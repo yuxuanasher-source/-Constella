@@ -29,6 +29,7 @@ function createRepo(
   return {
     shareBoardInserts,
     shareItemInserts,
+    getProjectStatus: vi.fn().mockResolvedValue("active"),
     listShareableApplications: vi.fn().mockResolvedValue([
       {
         id: "app-1",
@@ -174,7 +175,7 @@ describe("admission share board service", () => {
     ).rejects.toThrow("Every shared application must have a recording");
   });
 
-  it("rejects explicitly selected recordings that are not MCN approved", async () => {
+  it("shares explicitly selected recordings before settlement without requiring MCN approval", async () => {
     const repo = createRepo({
       listShareableApplications: vi.fn().mockResolvedValue([
         {
@@ -197,19 +198,24 @@ describe("admission share board service", () => {
       ]),
     });
 
-    await expect(
-      createAdmissionShareBoard({
-        repo,
-        actor,
-        projectId: "project-1",
-        input: { title: "Vendor review", applicationIds: ["app-1"] },
-        now: "2026-06-07T00:00:00.000Z",
-        tokenFactory: () => "plain-token",
+    await createAdmissionShareBoard({
+      repo,
+      actor,
+      projectId: "project-1",
+      input: { title: "Vendor review", applicationIds: ["app-1"] },
+      now: "2026-06-07T00:00:00.000Z",
+      tokenFactory: () => "plain-token",
+    });
+
+    expect(repo.shareItemInserts).toEqual([
+      expect.objectContaining({
+        applicationId: "app-1",
+        recordingSubmissionId: "rec-1",
       }),
-    ).rejects.toThrow("Every shared recording must be approved by MCN");
+    ]);
   });
 
-  it("shares only approved applications with recordings when creating a project-level board", async () => {
+  it("shares project applications that have recordings before settlement", async () => {
     const repo = createRepo({
       listShareableApplications: vi.fn().mockResolvedValue([
         {
@@ -217,7 +223,7 @@ describe("admission share board service", () => {
           organizationId: "org-1",
           projectId: "project-1",
           streamerId: "streamer-1",
-          status: "recording_approved",
+          status: "recording_reviewing",
         },
         {
           id: "app-no-recording",
@@ -234,7 +240,7 @@ describe("admission share board service", () => {
           projectId: "project-1",
           streamerId: "streamer-1",
           version: 1,
-          status: "approved",
+          status: "submitted",
         },
       ]),
     });
@@ -256,7 +262,7 @@ describe("admission share board service", () => {
     ]);
   });
 
-  it("shares only MCN-approved recordings when creating a project-level board", async () => {
+  it("shares all recorded applications before settlement regardless of MCN status", async () => {
     const repo = createRepo({
       listShareableApplications: vi.fn().mockResolvedValue([
         {
@@ -308,8 +314,35 @@ describe("admission share board service", () => {
         applicationId: "app-approved",
         recordingSubmissionId: "rec-approved",
       }),
+      expect.objectContaining({
+        applicationId: "app-reviewing",
+        recordingSubmissionId: "rec-reviewing",
+      }),
     ]);
   });
+
+  it.each(["draft", "settling", "archived"])(
+    "rejects recording shares when project status is %s",
+    async (status) => {
+      const repo = createRepo({
+        getProjectStatus: vi.fn().mockResolvedValue(status),
+      });
+
+      await expect(
+        createAdmissionShareBoard({
+          repo,
+          actor,
+          projectId: "project-1",
+          input: { title: "Vendor review" },
+          now: "2026-06-07T00:00:00.000Z",
+          tokenFactory: () => "plain-token",
+        }),
+      ).rejects.toThrow(
+        "Recording shares are only available before project settlement",
+      );
+      expect(repo.createShareBoard).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects applications outside the target project", async () => {
     const repo = createRepo({

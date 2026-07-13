@@ -8,6 +8,7 @@ import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
 import { MarketplaceBoard } from "@/components/marketplace/marketplace-board";
 import { USAGE_TUTORIAL_MD } from "./usage-tutorial-md";
 import { rankReportQueue } from "@/features/ai/bounded-actions";
+import { canShareAdmissionRecordingsForProject } from "@/features/applications/admission-share-policy";
 import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
 import {
   toCollaborationApplicationProjectCardDtos,
@@ -15429,25 +15430,32 @@ function ScreenAdmission() {
       setAdmissionMessage("分享链接后台暂未接入。");
       return;
     }
+    if (
+      board.project.status &&
+      !canShareAdmissionRecordingsForProject(board.project.status)
+    ) {
+      setAdmissionMessage("项目已进入结算或归档阶段，不能再创建录屏分享");
+      return;
+    }
     const projectApplications = applications.filter(
       (application) => admissionProjectId(application) === board.project.id,
     );
-    const shareableApplications = projectApplications.filter((application) =>
-      isMcnApprovedAdmissionRecording(application),
+    const shareableApplications = projectApplications.filter(
+      (application) => application.latestRecording,
     );
     const applicationIds = shareableApplications
       .map((application) => application.id)
       .filter(Boolean);
-    if (applicationIds.length === 0 && board.counts.mcnApproved === 0) {
-      setAdmissionMessage("当前项目暂无 MCN 已通过的可分享录屏");
+    if (applicationIds.length === 0 && board.counts.recordingCount === 0) {
+      setAdmissionMessage("当前项目暂无可分享录屏");
       return;
     }
-    const skippedNotApproved = applicationIds.length
+    const skippedUnavailable = applicationIds.length
       ? projectApplications.length - shareableApplications.length
       : 0;
     const skippedMessage =
-      skippedNotApproved > 0
-        ? `（已跳过 ${skippedNotApproved} 条未通过 MCN 初审或暂无录屏）`
+      skippedUnavailable > 0
+        ? `（已跳过 ${skippedUnavailable} 条暂无录屏的报名记录）`
         : "";
     setBusyAction(`share:${board.project.id}`);
     setAdmissionMessage("");
@@ -15462,7 +15470,7 @@ function ScreenAdmission() {
         setShareResult({
           projectName: board.project.name || board.project.code || "项目",
           shareUrl: result.shareUrl,
-          skippedNotApproved,
+          skippedUnavailable,
         });
       } else {
         setAdmissionMessage(`分享链接已生成${skippedMessage}`);
@@ -15935,7 +15943,13 @@ function ScreenAdmission() {
                       onClick={() => createShareBoard(board)}
                       disabled={
                         busyAction === `share:${board.project.id}` ||
-                        board.counts.recordingCount === 0
+                        board.counts.recordingCount === 0 ||
+                        Boolean(
+                          board.project.status &&
+                            !canShareAdmissionRecordingsForProject(
+                              board.project.status,
+                            ),
+                        )
                       }
                     >
                       创建分享链接
@@ -16032,7 +16046,7 @@ function AdmissionShareLinkDialog({ share, onClose }) {
         >
           <div style={{ fontSize: 16, fontWeight: 700 }}>分享链接已生成</div>
           <div style={{ marginTop: 4, fontSize: 12, color: "var(--ink-500)" }}>
-            {share.projectName} · 厂家可通过该链接复核已通过的录屏并提交反馈
+            {share.projectName} · 厂家可通过该链接复核项目录屏并提交反馈
           </div>
         </div>
         <div style={{ padding: 20, display: "grid", gap: 12 }}>
@@ -16051,10 +16065,9 @@ function AdmissionShareLinkDialog({ share, onClose }) {
           >
             {share.shareUrl}
           </div>
-          {share.skippedNotApproved > 0 ? (
+          {share.skippedUnavailable > 0 ? (
             <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
-              已跳过 {share.skippedNotApproved} 条未通过 MCN
-              初审或暂无录屏的记录。
+              已跳过 {share.skippedUnavailable} 条暂无录屏的报名记录。
             </div>
           ) : null}
           <div
@@ -18572,13 +18585,6 @@ function recordingReviewDecisionLabel(decision) {
   if (decision === "approved") return "通过";
   if (decision === "rejected") return "驳回";
   return "需补充";
-}
-
-function isMcnApprovedAdmissionRecording(application) {
-  return (
-    application.status === "recording_approved" &&
-    application.latestRecording?.status === "approved"
-  );
 }
 
 function admissionNextActionLabel(application) {

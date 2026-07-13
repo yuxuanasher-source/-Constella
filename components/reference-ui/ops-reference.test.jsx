@@ -5091,7 +5091,7 @@ describe("OpsReferenceApp admission smoke", () => {
     );
     expect(JSON.parse(shareCall[1].body)).toEqual({
       title: "Alpha Project 录屏复核",
-      applicationIds: ["app-ui-2"],
+      applicationIds: ["app-ui-1", "app-ui-2"],
       allowVendorSubmit: true,
     });
     expect(
@@ -5407,14 +5407,19 @@ describe("OpsReferenceApp admission smoke", () => {
     ).toBeInTheDocument();
   });
 
-  it("blocks creating a vendor share link when no recordings are MCN approved", async () => {
+  it("shares existing recordings during promotion without requiring MCN approval", async () => {
     const unapprovedApplications = [
       {
         id: "app-reviewing",
         status: "recording_reviewing",
         source: "signup",
         submittedAt: "2026-06-07T01:00:00.000Z",
-        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        project: {
+          id: "project-1",
+          code: "P-001",
+          name: "Alpha Project",
+          status: "active",
+        },
         streamer: { id: "streamer-1", displayName: "Streamer One" },
         latestRecording: {
           id: "rec-reviewing",
@@ -5425,7 +5430,7 @@ describe("OpsReferenceApp admission smoke", () => {
         vendorReview: null,
       },
     ];
-    const fetchMock = vi.fn(async (url) => {
+    const fetchMock = vi.fn(async (url, init) => {
       if (String(url) === "/api/applications/admission-board") {
         return {
           ok: true,
@@ -5436,6 +5441,7 @@ describe("OpsReferenceApp admission smoke", () => {
                   id: "project-1",
                   code: "P-001",
                   name: "Alpha Project",
+                  status: "active",
                   vendor: "Vendor A",
                   product: "Game A",
                 },
@@ -5465,6 +5471,17 @@ describe("OpsReferenceApp admission smoke", () => {
           }),
         };
       }
+      if (
+        String(url) === "/api/projects/project-1/admission-share-boards" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareUrl: "https://share.example/admission/promotion-token",
+          }),
+        };
+      }
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -5485,14 +5502,26 @@ describe("OpsReferenceApp admission smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "创建分享链接" }));
 
-    expect(
-      await screen.findByText("当前项目暂无 MCN 已通过的可分享录屏"),
-    ).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([url]) =>
-        String(url).includes("/admission-share-boards"),
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-1/admission-share-boards",
+        expect.objectContaining({ method: "POST" }),
       ),
-    ).toBe(false);
+    );
+    const shareCall = fetchMock.mock.calls.find(
+      ([url]) =>
+        String(url) === "/api/projects/project-1/admission-share-boards",
+    );
+    expect(JSON.parse(shareCall[1].body)).toEqual({
+      title: "Alpha Project 录屏复核",
+      applicationIds: ["app-reviewing"],
+      allowVendorSubmit: true,
+    });
+    expect(
+      await screen.findByText(
+        /https:\/\/share.example\/admission\/promotion-token/,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows vendor decisions with the correct MCN next actions", async () => {
