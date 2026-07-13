@@ -2956,6 +2956,14 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     );
     expect(review).toContain("assignedprojectstreamerids");
     expect(review).toContain("unassignedprojectstreamerids");
+    expect(review).toContain("v_current_group_project_snapshot_hash");
+    expect(review).toContain("'settlement_group_project_snapshot'");
+    expect(review).toContain(
+      "v_current_group_project_snapshot_hash is distinct from v_simulation.sample_selection",
+    );
+    expect(review).not.toContain(
+      "current_group_snapshot.current_group_snapshot_hash is distinct from v_simulation.sample_selection",
+    );
     expect(review).toContain("settlement_group_rule_conflict_blocking");
     expect(review).toContain("current_group_snapshot_hash");
     expect(submit).toContain("settlement_group_rule_conflict_blocking");

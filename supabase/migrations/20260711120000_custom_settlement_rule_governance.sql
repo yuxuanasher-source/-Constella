@@ -2202,6 +2202,7 @@ declare
   v_request_key text;
   v_request_fingerprint text;
   v_request_record public.custom_settlement_rule_lifecycle_requests%rowtype;
+  v_current_group_project_snapshot_hash text;
   v_result jsonb;
 begin
   if auth.uid() is null or v_actor_id is null then
@@ -2402,19 +2403,42 @@ begin
            v_simulation.sample_selection #>>
              '{groupPopulation,groupSnapshotHash}',
            ''
-         ) is null
-         or exists (
-           select 1
-           from public.settlement_rule_group_snapshot_state
-             as current_group_snapshot
-           where current_group_snapshot.organization_id =
-               p_organization_id
-             and current_group_snapshot.project_id = p_project_id
-             and current_group_snapshot.current_group_snapshot_hash
-               is distinct from v_simulation.sample_selection #>>
-                 '{groupPopulation,groupSnapshotHash}'
          )
+         is null
        ) then
+      raise exception 'settlement_group_simulation_population_incomplete';
+    end if;
+    if v_version.target_type = 'streamer_group' then
+      select public.custom_settlement_rule_request_fingerprint(
+        'settlement_group_project_snapshot',
+        pg_catalog.jsonb_build_object(
+          'projectId',
+          p_project_id,
+          'projectStreamers',
+          coalesce(
+            pg_catalog.jsonb_agg(
+              pg_catalog.jsonb_build_object(
+                'projectStreamerId',
+                current_group_snapshot.project_streamer_id,
+                'currentGroupSnapshotHash',
+                current_group_snapshot.current_group_snapshot_hash
+              )
+              order by current_group_snapshot.project_streamer_id
+            ),
+            '[]'::jsonb
+          )
+        )
+      )
+      into v_current_group_project_snapshot_hash
+      from public.settlement_rule_group_snapshot_state
+        as current_group_snapshot
+      where current_group_snapshot.organization_id = p_organization_id
+        and current_group_snapshot.project_id = p_project_id;
+    end if;
+    if v_version.target_type = 'streamer_group'
+       and v_current_group_project_snapshot_hash is distinct from
+         v_simulation.sample_selection #>>
+           '{groupPopulation,groupSnapshotHash}' then
       raise exception 'settlement_group_simulation_population_incomplete';
     end if;
     if v_version.target_type = 'streamer_group'
