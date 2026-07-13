@@ -2948,9 +2948,21 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(review).toContain(
       "settlement_group_simulation_population_incomplete",
     );
+    expect(review).toContain(
+      "settlement_group_simulation_population_missing_assigned",
+    );
+    expect(review).toContain(
+      "settlement_group_simulation_population_missing_unassigned",
+    );
+    expect(review).toContain("assignedprojectstreamerids");
+    expect(review).toContain("unassignedprojectstreamerids");
     expect(review).toContain("settlement_group_rule_conflict_blocking");
     expect(review).toContain("current_group_snapshot_hash");
     expect(submit).toContain("settlement_group_rule_conflict_blocking");
+    expect(submit).toContain("candidate_assignment");
+    expect(submit).toContain("active_pending_assignment");
+    expect(review).toContain("candidate_assignment");
+    expect(review).toContain("active_pending_assignment");
     expect(settlementGovernanceMigration).toContain(
       "create or replace view public.settlement_group_simulation_freshness",
     );

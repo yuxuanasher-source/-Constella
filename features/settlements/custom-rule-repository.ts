@@ -20,6 +20,7 @@ import {
   type TypedRuntimeValue,
 } from "./custom-rule-types";
 import {
+  determineSettlementPopulationCoverage,
   deriveSettlementGroupSimulationFreshness,
   type SettlementGroupMembershipSnapshot,
 } from "./custom-rule-groups";
@@ -696,6 +697,11 @@ export type SettlementRuleGroup = {
   }>;
   baseRuleCoveredProjectStreamerIds: string[];
 };
+
+type SettlementRuleGroupCoverage = Pick<
+  SettlementRuleGroup,
+  "unassignedProjectStreamers" | "baseRuleCoveredProjectStreamerIds"
+>;
 
 export type ProjectStreamerSettlementGroupAssignment = {
   id: string;
@@ -2196,6 +2202,21 @@ const settlementGroupSimulationFreshnessRowSchema = z.strictObject({
   group_snapshot_hash: hashSchema,
   current_group_snapshot_hash: hashSchema,
 });
+const settlementGroupCoverageProjectStreamerRowSchema = z.strictObject({
+  id: uuidSchema,
+  streamer_id: uuidSchema,
+  streamers: z
+    .union([
+      z.strictObject({ display_name: z.string().max(200).nullable() }),
+      z.array(z.strictObject({ display_name: z.string().max(200).nullable() })),
+    ])
+    .nullable()
+    .optional(),
+});
+const settlementGroupCoverageAssignmentRowSchema = z.strictObject({
+  project_streamer_id: uuidSchema,
+  group_id: uuidSchema,
+});
 
 const LIFECYCLE_VERSION_SELECT = Object.keys(
   lifecycleVersionRowSchema.shape,
@@ -2938,11 +2959,110 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
         "group list result must be an array",
       );
     }
+    const coverage = await this.loadSettlementRuleGroupCoverage(input);
     return data.map((row) =>
       toSettlementRuleGroup(
         parsePersistenceRow(settlementRuleGroupRowSchema, row, "group"),
+        coverage,
       ),
     );
+  }
+
+  private async loadSettlementRuleGroupCoverage(
+    input: ListSettlementRuleGroupsInput,
+  ): Promise<SettlementRuleGroupCoverage> {
+    const now = new Date().toISOString();
+    const { data: projectStreamerData, error: projectStreamerError } =
+      await this.client
+        .from("project_streamers")
+        .select("id, streamer_id, streamers(display_name)")
+        .eq("organization_id", input.organizationId)
+        .eq("project_id", input.projectId)
+        .eq("status", "joined")
+        .order("id", { ascending: true })
+        .returns<unknown[]>();
+    if (projectStreamerError) {
+      throw new CustomRulePersistenceQueryError(
+        "list_settlement_rule_group_project_streamers",
+        projectStreamerError,
+      );
+    }
+    if (!Array.isArray(projectStreamerData)) {
+      throw new CustomRulePersistenceDataError(
+        "group",
+        "group coverage project streamer result must be an array",
+      );
+    }
+
+    const { data: assignmentData, error: assignmentError } = await this.client
+      .from("project_streamer_settlement_group_assignments")
+      .select("project_streamer_id, group_id")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .lte("effective_from", now)
+      .or(`effective_until.is.null,effective_until.gt.${now}`)
+      .order("project_streamer_id", { ascending: true })
+      .returns<unknown[]>();
+    if (assignmentError) {
+      throw new CustomRulePersistenceQueryError(
+        "list_settlement_rule_group_assignments",
+        assignmentError,
+      );
+    }
+    if (!Array.isArray(assignmentData)) {
+      throw new CustomRulePersistenceDataError(
+        "assignment",
+        "group coverage assignment result must be an array",
+      );
+    }
+
+    const projectStreamers = projectStreamerData.map((row) =>
+      parsePersistenceRow(
+        settlementGroupCoverageProjectStreamerRowSchema,
+        row,
+        "group",
+      ),
+    );
+    const assignments = assignmentData.map((row) =>
+      parsePersistenceRow(
+        settlementGroupCoverageAssignmentRowSchema,
+        row,
+        "assignment",
+      ),
+    );
+    const projectStreamerById = new Map(
+      projectStreamers.map((projectStreamer) => [
+        projectStreamer.id,
+        projectStreamer,
+      ]),
+    );
+    const population = determineSettlementPopulationCoverage({
+      joinedProjectStreamerIds: projectStreamers.map(
+        (projectStreamer) => projectStreamer.id,
+      ),
+      activeAssignments: assignments.map((assignment) => ({
+        projectStreamerId: assignment.project_streamer_id,
+        groupId: assignment.group_id,
+      })),
+    });
+    return {
+      unassignedProjectStreamers: population.unassignedProjectStreamerIds.map(
+        (projectStreamerId) => {
+          const projectStreamer = projectStreamerById.get(projectStreamerId);
+          return {
+            projectStreamerId,
+            streamerId: projectStreamer?.streamer_id ?? projectStreamerId,
+            displayName:
+              displayNameFromStreamerJoin(projectStreamer?.streamers) ??
+              projectStreamer?.streamer_id ??
+              projectStreamerId,
+          };
+        },
+      ),
+      baseRuleCoveredProjectStreamerIds: [
+        ...population.baseRuleCoveredProjectStreamerIds,
+      ],
+    };
   }
 
   async archiveSettlementRuleGroup(
@@ -4839,6 +4959,7 @@ function scopeSimulationOwnerQuery<
 
 function toSettlementRuleGroup(
   row: z.infer<typeof settlementRuleGroupRowSchema>,
+  coverage?: SettlementRuleGroupCoverage,
 ): SettlementRuleGroup {
   return {
     id: row.id,
@@ -4854,17 +4975,29 @@ function toSettlementRuleGroup(
     activeRuleCount: row.active_rule_count,
     pendingRuleCount: row.pending_rule_count,
     futureAssignmentCount: row.future_assignment_count,
-    unassignedProjectStreamers: row.unassigned_project_streamers.map(
-      (streamer) => ({
+    unassignedProjectStreamers:
+      coverage?.unassignedProjectStreamers ??
+      row.unassigned_project_streamers.map((streamer) => ({
         projectStreamerId: streamer.project_streamer_id,
         streamerId: streamer.streamer_id,
         displayName: streamer.display_name,
-      }),
-    ),
-    baseRuleCoveredProjectStreamerIds: [
-      ...row.base_rule_covered_project_streamer_ids,
-    ],
+      })),
+    baseRuleCoveredProjectStreamerIds:
+      coverage?.baseRuleCoveredProjectStreamerIds ?? [
+        ...row.base_rule_covered_project_streamer_ids,
+      ],
   };
+}
+
+function displayNameFromStreamerJoin(
+  streamers:
+    | { display_name: string | null }
+    | Array<{ display_name: string | null }>
+    | null
+    | undefined,
+): string | null {
+  const streamer = Array.isArray(streamers) ? streamers[0] : streamers;
+  return streamer?.display_name ?? null;
 }
 
 function toProjectStreamerSettlementGroupAssignment(

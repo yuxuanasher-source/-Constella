@@ -2025,11 +2025,36 @@ begin
      and exists (
        select 1
        from public.custom_settlement_rule_versions as active_pending
+       join public.project_streamer_settlement_group_assignments
+         as active_pending_assignment
+         on active_pending_assignment.organization_id =
+             active_pending.organization_id
+        and active_pending_assignment.project_id =
+             active_pending.project_id
+        and active_pending_assignment.group_id = active_pending.target_id
+        and active_pending_assignment.effective_from <= p_effective_from
+        and (
+          active_pending_assignment.effective_until is null
+          or p_effective_from < active_pending_assignment.effective_until
+        )
+       join public.project_streamer_settlement_group_assignments
+         as candidate_assignment
+         on candidate_assignment.organization_id =
+             active_pending_assignment.organization_id
+        and candidate_assignment.project_id =
+             active_pending_assignment.project_id
+        and candidate_assignment.project_streamer_id =
+             active_pending_assignment.project_streamer_id
+        and candidate_assignment.group_id = p_target_id
+        and candidate_assignment.effective_from <= p_effective_from
+        and (
+          candidate_assignment.effective_until is null
+          or p_effective_from < candidate_assignment.effective_until
+        )
        where active_pending.organization_id = p_organization_id
          and active_pending.project_id = p_project_id
          and active_pending.scope = p_scope
          and active_pending.target_type = 'streamer_group'
-         and active_pending.target_id = p_target_id
          and active_pending.status in ('active', 'pending_review')
          and active_pending.id is distinct from p_source_rule_version_id
          and (
@@ -2395,12 +2420,103 @@ begin
     if v_version.target_type = 'streamer_group'
        and exists (
          select 1
+         from public.project_streamers as project_streamer
+         join public.project_streamer_settlement_group_assignments
+           as current_assignment
+           on current_assignment.organization_id =
+               project_streamer.organization_id
+          and current_assignment.project_id = project_streamer.project_id
+          and current_assignment.project_streamer_id = project_streamer.id
+          and current_assignment.group_id = v_version.target_id
+          and current_assignment.effective_from <= p_effective_from
+          and (
+            current_assignment.effective_until is null
+            or p_effective_from < current_assignment.effective_until
+          )
+         where project_streamer.organization_id = p_organization_id
+           and project_streamer.project_id = p_project_id
+           and project_streamer.status = 'joined'
+           and not exists (
+             select 1
+             from pg_catalog.jsonb_array_elements_text(
+               v_simulation.sample_selection #>
+                 '{groupPopulation,assignedProjectStreamerIds}'
+             ) as simulated(project_streamer_id)
+             where simulated.project_streamer_id =
+               current_assignment.project_streamer_id::text
+           )
+       ) then
+      raise exception
+        'settlement_group_simulation_population_missing_assigned';
+    end if;
+    if v_version.target_type = 'streamer_group'
+       and exists (
+         select 1
+         from public.project_streamers as project_streamer
+         where project_streamer.organization_id = p_organization_id
+           and project_streamer.project_id = p_project_id
+           and project_streamer.status = 'joined'
+           and not exists (
+             select 1
+             from public.project_streamer_settlement_group_assignments
+               as current_assignment
+             where current_assignment.organization_id =
+                 project_streamer.organization_id
+               and current_assignment.project_id = project_streamer.project_id
+               and current_assignment.project_streamer_id =
+                 project_streamer.id
+               and current_assignment.effective_from <= p_effective_from
+               and (
+                 current_assignment.effective_until is null
+                 or p_effective_from < current_assignment.effective_until
+               )
+           )
+           and not exists (
+             select 1
+             from pg_catalog.jsonb_array_elements_text(
+               v_simulation.sample_selection #>
+                 '{groupPopulation,unassignedProjectStreamerIds}'
+             ) as simulated(project_streamer_id)
+             where simulated.project_streamer_id = project_streamer.id::text
+           )
+       ) then
+      raise exception
+        'settlement_group_simulation_population_missing_unassigned';
+    end if;
+    if v_version.target_type = 'streamer_group'
+       and exists (
+         select 1
          from public.custom_settlement_rule_versions as active_pending
+         join public.project_streamer_settlement_group_assignments
+           as active_pending_assignment
+           on active_pending_assignment.organization_id =
+               active_pending.organization_id
+          and active_pending_assignment.project_id =
+               active_pending.project_id
+          and active_pending_assignment.group_id = active_pending.target_id
+          and active_pending_assignment.effective_from <= p_effective_from
+          and (
+            active_pending_assignment.effective_until is null
+            or p_effective_from < active_pending_assignment.effective_until
+          )
+         join public.project_streamer_settlement_group_assignments
+           as candidate_assignment
+           on candidate_assignment.organization_id =
+               active_pending_assignment.organization_id
+          and candidate_assignment.project_id =
+               active_pending_assignment.project_id
+          and candidate_assignment.project_streamer_id =
+               active_pending_assignment.project_streamer_id
+          and candidate_assignment.group_id = v_version.target_id
+          and candidate_assignment.effective_from <= p_effective_from
+          and (
+            candidate_assignment.effective_until is null
+            or p_effective_from < candidate_assignment.effective_until
+          )
          where active_pending.organization_id = p_organization_id
            and active_pending.project_id = p_project_id
            and active_pending.scope = v_version.scope
            and active_pending.target_type = 'streamer_group'
-           and active_pending.target_id = v_version.target_id
            and active_pending.id <> p_rule_version_id
            and active_pending.status in ('active', 'pending_review')
            and (

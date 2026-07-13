@@ -62,20 +62,53 @@ describe("Phase 2 custom rule lifecycle repository", () => {
 
   it("lists active and archived settlement rule groups with scoped assignment counts", async () => {
     const from = vi.fn((table: string) => {
-      expect(table).toBe("settlement_rule_groups");
+      if (table === "settlement_rule_groups") {
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          order: vi.fn().mockReturnThis(),
+          returns: vi.fn(async () => ({
+            data: [
+              settlementRuleGroupRow(
+                {
+                  assignment_count: 2,
+                  future_assignment_count: 1,
+                  active_rule_count: 0,
+                  pending_rule_count: 1,
+                },
+                { includeCoverage: false },
+              ),
+            ],
+            error: null,
+          })),
+        };
+      }
+      if (table === "project_streamers") {
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          order: vi.fn().mockReturnThis(),
+          returns: vi.fn(async () => ({
+            data: [
+              {
+                id: PROJECT_STREAMER_ID,
+                streamer_id: "00000000-0000-4000-8000-000000000014",
+                streamers: { display_name: "Streamer A" },
+              },
+            ],
+            error: null,
+          })),
+        };
+      }
+      expect(table).toBe("project_streamer_settlement_group_assignments");
       return {
         select: vi.fn().mockReturnThis(),
         eq: vi.fn().mockReturnThis(),
+        lte: vi.fn().mockReturnThis(),
+        or: vi.fn().mockReturnThis(),
         order: vi.fn().mockReturnThis(),
         returns: vi.fn(async () => ({
-          data: [
-            settlementRuleGroupRow({
-              assignment_count: 2,
-              future_assignment_count: 1,
-              active_rule_count: 0,
-              pending_rule_count: 1,
-            }),
-          ],
+          data: [],
           error: null,
         })),
       };
@@ -111,6 +144,10 @@ describe("Phase 2 custom rule lifecycle repository", () => {
         baseRuleCoveredProjectStreamerIds: [PROJECT_STREAMER_ID],
       }),
     ]);
+    expect(from).toHaveBeenCalledWith("project_streamers");
+    expect(from).toHaveBeenCalledWith(
+      "project_streamer_settlement_group_assignments",
+    );
   });
 
   it("archives settlement groups through a guarded RPC", async () => {
@@ -4091,8 +4128,11 @@ const HASH_D = "d".repeat(64);
 const HASH_E = "e".repeat(64);
 const HASH_F = "f".repeat(64);
 
-function settlementRuleGroupRow(overrides: Record<string, unknown> = {}) {
-  return {
+function settlementRuleGroupRow(
+  overrides: Record<string, unknown> = {},
+  options: { includeCoverage?: boolean } = {},
+) {
+  const row = {
     id: GROUP_ID,
     organization_id: ORGANIZATION_ID,
     project_id: PROJECT_ID,
@@ -4106,6 +4146,11 @@ function settlementRuleGroupRow(overrides: Record<string, unknown> = {}) {
     active_rule_count: 0,
     pending_rule_count: 0,
     future_assignment_count: 0,
+    ...overrides,
+  };
+  if (options.includeCoverage === false) return row;
+  return {
+    ...row,
     unassigned_project_streamers: [
       {
         project_streamer_id: PROJECT_STREAMER_ID,
@@ -4114,7 +4159,6 @@ function settlementRuleGroupRow(overrides: Record<string, unknown> = {}) {
       },
     ],
     base_rule_covered_project_streamer_ids: [PROJECT_STREAMER_ID],
-    ...overrides,
   };
 }
 
