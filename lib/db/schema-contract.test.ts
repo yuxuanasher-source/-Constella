@@ -89,6 +89,16 @@ const settlementSimulationSummaryV2Migration = readdirSync(
 const normalizedSettlementSimulationSummaryV2Migration = normalizeSql(
   settlementSimulationSummaryV2Migration,
 );
+const settlementGovernanceMigrationName =
+  "20260711120000_custom_settlement_rule_governance.sql";
+const settlementGovernanceMigration = readdirSync(migrationsDir).includes(
+  settlementGovernanceMigrationName,
+)
+  ? readFileSync(join(migrationsDir, settlementGovernanceMigrationName), "utf8")
+  : "";
+const normalizedSettlementGovernanceMigration = normalizeSql(
+  settlementGovernanceMigration,
+);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -376,6 +386,52 @@ function settlementAiCanonicalBusinessContract(): unknown {
   );
   expect(match, "missing canonical business contract fixture").not.toBeNull();
   return JSON.parse(match?.[1] ?? "null") as unknown;
+}
+
+function settlementGovernanceTableDefinition(table: string): string {
+  return normalizeSql(
+    extractBalancedSql(
+      settlementGovernanceMigration,
+      `create table public.${table}`,
+    ).inner,
+  );
+}
+
+function extractSettlementGovernanceFunction(fn: string): {
+  definition: string;
+  body: string;
+} {
+  const marker = `create or replace function public.${fn}`;
+  const start = settlementGovernanceMigration.toLowerCase().indexOf(marker);
+  expect(
+    start,
+    `missing Phase 2 governance function: ${fn}`,
+  ).toBeGreaterThanOrEqual(0);
+  const bodyMarker = /\bas\s+\$\$/giu;
+  bodyMarker.lastIndex = start;
+  const bodyStartMatch = bodyMarker.exec(settlementGovernanceMigration);
+  expect(
+    bodyStartMatch,
+    `missing Phase 2 governance body: ${fn}`,
+  ).not.toBeNull();
+  const bodyStart = bodyStartMatch?.index ?? -1;
+  const bodyContentStart = bodyStart + (bodyStartMatch?.[0].length ?? 0);
+  const bodyEnd = settlementGovernanceMigration.indexOf(
+    "$$;",
+    bodyContentStart,
+  );
+  expect(
+    bodyEnd,
+    `missing Phase 2 governance terminator: ${fn}`,
+  ).toBeGreaterThan(bodyContentStart);
+  return {
+    definition: normalizeSql(
+      settlementGovernanceMigration.slice(start, bodyEnd + 3),
+    ),
+    body: normalizeSql(
+      settlementGovernanceMigration.slice(bodyContentStart, bodyEnd),
+    ),
+  };
 }
 
 describe("P0 database contract", () => {
@@ -1787,9 +1843,9 @@ describe("Phase 1 settlement AI persistence contract", () => {
   });
 
   it("versions complete simulation summaries and guards all new inserts at v2", () => {
-    expect(
-      readdirSync(migrationsDir),
-    ).toContain(settlementSimulationSummaryV2MigrationName);
+    expect(readdirSync(migrationsDir)).toContain(
+      settlementSimulationSummaryV2MigrationName,
+    );
     expect(normalizedSettlementSimulationSummaryV2Migration).toContain(
       "alter function public.settlement_ai_simulation_summary_is_valid",
     );
@@ -1841,13 +1897,15 @@ describe("Phase 1 settlement AI persistence contract", () => {
     const insert = rpc.indexOf(
       "insert into public.settlement_formula_simulations",
     );
-    expect([
-      wrapperValidation,
-      existingLookup,
-      duplicateReturn,
-      v2InsertGate,
-      insert,
-    ].every((index) => index >= 0)).toBe(true);
+    expect(
+      [
+        wrapperValidation,
+        existingLookup,
+        duplicateReturn,
+        v2InsertGate,
+        insert,
+      ].every((index) => index >= 0),
+    ).toBe(true);
     expect([
       wrapperValidation,
       existingLookup,
@@ -2114,6 +2172,563 @@ describe("Phase 1 settlement AI database authoring authorization", () => {
         `alter function public.${unchangedRpc}`,
       );
     }
+  });
+});
+
+describe("Phase 2 governed settlement rule schema contract", () => {
+  it("declares the five governance tables with exact lifecycle enums and JSON budgets", () => {
+    expect(settlementGovernanceMigration).not.toBe("");
+
+    const version = settlementGovernanceTableDefinition(
+      "custom_settlement_rule_versions",
+    );
+    for (const column of [
+      "id uuid primary key",
+      "organization_id uuid not null",
+      "project_id uuid not null",
+      "scope text not null",
+      "target_type text not null",
+      "target_id uuid",
+      "execution_grain text not null",
+      "composition_mode text not null",
+      "priority integer not null",
+      "version_number integer not null",
+      "status text not null",
+      "formula text not null",
+      "compiled_ast jsonb not null",
+      "variables jsonb not null",
+      "parameters jsonb not null",
+      "rule_contract jsonb not null",
+      "missing_data_policy jsonb not null",
+      "test_cases jsonb not null",
+      "simulation_summary jsonb not null",
+      "formula_hash text not null",
+      "rule_contract_hash text not null",
+      "parameter_hash text not null",
+      "variable_catalog_version text not null",
+      "data_selection_hash text not null",
+      "simulation_id uuid not null",
+    ]) {
+      expect(version).toContain(column);
+    }
+    expect(version).toMatch(
+      /status in \(\s*'draft',\s*'pending_review',\s*'changes_requested',\s*'active',\s*'archived'\s*\)/u,
+    );
+    expect(version).toContain(
+      "scope in ('receivable', 'payable', 'external_cost', 'reconciliation')",
+    );
+    expect(version).toContain(
+      "target_type in ('project', 'streamer_group', 'project_streamer')",
+    );
+    expect(version).toMatch(
+      /execution_grain in \(\s*'report',\s*'project_streamer_period',\s*'batch',\s*'project_period'\s*\)/u,
+    );
+    expect(version).toMatch(
+      /composition_mode in \(\s*'replace',\s*'add',\s*'multiply',\s*'clamp',\s*'emit_items',\s*'check'\s*\)/u,
+    );
+    expect(version).toContain(
+      "pg_catalog.jsonb_typeof(compiled_ast) = 'object'",
+    );
+    expect(version).toContain("pg_catalog.jsonb_typeof(variables) = 'array'");
+    expect(version).toContain("pg_catalog.jsonb_typeof(parameters) = 'object'");
+    expect(version).toContain(
+      "pg_catalog.jsonb_typeof(rule_contract) = 'object'",
+    );
+    expect(version).toContain(
+      "pg_catalog.jsonb_typeof(missing_data_policy) = 'object'",
+    );
+    expect(version).toContain("pg_catalog.jsonb_typeof(test_cases) = 'array'");
+    expect(version).toContain(
+      "pg_catalog.jsonb_typeof(simulation_summary) = 'object'",
+    );
+    expect(version).toContain("public.settlement_ai_json_within_budget(");
+    expect(version).toContain(
+      "public.settlement_ai_normalized_ast_is_valid(compiled_ast)",
+    );
+    expect(version).toContain(
+      "public.settlement_ai_business_contract_is_valid(rule_contract)",
+    );
+
+    for (const table of [
+      "custom_settlement_rule_review_events",
+      "settlement_rule_groups",
+      "project_streamer_settlement_group_assignments",
+      "settlement_rule_templates",
+    ]) {
+      expect(normalizedSettlementGovernanceMigration).toContain(
+        `create table public.${table}`,
+      );
+    }
+  });
+
+  it("enforces target identity, version uniqueness, and one active target", () => {
+    const version = settlementGovernanceTableDefinition(
+      "custom_settlement_rule_versions",
+    );
+
+    expect(version).toContain("target_type = 'project' and target_id is null");
+    expect(version).toContain(
+      "target_type <> 'project' and target_id is not null",
+    );
+    expect(version).toContain("scope = 'payable' or target_type = 'project'");
+    expect(version).toContain(
+      "target_group_id uuid generated always as ( case when target_type = 'streamer_group' then target_id end ) stored",
+    );
+    expect(version).toContain(
+      "target_project_streamer_id uuid generated always as ( case when target_type = 'project_streamer' then target_id end ) stored",
+    );
+    expect(version).toContain(
+      "foreign key (target_group_id, organization_id, project_id) references public.settlement_rule_groups(id, organization_id, project_id)",
+    );
+    expect(version).toContain(
+      "foreign key (target_project_streamer_id, organization_id, project_id) references public.project_streamers(id, organization_id, project_id)",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "constraint project_streamers_id_organization_project_key unique (id, organization_id, project_id)",
+    );
+    expect(normalizedSettlementGovernanceMigration).toMatch(
+      /create unique index custom_settlement_rule_target_version_key on public\.custom_settlement_rule_versions \( organization_id, project_id, scope, target_type, coalesce\(target_id, '00000000-0000-0000-0000-000000000000'::uuid\), version_number \)/u,
+    );
+    expect(normalizedSettlementGovernanceMigration).toMatch(
+      /create unique index custom_settlement_rule_one_active_target on public\.custom_settlement_rule_versions \( project_id, scope, target_type, coalesce\(target_id, '00000000-0000-0000-0000-000000000000'::uuid\) \) where status = 'active'/u,
+    );
+
+    for (const constraint of [
+      "settlement_rule_groups_organization_fkey",
+      "settlement_rule_groups_created_by_fkey",
+      "custom_rule_versions_organization_fkey",
+      "custom_rule_versions_created_by_fkey",
+      "custom_rule_versions_approved_by_fkey",
+      "custom_rule_review_events_organization_fkey",
+      "custom_rule_review_events_actor_fkey",
+      "project_streamer_group_assignments_organization_fkey",
+      "project_streamer_group_assignments_actor_fkey",
+      "settlement_rule_templates_organization_fkey",
+      "settlement_rule_templates_created_by_fkey",
+    ]) {
+      expect(normalizedSettlementGovernanceMigration).toContain(
+        `constraint ${constraint} foreign key`,
+      );
+      expect(constraint.length).toBeLessThanOrEqual(63);
+    }
+  });
+
+  it("binds one immutable simulation and excludes approved range overlap", () => {
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "create extension if not exists btree_gist with schema extensions",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "constraint custom_settlement_rule_versions_effective_no_overlap exclude using gist",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "tstzrange(effective_from, effective_until, '[)') with &&",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "where (approved_at is not null and status in ('active', 'archived'))",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "constraint settlement_formula_simulations_rule_version_pair_key unique (id, rule_version_id, organization_id, project_id)",
+    );
+    expect(normalizedSettlementGovernanceMigration).toMatch(
+      /constraint custom_settlement_rule_versions_simulation_scope_fkey foreign key \(simulation_id, id, organization_id, project_id\) references public\.settlement_formula_simulations\(\s*id,\s*rule_version_id,\s*organization_id,\s*project_id\s*\) on delete restrict deferrable initially deferred/u,
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "constraint settlement_formula_simulations_rule_version_scope_fkey foreign key (rule_version_id, organization_id, project_id) references public.custom_settlement_rule_versions(id, organization_id, project_id) on delete restrict deferrable initially deferred",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "create unique index settlement_formula_simulations_rule_version_key",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "unique (simulation_id)",
+    );
+    expect(normalizedSettlementGovernanceMigration).not.toContain(
+      "drop constraint settlement_formula_simulations_exactly_one_owner",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "constraint custom_settlement_rule_versions_approved_archive_end_check check ( status <> 'archived' or approved_at is null or effective_until is not null )",
+    );
+  });
+
+  it("makes reviews append-only and group assignments effective-dated", () => {
+    const review = settlementGovernanceTableDefinition(
+      "custom_settlement_rule_review_events",
+    );
+    expect(review).toMatch(
+      /event_type in \(\s*'submitted',\s*'changes_requested',\s*'resubmitted',\s*'approved',\s*'force_approved',\s*'archived',\s*'activation_failed'\s*\)/u,
+    );
+    for (const column of [
+      "actor_id uuid not null",
+      "actor_role text not null",
+      "reason text",
+      "comment text",
+      "before_status text",
+      "after_status text",
+      "risk_summary jsonb not null",
+      "formula_hash text not null",
+      "rule_contract_hash text not null",
+      "parameter_hash text not null",
+      "variable_catalog_version text not null",
+      "data_selection_hash text not null",
+      "created_at timestamptz not null",
+    ]) {
+      expect(review).toContain(column);
+    }
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "create trigger custom_settlement_rule_review_events_immutable before update or delete on public.custom_settlement_rule_review_events",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "create trigger custom_settlement_rule_review_events_no_truncate before truncate on public.custom_settlement_rule_review_events",
+    );
+
+    const group = settlementGovernanceTableDefinition("settlement_rule_groups");
+    expect(group).toContain("status in ('active', 'archived')");
+    expect(group).toContain("status = 'active' and archived_at is null");
+    expect(group).toContain("status = 'archived' and archived_at is not null");
+    const assignment = settlementGovernanceTableDefinition(
+      "project_streamer_settlement_group_assignments",
+    );
+    expect(assignment).toContain(
+      "foreign key (project_streamer_id, organization_id, project_id) references public.project_streamers(id, organization_id, project_id)",
+    );
+    expect(assignment).toContain(
+      "foreign key (group_id, organization_id, project_id) references public.settlement_rule_groups(id, organization_id, project_id)",
+    );
+    expect(assignment).toContain(
+      "effective_until is null or effective_until > effective_from",
+    );
+    expect(assignment).toContain(
+      "constraint project_streamer_settlement_group_assignments_no_overlap exclude using gist",
+    );
+    expect(assignment).toContain(
+      "project_streamer_id with =, group_id with =, tstzrange(effective_from, effective_until, '[)') with &&",
+    );
+  });
+
+  it("stores only organization templates and does not seed system templates", () => {
+    const template = settlementGovernanceTableDefinition(
+      "settlement_rule_templates",
+    );
+    for (const column of [
+      "organization_id uuid not null",
+      "source_rule_version_id uuid",
+      "source_version_number integer",
+      "source_scope text",
+      "formula text not null",
+      "compiled_ast jsonb not null",
+      "variables jsonb not null",
+      "parameters jsonb not null",
+      "rule_contract jsonb not null",
+      "status text not null",
+    ]) {
+      expect(template).toContain(column);
+    }
+    expect(template).toContain("status in ('active', 'archived')");
+    expect(template).toContain(
+      "foreign key (source_rule_version_id, organization_id) references public.custom_settlement_rule_versions(id, organization_id)",
+    );
+    expect(template).toContain(
+      "foreign key ( source_rule_version_id, organization_id, source_project_id, source_version_number, source_scope ) references public.custom_settlement_rule_versions( id, organization_id, project_id, version_number, scope )",
+    );
+    expect(normalizedSettlementGovernanceMigration).not.toMatch(
+      /insert into public\.settlement_rule_templates/u,
+    );
+    expect(normalizedSettlementGovernanceMigration).not.toContain(
+      "system_template",
+    );
+  });
+
+  it("freezes submitted payloads, governance fields, deletes, and review history", () => {
+    const guardFunction = extractSettlementGovernanceFunction(
+      "guard_custom_settlement_rule_version_mutation",
+    );
+    const guard = guardFunction.body;
+    expect(guardFunction.definition).toContain(
+      "set search_path = pg_catalog, public",
+    );
+    expect(guard).toContain("if tg_op = 'delete' then");
+    expect(guard).toContain(
+      "custom settlement rule versions cannot be deleted",
+    );
+    expect(guard).toContain("old.status = 'draft' and new.status = 'draft'");
+    for (const field of [
+      "formula",
+      "compiled_ast",
+      "variables",
+      "parameters",
+      "rule_contract",
+      "missing_data_policy",
+      "test_cases",
+      "scope",
+      "target_type",
+      "target_id",
+      "priority",
+      "execution_grain",
+      "composition_mode",
+      "system_explanation_template",
+      "formula_hash",
+      "rule_contract_hash",
+      "parameter_hash",
+      "variable_catalog_version",
+      "data_selection_hash",
+      "simulation_id",
+      "ai_draft_id",
+    ]) {
+      expect(guard).toContain(`'${field}'`);
+    }
+    for (const field of [
+      "id",
+      "organization_id",
+      "project_id",
+      "version_number",
+      "created_by",
+      "created_at",
+    ]) {
+      expect(guard).toContain(`new.${field} is distinct from old.${field}`);
+    }
+    expect(guard).toContain("custom settlement rule identity is immutable");
+    for (const field of [
+      "status",
+      "effective_from",
+      "effective_until",
+      "approved_by",
+      "approved_at",
+      "archived_at",
+    ]) {
+      expect(guard).toContain(`new.${field} is distinct from old.${field}`);
+    }
+    for (const [before, after] of [
+      ["draft", "pending_review"],
+      ["pending_review", "changes_requested"],
+      ["changes_requested", "draft"],
+      ["pending_review", "active"],
+      ["active", "archived"],
+      ["draft", "archived"],
+      ["changes_requested", "archived"],
+    ]) {
+      expect(guard).toContain(
+        `old.status = '${before}' and new.status = '${after}'`,
+      );
+    }
+    expect(guard).toContain(
+      "custom settlement rule payload cannot change during status transition",
+    );
+    expect(guard).toContain(
+      "governance fields require an allowed status transition",
+    );
+    expect(guard).toContain(
+      "custom settlement rule status transition is not allowed",
+    );
+    for (const forbidden of [
+      "set_config",
+      "current_setting",
+      "session_replication_role",
+      "disable trigger",
+      "enable trigger",
+    ]) {
+      expect(guard).not.toContain(forbidden);
+    }
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "create trigger custom_settlement_rule_versions_guard before update or delete on public.custom_settlement_rule_versions",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "revoke all on function public.guard_custom_settlement_rule_version_mutation() from public, anon, authenticated, service_role",
+    );
+  });
+
+  it("allows only project-scoped MCN reads and removes all direct writes", () => {
+    for (const table of [
+      "custom_settlement_rule_versions",
+      "custom_settlement_rule_review_events",
+      "settlement_rule_groups",
+      "project_streamer_settlement_group_assignments",
+      "settlement_rule_templates",
+    ]) {
+      expect(normalizedSettlementGovernanceMigration).toContain(
+        `alter table public.${table} enable row level security`,
+      );
+      expect(normalizedSettlementGovernanceMigration).toContain(
+        `revoke all on table public.${table} from public, anon, authenticated, service_role`,
+      );
+      expect(normalizedSettlementGovernanceMigration).toContain(
+        `grant select on table public.${table} to authenticated`,
+      );
+    }
+    for (const table of [
+      "custom_settlement_rule_versions",
+      "custom_settlement_rule_review_events",
+      "settlement_rule_groups",
+      "project_streamer_settlement_group_assignments",
+    ]) {
+      expect(normalizedSettlementGovernanceMigration).toMatch(
+        new RegExp(
+          `create policy ${table}_mcn_project_read on public\\.${table} for select using \\( auth\\.uid\\(\\) is not null and public\\.is_org_member\\(organization_id\\) and public\\.is_mcn_staff\\(organization_id\\) and public\\.can_access_project\\(project_id\\) \\)`,
+          "u",
+        ),
+      );
+    }
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "create policy settlement_rule_templates_mcn_org_read on public.settlement_rule_templates for select using ( auth.uid() is not null and public.is_org_member(organization_id) and public.is_mcn_staff(organization_id) )",
+    );
+    expect(normalizedSettlementGovernanceMigration).not.toMatch(
+      /create policy [^;]+ for (?:insert|update|delete|all)/u,
+    );
+  });
+
+  it("exposes five fixed-search-path, role-gated, fail-closed RPC skeletons", () => {
+    const expectedRoles: Record<string, string[]> = {
+      save_custom_settlement_rule_draft: [
+        "'owner'",
+        "'ops_manager'",
+        "'operator_business'",
+      ],
+      apply_and_submit_custom_settlement_rule: [
+        "'owner'",
+        "'ops_manager'",
+        "'operator_business'",
+      ],
+      review_custom_settlement_rule: ["'owner'", "'ops_manager'", "'finance'"],
+      archive_custom_settlement_rule: ["'owner'", "'ops_manager'"],
+      change_settlement_group_assignment: ["'owner'", "'ops_manager'"],
+    };
+
+    for (const [fn, roles] of Object.entries(expectedRoles)) {
+      const rpc = extractSettlementGovernanceFunction(fn);
+      expect(rpc.definition).toContain("security definer");
+      expect(rpc.definition).toContain("set search_path = pg_catalog, public");
+      expect(rpc.body).toContain("v_actor_id uuid := auth.uid()");
+      expect(rpc.body).toContain("public.is_org_member(p_organization_id)");
+      expect(rpc.body).toContain("public.can_access_project(p_project_id)");
+      expect(rpc.body).toContain("for update");
+      expect(rpc.body).toContain(`${fn}_not_implemented_phase2_task1`);
+      const roleList = rpc.body.match(
+        /public\.current_user_role\(p_organization_id\) not in \(([^)]+)\)/u,
+      )?.[1];
+      expect(roleList?.match(/'[a-z_]+'/gu)).toEqual(roles);
+      expect(normalizedSettlementGovernanceMigration).toMatch(
+        new RegExp(
+          `revoke all on function public\\.${fn}\\([\\s\\S]+?from public, anon, authenticated, service_role;`,
+          "u",
+        ),
+      );
+      expect(normalizedSettlementGovernanceMigration).toMatch(
+        new RegExp(
+          `grant execute on function public\\.${fn}\\([\\s\\S]+?to authenticated;`,
+          "u",
+        ),
+      );
+      expect(normalizedSettlementGovernanceMigration).not.toMatch(
+        new RegExp(
+          `grant execute on function public\\.${fn}\\([\\s\\S]+?to (?:public|anon|service_role);`,
+          "u",
+        ),
+      );
+    }
+
+    const save = extractSettlementGovernanceFunction(
+      "save_custom_settlement_rule_draft",
+    ).body;
+    expect(
+      save.indexOf("from public.settlement_rule_groups"),
+    ).toBeGreaterThanOrEqual(0);
+    expect(save.indexOf("from public.settlement_rule_groups")).toBeLessThan(
+      save.indexOf("from public.project_streamers"),
+    );
+    expect(save.indexOf("from public.project_streamers")).toBeLessThan(
+      save.indexOf("from public.custom_settlement_rule_versions"),
+    );
+    expect(save).toContain("p_scope not in (");
+    expect(save).toContain("p_target_type not in (");
+    expect(save).toContain(
+      "p_scope <> 'payable' and p_target_type <> 'project'",
+    );
+    expect(save).toContain("custom_settlement_rule_target_invalid");
+    expect(save).toContain("custom_settlement_rule_group_scope_mismatch");
+    expect(save).toContain(
+      "custom_settlement_rule_project_streamer_scope_mismatch",
+    );
+
+    const submit = extractSettlementGovernanceFunction(
+      "apply_and_submit_custom_settlement_rule",
+    ).body;
+    expect(
+      submit.indexOf("from public.settlement_rule_groups"),
+    ).toBeGreaterThanOrEqual(0);
+    expect(submit.indexOf("from public.settlement_rule_groups")).toBeLessThan(
+      submit.indexOf("from public.project_streamers"),
+    );
+    expect(submit.indexOf("from public.project_streamers")).toBeLessThan(
+      submit.indexOf("from public.ai_settlement_rule_drafts"),
+    );
+    expect(
+      submit.indexOf("from public.ai_settlement_rule_drafts"),
+    ).toBeLessThan(
+      submit.indexOf("from public.settlement_formula_simulations"),
+    );
+    expect(
+      submit.indexOf("from public.settlement_formula_simulations"),
+    ).toBeLessThan(
+      submit.indexOf("from public.custom_settlement_rule_versions"),
+    );
+    expect(submit).toContain("p_scope not in (");
+    expect(submit).toContain("p_target_type not in (");
+    expect(submit).toContain(
+      "p_scope <> 'payable' and p_target_type <> 'project'",
+    );
+    expect(submit).toContain("custom_settlement_rule_target_invalid");
+    expect(submit).toContain("custom_settlement_rule_draft_scope_mismatch");
+    expect(submit).toContain(
+      "custom_settlement_rule_simulation_scope_mismatch",
+    );
+
+    for (const fn of [
+      "review_custom_settlement_rule",
+      "archive_custom_settlement_rule",
+    ]) {
+      expect(extractSettlementGovernanceFunction(fn).body).toContain(
+        "custom_settlement_rule_version_scope_mismatch",
+      );
+    }
+
+    const assignment = extractSettlementGovernanceFunction(
+      "change_settlement_group_assignment",
+    ).body;
+    expect(
+      assignment.indexOf("from public.settlement_rule_groups"),
+    ).toBeLessThan(assignment.indexOf("from public.project_streamers"));
+    expect(assignment.indexOf("from public.project_streamers")).toBeLessThan(
+      assignment.indexOf(
+        "from public.project_streamer_settlement_group_assignments",
+      ),
+    );
+    expect(assignment).toContain("settlement_rule_group_scope_mismatch");
+    expect(assignment).toContain("project_streamer_scope_mismatch");
+    expect(assignment).toContain(
+      "p_effective_until is not null and p_effective_until <= p_effective_from",
+    );
+
+    const archive = extractSettlementGovernanceFunction(
+      "archive_custom_settlement_rule",
+    ).body;
+    expect(archive).toContain("p_effective_until is null");
+    expect(archive).toContain("custom_settlement_rule_archive_end_required");
+    expect(archive.indexOf("p_effective_until is null")).toBeLessThan(
+      archive.indexOf("from public.custom_settlement_rule_versions"),
+    );
+  });
+
+  it("does not wire production settlement execution or duplicate conversations", () => {
+    expect(normalizedSettlementGovernanceMigration).not.toContain(
+      "generate_settlement_batch",
+    );
+    expect(normalizedSettlementGovernanceMigration).not.toContain(
+      "create table public.ai_conversations",
+    );
+    expect(normalizedSettlementGovernanceMigration).not.toContain(
+      "create table public.ai_chat_messages",
+    );
+    expect(normalizedSettlementGovernanceMigration).not.toContain(
+      "create table public.ai_chat_turns",
+    );
   });
 });
 
@@ -2501,6 +3116,855 @@ describe("Task8 custom settlement runtime database contract", () => {
 
 const settlementRuntimeRegressionContainer =
   process.env.CUSTOM_SETTLEMENT_RUNTIME_DB_REGRESSION_CONTAINER;
+
+describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
+  "Phase 2 governed settlement rule live catalog",
+  () => {
+    it("installs RLS, deferred ownership, exclusions, triggers, and least-privilege ACLs", () => {
+      const container = settlementRuntimeRegressionContainer ?? "";
+      const catalog = JSON.parse(
+        runDockerSqlText(
+          container,
+          `
+            with governance_tables(name) as (
+              values
+                ('custom_settlement_rule_versions'),
+                ('custom_settlement_rule_review_events'),
+                ('settlement_rule_groups'),
+                ('project_streamer_settlement_group_assignments'),
+                ('settlement_rule_templates')
+            ), governance_rpcs(name) as (
+              values
+                ('save_custom_settlement_rule_draft'),
+                ('apply_and_submit_custom_settlement_rule'),
+                ('review_custom_settlement_rule'),
+                ('archive_custom_settlement_rule'),
+                ('change_settlement_group_assignment')
+            )
+            select pg_catalog.jsonb_build_object(
+              'tables', (
+                select pg_catalog.count(*)
+                from pg_catalog.pg_class as relation
+                join pg_catalog.pg_namespace as namespace
+                  on namespace.oid = relation.relnamespace
+                join governance_tables as expected
+                  on expected.name = relation.relname
+                where namespace.nspname = 'public'
+                  and relation.relkind = 'r'
+              ),
+              'rls_tables', (
+                select pg_catalog.count(*)
+                from pg_catalog.pg_class as relation
+                join pg_catalog.pg_namespace as namespace
+                  on namespace.oid = relation.relnamespace
+                join governance_tables as expected
+                  on expected.name = relation.relname
+                where namespace.nspname = 'public'
+                  and relation.relrowsecurity
+              ),
+              'select_policies', (
+                select pg_catalog.count(*)
+                from pg_catalog.pg_policies as policy
+                join governance_tables as expected
+                  on expected.name = policy.tablename
+                where policy.schemaname = 'public'
+                  and policy.cmd = 'SELECT'
+              ),
+              'authenticated_select_grants', (
+                select pg_catalog.count(*)
+                from information_schema.role_table_grants as grant_row
+                join governance_tables as expected
+                  on expected.name = grant_row.table_name
+                where grant_row.table_schema = 'public'
+                  and grant_row.grantee = 'authenticated'
+                  and grant_row.privilege_type = 'SELECT'
+              ),
+              'direct_write_grants', (
+                select pg_catalog.count(*)
+                from information_schema.role_table_grants as grant_row
+                join governance_tables as expected
+                  on expected.name = grant_row.table_name
+                where grant_row.table_schema = 'public'
+                  and grant_row.grantee in (
+                    'anon',
+                    'authenticated',
+                    'service_role'
+                  )
+                  and grant_row.privilege_type in (
+                    'INSERT',
+                    'UPDATE',
+                    'DELETE',
+                    'TRUNCATE'
+                  )
+              ),
+              'deferred_cycle_fks', (
+                select pg_catalog.count(*)
+                from pg_catalog.pg_constraint
+                where conname in (
+                  'custom_settlement_rule_versions_simulation_scope_fkey',
+                  'settlement_formula_simulations_rule_version_scope_fkey'
+                )
+                  and contype = 'f'
+                  and condeferrable
+                  and condeferred
+              ),
+              'exactly_one_owner', (
+                select pg_catalog.count(*)
+                from pg_catalog.pg_constraint
+                where conname =
+                  'settlement_formula_simulations_exactly_one_owner'
+                  and contype = 'c'
+              ),
+              'exclusions', (
+                select pg_catalog.count(*)
+                from pg_catalog.pg_constraint
+                where conname in (
+                  'custom_settlement_rule_versions_effective_no_overlap',
+                  'project_streamer_settlement_group_assignments_no_overlap'
+                )
+                  and contype = 'x'
+              ),
+              'immutability_triggers', (
+                select pg_catalog.count(*)
+                from pg_catalog.pg_trigger
+                where tgname in (
+                  'custom_settlement_rule_versions_guard',
+                  'custom_settlement_rule_review_events_immutable',
+                  'custom_settlement_rule_review_events_no_truncate'
+                )
+                  and not tgisinternal
+              ),
+              'secure_rpcs', (
+                select pg_catalog.count(*)
+                from pg_catalog.pg_proc as procedure
+                join pg_catalog.pg_namespace as namespace
+                  on namespace.oid = procedure.pronamespace
+                join governance_rpcs as expected
+                  on expected.name = procedure.proname
+                where namespace.nspname = 'public'
+                  and procedure.prosecdef
+                  and procedure.proconfig @>
+                    array['search_path=pg_catalog, public']::text[]
+                  and pg_catalog.has_function_privilege(
+                    'authenticated',
+                    procedure.oid,
+                    'EXECUTE'
+                  )
+                  and not pg_catalog.has_function_privilege(
+                    'anon',
+                    procedure.oid,
+                    'EXECUTE'
+                  )
+                  and not pg_catalog.has_function_privilege(
+                    'service_role',
+                    procedure.oid,
+                    'EXECUTE'
+                  )
+                  and not exists (
+                    select 1
+                    from pg_catalog.aclexplode(
+                      coalesce(
+                        procedure.proacl,
+                        pg_catalog.acldefault('f', procedure.proowner)
+                      )
+                    ) as acl
+                    where acl.grantee = 0
+                      and acl.privilege_type = 'EXECUTE'
+                  )
+              )
+            )::text;
+          `,
+        ),
+      ) as Record<string, number>;
+
+      expect(catalog).toEqual({
+        tables: 5,
+        rls_tables: 5,
+        select_policies: 5,
+        authenticated_select_grants: 5,
+        direct_write_grants: 0,
+        deferred_cycle_fks: 2,
+        exactly_one_owner: 1,
+        exclusions: 2,
+        immutability_triggers: 3,
+        secure_rpcs: 5,
+      });
+    });
+
+    it("enforces reciprocal pairs, controlled transitions, and effective ranges", async () => {
+      const container = settlementRuntimeRegressionContainer ?? "";
+      const actorId = "9f110000-0000-4000-8000-000000000001";
+      const organizationId = "9f120000-0000-4000-8000-000000000001";
+      const projectId = "9f130000-0000-4000-8000-000000000001";
+      const versionOneId = "9f140000-0000-4000-8000-000000000001";
+      const versionTwoId = "9f140000-0000-4000-8000-000000000002";
+      const versionThreeId = "9f140000-0000-4000-8000-000000000003";
+      const simulationOneId = "9f150000-0000-4000-8000-000000000001";
+      const simulationTwoId = "9f150000-0000-4000-8000-000000000002";
+      const simulationThreeId = "9f150000-0000-4000-8000-000000000003";
+      const effectiveStart = "2026-07-01T00:00:00Z";
+      const replacementStart = "2026-08-01T00:00:00Z";
+      const overlapStart = "2026-07-15T00:00:00Z";
+      const overlapEnd = "2026-08-15T00:00:00Z";
+      const formulaHash = "c".repeat(64);
+      const ruleContractHash = "b".repeat(64);
+      const parameterHash = "d".repeat(64);
+      const variableCatalogVersion = "a".repeat(64);
+      const dataSelectionHash = "e".repeat(64);
+      const compiledAst = { kind: "identifier", name: "grossRevenue" };
+      const testCases = [
+        {
+          name: "标准场景",
+          inputs: {
+            grossRevenue: { type: "money_cents", amountCents: 10_000 },
+          },
+          expectedResult: { type: "money_cents", amountCents: 10_000 },
+        },
+      ];
+      const simulation = {
+        sampleSource: { kind: "historical_settlements" },
+        sampleSelection: {
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          populationCount: 20,
+          sampledCount: 20,
+          criteria: ["confirmed"],
+        },
+        coverage: {
+          summarySchemaVersion: 2,
+          totalRecords: 20,
+          evaluatedRecords: 20,
+          skippedRecords: 0,
+          uncoveredRecords: 0,
+          zeroAmountRecords: 0,
+          reviewRoutedRecords: 0,
+          blockedRecords: 0,
+        },
+        scenarios: [
+          {
+            id: "contract:000001",
+            category: "contract_example",
+            outcome: "calculated",
+            amountCents: "10000",
+            expectedAmountCents: "10000",
+            passed: true,
+          },
+        ],
+        historicalTotals: {
+          oldPayableAmountCents: null,
+          oldReceivableAmountCents: "10000",
+          newPayableAmountCents: null,
+          newReceivableAmountCents: "10000",
+          recordCount: 20,
+          verificationStatus: "verified",
+        },
+        deltas: {
+          payableAmountCents: null,
+          receivableAmountCents: "0",
+          percentageBps: 0,
+          marginImpactCents: "0",
+        },
+        largestChanges: [],
+        warnings: [],
+      };
+      const setupSql = `
+        insert into auth.users (id, email) values (
+          '${actorId}'::uuid,
+          'phase2-simulation-pair@example.invalid'
+        );
+        insert into public.profiles (id, email, full_name) values (
+          '${actorId}'::uuid,
+          'phase2-simulation-pair@example.invalid',
+          'Phase2 Simulation Pair'
+        );
+        insert into public.organizations (id, name, code) values (
+          '${organizationId}'::uuid,
+          'Phase2 Simulation Pair',
+          'phase2-simulation-pair'
+        );
+        insert into public.organization_members (
+          organization_id, user_id, role, status
+        ) values (
+          '${organizationId}'::uuid,
+          '${actorId}'::uuid,
+          'owner',
+          'active'
+        );
+        insert into public.projects (
+          id, organization_id, code, name, created_by, owner_id
+        ) values (
+          '${projectId}'::uuid,
+          '${organizationId}'::uuid,
+          'phase2-simulation-pair',
+          'Phase2 Simulation Pair',
+          '${actorId}'::uuid,
+          '${actorId}'::uuid
+        );
+      `;
+      const pairRowsSql = (crossed: boolean): string => `
+        insert into public.custom_settlement_rule_versions (
+          id, organization_id, project_id, scope, target_type, target_id,
+          execution_grain, composition_mode, priority, version_number,
+          status, formula, compiled_ast, variables, parameters,
+          rule_contract, system_explanation_template, missing_data_policy,
+          test_cases, simulation_summary, formula_hash, rule_contract_hash,
+          parameter_hash, variable_catalog_version, data_selection_hash,
+          simulation_id, created_by
+        ) values
+          (
+            '${versionOneId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            'receivable', 'project', null, 'report', 'replace', 100, 1,
+            'draft', 'grossRevenue', ${sqlJson(compiledAst)}, '[]'::jsonb,
+            '{}'::jsonb, ${sqlJson(settlementAiCanonicalBusinessContract())},
+            '项目确认收入作为应收金额。', '{}'::jsonb,
+            ${sqlJson(testCases)}, '{}'::jsonb, '${formulaHash}',
+            '${ruleContractHash}', '${parameterHash}',
+            '${variableCatalogVersion}', '${dataSelectionHash}',
+            '${simulationOneId}'::uuid, '${actorId}'::uuid
+          ),
+          (
+            '${versionTwoId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            'receivable', 'project', null, 'report', 'replace', 100, 2,
+            'draft', 'grossRevenue', ${sqlJson(compiledAst)}, '[]'::jsonb,
+            '{}'::jsonb, ${sqlJson(settlementAiCanonicalBusinessContract())},
+            '项目确认收入作为应收金额。', '{}'::jsonb,
+            ${sqlJson(testCases)}, '{}'::jsonb, '${formulaHash}',
+            '${ruleContractHash}', '${parameterHash}',
+            '${variableCatalogVersion}', '${dataSelectionHash}',
+            '${simulationTwoId}'::uuid, '${actorId}'::uuid
+          );
+        insert into public.settlement_formula_simulations (
+          id, organization_id, project_id, rule_version_id, ai_draft_id,
+          formula_hash, rule_contract_hash, parameter_hash,
+          variable_catalog_version, data_selection_hash, sample_source,
+          sample_selection, coverage, scenarios, historical_totals, deltas,
+          largest_changes, warnings, idempotency_key, created_by
+        ) values
+          (
+            '${simulationOneId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            '${crossed ? versionTwoId : versionOneId}'::uuid,
+            null, '${formulaHash}', '${ruleContractHash}', '${parameterHash}',
+            '${variableCatalogVersion}', '${dataSelectionHash}',
+            ${sqlJson(simulation.sampleSource)},
+            ${sqlJson(simulation.sampleSelection)},
+            ${sqlJson(simulation.coverage)}, ${sqlJson(simulation.scenarios)},
+            ${sqlJson(simulation.historicalTotals)},
+            ${sqlJson(simulation.deltas)},
+            ${sqlJson(simulation.largestChanges)},
+            ${sqlJson(simulation.warnings)},
+            'phase2-simulation-pair-1', '${actorId}'::uuid
+          ),
+          (
+            '${simulationTwoId}'::uuid,
+            '${organizationId}'::uuid,
+            '${projectId}'::uuid,
+            '${crossed ? versionOneId : versionTwoId}'::uuid,
+            null, '${formulaHash}', '${ruleContractHash}', '${parameterHash}',
+            '${variableCatalogVersion}', '${dataSelectionHash}',
+            ${sqlJson(simulation.sampleSource)},
+            ${sqlJson(simulation.sampleSelection)},
+            ${sqlJson(simulation.coverage)}, ${sqlJson(simulation.scenarios)},
+            ${sqlJson(simulation.historicalTotals)},
+            ${sqlJson(simulation.deltas)},
+            ${sqlJson(simulation.largestChanges)},
+            ${sqlJson(simulation.warnings)},
+            'phase2-simulation-pair-2', '${actorId}'::uuid
+          );
+      `;
+      const governanceWrapperSql = `
+        create function public.phase2_test_governance_transition(
+          p_rule_version_id uuid,
+          p_status text,
+          p_effective_from timestamptz,
+          p_effective_until timestamptz,
+          p_approved_by uuid,
+          p_approved_at timestamptz,
+          p_archived_at timestamptz,
+          p_reason text,
+          p_explanation text
+        )
+        returns void
+        language plpgsql
+        security definer
+        set search_path = pg_catalog, public
+        as $wrapper$
+        begin
+          update public.custom_settlement_rule_versions
+          set status = p_status,
+              effective_from = coalesce(
+                p_effective_from,
+                effective_from
+              ),
+              effective_until = coalesce(
+                p_effective_until,
+                effective_until
+              ),
+              approved_by = coalesce(p_approved_by, approved_by),
+              approved_at = coalesce(p_approved_at, approved_at),
+              archived_at = coalesce(p_archived_at, archived_at),
+              reason = coalesce(p_reason, reason),
+              system_explanation_template = coalesce(
+                p_explanation,
+                system_explanation_template
+              )
+          where id = p_rule_version_id;
+          if not found then
+            raise exception 'phase2_test_rule_not_found';
+          end if;
+        end;
+        $wrapper$;
+        revoke all on function public.phase2_test_governance_transition(
+          uuid, text, timestamptz, timestamptz, uuid, timestamptz,
+          timestamptz, text, text
+        ) from public, anon, authenticated, service_role;
+        grant execute on function public.phase2_test_governance_transition(
+          uuid, text, timestamptz, timestamptz, uuid, timestamptz,
+          timestamptz, text, text
+        ) to authenticated;
+      `;
+      const transitionCall = (input: {
+        approvedAt?: string;
+        approvedBy?: string;
+        archivedAt?: string;
+        effectiveFrom?: string;
+        effectiveUntil?: string;
+        explanation?: string;
+        reason?: string;
+        status: string;
+        versionId: string;
+      }): string => `
+        select public.phase2_test_governance_transition(
+          '${input.versionId}'::uuid,
+          ${sqlString(input.status)},
+          ${input.effectiveFrom ? `${sqlString(input.effectiveFrom)}::timestamptz` : "null::timestamptz"},
+          ${input.effectiveUntil ? `${sqlString(input.effectiveUntil)}::timestamptz` : "null::timestamptz"},
+          ${input.approvedBy ? `'${input.approvedBy}'::uuid` : "null::uuid"},
+          ${input.approvedAt ? `${sqlString(input.approvedAt)}::timestamptz` : "null::timestamptz"},
+          ${input.archivedAt ? `${sqlString(input.archivedAt)}::timestamptz` : "null::timestamptz"},
+          ${input.reason ? sqlString(input.reason) : "null::text"},
+          ${input.explanation ? sqlString(input.explanation) : "null::text"}
+        );
+      `;
+
+      const residueSql = `
+        select concat_ws(
+          '|',
+          (
+            select pg_catalog.count(*)
+            from public.custom_settlement_rule_versions
+            where organization_id = '${organizationId}'::uuid
+          ),
+          (
+            select pg_catalog.count(*)
+            from public.settlement_formula_simulations
+            where organization_id = '${organizationId}'::uuid
+          ),
+          (
+            select pg_catalog.count(*)
+            from public.organizations
+            where id = '${organizationId}'::uuid
+          ),
+          (
+            pg_catalog.to_regprocedure(
+              'public.phase2_test_governance_transition(uuid,text,timestamptz,timestamptz,uuid,timestamptz,timestamptz,text,text)'
+            ) is null
+          )
+        );
+      `;
+
+      expect(runDockerSqlText(container, residueSql)).toBe("0|0|0|t");
+      runDockerSql(
+        container,
+        `
+          begin;
+          ${setupSql}
+          ${pairRowsSql(false)}
+          set constraints all immediate;
+          set constraints
+            custom_settlement_rule_versions_simulation_scope_fkey,
+            settlement_formula_simulations_rule_version_scope_fkey
+            deferred;
+          ${governanceWrapperSql}
+
+          set local role authenticated;
+          select pg_catalog.set_config(
+            'request.jwt.claim.sub', '${actorId}', true
+          );
+          do $direct_update$
+          begin
+            begin
+              update public.custom_settlement_rule_versions
+              set status = 'pending_review'
+              where id = '${versionOneId}'::uuid;
+              raise exception 'phase2_direct_update_accepted';
+            exception
+              when insufficient_privilege then null;
+              when others then
+                if sqlerrm = 'phase2_direct_update_accepted' then
+                  raise;
+                end if;
+                raise exception 'phase2_direct_update_wrong_error: %', sqlerrm;
+            end;
+          end;
+          $direct_update$;
+
+          do $governance_without_transition$
+          begin
+            begin
+              perform public.phase2_test_governance_transition(
+                '${versionOneId}'::uuid,
+                'draft',
+                '${effectiveStart}'::timestamptz,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+              );
+              raise exception 'phase2_governance_without_transition_accepted';
+            exception
+              when others then
+                if sqlerrm =
+                   'phase2_governance_without_transition_accepted' then
+                  raise;
+                end if;
+                if sqlerrm <>
+                   'governance fields require an allowed status transition' then
+                  raise exception
+                    'phase2_governance_without_transition_wrong_error: %',
+                    sqlerrm;
+                end if;
+            end;
+          end;
+          $governance_without_transition$;
+
+          do $illegal_transition$
+          begin
+            begin
+              perform public.phase2_test_governance_transition(
+                '${versionOneId}'::uuid,
+                'active',
+                '${effectiveStart}'::timestamptz,
+                null,
+                '${actorId}'::uuid,
+                '${effectiveStart}'::timestamptz,
+                null,
+                '非法直接激活',
+                null
+              );
+              raise exception 'phase2_illegal_transition_accepted';
+            exception
+              when others then
+                if sqlerrm = 'phase2_illegal_transition_accepted' then
+                  raise;
+                end if;
+                if sqlerrm <>
+                   'custom settlement rule status transition is not allowed' then
+                  raise exception 'phase2_illegal_transition_wrong_error: %',
+                    sqlerrm;
+                end if;
+            end;
+          end;
+          $illegal_transition$;
+
+          do $payload_steal$
+          begin
+            begin
+              perform public.phase2_test_governance_transition(
+                '${versionOneId}'::uuid,
+                'pending_review',
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                '状态转换时偷改说明'
+              );
+              raise exception 'phase2_payload_steal_accepted';
+            exception
+              when others then
+                if sqlerrm = 'phase2_payload_steal_accepted' then
+                  raise;
+                end if;
+                if sqlerrm <>
+                   'custom settlement rule payload cannot change during status transition' then
+                  raise exception 'phase2_payload_steal_wrong_error: %',
+                    sqlerrm;
+                end if;
+            end;
+          end;
+          $payload_steal$;
+
+          ${transitionCall({ versionId: versionOneId, status: "pending_review" })}
+          ${transitionCall({ versionId: versionOneId, status: "changes_requested", reason: "请补充规则说明" })}
+
+          do $requested_changes_payload_steal$
+          begin
+            begin
+              perform public.phase2_test_governance_transition(
+                '${versionOneId}'::uuid,
+                'draft',
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                '请求修改转草稿时偷改说明'
+              );
+              raise exception
+                'phase2_requested_changes_payload_steal_accepted';
+            exception
+              when others then
+                if sqlerrm =
+                   'phase2_requested_changes_payload_steal_accepted' then
+                  raise;
+                end if;
+                if sqlerrm <>
+                   'custom settlement rule payload cannot change during status transition' then
+                  raise exception
+                    'phase2_requested_changes_payload_steal_wrong_error: %',
+                    sqlerrm;
+                end if;
+            end;
+          end;
+          $requested_changes_payload_steal$;
+
+          ${transitionCall({ versionId: versionOneId, status: "draft" })}
+          ${transitionCall({
+            versionId: versionOneId,
+            status: "draft",
+            explanation: "请求修改转草稿后第二次更新说明。",
+          })}
+          ${transitionCall({ versionId: versionOneId, status: "pending_review" })}
+          ${transitionCall({
+            versionId: versionOneId,
+            status: "active",
+            effectiveFrom: effectiveStart,
+            approvedBy: actorId,
+            approvedAt: effectiveStart,
+            reason: "批准首版",
+          })}
+
+          do $approved_archive_without_end$
+          declare
+            v_constraint_name text;
+          begin
+            begin
+              perform public.phase2_test_governance_transition(
+                '${versionOneId}'::uuid,
+                'archived',
+                null,
+                null,
+                null,
+                null,
+                '${replacementStart}'::timestamptz,
+                '缺少生效结束时间',
+                null
+              );
+              raise exception 'phase2_approved_archive_without_end_accepted';
+            exception
+              when check_violation then
+                get stacked diagnostics
+                  v_constraint_name = constraint_name;
+                if v_constraint_name <>
+                   'custom_settlement_rule_versions_approved_archive_end_check' then
+                  raise exception
+                    'phase2_approved_archive_without_end_wrong_constraint: %',
+                    v_constraint_name;
+                end if;
+            end;
+          end;
+          $approved_archive_without_end$;
+
+          ${transitionCall({
+            versionId: versionOneId,
+            status: "archived",
+            effectiveUntil: replacementStart,
+            archivedAt: replacementStart,
+            reason: "由相邻版本接替",
+          })}
+          ${transitionCall({ versionId: versionTwoId, status: "pending_review" })}
+          ${transitionCall({
+            versionId: versionTwoId,
+            status: "active",
+            effectiveFrom: replacementStart,
+            approvedBy: actorId,
+            approvedAt: replacementStart,
+            reason: "批准相邻版本",
+          })}
+          reset role;
+
+          do $adjacent_ranges$
+          begin
+            if (
+              select pg_catalog.count(*)
+              from public.custom_settlement_rule_versions as version
+              where (
+                version.id = '${versionOneId}'::uuid
+                and version.status = 'archived'
+                and version.effective_from = '${effectiveStart}'::timestamptz
+                and version.effective_until =
+                  '${replacementStart}'::timestamptz
+              ) or (
+                version.id = '${versionTwoId}'::uuid
+                and version.status = 'active'
+                and version.effective_from =
+                  '${replacementStart}'::timestamptz
+                and version.effective_until is null
+              )
+            ) <> 2 then
+              raise exception 'phase2_adjacent_ranges_not_persisted';
+            end if;
+          end;
+          $adjacent_ranges$;
+
+          do $overlap$
+          declare
+            v_constraint_name text;
+          begin
+            begin
+              insert into public.settlement_formula_simulations (
+                id, organization_id, project_id, rule_version_id,
+                ai_draft_id, formula_hash, rule_contract_hash,
+                parameter_hash, variable_catalog_version,
+                data_selection_hash, sample_source, sample_selection,
+                coverage, scenarios, historical_totals, deltas,
+                largest_changes, warnings, idempotency_key, created_by
+              )
+              select
+                '${simulationThreeId}'::uuid,
+                simulation.organization_id,
+                simulation.project_id,
+                '${versionThreeId}'::uuid,
+                null,
+                simulation.formula_hash,
+                simulation.rule_contract_hash,
+                simulation.parameter_hash,
+                simulation.variable_catalog_version,
+                simulation.data_selection_hash,
+                simulation.sample_source,
+                simulation.sample_selection,
+                simulation.coverage,
+                simulation.scenarios,
+                simulation.historical_totals,
+                simulation.deltas,
+                simulation.largest_changes,
+                simulation.warnings,
+                'phase2-simulation-pair-3',
+                simulation.created_by
+              from public.settlement_formula_simulations as simulation
+              where simulation.id = '${simulationTwoId}'::uuid;
+
+              insert into public.custom_settlement_rule_versions (
+                id, organization_id, project_id, scope, target_type,
+                target_id, execution_grain, composition_mode, priority,
+                version_number, status, formula, compiled_ast, variables,
+                parameters, rule_contract, system_explanation_template,
+                missing_data_policy, test_cases, simulation_summary,
+                formula_hash, rule_contract_hash, parameter_hash,
+                variable_catalog_version, data_selection_hash,
+                simulation_id, effective_from, effective_until, created_by,
+                approved_by, ai_draft_id, reason, approved_at, archived_at
+              )
+              select
+                '${versionThreeId}'::uuid,
+                version.organization_id,
+                version.project_id,
+                version.scope,
+                version.target_type,
+                version.target_id,
+                version.execution_grain,
+                version.composition_mode,
+                version.priority,
+                3,
+                'archived',
+                version.formula,
+                version.compiled_ast,
+                version.variables,
+                version.parameters,
+                version.rule_contract,
+                version.system_explanation_template,
+                version.missing_data_policy,
+                version.test_cases,
+                version.simulation_summary,
+                version.formula_hash,
+                version.rule_contract_hash,
+                version.parameter_hash,
+                version.variable_catalog_version,
+                version.data_selection_hash,
+                '${simulationThreeId}'::uuid,
+                '${overlapStart}'::timestamptz,
+                '${overlapEnd}'::timestamptz,
+                version.created_by,
+                '${actorId}'::uuid,
+                null,
+                '重叠范围回归',
+                '${overlapStart}'::timestamptz,
+                '${overlapEnd}'::timestamptz
+              from public.custom_settlement_rule_versions as version
+              where version.id = '${versionTwoId}'::uuid;
+              raise exception 'phase2_overlapping_range_accepted';
+            exception
+              when exclusion_violation then
+                get stacked diagnostics
+                  v_constraint_name = constraint_name;
+                if v_constraint_name <>
+                   'custom_settlement_rule_versions_effective_no_overlap' then
+                  raise exception 'phase2_overlap_wrong_constraint: %',
+                    v_constraint_name;
+                end if;
+              when others then
+                if sqlerrm = 'phase2_overlapping_range_accepted' then
+                  raise;
+                end if;
+                raise exception 'phase2_overlap_wrong_error: %', sqlerrm;
+            end;
+            if exists (
+              select 1
+              from public.custom_settlement_rule_versions
+              where id = '${versionThreeId}'::uuid
+            ) or exists (
+              select 1
+              from public.settlement_formula_simulations
+              where id = '${simulationThreeId}'::uuid
+            ) then
+              raise exception 'phase2_overlap_transaction_left_residue';
+            end if;
+          end;
+          $overlap$;
+          rollback;
+        `,
+      );
+      expect(runDockerSqlText(container, residueSql)).toBe("0|0|0|t");
+
+      const crossed = await runDockerSqlAsyncCapture(
+        container,
+        `
+          begin;
+          ${setupSql}
+          ${pairRowsSql(true)}
+          set constraints all immediate;
+          commit;
+        `,
+      );
+      expect(crossed.code).not.toBe(0);
+      expect(crossed.stderr).toContain("23503");
+      expect(crossed.stderr).toContain(
+        "custom_settlement_rule_versions_simulation_scope_fkey",
+      );
+      expect(runDockerSqlText(container, residueSql)).toBe("0|0|0|t");
+    }, 45_000);
+  },
+);
 
 describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
   "Task8 custom settlement runtime database behavior",
