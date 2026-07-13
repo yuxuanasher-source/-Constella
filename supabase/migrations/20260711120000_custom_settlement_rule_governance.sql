@@ -2332,6 +2332,10 @@ begin
   if v_actor_role is null or v_actor_role not in ('owner', 'ops_manager', 'operator_business') then
     raise exception 'custom_settlement_rule_clone_not_allowed';
   end if;
+  if not public.can_access_project(p_source_project_id)
+     or not public.can_access_project(p_target_project_id) then
+    raise exception 'custom_settlement_rule_clone_project_access_denied';
+  end if;
   select *
     into v_source
   from public.custom_settlement_rule_versions as version
@@ -2427,6 +2431,9 @@ begin
   if v_actor_role is null or v_actor_role not in ('owner', 'ops_manager', 'operator_business') then
     raise exception 'custom_settlement_rule_parameter_edit_not_allowed';
   end if;
+  if not public.can_access_project(p_project_id) then
+    raise exception 'custom_settlement_rule_parameter_project_access_denied';
+  end if;
   select *
     into v_source
   from public.custom_settlement_rule_versions as version
@@ -2514,6 +2521,9 @@ begin
   if v_actor_role is null or v_actor_role not in ('owner', 'ops_manager') then
     raise exception 'settlement_rule_template_manage_not_allowed';
   end if;
+  if not public.can_access_project(p_project_id) then
+    raise exception 'settlement_rule_template_project_access_denied';
+  end if;
   select *
     into v_source
   from public.custom_settlement_rule_versions as version
@@ -2578,6 +2588,9 @@ begin
   limit 1;
   if v_actor_role is null or v_actor_role not in ('owner', 'ops_manager') then
     raise exception 'settlement_rule_template_manage_not_allowed';
+  end if;
+  if not public.can_access_project(p_project_id) then
+    raise exception 'settlement_rule_template_project_access_denied';
   end if;
 
   update public.settlement_rule_templates as template
@@ -4111,6 +4124,86 @@ grant execute on function public.apply_and_submit_custom_settlement_rule(
   uuid,
   timestamptz,
   text,
+  text,
+  text
+) to authenticated;
+
+revoke all on function public.clone_custom_settlement_rule_to_draft(
+  uuid,
+  uuid,
+  uuid,
+  uuid,
+  uuid,
+  jsonb,
+  text,
+  text
+) from public, anon, authenticated, service_role;
+grant execute on function public.clone_custom_settlement_rule_to_draft(
+  uuid,
+  uuid,
+  uuid,
+  uuid,
+  uuid,
+  jsonb,
+  text,
+  text
+) to authenticated;
+
+revoke all on function public.create_custom_settlement_rule_parameter_draft(
+  uuid,
+  uuid,
+  uuid,
+  uuid,
+  jsonb,
+  jsonb,
+  text,
+  text
+) from public, anon, authenticated, service_role;
+grant execute on function public.create_custom_settlement_rule_parameter_draft(
+  uuid,
+  uuid,
+  uuid,
+  uuid,
+  jsonb,
+  jsonb,
+  text,
+  text
+) to authenticated;
+
+revoke all on function public.save_organization_settlement_rule_template(
+  uuid,
+  uuid,
+  uuid,
+  text,
+  text,
+  text,
+  text,
+  text
+) from public, anon, authenticated, service_role;
+grant execute on function public.save_organization_settlement_rule_template(
+  uuid,
+  uuid,
+  uuid,
+  text,
+  text,
+  text,
+  text,
+  text
+) to authenticated;
+
+revoke all on function public.archive_organization_settlement_rule_template(
+  uuid,
+  uuid,
+  uuid,
+  timestamptz,
+  text,
+  text
+) from public, anon, authenticated, service_role;
+grant execute on function public.archive_organization_settlement_rule_template(
+  uuid,
+  uuid,
+  uuid,
+  timestamptz,
   text,
   text
 ) to authenticated;

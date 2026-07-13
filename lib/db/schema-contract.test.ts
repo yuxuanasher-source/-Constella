@@ -2480,6 +2480,65 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(archiveTemplate).toContain("template.organization_id = p_organization_id");
   });
 
+  it("fail-closes settlement reuse RPCs with project access checks and authenticated-only grants", () => {
+    const reuseRpcNames = [
+      "clone_custom_settlement_rule_to_draft",
+      "create_custom_settlement_rule_parameter_draft",
+      "save_organization_settlement_rule_template",
+      "archive_organization_settlement_rule_template",
+    ];
+    for (const fn of reuseRpcNames) {
+      const rpc = extractSettlementGovernanceFunction(fn);
+      expect(rpc.definition).toContain("security definer");
+      expect(rpc.definition).toContain("set search_path = pg_catalog, public");
+      expect(rpc.body).toContain("v_actor_id uuid := auth.uid()");
+      expect(rpc.body).toContain("v_actor_role");
+      expect(rpc.body).toContain("not in (");
+      expect(normalizedSettlementGovernanceMigration).toMatch(
+        new RegExp(
+          `revoke all on function public\\.${fn}\\([\\s\\S]+?from public, anon, authenticated, service_role;`,
+          "u",
+        ),
+      );
+      expect(normalizedSettlementGovernanceMigration).toMatch(
+        new RegExp(
+          `grant execute on function public\\.${fn}\\([\\s\\S]+?to authenticated;`,
+          "u",
+        ),
+      );
+      expect(normalizedSettlementGovernanceMigration).not.toMatch(
+        new RegExp(
+          `grant execute on function public\\.${fn}\\([\\s\\S]+?to (?:public|anon|service_role);`,
+          "u",
+        ),
+      );
+    }
+
+    const clone = extractSettlementGovernanceFunction(
+      "clone_custom_settlement_rule_to_draft",
+    ).body;
+    expect(clone).toContain("public.can_access_project(p_source_project_id)");
+    expect(clone).toContain("public.can_access_project(p_target_project_id)");
+
+    for (const fn of [
+      "create_custom_settlement_rule_parameter_draft",
+      "save_organization_settlement_rule_template",
+      "archive_organization_settlement_rule_template",
+    ]) {
+      expect(extractSettlementGovernanceFunction(fn).body).toContain(
+        "public.can_access_project(p_project_id)",
+      );
+    }
+
+    const archiveTemplate = extractSettlementGovernanceFunction(
+      "archive_organization_settlement_rule_template",
+    ).body;
+    expect(archiveTemplate).toContain("template.id = p_template_id");
+    expect(archiveTemplate).toContain(
+      "template.organization_id = p_organization_id",
+    );
+  });
+
   it("freezes submitted payloads, governance fields, deletes, and review history", () => {
     const guardFunction = extractSettlementGovernanceFunction(
       "guard_custom_settlement_rule_version_mutation",
