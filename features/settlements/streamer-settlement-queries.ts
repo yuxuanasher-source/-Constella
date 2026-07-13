@@ -184,7 +184,7 @@ function toStreamerPayableExplanation(
 
   const finalAmountCents = Math.round(facts.amount * 100);
   const components = toPersonalComponents(ruleEngine);
-  const evidenceFacts = {
+  const evidenceFacts: StreamerPayableExplanation["evidenceFacts"] = {
     hours: facts.hours,
     evidenceLevel: row.evidence_level ?? "unknown",
     timeSource: facts.timeSource,
