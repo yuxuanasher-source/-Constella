@@ -48,6 +48,33 @@ export const CUSTOM_RULE_VERSION_STATUSES = [
 export type CustomRuleVersionStatus =
   (typeof CUSTOM_RULE_VERSION_STATUSES)[number];
 
+export const MATERIAL_RISK_CODES = Object.freeze([
+  "negative_margin",
+  "abnormal_total_increase",
+  "red_evidence_payment",
+  "money_changing_explicit_default",
+  "group_level_replace",
+  "overlapping_group_exception",
+  "safety_cap_exceeded",
+] as const);
+
+export type MaterialRiskCode = (typeof MATERIAL_RISK_CODES)[number];
+
+export type CustomRuleSimulationFreshnessHashes = Readonly<{
+  formulaHash: string | null | undefined;
+  contractHash: string | null | undefined;
+  parameterHash: string | null | undefined;
+  catalogHash: string | null | undefined;
+  dataSelectionHash: string | null | undefined;
+}>;
+
+export type CustomRulePrimaryActionDto =
+  | { state: "draft"; action: "apply_and_submit" }
+  | { state: "pending_review"; action: "approve" }
+  | { state: "changes_requested"; action: "revise_and_resimulate" }
+  | { state: "active"; action: "create_new_version" }
+  | { state: "archived"; action: "none" };
+
 export const RUNTIME_SCALAR_TYPES = [
   "money_cents",
   "rate_bps",
@@ -231,12 +258,7 @@ export function centsToLegacyYuan(cents: number): number {
 }
 
 export function percentToBpsStrict(value: number): number {
-  return scaleLegacyNumberToSafeInteger(
-    value,
-    2,
-    "percent",
-    "basis points",
-  );
+  return scaleLegacyNumberToSafeInteger(value, 2, "percent", "basis points");
 }
 
 export function parsePostgresBigintCents(
@@ -338,10 +360,7 @@ function scaleCanonicalDecimalExactly(
   }
 
   const scaled = sign === "-" ? -magnitude : magnitude;
-  if (
-    scaled < SAFE_INTEGER_MIN_BIGINT ||
-    scaled > SAFE_INTEGER_MAX_BIGINT
-  ) {
+  if (scaled < SAFE_INTEGER_MIN_BIGINT || scaled > SAFE_INTEGER_MAX_BIGINT) {
     throw new RangeError(`${outputLabel} must be a safe integer`);
   }
 

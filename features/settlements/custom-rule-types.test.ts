@@ -6,6 +6,7 @@ import {
   CUSTOM_RULE_SCOPES,
   CUSTOM_RULE_TARGET_TYPES,
   CUSTOM_RULE_VERSION_STATUSES,
+  MATERIAL_RISK_CODES,
   RUNTIME_SCALAR_TYPES,
   assertSafeIntegerValue,
   centsToLegacyYuan,
@@ -19,9 +20,12 @@ import type {
   CompiledAstNode,
   CustomRuleCompositionMode,
   CustomRuleExecutionGrain,
+  CustomRulePrimaryActionDto,
   CustomRuleScope,
+  CustomRuleSimulationFreshnessHashes,
   CustomRuleTargetType,
   CustomRuleVersionStatus,
+  MaterialRiskCode,
   NormalizedAstNode,
   RuntimeScalarType,
 } from "./custom-rule-types";
@@ -82,6 +86,48 @@ describe("custom rule narrow unions", () => {
     ]);
   });
 
+  it("keeps material-risk and governance DTO contracts narrow", () => {
+    const risks: readonly MaterialRiskCode[] = MATERIAL_RISK_CODES;
+    const freshness: CustomRuleSimulationFreshnessHashes = {
+      formulaHash: "formula",
+      contractHash: "contract",
+      parameterHash: "parameters",
+      catalogHash: "catalog",
+      dataSelectionHash: "selection",
+    };
+    const actions: CustomRulePrimaryActionDto[] = [
+      { state: "draft", action: "apply_and_submit" },
+      { state: "pending_review", action: "approve" },
+      { state: "changes_requested", action: "revise_and_resimulate" },
+      { state: "active", action: "create_new_version" },
+      { state: "archived", action: "none" },
+    ];
+
+    expect(risks).toEqual([
+      "negative_margin",
+      "abnormal_total_increase",
+      "red_evidence_payment",
+      "money_changing_explicit_default",
+      "group_level_replace",
+      "overlapping_group_exception",
+      "safety_cap_exceeded",
+    ]);
+    expect(Object.keys(freshness)).toEqual([
+      "formulaHash",
+      "contractHash",
+      "parameterHash",
+      "catalogHash",
+      "dataSelectionHash",
+    ]);
+    expect(actions.map(({ action }) => action)).toEqual([
+      "apply_and_submit",
+      "approve",
+      "revise_and_resimulate",
+      "create_new_version",
+      "none",
+    ]);
+  });
+
   it("encodes the first-release scope and target compatibility matrix", () => {
     for (const targetType of CUSTOM_RULE_TARGET_TYPES) {
       expect(isCustomRuleTargetCompatible("payable", targetType)).toBe(true);
@@ -93,9 +139,7 @@ describe("custom rule narrow unions", () => {
       "reconciliation",
     ] as const) {
       expect(isCustomRuleTargetCompatible(scope, "project")).toBe(true);
-      expect(isCustomRuleTargetCompatible(scope, "streamer_group")).toBe(
-        false,
-      );
+      expect(isCustomRuleTargetCompatible(scope, "streamer_group")).toBe(false);
       expect(isCustomRuleTargetCompatible(scope, "project_streamer")).toBe(
         false,
       );
@@ -133,9 +177,7 @@ describe("product-owned AST contracts", () => {
       },
       {
         kind: "object",
-        entries: [
-          { key: "eligible", value: { kind: "literal", value: true } },
-        ],
+        entries: [{ key: "eligible", value: { kind: "literal", value: true } }],
       },
     ];
 
@@ -272,9 +314,7 @@ describe("strict unit adapters", () => {
     expect(percentToBpsStrict(0.1 + 0.2)).toBe(30);
     expect(percentToBpsStrict(0.7 + 0.1)).toBe(80);
     expect(percentToBpsStrict(10_000_000_000.03)).toBe(1_000_000_000_003);
-    expect(percentToBpsStrict(-10_000_000_000.03)).toBe(
-      -1_000_000_000_003,
-    );
+    expect(percentToBpsStrict(-10_000_000_000.03)).toBe(-1_000_000_000_003);
     expect(assertSafeIntegerValue(42, "test value")).toBe(42);
   });
 
@@ -299,9 +339,7 @@ describe("strict unit adapters", () => {
 
     expect(centsToLegacyYuan(1)).toBe(0.01);
     expect(centsToLegacyYuan(-1)).toBe(-0.01);
-    expect(centsToLegacyYuan(largestLosslessCents)).toBe(
-      90_071_992_547_409.9,
-    );
+    expect(centsToLegacyYuan(largestLosslessCents)).toBe(90_071_992_547_409.9);
     expect(centsToLegacyYuan(smallestLosslessCents)).toBe(
       -90_071_992_547_409.9,
     );
