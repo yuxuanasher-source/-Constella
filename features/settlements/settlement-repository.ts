@@ -28,11 +28,50 @@ type SettlementPoolReportRow = {
   streamer_id: string;
   live_task_id: string;
   status: "approved";
+  system_duration: number | null;
+  screenshot_duration: number | null;
   settlement_duration: number | null;
   time_source: "system" | "screenshot" | "claimed" | null;
   evidence_level: "green" | "yellow" | "red" | null;
   settled_batch_item_id: string | null;
+  viewers: number | null;
+  reviewed_at: string | null;
   created_at: string;
+  live_tasks:
+    | {
+        system_started_at: string | null;
+        planned_start_at: string | null;
+      }
+    | Array<{
+        system_started_at: string | null;
+        planned_start_at: string | null;
+      }>
+    | null;
+};
+
+type ProjectStreamerSettlementContextRow = {
+  id: string;
+  streamer_id: string;
+  collaboration_id: string | null;
+  hourly_rate: number | null;
+  base_salary: number | null;
+  cps_rate_bps: number | null;
+  streamers:
+    | { source_type: string | null }
+    | Array<{ source_type: string | null }>
+    | null;
+};
+
+type ProjectStreamerSettlementGroupAssignmentContextRow = {
+  id: string;
+  project_streamer_id: string;
+  group_id: string;
+  effective_from: string;
+  effective_until: string | null;
+  settlement_rule_groups:
+    | { name: string }
+    | Array<{ name: string }>
+    | null;
 };
 
 type SettlementBatchItemStateRow = {
@@ -147,11 +186,16 @@ const settlementPoolReportSelect = `
   streamer_id,
   live_task_id,
   status,
+  system_duration,
+  screenshot_duration,
   settlement_duration,
   time_source,
   evidence_level,
   settled_batch_item_id,
-  created_at
+  viewers,
+  reviewed_at,
+  created_at,
+  live_tasks(system_started_at, planned_start_at)
 `;
 
 const settlementBatchSelect = `
@@ -222,10 +266,92 @@ export class SupabaseSettlementRepository implements SettlementRepository {
     const settledReportIds = reportIds.length
       ? await this.listSettledReportIdsForBatchType(reportIds, input.batchType)
       : new Set<string>();
+    const unsettledRows = rows.filter((row) => !settledReportIds.has(row.id));
+    const projectStreamerByStreamerId =
+      await this.listProjectStreamerSettlementContext({
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        streamerIds: uniqueStable(unsettledRows.map((row) => row.streamer_id)),
+      });
+    const groupAssignmentsByProjectStreamerId =
+      await this.listProjectStreamerSettlementGroupAssignments({
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        projectStreamerIds: uniqueStable(
+          [...projectStreamerByStreamerId.values()].map((row) => row.id),
+        ),
+      });
 
-    return rows
-      .filter((row) => !settledReportIds.has(row.id))
-      .map((row) => toSettlementPoolReport(row, []));
+    return unsettledRows.map((row) =>
+      toSettlementPoolReport(
+        row,
+        [],
+        projectStreamerByStreamerId.get(row.streamer_id) ?? null,
+        groupAssignmentsByProjectStreamerId,
+      ),
+    );
+  }
+
+  private async listProjectStreamerSettlementContext(input: {
+    organizationId: string;
+    projectId: string;
+    streamerIds: string[];
+  }): Promise<Map<string, ProjectStreamerSettlementContextRow>> {
+    if (input.streamerIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.client
+      .from("project_streamers")
+      .select(
+        "id, streamer_id, hourly_rate, base_salary, cps_rate_bps, collaboration_id, streamers(source_type)",
+      )
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .in("streamer_id", input.streamerIds)
+      .returns<ProjectStreamerSettlementContextRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    return new Map((data ?? []).map((row) => [row.streamer_id, row]));
+  }
+
+  private async listProjectStreamerSettlementGroupAssignments(input: {
+    organizationId: string;
+    projectId: string;
+    projectStreamerIds: string[];
+  }): Promise<Map<string, ProjectStreamerSettlementGroupAssignmentContextRow[]>> {
+    if (input.projectStreamerIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.client
+      .from("project_streamer_settlement_group_assignments")
+      .select(
+        "id, project_streamer_id, group_id, effective_from, effective_until, settlement_rule_groups(name)",
+      )
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .in("project_streamer_id", input.projectStreamerIds)
+      .returns<ProjectStreamerSettlementGroupAssignmentContextRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    const grouped = new Map<
+      string,
+      ProjectStreamerSettlementGroupAssignmentContextRow[]
+    >();
+    for (const row of data ?? []) {
+      grouped.set(row.project_streamer_id, [
+        ...(grouped.get(row.project_streamer_id) ?? []),
+        row,
+      ]);
+    }
+    return grouped;
   }
 
   async getSettlementRules(input: {
@@ -717,7 +843,15 @@ function toProjectStreamerSettlementRecord(
 function toSettlementPoolReport(
   row: SettlementPoolReportRow,
   settledBatchTypes: SettlementBatchType[] = [],
+  projectStreamer: ProjectStreamerSettlementContextRow | null = null,
+  groupAssignmentsByProjectStreamerId: Map<
+    string,
+    ProjectStreamerSettlementGroupAssignmentContextRow[]
+  > = new Map(),
 ): SettlementPoolReport {
+  const liveTask = firstRelation(row.live_tasks);
+  const effectiveAt =
+    liveTask?.system_started_at ?? liveTask?.planned_start_at ?? row.created_at;
   return {
     id: row.id,
     organizationId: row.organization_id,
@@ -725,13 +859,67 @@ function toSettlementPoolReport(
     streamerId: row.streamer_id,
     liveTaskId: row.live_task_id,
     status: row.status,
+    systemDuration: row.system_duration,
+    screenshotDuration: row.screenshot_duration,
     settlementDuration: row.settlement_duration,
     timeSource: row.time_source,
     evidenceLevel: row.evidence_level,
     settledBatchItemId: row.settled_batch_item_id,
     settledBatchTypes,
+    viewers: row.viewers,
+    reviewedAt: row.reviewed_at,
+    liveTaskSystemStartedAt: liveTask?.system_started_at ?? null,
+    plannedStartAt: liveTask?.planned_start_at ?? null,
+    projectStreamerId: projectStreamer?.id ?? null,
+    streamerSource:
+      firstRelation(projectStreamer?.streamers)?.source_type ?? null,
+    collaborationId: projectStreamer?.collaboration_id ?? null,
+    frozenHourlyRate:
+      projectStreamer?.hourly_rate === undefined
+        ? null
+        : Number(projectStreamer.hourly_rate),
+    frozenBaseSalary:
+      projectStreamer?.base_salary === undefined
+        ? null
+        : Number(projectStreamer.base_salary),
+    frozenCpsRateBps:
+      projectStreamer?.cps_rate_bps === undefined
+        ? null
+        : Number(projectStreamer.cps_rate_bps),
+    settlementGroups: projectStreamer
+      ? settlementGroupsForEffectiveAt(
+          groupAssignmentsByProjectStreamerId.get(projectStreamer.id) ?? [],
+          effectiveAt,
+        )
+      : [],
     createdAt: row.created_at,
   };
+}
+
+function settlementGroupsForEffectiveAt(
+  assignments: ProjectStreamerSettlementGroupAssignmentContextRow[],
+  effectiveAt: string,
+): Array<{ id: string; name: string; assignmentId: string }> {
+  return assignments
+    .filter(
+      (assignment) =>
+        assignment.effective_from <= effectiveAt &&
+        (assignment.effective_until === null ||
+          effectiveAt < assignment.effective_until),
+    )
+    .map((assignment) => {
+      const group = firstRelation(assignment.settlement_rule_groups);
+      return {
+        id: assignment.group_id,
+        name: group?.name ?? assignment.group_id,
+        assignmentId: assignment.id,
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.id.localeCompare(right.id) ||
+        left.assignmentId.localeCompare(right.assignmentId),
+    );
 }
 
 function hasBatchType(
@@ -928,4 +1116,15 @@ function removeUndefined(
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined),
   );
+}
+
+function firstRelation<T>(relation: T | T[] | null | undefined): T | null {
+  if (!relation) {
+    return null;
+  }
+  return Array.isArray(relation) ? (relation[0] ?? null) : relation;
+}
+
+function uniqueStable(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
 }

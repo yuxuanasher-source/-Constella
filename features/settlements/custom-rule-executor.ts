@@ -362,6 +362,7 @@ function resolvedLayerForComposition(input: {
     composition: input.layer.composition,
     formulaHash: input.layer.formulaHash,
     contractHash: input.layer.contractHash,
+    parameters: input.layer.parameters,
     compiledAst: input.layer.compiledAst as unknown as NormalizedAstNode,
     compiledAstHash: input.layer.compiledAstHash,
     activeCompiledAstHash: input.layer.activeCompiledAstHash,

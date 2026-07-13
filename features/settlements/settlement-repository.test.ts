@@ -233,6 +233,108 @@ describe("SupabaseSettlementRepository", () => {
     expect(from).toHaveBeenCalledWith("settlement_batch_items");
   });
 
+  it("maps production settlement context and effective group assignments for pool reports", async () => {
+    const reports = [
+      {
+        id: "report-open",
+        organization_id: "org-1",
+        project_id: "project-1",
+        streamer_id: "streamer-1",
+        live_task_id: "task-1",
+        status: "approved",
+        system_duration: 55,
+        screenshot_duration: 60,
+        settlement_duration: 60,
+        time_source: "system",
+        evidence_level: "green",
+        settled_batch_item_id: null,
+        viewers: 123,
+        reviewed_at: "2026-07-12T02:00:00.000Z",
+        created_at: "2026-07-12T01:00:00.000Z",
+        live_tasks: {
+          system_started_at: "2026-07-12T00:30:00.000Z",
+          planned_start_at: "2026-07-12T00:00:00.000Z",
+        },
+      },
+    ];
+    const projectStreamers = [
+      {
+        id: "project-streamer-1",
+        streamer_id: "streamer-1",
+        hourly_rate: 80,
+        base_salary: 500,
+        cps_rate_bps: 1500,
+        collaboration_id: "collaboration-1",
+        streamers: { source_type: "organic" },
+      },
+    ];
+    const assignments = [
+      {
+        id: "assignment-active",
+        project_streamer_id: "project-streamer-1",
+        group_id: "group-active",
+        effective_from: "2026-07-01T00:00:00.000Z",
+        effective_until: null,
+        settlement_rule_groups: { name: "Gold" },
+      },
+      {
+        id: "assignment-future",
+        project_streamer_id: "project-streamer-1",
+        group_id: "group-future",
+        effective_from: "2026-08-01T00:00:00.000Z",
+        effective_until: null,
+        settlement_rule_groups: { name: "Future" },
+      },
+    ];
+    const from = vi.fn((table: string) => {
+      if (table === "live_reports") return createQuery(reports);
+      if (table === "settlement_batch_item_reports") return createQuery([]);
+      if (table === "settlement_batch_items") return createQuery([]);
+      if (table === "project_streamers") return createQuery(projectStreamers);
+      if (table === "project_streamer_settlement_group_assignments") {
+        return createQuery(assignments);
+      }
+      throw new Error(`unexpected table ${table}`);
+    });
+    const repo = new SupabaseSettlementRepository({ from } as never);
+
+    await expect(
+      repo.listSettlementPoolReports({
+        organizationId: "org-1",
+        projectId: "project-1",
+        batchType: "payable",
+        periodStart: "2026-07-01",
+        periodEnd: "2026-07-31",
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: "report-open",
+        systemDuration: 55,
+        screenshotDuration: 60,
+        viewers: 123,
+        reviewedAt: "2026-07-12T02:00:00.000Z",
+        liveTaskSystemStartedAt: "2026-07-12T00:30:00.000Z",
+        plannedStartAt: "2026-07-12T00:00:00.000Z",
+        projectStreamerId: "project-streamer-1",
+        streamerSource: "organic",
+        collaborationId: "collaboration-1",
+        frozenHourlyRate: 80,
+        frozenBaseSalary: 500,
+        frozenCpsRateBps: 1500,
+        settlementGroups: [
+          {
+            id: "group-active",
+            name: "Gold",
+            assignmentId: "assignment-active",
+          },
+        ],
+      }),
+    ]);
+    expect(from).toHaveBeenCalledWith(
+      "project_streamer_settlement_group_assignments",
+    );
+  });
+
   it("propagates duplicate aggregate link errors from atomic generation", async () => {
     const repo = new SupabaseSettlementRepository({
       rpc: vi.fn(async () => ({

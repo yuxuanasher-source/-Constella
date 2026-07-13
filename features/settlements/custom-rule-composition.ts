@@ -28,6 +28,7 @@ type ResolvedLayerCommon = Readonly<{
   composition: MoneyCompositionMode;
   formulaHash: string;
   contractHash: string;
+  parameters?: Record<string, TypedRuntimeValue>;
   compiledAst?: NormalizedAstNode;
   compiledAstHash?: string;
   activeCompiledAstHash?: string;
@@ -58,6 +59,7 @@ export type AppliedCustomRuleLayerSnapshot = Readonly<{
   composition: MoneyCompositionMode;
   formulaHash: string;
   contractHash: string;
+  parameters?: Record<string, TypedRuntimeValue>;
   typedInputs: Record<string, TypedRuntimeValue>;
   namedOutputs: Record<string, TypedRuntimeValue>;
   missingDataDecisions: readonly CustomRuleMissingDataDecisionSnapshot[];
@@ -123,6 +125,7 @@ export function composeCustomSettlementLayers(input: {
       composition: layer.composition,
       formulaHash: layer.formulaHash,
       contractHash: layer.contractHash,
+      ...(layer.parameters ? { parameters: layer.parameters } : {}),
       typedInputs: layer.typedInputs,
       namedOutputs: layer.namedOutputs,
       missingDataDecisions: layer.missingDataDecisions,

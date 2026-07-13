@@ -10,6 +10,7 @@ import {
   sendSettlementBatchStatements,
   type SettlementBatchAtomicItemInput,
   type SettlementBatchRecord,
+  type CustomSettlementExecutionPort,
   type SettlementRepository,
 } from "./settlement-service";
 
@@ -277,6 +278,206 @@ describe("settlement service", () => {
         objectType: "settlement_batch",
       }),
     );
+  });
+
+  it("uses the legacy calculation branch when no custom layers are active", async () => {
+    const customExecutionPort: CustomSettlementExecutionPort = {
+      resolveAndExecute: vi.fn(
+        async (): Promise<"no_custom_layers"> => "no_custom_layers",
+      ),
+    };
+
+    await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "payable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      },
+      customExecutionPort,
+    });
+
+    expect(customExecutionPort.resolveAndExecute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org-1",
+        projectId: "project-1",
+        batchType: "payable",
+        reports: [report],
+      }),
+    );
+    expect(repo.getSettlementRules).toHaveBeenCalled();
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        computedAmount: 160,
+        items: [
+          expect.objectContaining({
+            computedAmount: 160,
+            evidenceSnapshot: expect.not.objectContaining({
+              ruleEngine: expect.anything(),
+            }),
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("persists custom cents snapshots and sums batch totals as integer cents", async () => {
+    const customExecutionPort: CustomSettlementExecutionPort = {
+      resolveAndExecute: vi.fn(async () => ({
+        items: [
+          customProductionItem({
+            sourceReportIds: ["report-1"],
+            computedAmountCents: 10,
+          }),
+          customProductionItem({
+            streamerId: "streamer-2",
+            sourceReportIds: ["report-2"],
+            computedAmountCents: 20,
+          }),
+        ],
+      })),
+    };
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      report,
+      { ...report, id: "report-2", streamerId: "streamer-2" },
+    ]);
+
+    await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "payable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      },
+      customExecutionPort,
+    });
+
+    expect(repo.getSettlementRules).toHaveBeenCalled();
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        computedAmount: 0.3,
+        items: [
+          expect.objectContaining({
+            computedAmount: 0.1,
+            liveReportIds: ["report-1"],
+            evidenceSnapshot: expect.objectContaining({
+              ruleEngine: expect.objectContaining({
+                namedOutputsCents: { final: 10 },
+                sourceReportIds: ["report-1"],
+              }),
+            }),
+          }),
+          expect.objectContaining({
+            computedAmount: 0.2,
+            liveReportIds: ["report-2"],
+            evidenceSnapshot: expect.objectContaining({
+              ruleEngine: expect.objectContaining({
+                namedOutputsCents: { final: 20 },
+                sourceReportIds: ["report-2"],
+              }),
+            }),
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("excludes review-routed custom placeholders from batch totals", async () => {
+    const customExecutionPort: CustomSettlementExecutionPort = {
+      resolveAndExecute: vi.fn(async () => ({
+        items: [
+          customProductionItem({
+            sourceReportIds: ["report-1"],
+            computedAmountCents: 10_000,
+          }),
+          customProductionItem({
+            sourceReportIds: ["report-review"],
+            computedAmountCents: 0,
+            reviewRouted: true,
+            exceptions: [
+              {
+                liveReportId: "report-review",
+                ruleVersionId: "rule-version-1",
+                layerSnapshot: { layer: "project_base" },
+                variableName: "gift_amount",
+                policy: "route_item_to_review",
+                createdBy: "user-owner",
+              },
+            ],
+          }),
+        ],
+      })),
+    };
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      report,
+      { ...report, id: "report-review" },
+    ]);
+
+    await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "payable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      },
+      customExecutionPort,
+    });
+
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        computedAmount: 100,
+        items: [
+          expect.objectContaining({ computedAmount: 100 }),
+          expect.objectContaining({
+            computedAmount: 0,
+            exceptions: [
+              expect.objectContaining({
+                variableName: "gift_amount",
+                policy: "route_item_to_review",
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("propagates custom execution errors without falling back to fixed rules", async () => {
+    const customExecutionPort: CustomSettlementExecutionPort = {
+      resolveAndExecute: vi.fn(async () => {
+        throw new Error("CUSTOM_RULE_EXECUTION_BLOCKED");
+      }),
+    };
+
+    await expect(
+      generateSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor,
+        input: {
+          projectId: "project-1",
+          batchType: "payable",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+        },
+        customExecutionPort,
+      }),
+    ).rejects.toThrow("CUSTOM_RULE_EXECUTION_BLOCKED");
+
+    expect(repo.createSettlementBatchAtomic).not.toHaveBeenCalled();
   });
 
   it("uses the project default rule for receivable batches", async () => {
@@ -879,3 +1080,36 @@ describe("settlement service", () => {
     ).rejects.toThrow("Only payable batches can be sent to streamers");
   });
 });
+
+function customProductionItem(input: {
+  streamerId?: string;
+  sourceReportIds: string[];
+  computedAmountCents: number;
+  reviewRouted?: boolean;
+  exceptions?: SettlementBatchAtomicItemInput["exceptions"];
+}) {
+  return {
+    streamerId: input.streamerId ?? "streamer-1",
+    sourceReportIds: input.sourceReportIds,
+    computedAmountCents: input.computedAmountCents,
+    reviewRouted: input.reviewRouted ?? false,
+    evidenceLevel: "green" as const,
+    evidenceSnapshot: {
+      ruleEngine: {
+        mode: "custom",
+        contractHash: "contract-hash",
+        grain: "report",
+        parameters: {},
+        appliedLayers: [],
+        membershipAssignmentIds: [],
+        membershipSnapshotHash: "membership-hash",
+        typedInputs: {},
+        namedOutputsCents: { final: input.computedAmountCents },
+        missingDataDecisions: [],
+        sourceReportIds: input.sourceReportIds,
+        explanationZh: "自定义结算规则计算完成。",
+      },
+    },
+    exceptions: input.exceptions,
+  };
+}

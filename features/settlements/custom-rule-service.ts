@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
 import type { AiProviderName } from "@/features/ai/contracts";
@@ -22,6 +23,7 @@ import {
   businessRuleContractSchema,
   diffBusinessRuleContracts,
   runtimeValueTypeSchema,
+  typedRuntimeValueSchema,
   type BusinessRuleContract,
   type BusinessRuleContractChange,
 } from "./custom-rule-contract";
@@ -32,7 +34,19 @@ import {
   type CustomRuleInputRequirement,
 } from "./custom-rule-data-readiness";
 import { buildCustomRuleTemplateExplanation } from "./custom-rule-explanation";
+import {
+  executeCustomSettlementRulePipeline,
+  type CustomRuleExecutionSnapshot,
+  type ExecutableCustomRuleLayer,
+} from "./custom-rule-executor";
+import {
+  buildCustomRulePeriodAggregates,
+  buildCustomRuleReportExecutionContext,
+} from "./custom-rule-execution-context";
 import { parseCustomRuleFormula } from "./custom-rule-parser";
+import { isCustomSettlementRuleExecutionEnabled } from "./custom-rule-feature-flag";
+import { buildSettlementGroupMembershipSnapshot } from "./custom-rule-groups";
+import type { PreparedRuleException } from "./custom-rule-missing-data";
 import type {
   ClarifyingCustomRuleDraftInput,
   ContractReadyCustomRuleDraftInput,
@@ -67,6 +81,7 @@ import type {
   RequestCustomRuleChangesInput,
   SaveCustomRuleDraftInput,
   SavedCustomRuleDraftResult,
+  ResolvedExecutableCustomRuleLayers,
   SettlementFormulaSimulation,
   SettlementAiGeneratedTestCase,
   SettlementAiSafetyFlag,
@@ -76,7 +91,10 @@ import type {
   SettlementAiFailedTurnFailureSemantics,
   SettlementAiUnresolvedAmbiguity,
 } from "./custom-rule-repository";
-import { SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES } from "./custom-rule-repository";
+import {
+  SETTLEMENT_AI_FAILED_TURN_ERROR_SUMMARIES,
+  SupabaseCustomRuleReadRepository,
+} from "./custom-rule-repository";
 import {
   calculateCustomRuleDataSelectionHash,
   calculateCustomRuleEvidenceHash,
@@ -89,7 +107,19 @@ import {
   type CustomRuleSimulationResult,
 } from "./custom-rule-simulation";
 import type { TypedRuntimeValue } from "./custom-rule-types";
-import type { CustomRuleSimulationFreshnessHashes } from "./custom-rule-types";
+import type {
+  CompiledAstNode,
+  CustomRuleExecutionGrain,
+  CustomRuleExecutionUnit,
+  CustomRuleSimulationFreshnessHashes,
+} from "./custom-rule-types";
+import type {
+  CustomSettlementExecutionPort,
+  CustomSettlementProductionInput,
+  CustomSettlementProductionItem,
+  SettlementPoolReport,
+  SettlementRuleExceptionInsert,
+} from "./settlement-service";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
 import type { CustomRuleVariableCatalog } from "./custom-rule-variable-catalog";
 import {
@@ -5072,6 +5102,599 @@ export type CustomRuleLifecycleRepositoryPort = Pick<
 
 export type CustomRuleExecutionCapability = Readonly<{ enabled: boolean }>;
 
+type CustomRuleProductionRepositoryPort = Pick<
+  CustomRuleRepository,
+  "resolveExecutableCustomRuleLayers"
+>;
+
+type ProductionLookupByUnit = Map<
+  string,
+  ResolvedExecutableCustomRuleLayers
+>;
+
+export function createCustomRuleExecutionCapability(
+  env?: Record<string, string | undefined>,
+): CustomRuleExecutionCapability {
+  return { enabled: isCustomSettlementRuleExecutionEnabled(env) };
+}
+
+export function createProductionCustomSettlementExecutionPort(input: {
+  supabase?: SupabaseClient;
+  repository?: CustomRuleProductionRepositoryPort;
+  executionCapability?: CustomRuleExecutionCapability;
+}): CustomSettlementExecutionPort {
+  const repository =
+    input.repository ??
+    (input.supabase
+      ? new SupabaseCustomRuleReadRepository(input.supabase)
+      : undefined);
+  if (!repository) {
+    throw new Error("Custom settlement production repository is required");
+  }
+  const executionCapability =
+    input.executionCapability ?? createCustomRuleExecutionCapability();
+
+  return {
+    async resolveAndExecute(productionInput) {
+      const probeUnits = buildProductionExecutionUnits(productionInput, "report");
+      const probeLookupByUnit = await resolveProductionLookupsByUnit({
+        repository,
+        input: productionInput,
+        units: probeUnits,
+      });
+      if (!hasAnyResolvedCustomLayers(probeLookupByUnit)) {
+        return "no_custom_layers";
+      }
+      if (!executionCapability.enabled) {
+        throw new CustomRuleGovernanceError(
+          "CUSTOM_RULE_EXECUTION_DISABLED",
+          "Production custom settlement rule execution is disabled",
+        );
+      }
+
+      const grain = productionExecutionGrain(probeLookupByUnit);
+      const units = buildProductionExecutionUnits(productionInput, grain);
+      const resolvedLookupByUnit =
+        grain === "report"
+          ? probeLookupByUnit
+          : await resolveProductionLookupsByUnit({
+              repository,
+              input: productionInput,
+              units,
+            });
+      const reportById = new Map(
+        productionInput.reports.map((report) => [report.id, report]),
+      );
+      const result = executeCustomSettlementRulePipeline({
+        planExecutionUnits: () => units,
+        resolveLayers: (unit) =>
+          executableLayersForUnit({
+            input: productionInput,
+            unit,
+            lookup: lookupForUnit(resolvedLookupByUnit, unit),
+            reportById,
+          }),
+        buildExecutionContext: (unit) =>
+          buildProductionExecutionContext({
+            input: productionInput,
+            unit,
+            reportById,
+            businessTimezone: businessTimezoneForLookup(
+              lookupForUnit(resolvedLookupByUnit, unit),
+            ),
+          }),
+      });
+
+      if (result.kind === "blocked") {
+        throw result.error;
+      }
+
+      return {
+        items: [
+          ...result.snapshots.map((snapshot) =>
+            productionItemForSnapshot(snapshot, units),
+          ),
+          ...(result.kind === "review"
+            ? reviewItemsForExceptions(result.exceptions, units)
+            : []),
+        ],
+      };
+    },
+  };
+}
+
+async function resolveProductionLookupsByUnit(input: {
+  repository: CustomRuleProductionRepositoryPort;
+  input: CustomSettlementProductionInput;
+  units: CustomRuleExecutionUnit[];
+}): Promise<ProductionLookupByUnit> {
+  const groups = new Map<string, CustomRuleExecutionUnit[]>();
+  for (const unit of input.units) {
+    const timestamp = unit.membershipSnapshot.effectiveAt;
+    groups.set(timestamp, [...(groups.get(timestamp) ?? []), unit]);
+  }
+
+  const lookupByUnit: ProductionLookupByUnit = new Map();
+  for (const [executionTimestamp, units] of groups) {
+    const lookup = await input.repository.resolveExecutableCustomRuleLayers({
+      organizationId: input.input.organizationId,
+      projectId: input.input.projectId,
+      scope: input.input.batchType,
+      executionTimestamp,
+      executionUnits: units,
+    });
+    for (const unit of units) {
+      lookupByUnit.set(unit.key, lookupForSingleUnit(lookup, unit));
+    }
+  }
+  return lookupByUnit;
+}
+
+function lookupForSingleUnit(
+  lookup: ResolvedExecutableCustomRuleLayers,
+  unit: CustomRuleExecutionUnit,
+): ResolvedExecutableCustomRuleLayers {
+  const groupIds = new Set(unit.membershipSnapshot.groups.map((group) => group.id));
+  return {
+    projectBaseVersion: lookup.projectBaseVersion,
+    groupVersions: lookup.groupVersions.filter((layer) =>
+      groupIds.has(layer.groupId),
+    ),
+    projectStreamerVersions: lookup.projectStreamerVersions.filter(
+      (layer) => layer.projectStreamerId === unit.projectStreamerId,
+    ),
+    assignmentsByUnitKey: {
+      [unit.key]: lookup.assignmentsByUnitKey[unit.key] ?? [],
+    },
+  };
+}
+
+function lookupForUnit(
+  lookupByUnit: ProductionLookupByUnit,
+  unit: CustomRuleExecutionUnit,
+): ResolvedExecutableCustomRuleLayers {
+  const lookup = lookupByUnit.get(unit.key);
+  if (!lookup) {
+    throw new Error(`custom settlement lookup missing for ${unit.key}`);
+  }
+  return lookup;
+}
+
+function hasResolvedCustomLayers(
+  lookup: ResolvedExecutableCustomRuleLayers,
+): boolean {
+  return (
+    lookup.projectBaseVersion !== null ||
+    lookup.groupVersions.length > 0 ||
+    lookup.projectStreamerVersions.length > 0
+  );
+}
+
+function hasAnyResolvedCustomLayers(lookupByUnit: ProductionLookupByUnit): boolean {
+  return [...lookupByUnit.values()].some(hasResolvedCustomLayers);
+}
+
+function productionExecutionGrain(
+  lookupByUnit: ProductionLookupByUnit,
+): CustomRuleExecutionGrain {
+  const versions = [...lookupByUnit.values()]
+    .flatMap((lookup) => [
+      ...(lookup.projectBaseVersion ? [lookup.projectBaseVersion] : []),
+      ...lookup.groupVersions.map((item) => item.version),
+      ...lookup.projectStreamerVersions.map((item) => item.version),
+    ])
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return versions[0]?.executionGrain ?? "report";
+}
+
+function buildProductionExecutionUnits(
+  input: CustomSettlementProductionInput,
+  grain: CustomRuleExecutionGrain,
+): CustomRuleExecutionUnit[] {
+  const reports = [...input.reports].sort((left, right) =>
+    left.id.localeCompare(right.id),
+  );
+  if (grain === "report") {
+    return reports.map((report) =>
+      executionUnitForReports(input, grain, [report]),
+    );
+  }
+  if (grain === "project_streamer_period") {
+    const grouped = new Map<string, SettlementPoolReport[]>();
+    for (const report of reports) {
+      const projectStreamerId =
+        report.projectStreamerId ?? report.streamerId ?? "project";
+      const key = `${projectStreamerId}:${membershipSnapshotForReport(report).snapshotHash}`;
+      grouped.set(key, [...(grouped.get(key) ?? []), report]);
+    }
+    return [...grouped.values()].map((group) =>
+      executionUnitForReports(input, grain, group),
+    );
+  }
+  return [executionUnitForReports(input, grain, reports)];
+}
+
+function executionUnitForReports(
+  input: CustomSettlementProductionInput,
+  grain: CustomRuleExecutionGrain,
+  reports: SettlementPoolReport[],
+): CustomRuleExecutionUnit {
+  const firstReport = reports[0];
+  if (!firstReport) {
+    throw new Error("custom settlement execution unit requires reports");
+  }
+  const sourceReportIds = reports.map((report) => report.id).sort();
+  const projectStreamerId = firstReport.projectStreamerId ?? firstReport.streamerId;
+  const membershipSnapshot = membershipSnapshotForReport(firstReport);
+  const key =
+    grain === "report"
+      ? `report:${input.projectId}:${firstReport.id}`
+      : grain === "project_streamer_period"
+        ? `project_streamer_period:${input.projectId}:${projectStreamerId}:${membershipSnapshot.snapshotHash}`
+        : `${grain}:${input.projectId}`;
+  return {
+    key,
+    grain,
+    projectId: input.projectId,
+    projectStreamerId,
+    streamerId: firstReport.streamerId,
+    periodStart: toPeriodStartTimestamp(input.periodStart),
+    periodEnd: toPeriodEndTimestamp(input.periodEnd),
+    sourceReportIds,
+    membershipSnapshot,
+    variables: {
+      fixed_base_amount: {
+        type: "money_cents",
+        amountCents: fixedBaseAmountCents(input, reports),
+      },
+    },
+  };
+}
+
+function membershipSnapshotForReport(report: SettlementPoolReport) {
+  return buildSettlementGroupMembershipSnapshot({
+    projectStreamerId: report.projectStreamerId ?? report.streamerId,
+    effectiveAt:
+      report.liveTaskSystemStartedAt ?? report.plannedStartAt ?? report.createdAt,
+    groups: report.settlementGroups ?? [],
+  });
+}
+
+function executableLayersForUnit(input: {
+  input: CustomSettlementProductionInput;
+  unit: CustomRuleExecutionUnit;
+  lookup: ResolvedExecutableCustomRuleLayers;
+  reportById: Map<string, SettlementPoolReport>;
+}) {
+  const groupIds = new Set(input.unit.membershipSnapshot.groups.map((group) => group.id));
+  const groupLayers = input.lookup.groupVersions
+    .filter((layer) => groupIds.has(layer.groupId))
+    .map((layer) => executableLayerFromVersion(layer.version));
+  const projectStreamerLayer = input.lookup.projectStreamerVersions.find(
+    (layer) => layer.projectStreamerId === input.unit.projectStreamerId,
+  );
+  return {
+    base: input.lookup.projectBaseVersion
+      ? executableLayerFromVersion(input.lookup.projectBaseVersion)
+      : fixedBaseExecutableLayer(input.input, input.unit),
+    groupLayers,
+    ...(projectStreamerLayer
+      ? { projectStreamerLayer: executableLayerFromVersion(projectStreamerLayer.version) }
+      : {}),
+  };
+}
+
+function executableLayerFromVersion(
+  version: CustomSettlementRuleVersion,
+): ExecutableCustomRuleLayer {
+  const compiledAstHash = hashJson(version.compiledAst);
+  return {
+    versionId: version.id,
+    target: version.target,
+    priority: version.priority,
+    composition: version.compositionMode as ExecutableCustomRuleLayer["composition"],
+    formulaHash: version.formulaHash,
+    contractHash: version.contractHash,
+    compiledAst: version.compiledAst as unknown as CompiledAstNode,
+    compiledAstHash,
+    activeCompiledAstHash: compiledAstHash,
+    declarations: version.ruleContract.requiredInputs.map((requiredInput) => ({
+      name: requiredInput.name,
+      required: true,
+      category: "formula_input",
+      valueType: requiredInput.valueType,
+      missingDataPolicy: version.ruleContract.missingDataPolicy,
+    })),
+    parameters: typedParameterValues(version.parameters),
+    authorized: true,
+  };
+}
+
+function fixedBaseExecutableLayer(
+  input: CustomSettlementProductionInput,
+  unit: CustomRuleExecutionUnit,
+): ExecutableCustomRuleLayer {
+  const amount = unit.variables.fixed_base_amount;
+  const amountCents = amount?.type === "money_cents" ? amount.amountCents : 0;
+  const formula = `money_result({ final: yuan(${amountCents / 100}) })`;
+  const compiled = validateCustomRuleFormula(formula, {
+    scope: input.batchType,
+    executionGrain: unit.grain,
+    compositionMode: "replace",
+  });
+  if (!compiled.ok) {
+    throw new Error("fixed settlement base formula did not compile");
+  }
+  const compiledAstHash = createHash("sha256")
+    .update(JSON.stringify(compiled.compiledAst))
+    .digest("hex");
+  return {
+    versionId: "fixed-base",
+    target: { targetType: "project", targetId: null },
+    priority: 0,
+    composition: "replace",
+    formulaHash: "fixed-base",
+    contractHash: "fixed-base",
+    compiledAst: compiled.compiledAst,
+    compiledAstHash,
+    activeCompiledAstHash: compiledAstHash,
+    declarations: [],
+    parameters: {},
+    authorized: true,
+  };
+}
+
+function buildProductionExecutionContext(input: {
+  input: CustomSettlementProductionInput;
+  unit: CustomRuleExecutionUnit;
+  reportById: Map<string, SettlementPoolReport>;
+  businessTimezone: string;
+}): Record<string, TypedRuntimeValue> {
+  if (input.unit.grain === "report" && input.unit.sourceReportIds.length === 1) {
+    const report = input.reportById.get(input.unit.sourceReportIds[0]);
+    if (!report) return {};
+    return buildCustomRuleReportExecutionContext({
+      businessTimezone: input.businessTimezone,
+      businessTimezoneConfirmed: true,
+      report: {
+        id: report.id,
+        projectId: report.projectId,
+        streamerId: report.streamerId,
+        systemDurationMinutes: report.systemDuration,
+        screenshotDurationMinutes: report.screenshotDuration,
+        settlementDurationMinutes: report.settlementDuration,
+        viewers: report.viewers,
+        evidenceLevel: report.evidenceLevel,
+        timeSource: report.timeSource,
+        liveStartedAt:
+          report.liveTaskSystemStartedAt ?? report.plannedStartAt ?? report.createdAt,
+        approvedAt: report.reviewedAt,
+      },
+      projectStreamer: report.projectStreamerId
+        ? {
+            id: report.projectStreamerId,
+            streamerId: report.streamerId,
+            streamerSource: report.streamerSource,
+            collaborationId: report.collaborationId,
+            hourlyRateYuan: report.frozenHourlyRate,
+            baseSalaryYuan: report.frozenBaseSalary,
+            cpsRateBps: report.frozenCpsRateBps,
+          }
+        : null,
+    }).variables;
+  }
+
+  const reports = input.unit.sourceReportIds
+    .map((reportId) => input.reportById.get(reportId))
+    .filter((report): report is SettlementPoolReport => Boolean(report));
+  return buildCustomRulePeriodAggregates({
+    scope: input.input.batchType,
+    projectId: input.input.projectId,
+    periodStart: toPeriodStartTimestamp(input.input.periodStart),
+    periodEnd: toPeriodEndTimestamp(input.input.periodEnd),
+    approvedReports: reports.map((report) => ({
+      id: report.id,
+      approved: report.status === "approved",
+      systemDurationMinutes: report.systemDuration,
+      settlementDurationMinutes: report.settlementDuration,
+      evidenceLevel: report.evidenceLevel,
+    })),
+  }).variables;
+}
+
+function businessTimezoneForLookup(
+  lookup: ResolvedExecutableCustomRuleLayers,
+): string {
+  const version =
+    lookup.projectBaseVersion ??
+    lookup.groupVersions[0]?.version ??
+    lookup.projectStreamerVersions[0]?.version;
+  return version?.ruleContract.businessTimezone ?? "Asia/Shanghai";
+}
+
+function productionItemForSnapshot(
+  snapshot: CustomRuleExecutionSnapshot,
+  units: CustomRuleExecutionUnit[],
+): CustomSettlementProductionItem {
+  const unit = units.find((candidate) => candidate.key === snapshot.executionUnitKey);
+  return {
+    streamerId: unit?.streamerId ?? null,
+    sourceReportIds: snapshot.sourceReportIds,
+    computedAmountCents: snapshot.finalAmountCents,
+    evidenceSnapshot: {
+      ruleEngine: ruleEngineSnapshot(snapshot, unit),
+    },
+  };
+}
+
+function reviewItemsForExceptions(
+  exceptions: readonly PreparedRuleException[],
+  units: CustomRuleExecutionUnit[],
+): CustomSettlementProductionItem[] {
+  const byUnit = new Map<string, PreparedRuleException[]>();
+  for (const exception of exceptions) {
+    byUnit.set(exception.executionUnitKey, [
+      ...(byUnit.get(exception.executionUnitKey) ?? []),
+      exception,
+    ]);
+  }
+  return [...byUnit.entries()].map(([unitKey, unitExceptions]) => {
+    const unit = units.find((candidate) => candidate.key === unitKey);
+    const sourceReportIds = unit?.sourceReportIds ?? [];
+    return {
+      streamerId: unit?.streamerId ?? null,
+      sourceReportIds,
+      computedAmountCents: 0,
+      reviewRouted: true,
+      evidenceSnapshot: {
+        ruleEngine: {
+          mode: "custom",
+          contractHash: null,
+          grain: unit?.grain ?? "report",
+          parameters: {},
+          appliedLayers: [],
+          membershipAssignmentIds:
+            unit?.membershipSnapshot.groups.map((group) => group.assignmentId) ??
+            [],
+          membershipSnapshotHash: unit?.membershipSnapshot.snapshotHash ?? null,
+          typedInputs: {},
+          namedOutputsCents: {},
+          sourceReportIds,
+          missingDataDecisions: unitExceptions,
+          explanationZh: "自定义结算规则缺少可复核输入，本项进入人工复核且暂不计入批次合计。",
+        },
+      },
+      exceptions: unitExceptions.map((exception) =>
+        settlementExceptionForPreparedException(exception, sourceReportIds),
+      ),
+    };
+  });
+}
+
+function settlementExceptionForPreparedException(
+  exception: PreparedRuleException,
+  sourceReportIds: string[],
+): SettlementRuleExceptionInsert {
+  return {
+    liveReportId: sourceReportIds[0] ?? null,
+    ruleVersionId: exception.ruleVersionId,
+    layerSnapshot: {
+      target: exception.target,
+      layer: exception.layer,
+      executionUnitKey: exception.executionUnitKey,
+      category: exception.category,
+    },
+    variableName: exception.variable,
+    policy: "route_item_to_review",
+  };
+}
+
+function ruleEngineSnapshot(
+  snapshot: CustomRuleExecutionSnapshot,
+  unit?: CustomRuleExecutionUnit,
+): Record<string, unknown> {
+  return {
+    mode: "custom",
+    contractHash: snapshot.appliedLayers[0]?.contractHash ?? null,
+    grain: unit?.grain ?? "report",
+    parameters: Object.fromEntries(
+      snapshot.appliedLayers.map((layer) => [
+        layer.versionId ?? "fixed-base",
+        layer.parameters ?? {},
+      ]),
+    ),
+    appliedLayers: snapshot.appliedLayers.map((layer) => ({
+      versionId: layer.versionId,
+      target: layer.target,
+      priority: layer.priority,
+      composition: layer.composition,
+      formulaHash: layer.formulaHash,
+      contractHash: layer.contractHash,
+      inputAmountCents: layer.inputAmountCents,
+      outputAmountCents: layer.outputAmountCents,
+      resultAmountCents: layer.resultAmountCents,
+    })),
+    membershipAssignmentIds:
+      unit?.membershipSnapshot.groups.map((group) => group.assignmentId) ?? [],
+    membershipSnapshotHash: unit?.membershipSnapshot.snapshotHash ?? null,
+    typedInputs: snapshot.appliedLayers.map((layer) => layer.typedInputs),
+    namedOutputsCents: Object.fromEntries(
+      snapshot.appliedLayers.flatMap((layer) =>
+        Object.entries(layer.namedOutputs)
+          .filter(([, value]) => value.type === "money_cents")
+          .map(([name, value]) => [
+            `${layer.versionId ?? "fixed"}:${name}`,
+            value.type === "money_cents" ? value.amountCents : null,
+          ]),
+      ),
+    ),
+    missingDataDecisions: snapshot.appliedLayers.flatMap(
+      (layer) => layer.missingDataDecisions,
+    ),
+    sourceReportIds: snapshot.sourceReportIds,
+    explanationZh: `自定义结算规则按${unit?.grain ?? "report"}粒度计算，最终金额为${snapshot.finalAmountCents}分。`,
+    deterministicExplanation: snapshot.deterministicExplanation,
+  };
+}
+
+function typedParameterValues(
+  parameters: Record<string, unknown>,
+): Record<string, TypedRuntimeValue> {
+  return Object.fromEntries(
+    Object.entries(parameters)
+      .map(([key, value]) => {
+        const parsed = typedRuntimeValueSchema.safeParse(value);
+        return parsed.success ? ([key, parsed.data] as const) : null;
+      })
+      .filter((entry): entry is readonly [string, TypedRuntimeValue] =>
+        Boolean(entry),
+      ),
+  );
+}
+
+function fixedBaseAmountCents(
+  input: CustomSettlementProductionInput,
+  reports: SettlementPoolReport[],
+): number {
+  const legacyAmounts = input.legacyComputedAmountCentsByReportId;
+  if (legacyAmounts) {
+    return reports.reduce((total, report) => {
+      const amount = legacyAmounts[report.id];
+      return amount === undefined ? total : total + amount;
+    }, 0);
+  }
+
+  if (input.batchType === "receivable") {
+    return 0;
+  }
+  let total = 0;
+  const baseApplied = new Set<string>();
+  for (const report of reports) {
+    const hourlyRate = report.frozenHourlyRate ?? 0;
+    const baseSalary = report.frozenBaseSalary ?? 0;
+    const minutes = report.settlementDuration ?? 0;
+    total += Math.round((minutes / 60) * hourlyRate * 100);
+    const baseKey = report.projectStreamerId ?? report.streamerId;
+    if (!baseApplied.has(baseKey)) {
+      total += Math.round(baseSalary * 100);
+      baseApplied.add(baseKey);
+    }
+  }
+  return total;
+}
+
+function hashJson(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function toPeriodStartTimestamp(value: string): string {
+  return new Date(`${value}T00:00:00.000Z`).toISOString();
+}
+
+function toPeriodEndTimestamp(value: string): string {
+  return new Date(`${value}T23:59:59.999Z`).toISOString();
+}
+
 type LifecycleActorInput = Readonly<{
   organizationId: string;
   userId: string;
@@ -5346,9 +5969,8 @@ export function createCustomRuleLifecycleService(dependencies: {
   now?: () => string;
 }): CustomRuleLifecycleService {
   const repository = dependencies.repository;
-  const executionCapability = dependencies.executionCapability ?? {
-    enabled: false,
-  };
+  const executionCapability =
+    dependencies.executionCapability ?? createCustomRuleExecutionCapability();
   const now = dependencies.now ?? (() => new Date().toISOString());
 
   type VersionContext = CustomRuleLifecycleGovernanceContext & {
