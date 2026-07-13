@@ -3180,7 +3180,7 @@ function buildAuthorizedSimulationRecords(input: {
         input.contract.businessTimezone,
       );
       if (input.contract.scope === "external_cost") {
-        addExternalCostVariables(variables, reportCosts);
+        addExternalCostVariables(variables, report, reportCosts);
       }
       return {
         recordId: report.id,
@@ -3752,8 +3752,10 @@ function addProjectStreamerVariables(
 
 function addExternalCostVariables(
   variables: Record<string, TypedRuntimeValue>,
+  report: ApprovedReportRow,
   costs: ProjectCostRow[],
 ): void {
+  variables.report_id = { type: "string", value: report.id };
   addCostTypeAmountVariable(variables, "gift_amount", costs, "gift");
   addCostTypeAmountVariable(
     variables,
@@ -3776,6 +3778,14 @@ function addExternalCostVariables(
   const rowIndex = firstPayloadInteger(costs, "row_index");
   if (rowIndex !== null) {
     variables.import_row_index = { type: "integer", value: rowIndex };
+  }
+  const importType = firstCostString(costs, "import_type");
+  if (importType !== null) {
+    variables.import_type = { type: "string", value: importType };
+  }
+  const supplierId = firstCostString(costs, "supplier_organization_id");
+  if (supplierId !== null) {
+    variables.supplier_id = { type: "string", value: supplierId };
   }
 }
 
@@ -3835,6 +3845,17 @@ function firstPayloadInteger(
   for (const cost of costs) {
     const value = integerPayloadValue(payloadValue(cost, key));
     if (value !== null) return value;
+  }
+  return null;
+}
+
+function firstCostString(
+  costs: ProjectCostRow[],
+  key: "import_type" | "supplier_organization_id",
+): string | null {
+  for (const cost of costs) {
+    const value = cost[key];
+    if (typeof value === "string" && value.length > 0) return value;
   }
   return null;
 }
