@@ -4199,6 +4199,21 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(resolve.body).toContain("'replay_deferred'");
     expect(resolve.body).not.toContain("insert into public.project_cost_items");
     expect(resolve.body).not.toContain("source_context_snapshot -> 'replay_items'");
+
+    const replay = extractCustomSettlementCostReconciliationFunction(
+      "replay_external_cost_rule_exception_items",
+    );
+    expect(replay.definition).toContain("security definer");
+    expect(replay.definition).toContain("set search_path = pg_catalog, public");
+    expect(replay.definition).toContain("p_idempotency_key text");
+    expect(replay.definition).toContain("p_input_hash text");
+    expect(replay.body).toContain("external_cost_replay_batch_not_confirmed");
+    expect(replay.body).toContain("external_cost_replay_unresolved_exceptions");
+    expect(replay.body).toContain("external_cost_replay_execution_key_required");
+    expect(replay.body).toContain("external_cost_replay_input_hash_required");
+    expect(replay.body).toContain("external_cost_replay_execution_key_conflict");
+    expect(replay.body).toContain("external_cost_replay_items_must_be_pending_review");
+    expect(replay.body).toContain("'pending_review'");
   });
 
   it("uses a row-scoped advisory lock before deterministic sibling locks during exception resolution", () => {
@@ -4285,6 +4300,51 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     expect(resolve.body).not.toContain("external_cost_exception_replay_execution_key_conflict");
   });
 
+  it("provides a replay-only RPC for Task 3 to atomically persist resolved exception items", () => {
+    const replay = extractCustomSettlementCostReconciliationFunction(
+      "replay_external_cost_rule_exception_items",
+    );
+    expect(replay.definition).toContain("security definer");
+    expect(replay.definition).toContain("set search_path = pg_catalog, public");
+    expect(replay.definition).toContain("p_import_row_index integer");
+    expect(replay.body).toContain("external_cost_replay_entitlement_required");
+    expect(replay.body).toContain(
+      "from public.project_complex_cost_rule_entitlements as entitlement",
+    );
+    expect(replay.body).toMatch(
+      /from public\.project_cost_import_batches[\s\S]+organization_id = p_organization_id[\s\S]+project_id = p_project_id[\s\S]+for update/u,
+    );
+    expect(replay.body).toContain("v_batch.status <> 'confirmed'");
+    expect(replay.body).toContain("locked_siblings as materialized");
+    expect(replay.body).toMatch(
+      /locked_siblings as materialized[\s\S]+order by sibling\.id[\s\S]+for update/u,
+    );
+    expect(replay.body).toContain("status not in ('resolved', 'voided')");
+    expect(replay.body).toContain("external_cost_replay_unresolved_exceptions");
+    expect(replay.body).toContain("external_cost_replay_items_must_be_pending_review");
+    expect(replay.body).toContain("external_cost_replay_source_scope_mismatch");
+    expect(replay.body).toMatch(
+      /from public\.streamers as streamer[\s\S]+streamer\.id = nullif\(v_item ->> 'streamer_id'[\s\S]+streamer\.organization_id = p_organization_id/u,
+    );
+    expect(replay.body).toMatch(
+      /from public\.live_reports as report[\s\S]+report\.id = nullif\(v_item ->> 'live_report_id'[\s\S]+report\.organization_id = p_organization_id[\s\S]+report\.project_id = p_project_id/u,
+    );
+    expect(replay.body).toMatch(
+      /from public\.custom_settlement_rule_versions as rule_version[\s\S]+rule_version\.id = nullif\(v_item ->> 'rule_version_id'[\s\S]+rule_version\.organization_id = p_organization_id[\s\S]+rule_version\.project_id = p_project_id/u,
+    );
+    expect(replay.body).toContain("source_execution_key");
+    expect(replay.body).toContain("source_input_hash");
+    expect(replay.body).toContain("v_existing_cost_item");
+    expect(replay.body).toContain("v_existing_cost_item.source_input_hash is distinct from v_item_source_input_hash");
+    expect(replay.body).toContain("v_existing_cost_item.source_import_batch_id is distinct from p_import_batch_id");
+    expect(replay.body).toContain("v_existing_cost_item.source_payload ->> '__replay_idempotency_key'");
+    expect(replay.body).toContain("insert into public.project_cost_items");
+    expect(replay.body).toContain("'__replay_idempotency_key'");
+    expect(replay.body).toContain("'idempotency_status'");
+    expect(replay.body).not.toContain("p_legacy_items");
+    expect(replay.body).not.toContain("status = 'confirmed'");
+  });
+
   it("locks cost provenance tables behind RLS project ownership and RPC-only writes", () => {
     for (const table of [
       "external_cost_rule_exceptions",
@@ -4315,6 +4375,7 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     for (const rpc of [
       "confirm_cost_import_with_rule_items",
       "resolve_external_cost_rule_exception",
+      "replay_external_cost_rule_exception_items",
     ]) {
       expect(normalizedCustomSettlementCostReconciliationMigration).toMatch(
         new RegExp(

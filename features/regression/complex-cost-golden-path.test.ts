@@ -321,4 +321,8 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
   async listSettlementReconciliationRuns() {
     return [];
   }
+
+  async replayExternalCostRuleExceptionItems() {
+    return { items: [], idempotencyStatus: "existing" as const };
+  }
 }

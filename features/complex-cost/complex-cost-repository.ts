@@ -18,6 +18,8 @@ import type {
   ProjectCostItemSource,
   ProjectCostItemStatus,
   ProjectCostItemType,
+  ReplayExternalCostRuleExceptionItemsInput,
+  ReplayExternalCostRuleExceptionItemsResult,
   ComplexCostEvidenceLevel,
   ExternalCostRuleExceptionPolicy,
   ExternalCostRuleExceptionRecord,
@@ -193,6 +195,9 @@ export type ResolveExternalCostRuleExceptionResult = {
   exception: ExternalCostRuleExceptionRecord;
   items: ProjectCostItemRecord[];
   replayed: boolean;
+  replayDeferred: boolean;
+  openSiblingCount: number;
+  needsReplay: boolean;
 };
 
 type ProjectCostItemProvenanceInput = {
@@ -537,6 +542,39 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
       exception: mapExternalCostRuleExceptionRow(payload.exception),
       items: (payload.items ?? []).map(mapCostItemRow),
       replayed: Boolean(payload.replayed),
+      replayDeferred: Boolean(payload.replay_deferred),
+      openSiblingCount: Number(payload.openSiblingCount ?? 0),
+      needsReplay:
+        Boolean(payload.replay_deferred) &&
+        Number(payload.openSiblingCount ?? 0) === 0,
+    };
+  }
+
+  async replayExternalCostRuleExceptionItems(
+    input: ReplayExternalCostRuleExceptionItemsInput,
+  ): Promise<ReplayExternalCostRuleExceptionItemsResult> {
+    const { data, error } = await this.client.rpc(
+      "replay_external_cost_rule_exception_items",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_import_batch_id: input.importBatchId,
+        p_import_row_index: input.importRowIndex,
+        p_idempotency_key: input.idempotencyKey,
+        p_input_hash: input.inputHash,
+        p_created_by: input.createdBy,
+        p_items: input.items.map(toRpcCostItem),
+      },
+    );
+
+    const payload = requireSingle({
+      data: data as ReplayExternalCostRuleExceptionItemsRpcResult | null,
+      error,
+    });
+
+    return {
+      items: (payload.items ?? []).map(mapCostItemRow),
+      idempotencyStatus: payload.idempotency_status,
     };
   }
 
@@ -649,6 +687,13 @@ type ResolveExternalCostRuleExceptionRpcResult = {
   exception: ExternalCostRuleExceptionRow;
   items: CostItemRow[];
   replayed: boolean;
+  replay_deferred?: boolean;
+  openSiblingCount?: number;
+};
+
+type ReplayExternalCostRuleExceptionItemsRpcResult = {
+  items: CostItemRow[];
+  idempotency_status: "created" | "existing";
 };
 
 export function mapExternalCostRuleExceptionRow(

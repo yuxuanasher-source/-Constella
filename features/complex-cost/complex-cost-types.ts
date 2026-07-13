@@ -197,6 +197,39 @@ export type SettlementReconciliationRunRecord = {
   createdAt?: string;
 };
 
+export type ExternalCostRuleReplayItemInput = {
+  importRowIndex?: number;
+  ruleVersionId?: string | null;
+  streamerId?: string | null;
+  supplierOrganizationId?: string | null;
+  liveReportId?: string | null;
+  itemType: ProjectCostItemType;
+  amountCents: number;
+  direction: ProjectCostItemDirection;
+  evidenceLevel: ComplexCostEvidenceLevel;
+  sourcePayload: Record<string, unknown>;
+  sourceExecutionKey: string;
+  sourceInputHash: string;
+  sourceExplanation?: string | null;
+  status: Extract<ProjectCostItemStatus, "pending_review">;
+};
+
+export type ReplayExternalCostRuleExceptionItemsInput = {
+  organizationId: string;
+  projectId: string;
+  importBatchId: string;
+  importRowIndex: number;
+  idempotencyKey: string;
+  inputHash: string;
+  createdBy: string;
+  items: ExternalCostRuleReplayItemInput[];
+};
+
+export type ReplayExternalCostRuleExceptionItemsResult = {
+  items: ProjectCostItemRecord[];
+  idempotencyStatus: "created" | "existing";
+};
+
 export type ComplexCostDashboardRecord = {
   expectedReceivableCents?: number;
   streamerPayableCents?: number;

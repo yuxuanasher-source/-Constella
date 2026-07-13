@@ -376,6 +376,7 @@ describe("SupabaseComplexCostRepository exception resolution", () => {
         items: [],
         replayed: false,
         replay_deferred: true,
+        openSiblingCount: 0,
       },
       error: null,
     }));
@@ -397,6 +398,9 @@ describe("SupabaseComplexCostRepository exception resolution", () => {
       p_resolved_by: "user-2",
     });
     expect(result.replayed).toBe(false);
+    expect(result.replayDeferred).toBe(true);
+    expect(result.openSiblingCount).toBe(0);
+    expect(result.needsReplay).toBe(true);
     expect(result.items).toEqual([]);
     expect(result.exception).toEqual(
       expect.objectContaining({
@@ -404,6 +408,71 @@ describe("SupabaseComplexCostRepository exception resolution", () => {
         resolvedBy: "user-2",
       }),
     );
+  });
+});
+
+describe("SupabaseComplexCostRepository exception replay", () => {
+  it("delegates resolved exception replay items to the replay-only RPC", async () => {
+    const rpc = vi.fn(async () => ({
+      data: {
+        items: [costItemRow],
+        idempotency_status: "created",
+      },
+      error: null,
+    }));
+    const repo = new SupabaseComplexCostRepository({ rpc } as never);
+    const contractRepo: Pick<
+      ComplexCostRepository,
+      "replayExternalCostRuleExceptionItems"
+    > = repo;
+
+    const result = await contractRepo.replayExternalCostRuleExceptionItems({
+      organizationId: "org-1",
+      projectId: "project-1",
+      importBatchId: "import-1",
+      importRowIndex: 0,
+      idempotencyKey: "replay-1",
+      inputHash: "input-hash-1",
+      createdBy: "user-1",
+      items: [
+        {
+          importRowIndex: 0,
+          ruleVersionId: "rule-version-1",
+          itemType: "supplier_fee",
+          amountCents: 12_000,
+          direction: "cost",
+          evidenceLevel: "yellow",
+          sourcePayload: { rowIndex: 0, resolved: true },
+          sourceExecutionKey: "import-1:0:supplier_fee",
+          sourceInputHash: "input-hash-1",
+          sourceExplanation: "Supplier fee replayed after exception review.",
+          status: "pending_review",
+        },
+      ],
+    });
+
+    expect(rpc).toHaveBeenCalledWith("replay_external_cost_rule_exception_items", {
+      p_organization_id: "org-1",
+      p_project_id: "project-1",
+      p_import_batch_id: "import-1",
+      p_import_row_index: 0,
+      p_idempotency_key: "replay-1",
+      p_input_hash: "input-hash-1",
+      p_created_by: "user-1",
+      p_items: [
+        expect.objectContaining({
+          import_row_index: 0,
+          rule_version_id: "rule-version-1",
+          source_execution_key: "import-1:0:supplier_fee",
+          source_input_hash: "input-hash-1",
+          status: "pending_review",
+        }),
+      ],
+    });
+    expect(result).toEqual({
+      items: [expect.objectContaining({ id: "cost-1" })],
+      idempotencyStatus: "created",
+    });
   });
 });
 
