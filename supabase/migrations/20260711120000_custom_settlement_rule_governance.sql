@@ -513,6 +513,50 @@ create table public.custom_settlement_rule_lifecycle_requests (
   )
 );
 
+create table public.settlement_rule_group_lifecycle_requests (
+  actor_id uuid not null,
+  client_request_id text not null,
+  organization_id uuid not null,
+  project_id uuid not null,
+  operation text not null,
+  request_fingerprint text not null,
+  result_snapshot jsonb not null,
+  created_at timestamptz not null default pg_catalog.now(),
+  constraint settlement_rule_group_lifecycle_requests_pkey
+    primary key (actor_id, client_request_id),
+  constraint settlement_rule_group_lifecycle_requests_actor_fkey
+    foreign key (actor_id)
+    references public.profiles(id)
+    on delete restrict,
+  constraint settlement_rule_group_lifecycle_requests_organization_fkey
+    foreign key (organization_id)
+    references public.organizations(id)
+    on delete restrict,
+  constraint settlement_rule_group_lifecycle_requests_project_scope_fkey
+    foreign key (project_id, organization_id)
+    references public.projects(id, organization_id)
+    on delete restrict,
+  constraint settlement_rule_group_lifecycle_requests_operation_check check (
+    operation in (
+      'create_settlement_rule_group',
+      'archive_settlement_rule_group',
+      'change_settlement_group_assignment'
+    )
+  ),
+  constraint settlement_rule_group_lifecycle_requests_client_id_check check (
+    client_request_id = pg_catalog.btrim(client_request_id)
+    and pg_catalog.char_length(client_request_id) between 1 and 120
+  ),
+  constraint settlement_rule_group_lifecycle_requests_fingerprint_check check (
+    request_fingerprint ~ '^[0-9a-f]{64}$'
+  ),
+  constraint settlement_rule_group_lifecycle_requests_result_check check (
+    pg_catalog.jsonb_typeof(result_snapshot) = 'object'
+    and public.settlement_ai_json_within_budget(result_snapshot)
+    and public.settlement_ai_json_is_safe(result_snapshot)
+  )
+);
+
 create table public.project_streamer_settlement_group_assignments (
   id uuid primary key default extensions.gen_random_uuid(),
   organization_id uuid not null,
@@ -907,6 +951,14 @@ create trigger custom_settlement_rule_lifecycle_requests_no_truncate
 before truncate on public.custom_settlement_rule_lifecycle_requests
 for each statement execute function public.prevent_custom_settlement_lifecycle_request_mutation();
 
+create trigger settlement_rule_group_lifecycle_requests_immutable
+before update or delete on public.settlement_rule_group_lifecycle_requests
+for each row execute function public.prevent_custom_settlement_lifecycle_request_mutation();
+
+create trigger settlement_rule_group_lifecycle_requests_no_truncate
+before truncate on public.settlement_rule_group_lifecycle_requests
+for each statement execute function public.prevent_custom_settlement_lifecycle_request_mutation();
+
 create or replace function public.prevent_custom_settlement_governance_delete()
 returns trigger
 language plpgsql
@@ -932,6 +984,8 @@ for each row execute function public.prevent_custom_settlement_governance_delete
 alter table public.custom_settlement_rule_versions enable row level security;
 alter table public.custom_settlement_rule_review_events enable row level security;
 alter table public.custom_settlement_rule_lifecycle_requests enable row level security;
+alter table public.settlement_rule_group_lifecycle_requests
+  enable row level security;
 alter table public.settlement_rule_groups enable row level security;
 alter table public.project_streamer_settlement_group_assignments enable row level security;
 alter table public.settlement_rule_group_snapshot_state enable row level security;
@@ -1017,6 +1071,70 @@ as $$
   );
 $$;
 
+create or replace function public.settlement_rule_group_project_snapshot_hash(
+  p_organization_id uuid,
+  p_project_id uuid,
+  p_effective_at timestamptz
+)
+returns text
+language sql
+stable
+set search_path = pg_catalog, public
+as $$
+  select public.custom_settlement_rule_request_fingerprint(
+    'settlement_group_project_snapshot',
+    pg_catalog.jsonb_build_object(
+      'projectId',
+      p_project_id,
+      'effectiveAt',
+      p_effective_at,
+      'projectStreamers',
+      coalesce(
+        pg_catalog.jsonb_agg(
+          pg_catalog.jsonb_build_object(
+            'projectStreamerId',
+            project_streamer.id,
+            'groups',
+            coalesce(
+              (
+                select pg_catalog.jsonb_agg(
+                  pg_catalog.jsonb_build_object(
+                    'id', rule_group.id,
+                    'name', rule_group.name,
+                    'assignmentId', assignment.id
+                  )
+                  order by rule_group.id, assignment.id
+                )
+                from public.project_streamer_settlement_group_assignments
+                  as assignment
+                join public.settlement_rule_groups as rule_group
+                  on rule_group.id = assignment.group_id
+                 and rule_group.organization_id = assignment.organization_id
+                 and rule_group.project_id = assignment.project_id
+                where assignment.organization_id = p_organization_id
+                  and assignment.project_id = p_project_id
+                  and assignment.project_streamer_id = project_streamer.id
+                  and assignment.effective_from <= p_effective_at
+                  and (
+                    assignment.effective_until is null
+                    or p_effective_at < assignment.effective_until
+                  )
+              ),
+              '[]'::jsonb
+            )
+          )
+          order by project_streamer.id
+        ),
+        '[]'::jsonb
+      )
+    )
+  )
+  from public.project_streamers as project_streamer
+  where project_streamer.organization_id = p_organization_id
+    and project_streamer.project_id = p_project_id
+    and project_streamer.status = 'joined';
+$$;
+
 create or replace view public.settlement_group_simulation_freshness
 with (security_invoker = true)
 as
@@ -1037,30 +1155,10 @@ select
     simulation.data_selection_hash
   ) as group_snapshot_hash,
   coalesce(
-    (
-      select public.custom_settlement_rule_request_fingerprint(
-        'settlement_group_project_snapshot',
-        pg_catalog.jsonb_build_object(
-          'projectId',
-          version.project_id,
-          'projectStreamers',
-          coalesce(
-            pg_catalog.jsonb_agg(
-              pg_catalog.jsonb_build_object(
-                'projectStreamerId',
-                snapshot.project_streamer_id,
-                'currentGroupSnapshotHash',
-                snapshot.current_group_snapshot_hash
-              )
-              order by snapshot.project_streamer_id
-            ),
-            '[]'::jsonb
-          )
-        )
-      )
-      from public.settlement_rule_group_snapshot_state as snapshot
-      where snapshot.organization_id = version.organization_id
-        and snapshot.project_id = version.project_id
+    public.settlement_rule_group_project_snapshot_hash(
+      version.organization_id,
+      version.project_id,
+      version.effective_from
     ),
     coalesce(
       nullif(
@@ -1131,6 +1229,9 @@ declare
   v_actor_id uuid := auth.uid();
   v_actor_role text;
   v_group public.settlement_rule_groups%rowtype;
+  v_request_fingerprint text;
+  v_request_record public.settlement_rule_group_lifecycle_requests%rowtype;
+  v_result jsonb;
 begin
   if auth.uid() is null or v_actor_id is null then
     raise exception 'authentication_required';
@@ -1163,6 +1264,31 @@ begin
      or pg_catalog.char_length(p_client_request_id) not between 1 and 120 then
     raise exception 'settlement_rule_group_input_invalid';
   end if;
+  v_request_fingerprint := public.custom_settlement_rule_request_fingerprint(
+    'create_settlement_rule_group',
+    pg_catalog.jsonb_build_object(
+      'organizationId', p_organization_id,
+      'projectId', p_project_id,
+      'name', p_name,
+      'description', p_description,
+      'reason', p_reason
+    )
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_actor_id::text || ':' || p_client_request_id, 0)
+  );
+  select request.*
+  into v_request_record
+  from public.settlement_rule_group_lifecycle_requests as request
+  where request.actor_id = v_actor_id
+    and request.client_request_id = p_client_request_id
+  for update;
+  if found then
+    if v_request_record.request_fingerprint <> v_request_fingerprint then
+      raise exception 'settlement_rule_group_idempotency_conflict';
+    end if;
+    return v_request_record.result_snapshot;
+  end if;
 
   perform public.settlement_ai_lock_authoring_parents(
     p_organization_id,
@@ -1193,12 +1319,20 @@ begin
     p_organization_id, p_project_id, p_name, p_description, v_actor_id
   ) returning * into v_group;
 
-  return pg_catalog.to_jsonb(v_group) || pg_catalog.jsonb_build_object(
+  v_result := pg_catalog.to_jsonb(v_group) || pg_catalog.jsonb_build_object(
     'assignment_count', 0,
     'active_rule_count', 0,
     'pending_rule_count', 0,
     'future_assignment_count', 0
   );
+  insert into public.settlement_rule_group_lifecycle_requests (
+    actor_id, client_request_id, organization_id, project_id, operation,
+    request_fingerprint, result_snapshot
+  ) values (
+    v_actor_id, p_client_request_id, p_organization_id, p_project_id,
+    'create_settlement_rule_group', v_request_fingerprint, v_result
+  );
+  return v_result;
 end;
 $$;
 
@@ -2415,31 +2549,12 @@ begin
       raise exception 'settlement_group_simulation_population_incomplete';
     end if;
     if v_version.target_type = 'streamer_group' then
-      select public.custom_settlement_rule_request_fingerprint(
-        'settlement_group_project_snapshot',
-        pg_catalog.jsonb_build_object(
-          'projectId',
-          p_project_id,
-          'projectStreamers',
-          coalesce(
-            pg_catalog.jsonb_agg(
-              pg_catalog.jsonb_build_object(
-                'projectStreamerId',
-                current_group_snapshot.project_streamer_id,
-                'currentGroupSnapshotHash',
-                current_group_snapshot.current_group_snapshot_hash
-              )
-              order by current_group_snapshot.project_streamer_id
-            ),
-            '[]'::jsonb
-          )
-        )
+      select public.settlement_rule_group_project_snapshot_hash(
+        p_organization_id,
+        p_project_id,
+        p_effective_from
       )
-      into v_current_group_project_snapshot_hash
-      from public.settlement_rule_group_snapshot_state
-        as current_group_snapshot
-      where current_group_snapshot.organization_id = p_organization_id
-        and current_group_snapshot.project_id = p_project_id;
+      into v_current_group_project_snapshot_hash;
     end if;
     if v_version.target_type = 'streamer_group'
        and v_current_group_project_snapshot_hash is distinct from
@@ -3177,6 +3292,9 @@ declare
   v_active_rule_count integer;
   v_pending_rule_count integer;
   v_future_assignment_count integer;
+  v_request_fingerprint text;
+  v_request_record public.settlement_rule_group_lifecycle_requests%rowtype;
+  v_result jsonb;
 begin
   if auth.uid() is null or v_actor_id is null then
     raise exception 'authentication_required';
@@ -3199,6 +3317,31 @@ begin
      or p_client_request_id <> pg_catalog.btrim(p_client_request_id)
      or pg_catalog.char_length(p_client_request_id) not between 1 and 120 then
     raise exception 'settlement_rule_group_archive_input_invalid';
+  end if;
+  v_request_fingerprint := public.custom_settlement_rule_request_fingerprint(
+    'archive_settlement_rule_group',
+    pg_catalog.jsonb_build_object(
+      'organizationId', p_organization_id,
+      'projectId', p_project_id,
+      'groupId', p_group_id,
+      'archivedAt', p_archived_at,
+      'reason', p_reason
+    )
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_actor_id::text || ':' || p_client_request_id, 0)
+  );
+  select request.*
+  into v_request_record
+  from public.settlement_rule_group_lifecycle_requests as request
+  where request.actor_id = v_actor_id
+    and request.client_request_id = p_client_request_id
+  for update;
+  if found then
+    if v_request_record.request_fingerprint <> v_request_fingerprint then
+      raise exception 'settlement_rule_group_idempotency_conflict';
+    end if;
+    return v_request_record.result_snapshot;
   end if;
 
   perform public.settlement_ai_lock_authoring_parents(
@@ -3286,12 +3429,20 @@ begin
   where id = p_group_id
   returning * into v_group;
 
-  return pg_catalog.to_jsonb(v_group) || pg_catalog.jsonb_build_object(
+  v_result := pg_catalog.to_jsonb(v_group) || pg_catalog.jsonb_build_object(
     'assignment_count', 0,
     'active_rule_count', v_active_rule_count,
     'pending_rule_count', v_pending_rule_count,
     'future_assignment_count', v_future_assignment_count
   );
+  insert into public.settlement_rule_group_lifecycle_requests (
+    actor_id, client_request_id, organization_id, project_id, operation,
+    request_fingerprint, result_snapshot
+  ) values (
+    v_actor_id, p_client_request_id, p_organization_id, p_project_id,
+    'archive_settlement_rule_group', v_request_fingerprint, v_result
+  );
+  return v_result;
 end;
 $$;
 
@@ -3316,6 +3467,9 @@ declare
   v_inserted public.project_streamer_settlement_group_assignments%rowtype;
   v_closed_ids uuid[];
   v_snapshot_hash text;
+  v_request_fingerprint text;
+  v_request_record public.settlement_rule_group_lifecycle_requests%rowtype;
+  v_result jsonb;
 begin
   if auth.uid() is null or v_actor_id is null then
     raise exception 'authentication_required';
@@ -3342,6 +3496,33 @@ begin
      or p_client_request_id <> pg_catalog.btrim(p_client_request_id)
      or pg_catalog.char_length(p_client_request_id) not between 1 and 120 then
     raise exception 'settlement_group_assignment_input_invalid';
+  end if;
+  v_request_fingerprint := public.custom_settlement_rule_request_fingerprint(
+    'change_settlement_group_assignment',
+    pg_catalog.jsonb_build_object(
+      'organizationId', p_organization_id,
+      'projectId', p_project_id,
+      'projectStreamerId', p_project_streamer_id,
+      'groupId', p_group_id,
+      'effectiveFrom', p_effective_from,
+      'effectiveUntil', p_effective_until,
+      'reason', p_reason
+    )
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_actor_id::text || ':' || p_client_request_id, 0)
+  );
+  select request.*
+  into v_request_record
+  from public.settlement_rule_group_lifecycle_requests as request
+  where request.actor_id = v_actor_id
+    and request.client_request_id = p_client_request_id
+  for update;
+  if found then
+    if v_request_record.request_fingerprint <> v_request_fingerprint then
+      raise exception 'settlement_rule_group_idempotency_conflict';
+    end if;
+    return v_request_record.result_snapshot;
   end if;
   if exists (
     select 1
@@ -3374,6 +3555,7 @@ begin
   where project_streamer.id = p_project_streamer_id
     and project_streamer.organization_id = p_organization_id
     and project_streamer.project_id = p_project_id
+    and project_streamer.status = 'joined'
   for update;
   if not found then
     raise exception 'project_streamer_scope_mismatch';
@@ -3482,7 +3664,7 @@ begin
   where public.settlement_rule_group_snapshot_state.effective_at <=
     excluded.effective_at;
 
-  return pg_catalog.jsonb_build_object(
+  v_result := pg_catalog.jsonb_build_object(
     'insertedAssignment', pg_catalog.to_jsonb(v_inserted),
     'inserted_assignment', pg_catalog.to_jsonb(v_inserted),
     'closedAssignmentIds', coalesce(v_closed_ids, array[]::uuid[]),
@@ -3490,6 +3672,14 @@ begin
     'newGroupSnapshotHash', v_snapshot_hash,
     'new_group_snapshot_hash', v_snapshot_hash
   );
+  insert into public.settlement_rule_group_lifecycle_requests (
+    actor_id, client_request_id, organization_id, project_id, operation,
+    request_fingerprint, result_snapshot
+  ) values (
+    v_actor_id, p_client_request_id, p_organization_id, p_project_id,
+    'change_settlement_group_assignment', v_request_fingerprint, v_result
+  );
+  return v_result;
 end;
 $$;
 
@@ -3498,6 +3688,8 @@ revoke all on table public.custom_settlement_rule_versions
 revoke all on table public.custom_settlement_rule_review_events
   from public, anon, authenticated, service_role;
 revoke all on table public.custom_settlement_rule_lifecycle_requests
+  from public, anon, authenticated, service_role;
+revoke all on table public.settlement_rule_group_lifecycle_requests
   from public, anon, authenticated, service_role;
 revoke all on table public.settlement_rule_groups
   from public, anon, authenticated, service_role;
@@ -3537,6 +3729,16 @@ revoke all on function public.custom_settlement_rule_lifecycle_result(
   uuid,
   uuid
 ) from public, anon, authenticated, service_role;
+revoke all on function public.settlement_rule_group_project_snapshot_hash(
+  uuid,
+  uuid,
+  timestamptz
+) from public, anon, authenticated, service_role;
+grant execute on function public.settlement_rule_group_project_snapshot_hash(
+  uuid,
+  uuid,
+  timestamptz
+) to authenticated;
 
 revoke all on function public.create_settlement_rule_group(
   uuid,

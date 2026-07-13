@@ -2252,6 +2252,7 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     for (const table of [
       "custom_settlement_rule_review_events",
       "custom_settlement_rule_lifecycle_requests",
+      "settlement_rule_group_lifecycle_requests",
       "settlement_rule_groups",
       "project_streamer_settlement_group_assignments",
       "settlement_rule_templates",
@@ -2563,6 +2564,15 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(normalizedSettlementGovernanceMigration).not.toContain(
       "grant select on table public.custom_settlement_rule_lifecycle_requests",
     );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "alter table public.settlement_rule_group_lifecycle_requests enable row level security",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "revoke all on table public.settlement_rule_group_lifecycle_requests from public, anon, authenticated, service_role",
+    );
+    expect(normalizedSettlementGovernanceMigration).not.toContain(
+      "grant select on table public.settlement_rule_group_lifecycle_requests",
+    );
     for (const table of [
       "custom_settlement_rule_versions",
       "custom_settlement_rule_review_events",
@@ -2639,6 +2649,18 @@ describe("Phase 2 governed settlement rule schema contract", () => {
           "u",
         ),
       );
+    }
+    for (const fn of [
+      "create_settlement_rule_group",
+      "archive_settlement_rule_group",
+      "change_settlement_group_assignment",
+    ]) {
+      const body = extractSettlementGovernanceFunction(fn).body;
+      expect(body).toContain("settlement_rule_group_lifecycle_requests");
+      expect(body).toContain("v_request_fingerprint");
+      expect(body).toContain("v_request_record");
+      expect(body).toContain("settlement_rule_group_idempotency_conflict");
+      expect(body).toContain("v_result");
     }
 
     const save = extractSettlementGovernanceFunction(
@@ -2918,6 +2940,7 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     );
     expect(assignment).toContain("settlement_rule_group_scope_mismatch");
     expect(assignment).toContain("project_streamer_scope_mismatch");
+    expect(assignment).toContain("project_streamer.status = 'joined'");
     expect(assignment).toContain(
       "p_effective_until is not null and p_effective_until <= p_effective_from",
     );
@@ -2970,7 +2993,10 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(review).toContain("assignedprojectstreamerids");
     expect(review).toContain("unassignedprojectstreamerids");
     expect(review).toContain("v_current_group_project_snapshot_hash");
-    expect(review).toContain("'settlement_group_project_snapshot'");
+    expect(review).toContain(
+      "public.settlement_rule_group_project_snapshot_hash",
+    );
+    expect(review).toContain("p_effective_from");
     expect(review).toContain(
       "v_current_group_project_snapshot_hash is distinct from v_simulation.sample_selection",
     );
@@ -2978,7 +3004,9 @@ describe("Phase 2 governed settlement rule schema contract", () => {
       "current_group_snapshot.current_group_snapshot_hash is distinct from v_simulation.sample_selection",
     );
     expect(review).toContain("settlement_group_rule_conflict_blocking");
-    expect(review).toContain("current_group_snapshot_hash");
+    expect(settlementGovernanceMigration).toContain(
+      "current_group_snapshot_hash",
+    );
     expect(submit).toContain("settlement_group_rule_conflict_blocking");
     expect(submit).toContain("candidate_assignment");
     expect(submit).toContain("active_pending_assignment");
@@ -2986,6 +3014,12 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(review).toContain("active_pending_assignment");
     expect(settlementGovernanceMigration).toContain(
       "create or replace view public.settlement_group_simulation_freshness",
+    );
+    expect(settlementGovernanceMigration).toContain(
+      "create or replace function public.settlement_rule_group_project_snapshot_hash",
+    );
+    expect(normalizedSettlementGovernanceMigration).toContain(
+      "public.settlement_rule_group_project_snapshot_hash( version.organization_id, version.project_id, version.effective_from",
     );
     expect(settlementGovernanceMigration).toContain(
       "'settlement_group_project_snapshot'",

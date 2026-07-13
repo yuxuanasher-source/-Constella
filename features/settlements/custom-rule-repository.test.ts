@@ -61,6 +61,8 @@ describe("Phase 2 custom rule lifecycle repository", () => {
   });
 
   it("lists active and archived settlement rule groups with scoped assignment counts", async () => {
+    const assignmentsSelect = vi.fn().mockReturnThis();
+    const versionsSelect = vi.fn().mockReturnThis();
     const from = vi.fn((table: string) => {
       if (table === "settlement_rule_groups") {
         return {
@@ -69,15 +71,7 @@ describe("Phase 2 custom rule lifecycle repository", () => {
           order: vi.fn().mockReturnThis(),
           returns: vi.fn(async () => ({
             data: [
-              settlementRuleGroupRow(
-                {
-                  assignment_count: 2,
-                  future_assignment_count: 1,
-                  active_rule_count: 0,
-                  pending_rule_count: 1,
-                },
-                { includeCoverage: false },
-              ),
+              settlementRuleGroupRow({}, { includeCoverage: false }),
             ],
             error: null,
           })),
@@ -100,15 +94,47 @@ describe("Phase 2 custom rule lifecycle repository", () => {
           })),
         };
       }
-      expect(table).toBe("project_streamer_settlement_group_assignments");
+      if (table === "project_streamer_settlement_group_assignments") {
+        return {
+          select: assignmentsSelect,
+          eq: vi.fn().mockReturnThis(),
+          order: vi.fn().mockReturnThis(),
+          returns: vi.fn(async () => ({
+            data: [
+              {
+                project_streamer_id: PROJECT_STREAMER_ID,
+                group_id: GROUP_ID,
+                effective_from: "2026-01-01T00:00:00.000Z",
+                effective_until: null,
+              },
+              {
+                project_streamer_id: OTHER_PROJECT_STREAMER_ID,
+                group_id: GROUP_ID,
+                effective_from: "2026-01-01T00:00:00.000Z",
+                effective_until: null,
+              },
+              {
+                project_streamer_id: OTHER_PROJECT_STREAMER_ID,
+                group_id: GROUP_ID,
+                effective_from: "2999-01-01T00:00:00.000Z",
+                effective_until: null,
+              },
+            ],
+            error: null,
+          })),
+        };
+      }
+      expect(table).toBe("custom_settlement_rule_versions");
       return {
-        select: vi.fn().mockReturnThis(),
+        select: versionsSelect,
         eq: vi.fn().mockReturnThis(),
-        lte: vi.fn().mockReturnThis(),
-        or: vi.fn().mockReturnThis(),
+        in: vi.fn().mockReturnThis(),
         order: vi.fn().mockReturnThis(),
         returns: vi.fn(async () => ({
-          data: [],
+          data: [
+            { target_group_id: GROUP_ID, status: "active" },
+            { target_group_id: GROUP_ID, status: "pending_review" },
+          ],
           error: null,
         })),
       };
@@ -132,22 +158,21 @@ describe("Phase 2 custom rule lifecycle repository", () => {
         id: GROUP_ID,
         assignmentCount: 2,
         futureAssignmentCount: 1,
-        activeRuleCount: 0,
+        activeRuleCount: 1,
         pendingRuleCount: 1,
-        unassignedProjectStreamers: [
-          {
-            projectStreamerId: PROJECT_STREAMER_ID,
-            streamerId: "00000000-0000-4000-8000-000000000014",
-            displayName: "Streamer A",
-          },
-        ],
-        baseRuleCoveredProjectStreamerIds: [PROJECT_STREAMER_ID],
+        unassignedProjectStreamers: [],
+        baseRuleCoveredProjectStreamerIds: [],
       }),
     ]);
+    expect(assignmentsSelect).toHaveBeenCalledWith(
+      "project_streamer_id, group_id, effective_from, effective_until",
+    );
+    expect(versionsSelect).toHaveBeenCalledWith("target_group_id, status");
     expect(from).toHaveBeenCalledWith("project_streamers");
     expect(from).toHaveBeenCalledWith(
       "project_streamer_settlement_group_assignments",
     );
+    expect(from).toHaveBeenCalledWith("custom_settlement_rule_versions");
   });
 
   it("archives settlement groups through a guarded RPC", async () => {
@@ -4120,6 +4145,7 @@ const RULE_VERSION_ID = "00000000-0000-4000-8000-000000000009";
 const SIMULATION_ID = "00000000-0000-4000-8000-000000000010";
 const GROUP_ID = "00000000-0000-4000-8000-000000000011";
 const PROJECT_STREAMER_ID = "00000000-0000-4000-8000-000000000012";
+const OTHER_PROJECT_STREAMER_ID = "00000000-0000-4000-8000-000000000015";
 const ASSIGNMENT_ID = "00000000-0000-4000-8000-000000000013";
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);

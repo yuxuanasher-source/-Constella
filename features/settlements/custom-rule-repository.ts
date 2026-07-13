@@ -702,6 +702,17 @@ type SettlementRuleGroupCoverage = Pick<
   SettlementRuleGroup,
   "unassignedProjectStreamers" | "baseRuleCoveredProjectStreamerIds"
 >;
+type SettlementRuleGroupCounts = Pick<
+  SettlementRuleGroup,
+  | "assignmentCount"
+  | "activeRuleCount"
+  | "pendingRuleCount"
+  | "futureAssignmentCount"
+>;
+type SettlementRuleGroupListFacts = {
+  coverage: SettlementRuleGroupCoverage;
+  countsByGroupId: Map<string, SettlementRuleGroupCounts>;
+};
 
 export type ProjectStreamerSettlementGroupAssignment = {
   id: string;
@@ -2216,6 +2227,12 @@ const settlementGroupCoverageProjectStreamerRowSchema = z.strictObject({
 const settlementGroupCoverageAssignmentRowSchema = z.strictObject({
   project_streamer_id: uuidSchema,
   group_id: uuidSchema,
+  effective_from: timestampSchema,
+  effective_until: timestampSchema.nullable(),
+});
+const settlementGroupRuleCountRowSchema = z.strictObject({
+  target_group_id: uuidSchema,
+  status: z.enum(["active", "pending_review"]),
 });
 
 const LIFECYCLE_VERSION_SELECT = Object.keys(
@@ -2959,18 +2976,19 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
         "group list result must be an array",
       );
     }
-    const coverage = await this.loadSettlementRuleGroupCoverage(input);
+    const facts = await this.loadSettlementRuleGroupListFacts(input);
     return data.map((row) =>
       toSettlementRuleGroup(
         parsePersistenceRow(settlementRuleGroupRowSchema, row, "group"),
-        coverage,
+        facts.coverage,
+        facts.countsByGroupId,
       ),
     );
   }
 
-  private async loadSettlementRuleGroupCoverage(
+  private async loadSettlementRuleGroupListFacts(
     input: ListSettlementRuleGroupsInput,
-  ): Promise<SettlementRuleGroupCoverage> {
+  ): Promise<SettlementRuleGroupListFacts> {
     const now = new Date().toISOString();
     const { data: projectStreamerData, error: projectStreamerError } =
       await this.client
@@ -2996,11 +3014,9 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
 
     const { data: assignmentData, error: assignmentError } = await this.client
       .from("project_streamer_settlement_group_assignments")
-      .select("project_streamer_id, group_id")
+      .select("project_streamer_id, group_id, effective_from, effective_until")
       .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
-      .lte("effective_from", now)
-      .or(`effective_until.is.null,effective_until.gt.${now}`)
       .order("project_streamer_id", { ascending: true })
       .returns<unknown[]>();
     if (assignmentError) {
@@ -3013,6 +3029,27 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
       throw new CustomRulePersistenceDataError(
         "assignment",
         "group coverage assignment result must be an array",
+      );
+    }
+    const { data: ruleData, error: ruleError } = await this.client
+      .from("custom_settlement_rule_versions")
+      .select("target_group_id, status")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("target_type", "streamer_group")
+      .in("status", ["active", "pending_review"])
+      .order("target_group_id", { ascending: true })
+      .returns<unknown[]>();
+    if (ruleError) {
+      throw new CustomRulePersistenceQueryError(
+        "list_settlement_rule_group_rule_counts",
+        ruleError,
+      );
+    }
+    if (!Array.isArray(ruleData)) {
+      throw new CustomRulePersistenceDataError(
+        "group",
+        "group rule count result must be an array",
       );
     }
 
@@ -3030,38 +3067,78 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
         "assignment",
       ),
     );
+    const rules = ruleData.map((row) =>
+      parsePersistenceRow(settlementGroupRuleCountRowSchema, row, "group"),
+    );
     const projectStreamerById = new Map(
       projectStreamers.map((projectStreamer) => [
         projectStreamer.id,
         projectStreamer,
       ]),
     );
+    const activeAssignments = assignments.filter(
+      (assignment) =>
+        assignment.effective_from <= now &&
+        (assignment.effective_until === null || now < assignment.effective_until),
+    );
     const population = determineSettlementPopulationCoverage({
       joinedProjectStreamerIds: projectStreamers.map(
         (projectStreamer) => projectStreamer.id,
       ),
-      activeAssignments: assignments.map((assignment) => ({
+      activeAssignments: activeAssignments.map((assignment) => ({
         projectStreamerId: assignment.project_streamer_id,
         groupId: assignment.group_id,
       })),
     });
+    const countsByGroupId = new Map<string, SettlementRuleGroupCounts>();
+    const ensureCounts = (groupId: string): SettlementRuleGroupCounts => {
+      const existing = countsByGroupId.get(groupId);
+      if (existing) return existing;
+      const counts: SettlementRuleGroupCounts = {
+        assignmentCount: 0,
+        activeRuleCount: 0,
+        pendingRuleCount: 0,
+        futureAssignmentCount: 0,
+      };
+      countsByGroupId.set(groupId, counts);
+      return counts;
+    };
+    for (const assignment of assignments) {
+      const counts = ensureCounts(assignment.group_id);
+      if (assignment.effective_from > now) {
+        counts.futureAssignmentCount += 1;
+      } else if (
+        assignment.effective_until === null ||
+        now < assignment.effective_until
+      ) {
+        counts.assignmentCount += 1;
+      }
+    }
+    for (const rule of rules) {
+      const counts = ensureCounts(rule.target_group_id);
+      if (rule.status === "active") counts.activeRuleCount += 1;
+      if (rule.status === "pending_review") counts.pendingRuleCount += 1;
+    }
     return {
-      unassignedProjectStreamers: population.unassignedProjectStreamerIds.map(
-        (projectStreamerId) => {
-          const projectStreamer = projectStreamerById.get(projectStreamerId);
-          return {
-            projectStreamerId,
-            streamerId: projectStreamer?.streamer_id ?? projectStreamerId,
-            displayName:
-              displayNameFromStreamerJoin(projectStreamer?.streamers) ??
-              projectStreamer?.streamer_id ??
+      coverage: {
+        unassignedProjectStreamers: population.unassignedProjectStreamerIds.map(
+          (projectStreamerId) => {
+            const projectStreamer = projectStreamerById.get(projectStreamerId);
+            return {
               projectStreamerId,
-          };
-        },
-      ),
-      baseRuleCoveredProjectStreamerIds: [
-        ...population.baseRuleCoveredProjectStreamerIds,
-      ],
+              streamerId: projectStreamer?.streamer_id ?? projectStreamerId,
+              displayName:
+                displayNameFromStreamerJoin(projectStreamer?.streamers) ??
+                projectStreamer?.streamer_id ??
+                projectStreamerId,
+            };
+          },
+        ),
+        baseRuleCoveredProjectStreamerIds: [
+          ...population.baseRuleCoveredProjectStreamerIds,
+        ],
+      },
+      countsByGroupId,
     };
   }
 
@@ -4960,7 +5037,9 @@ function scopeSimulationOwnerQuery<
 function toSettlementRuleGroup(
   row: z.infer<typeof settlementRuleGroupRowSchema>,
   coverage?: SettlementRuleGroupCoverage,
+  countsByGroupId?: Map<string, SettlementRuleGroupCounts>,
 ): SettlementRuleGroup {
+  const counts = countsByGroupId?.get(row.id);
   return {
     id: row.id,
     organizationId: row.organization_id,
@@ -4971,10 +5050,11 @@ function toSettlementRuleGroup(
     createdBy: row.created_by,
     createdAt: row.created_at,
     archivedAt: row.archived_at,
-    assignmentCount: row.assignment_count,
-    activeRuleCount: row.active_rule_count,
-    pendingRuleCount: row.pending_rule_count,
-    futureAssignmentCount: row.future_assignment_count,
+    assignmentCount: counts?.assignmentCount ?? row.assignment_count,
+    activeRuleCount: counts?.activeRuleCount ?? row.active_rule_count,
+    pendingRuleCount: counts?.pendingRuleCount ?? row.pending_rule_count,
+    futureAssignmentCount:
+      counts?.futureAssignmentCount ?? row.future_assignment_count,
     unassignedProjectStreamers:
       coverage?.unassignedProjectStreamers ??
       row.unassigned_project_streamers.map((streamer) => ({
