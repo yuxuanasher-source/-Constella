@@ -8,6 +8,7 @@ import {
   mapVendorDecisionToSyncPatch,
   submitVendorAdmissionReviews,
   type AdmissionShareBoardRepository,
+  type PublicAdmissionShareBoardSnapshot,
 } from "./admission-share-board";
 
 const actor = {
@@ -397,6 +398,34 @@ describe("admission share board service", () => {
     expect(JSON.stringify(dto)).not.toContain("tokenHash");
     expect(JSON.stringify(dto)).not.toContain("accessCodeHash");
     expect(JSON.stringify(dto)).not.toContain("private/path/rec-2.mp4");
+  });
+
+  it("preserves both private upload and external link playback sources", async () => {
+    const snapshot = publicSnapshot() as PublicAdmissionShareBoardSnapshot;
+    snapshot.items[0] = {
+      ...snapshot.items[0],
+      storagePath: "private/path/rec-1.mp4",
+    };
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(snapshot),
+    });
+
+    const dto = await getPublicAdmissionShareBoard({
+      repo,
+      token: "plain-token",
+      accessCode: "2468",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(dto.items[0]).toEqual(
+      expect.objectContaining({
+        recordingUrl: "https://video.example/rec-1",
+        playbackUrl:
+          "/api/public/admission-share/plain-token/recordings/rec-1?accessCode=2468",
+        hasPrivateStorage: true,
+      }),
+    );
+    expect(JSON.stringify(dto)).not.toContain("private/path/rec-1.mp4");
   });
 
   it("resolves private recording playback sources only after share gating", async () => {

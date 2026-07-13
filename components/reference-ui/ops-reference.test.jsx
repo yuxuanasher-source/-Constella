@@ -5882,7 +5882,7 @@ describe("OpsReferenceApp admission smoke", () => {
         version: 2,
         status: "reviewing",
         durationSeconds: 1800,
-        url: null,
+        url: "https://www.bilibili.com/video/BV1xx411c7mD",
         hasPrivateStorage: true,
         aiAnalysis: {
           id: "analysis-ws-priv",
@@ -6184,6 +6184,38 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(externalLink).toHaveAttribute("target", "_blank");
     expect(screen.queryByTitle("B 站录屏播放")).not.toBeInTheDocument();
     expect(await screen.findByText("暂无 AI 预审结果")).toBeInTheDocument();
+  });
+
+  it("switches a dual-source workspace recording between private upload and platform link", async () => {
+    const admissionApplications = buildWorkspaceAdmissionApplications();
+    vi.stubGlobal("fetch", buildWorkspaceFetchMock(admissionApplications));
+
+    const { container } = render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={admissionApplications}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "进入录屏审核" }));
+
+    expect(
+      screen.getByRole("button", { name: "原始录屏" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "平台链接" }),
+    ).toBeInTheDocument();
+    expect(container.querySelector("video")).toHaveAttribute(
+      "src",
+      "/api/recording-assets/asset-ws-priv/download",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "平台链接" }));
+    expect(screen.getByTitle("B 站录屏播放")).toHaveAttribute(
+      "src",
+      "https://player.bilibili.com/player.html?bvid=BV1xx411c7mD&page=1&high_quality=1&danmaku=0",
+    );
+    expect(container.querySelector("video")).toBeNull();
   });
 
   it("renders workspace AI pre-review checkpoints with fast-lane badge and failure fallback", async () => {

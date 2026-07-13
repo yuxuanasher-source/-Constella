@@ -17583,6 +17583,9 @@ function admissionRecordingExternalUrl(recording) {
 
 function admissionRecordingSourceMeta(recording) {
   if (!recording) return { label: "无录屏", tone: "amber" };
+  if (recording.hasPrivateStorage && admissionRecordingExternalUrl(recording)) {
+    return { label: "双来源", tone: "violet" };
+  }
   if (recording.hasPrivateStorage) return { label: "私有上传", tone: "teal" };
   if (admissionRecordingExternalUrl(recording)) {
     return { label: "外链", tone: "blue" };
@@ -17934,6 +17937,7 @@ function AdmissionReviewWorkspace({
       </div>
       <div className="admission-workspace-col">
       <AdmissionWorkspaceDetail
+        key={active?.latestRecording?.id || active?.id || "empty"}
         application={active}
         projectName={projectName}
         pendingLeft={pendingLeft}
@@ -17961,7 +17965,16 @@ function AdmissionWorkspaceDetail({
   fetchPreReview,
 }) {
   const submissionId = application?.latestRecording?.id ?? null;
+  const recording = application?.latestRecording ?? null;
+  const externalUrl = admissionRecordingExternalUrl(recording);
+  const embedSrc = admissionBilibiliEmbedSrc(externalUrl);
+  const canPlayPrivate = Boolean(
+    recording?.hasPrivateStorage && recording?.assetId,
+  );
   const [videoError, setVideoError] = React.useState(false);
+  const [playbackSource, setPlaybackSource] = React.useState(
+    canPlayPrivate ? "private" : "external",
+  );
   // 逐字稿面板的时间戳跳转/高亮跟随需要直接操作本屏的 video 元素。
   const videoRef = React.useRef(null);
   // AI 预审：选中条目变化时拉取一次；失败降级为灰字，不阻塞审核操作。
@@ -18027,11 +18040,9 @@ function AdmissionWorkspaceDetail({
     );
   }
 
-  const recording = application.latestRecording ?? null;
-  const externalUrl = admissionRecordingExternalUrl(recording);
-  const embedSrc = admissionBilibiliEmbedSrc(externalUrl);
-  const canPlayPrivate = Boolean(
-    recording?.hasPrivateStorage && recording?.assetId,
+  const hasBothSources = Boolean(canPlayPrivate && externalUrl);
+  const showPrivateSource = Boolean(
+    canPlayPrivate && (!externalUrl || playbackSource === "private"),
   );
   const statusMeta = admissionWorkspaceStatusMeta(application);
   const reviewable = isAdmissionRecordingReviewable(application);
@@ -18140,7 +18151,55 @@ function AdmissionWorkspaceDetail({
               overflow: "hidden",
             }}
           >
-            {canPlayPrivate ? (
+            {hasBothSources ? (
+              <div
+                aria-label="录屏来源"
+                role="group"
+                style={{
+                  alignSelf: "flex-start",
+                  display: "inline-flex",
+                  padding: 2,
+                  borderRadius: 6,
+                  background: "#17233A",
+                  border: "1px solid #334155",
+                }}
+              >
+                {[
+                  { key: "private", label: "原始录屏" },
+                  {
+                    key: "external",
+                    label: embedSrc ? "平台链接" : "URL 链接",
+                  },
+                ].map((source) => {
+                  const selected =
+                    source.key === "private"
+                      ? showPrivateSource
+                      : !showPrivateSource;
+                  return (
+                    <button
+                      key={source.key}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setPlaybackSource(source.key)}
+                      style={{
+                        height: 28,
+                        padding: "0 10px",
+                        border: "none",
+                        borderRadius: 4,
+                        background: selected ? "#FFFFFF" : "transparent",
+                        color: selected ? "var(--blue-700)" : "#A8B5CC",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {source.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {showPrivateSource ? (
               <>
                 <video
                   ref={videoRef}
@@ -18220,7 +18279,7 @@ function AdmissionWorkspaceDetail({
               </div>
             )}
           </div>
-          {canPlayPrivate ? (
+          {showPrivateSource ? (
             <RecordingTranscriptPanel
               assetId={recording.assetId}
               assetName={`${application.streamer?.displayName || "主播"}-${projectName}`}

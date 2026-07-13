@@ -55,7 +55,7 @@ const shareBoard = {
       recordingSubmissionId: "rec-3",
       recordingVersion: 1,
       recordingStatus: "approved",
-      recordingUrl: null,
+      recordingUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
       playbackUrl:
         "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
       hasPrivateStorage: true,
@@ -174,6 +174,35 @@ describe("AdmissionSharePageClient", () => {
     ).toHaveAttribute(
       "src",
       "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
+    );
+    expect(container.querySelectorAll("video, iframe")).toHaveLength(1);
+  });
+
+  it("switches between private upload and platform link for a dual-source recording", async () => {
+    const { container } = render(
+      <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
+    );
+
+    await screen.findByText("Alpha Project");
+    fireEvent.click(screen.getByRole("button", { name: /3\. Streamer Three/ }));
+
+    expect(
+      screen.getByRole("button", { name: "原始录屏" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "平台链接" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Streamer Three 原始录屏播放器"),
+    ).toHaveAttribute(
+      "src",
+      "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "平台链接" }));
+    expect(screen.getByTitle("Streamer Three 平台录屏播放器")).toHaveAttribute(
+      "src",
+      expect.stringContaining("player.bilibili.com/player.html"),
     );
     expect(container.querySelectorAll("video, iframe")).toHaveLength(1);
   });

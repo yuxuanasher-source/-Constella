@@ -1140,15 +1140,14 @@ function toPublicShareDto(
       recordingStatus: item.recordingStatus,
       recordingUrl: item.recordingUrl,
       playbackUrl:
-        item.recordingUrl ??
         (item.storagePath
           ? publicAdmissionRecordingPlaybackUrl({
               token: input.token,
               accessCode: input.accessCode,
               recordingSubmissionId: item.recordingSubmissionId,
             })
-          : null),
-      hasPrivateStorage: Boolean(item.storagePath && !item.recordingUrl),
+          : null) ?? item.recordingUrl,
+      hasPrivateStorage: Boolean(item.storagePath),
       streamer: item.streamer,
       vendorReview: item.vendorReview,
     })),

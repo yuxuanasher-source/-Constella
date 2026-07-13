@@ -8,7 +8,13 @@ import {
   Send,
   ShieldCheck,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 type VendorDecision =
   | "pending"
@@ -541,7 +547,10 @@ export default function AdmissionSharePageClient({
               {selectedItem && selectedDraft ? (
                 <>
                   <div className="bg-[#0b1220] p-3 sm:p-4">
-                    <RecordingPlayer item={selectedItem} />
+                    <RecordingPlayer
+                      key={selectedItem.recordingSubmissionId}
+                      item={selectedItem}
+                    />
                   </div>
 
                   <div className="grid gap-4 border-t border-[var(--line)] p-4">
@@ -664,6 +673,9 @@ export default function AdmissionSharePageClient({
 }
 
 function recordingSourceLabel(item: PublicAdmissionShareItem) {
+  if (item.hasPrivateStorage && item.recordingUrl) {
+    return "双来源";
+  }
   if (item.hasPrivateStorage) {
     return "原始上传";
   }
@@ -697,9 +709,19 @@ function decisionBadgeClass(decision: VendorDecision) {
 }
 
 function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
-  const sourceUrl = item.playbackUrl ?? item.recordingUrl;
   const streamerName = item.streamer.displayName || "主播";
-  const externalUrl = item.recordingUrl ?? sourceUrl;
+  const privatePlaybackUrl = item.hasPrivateStorage ? item.playbackUrl : null;
+  const externalUrl =
+    item.recordingUrl ?? (item.hasPrivateStorage ? null : item.playbackUrl);
+  const [activeSource, setActiveSource] = useState<"private" | "external">(
+    privatePlaybackUrl ? "private" : "external",
+  );
+
+  const hasBothSources = Boolean(privatePlaybackUrl && externalUrl);
+  const isPrivateSource = Boolean(
+    privatePlaybackUrl && (!externalUrl || activeSource === "private"),
+  );
+  const sourceUrl = isPrivateSource ? privatePlaybackUrl : externalUrl;
 
   if (!sourceUrl) {
     return (
@@ -715,10 +737,14 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
     );
   }
 
-  const platformEmbedUrl = platformEmbedSource(sourceUrl);
+  const platformEmbedUrl = isPrivateSource
+    ? null
+    : platformEmbedSource(sourceUrl);
+  let player: ReactNode;
+
   if (platformEmbedUrl) {
-    return (
-      <div className="grid gap-2">
+    player = (
+      <>
         <iframe
           className="aspect-video w-full rounded-md border border-[var(--line)] bg-black"
           title={`${streamerName} 平台录屏播放器`}
@@ -726,16 +752,12 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
           allow="autoplay; fullscreen; picture-in-picture"
           allowFullScreen
         />
-        {externalUrl ? (
-          <RecordingSourceLink href={externalUrl} name={streamerName} />
-        ) : null}
-      </div>
+        <RecordingSourceLink href={externalUrl!} name={streamerName} />
+      </>
     );
-  }
-
-  if (item.hasPrivateStorage || isDirectVideoSource(sourceUrl)) {
-    return (
-      <div className="grid gap-2">
+  } else if (isPrivateSource || isDirectVideoSource(sourceUrl)) {
+    player = (
+      <>
         <video
           aria-label={`${streamerName} 原始录屏播放器`}
           className="aspect-video w-full rounded-md border border-[var(--line)] bg-black"
@@ -743,34 +765,67 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
           controls
           preload="metadata"
         />
-        {externalUrl ? (
+        {!isPrivateSource && externalUrl ? (
           <RecordingSourceLink href={externalUrl} name={streamerName} />
         ) : null}
+      </>
+    );
+  } else {
+    player = (
+      <div className="rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-4">
+        <div className="flex items-start gap-3">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-white text-[var(--blue-600)]">
+            <PlayCircle className="h-5 w-5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-[var(--ink-900)]">
+              平台录屏链接
+            </div>
+            <p className="mt-1 truncate text-xs text-[var(--ink-500)]">
+              {sourceUrl}
+            </p>
+            <div className="mt-3">
+              <RecordingSourceLink href={sourceUrl} name={streamerName} />
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-4">
-      <div className="flex items-start gap-3">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-white text-[var(--blue-600)]">
-          <PlayCircle className="h-5 w-5" aria-hidden="true" />
-        </span>
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-[var(--ink-900)]">
-            平台录屏链接
-          </div>
-          <p className="mt-1 truncate text-xs text-[var(--ink-500)]">
-            {sourceUrl}
-          </p>
-          <div className="mt-3">
-            <RecordingSourceLink
-              href={externalUrl ?? sourceUrl}
-              name={streamerName}
-            />
-          </div>
+    <div className="grid gap-2">
+      {hasBothSources ? (
+        <div
+          aria-label="录屏来源"
+          className="inline-flex w-fit rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-0.5"
+          role="group"
+        >
+          <button
+            className={`h-8 rounded px-3 text-xs font-medium transition-colors ${
+              isPrivateSource
+                ? "bg-white text-[var(--blue-700)] shadow-sm"
+                : "text-[var(--ink-500)] hover:text-[var(--ink-700)]"
+            }`}
+            onClick={() => setActiveSource("private")}
+            type="button"
+          >
+            原始录屏
+          </button>
+          <button
+            className={`h-8 rounded px-3 text-xs font-medium transition-colors ${
+              !isPrivateSource
+                ? "bg-white text-[var(--blue-700)] shadow-sm"
+                : "text-[var(--ink-500)] hover:text-[var(--ink-700)]"
+            }`}
+            onClick={() => setActiveSource("external")}
+            type="button"
+          >
+            {platformEmbedSource(externalUrl!) ? "平台链接" : "URL 链接"}
+          </button>
         </div>
-      </div>
+      ) : null}
+      {player}
     </div>
   );
 }
