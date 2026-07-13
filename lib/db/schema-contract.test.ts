@@ -1926,6 +1926,31 @@ describe("Phase 1 settlement AI persistence contract", () => {
     );
   });
 
+  it("allows only the governed archive proof extension on v2 sample selections", () => {
+    expect(normalizedSettlementSimulationSummaryV2Migration).toMatch(
+      /array\[\s*'periodstart',\s*'periodend',\s*'populationcount',\s*'sampledcount',\s*'criteria',\s*'archiveproof'\s*\]::text\[\]/u,
+    );
+    for (const archiveProofGuard of [
+      "p_sample_selection -> 'archiveproof'",
+      "archivedruleversionid",
+      "proofkind",
+      "excludeslockedbatches",
+      "lockedbatchcount",
+      "remainingcustomlayercount",
+      "fixedfallbackavailable",
+    ]) {
+      expect(normalizedSettlementSimulationSummaryV2Migration).toContain(
+        archiveProofGuard,
+      );
+    }
+    expect(normalizedSettlementSimulationSummaryV2Migration).toMatch(
+      /p_sample_selection \? 'archiveproof'[\s\S]+public\.settlement_ai_json_has_exact_keys\(\s*p_sample_selection -> 'archiveproof'/u,
+    );
+    expect(normalizedSettlementSimulationSummaryV2Migration).toMatch(
+      /p_sample_selection \? 'archiveproof'[\s\S]+public\.settlement_ai_safe_integer_json\(\s*p_sample_selection -> 'archiveproof' -> 'lockedbatchcount',\s*true\s*\)/u,
+    );
+  });
+
   it("ships executable negative validator self-checks and exact read policies", () => {
     const selfChecks = settlementAiSelfCheckBlock();
     expect(
@@ -3780,10 +3805,10 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
       ) as Record<string, number>;
 
       expect(catalog).toEqual({
-        tables: 5,
-        rls_tables: 5,
-        select_policies: 5,
-        authenticated_select_grants: 5,
+        tables: 6,
+        rls_tables: 6,
+        select_policies: 6,
+        authenticated_select_grants: 6,
         direct_write_grants: 0,
         deferred_cycle_fks: 2,
         exactly_one_owner: 1,

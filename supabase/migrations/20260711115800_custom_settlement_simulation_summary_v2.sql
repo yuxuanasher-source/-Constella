@@ -171,15 +171,28 @@ begin
     return false;
   end if;
 
-  if not public.settlement_ai_json_has_exact_keys(
-       p_sample_selection,
-       array[
-         'periodStart',
-         'periodEnd',
-         'populationCount',
-         'sampledCount',
-         'criteria'
-       ]::text[]
+  if not (
+       public.settlement_ai_json_has_exact_keys(
+         p_sample_selection,
+         array[
+           'periodStart',
+           'periodEnd',
+           'populationCount',
+           'sampledCount',
+           'criteria'
+         ]::text[]
+       )
+       or public.settlement_ai_json_has_exact_keys(
+         p_sample_selection,
+         array[
+           'periodStart',
+           'periodEnd',
+           'populationCount',
+           'sampledCount',
+           'criteria',
+           'archiveProof'
+         ]::text[]
+       )
      )
      or not public.settlement_ai_business_date_is_valid(
        p_sample_selection ->> 'periodStart'
@@ -216,6 +229,42 @@ begin
       return false;
     end if;
   end loop;
+  if p_sample_selection ? 'archiveProof'
+     and (
+       not public.settlement_ai_json_has_exact_keys(
+         p_sample_selection -> 'archiveProof',
+         array[
+           'archivedRuleVersionId',
+           'proofKind',
+           'excludesLockedBatches',
+           'lockedBatchCount',
+           'remainingCustomLayerCount',
+           'fixedFallbackAvailable'
+         ]::text[]
+       )
+       or (p_sample_selection -> 'archiveProof' ->> 'archivedRuleVersionId')
+         !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+       or p_sample_selection -> 'archiveProof' ->> 'proofKind' not in (
+         'remaining_custom_layers',
+         'fixed_fallback'
+       )
+       or pg_catalog.jsonb_typeof(
+         p_sample_selection -> 'archiveProof' -> 'excludesLockedBatches'
+       ) <> 'boolean'
+       or not public.settlement_ai_safe_integer_json(
+         p_sample_selection -> 'archiveProof' -> 'lockedBatchCount',
+         true
+       )
+       or not public.settlement_ai_safe_integer_json(
+         p_sample_selection -> 'archiveProof' -> 'remainingCustomLayerCount',
+         true
+       )
+       or pg_catalog.jsonb_typeof(
+         p_sample_selection -> 'archiveProof' -> 'fixedFallbackAvailable'
+       ) <> 'boolean'
+     ) then
+    return false;
+  end if;
 
   if not public.settlement_ai_json_has_exact_keys(
        p_coverage,

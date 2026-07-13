@@ -3117,7 +3117,7 @@ begin
       )::integer,
       coalesce(pg_catalog.bool_or(
         approver_member.user_id = v_actor_id
-        and approver_member.role = v_actor_role
+        and approver_member.role::text = v_actor_role
       ), false),
       coalesce(pg_catalog.bool_or(
         approver_member.user_id <> v_version.created_by
