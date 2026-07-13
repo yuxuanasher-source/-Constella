@@ -1992,7 +1992,8 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
         periodStart: "2026-07-01",
         periodEnd: "2026-07-10",
       });
-      expect(harness.catalog.getCatalog).toHaveBeenCalledWith(
+      const catalog = harness.catalog as { getCatalog: ReturnType<typeof vi.fn> };
+      expect(catalog.getCatalog).toHaveBeenCalledWith(
         expect.objectContaining({ scope, executionGrain }),
       );
     },

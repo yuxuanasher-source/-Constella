@@ -14,6 +14,7 @@ import {
 import type { CustomRuleDataReadinessReport } from "./custom-rule-data-readiness";
 import {
   executeCompiledCustomRuleWithTrace,
+  type CustomRuleExecutionResult,
   type ExecuteCompiledCustomRuleInput,
 } from "./custom-rule-engine";
 import { buildCustomRuleExecutionExplanation } from "./custom-rule-explanation";
@@ -33,6 +34,7 @@ import {
   type RuntimeValueType,
   type TypedRuntimeValue,
 } from "./custom-rule-types";
+import type { ProjectCostItemType } from "@/features/complex-cost/complex-cost-types";
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -341,12 +343,26 @@ const moneyResultSchema = z
       result.componentsCents.final >= 0,
     { message: "engine final settlement amount must be nonnegative" },
   );
+const projectCostItemTypeSchema: z.ZodType<ProjectCostItemType> = z.enum([
+  "cpa",
+  "cps",
+  "gift",
+  "bonus",
+  "penalty",
+  "supplier_fee",
+  "traffic",
+  "platform_fee",
+  "sample",
+  "replay",
+  "tax",
+  "manual",
+]);
 const costItemsRuleResultSchema = z.strictObject({
   kind: z.literal("cost_items"),
   items: z
     .array(
       z.strictObject({
-        category: z.string().min(1).max(100),
+        category: projectCostItemTypeSchema,
         amountCents: nonnegativeSafeIntegerSchema,
         memo: z.string().min(1).max(120),
       }),
@@ -369,7 +385,7 @@ const ruleResultSchema = z.discriminatedUnion("kind", [
   moneyResultSchema,
   costItemsRuleResultSchema,
   reconciliationRuleResultSchema,
-]);
+]) satisfies z.ZodType<CustomRuleExecutionResult>;
 const executionOutputSchema = z.strictObject({
   result: ruleResultSchema,
   trace: z.array(executionTraceSchema).max(100_000),

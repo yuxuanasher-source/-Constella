@@ -730,7 +730,7 @@ function readObjectKey(
 }
 
 function validateObjectKey(
-  name: string,
+  name: string | null,
   span: CustomRuleSourceSpan,
   path: string,
 ): string {
