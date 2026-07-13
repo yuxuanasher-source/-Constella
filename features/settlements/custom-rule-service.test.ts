@@ -1053,6 +1053,10 @@ describe("Phase 2 custom rule lifecycle service", () => {
         clientRequestId: "archive-cross-org-template-1",
       }),
     ).rejects.toMatchObject({ code: "CUSTOM_RULE_TEMPLATE_ORG_MISMATCH" });
+    expect(crossOrg.repository.getOrganizationRuleTemplate).toHaveBeenCalledWith({
+      organizationId: ORGANIZATION_ID,
+      templateId: uuid(974),
+    });
     expect(
       crossOrg.repository.archiveOrganizationRuleTemplate,
     ).not.toHaveBeenCalled();
@@ -1255,6 +1259,7 @@ function phase2LifecycleFixture(overrides: Record<string, unknown> = {}) {
     cloneCustomRuleToDraft: vi.fn(async (input) => input.clone),
     createCustomRuleParameterDraft: vi.fn(async (input) => input.draft),
     saveOrganizationRuleTemplate: vi.fn(async () => organizationTemplate),
+    getOrganizationRuleTemplate: vi.fn(async () => organizationTemplate),
     archiveOrganizationRuleTemplate: vi.fn(async () => ({
       ...organizationTemplate,
       status: "archived",

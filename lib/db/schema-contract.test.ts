@@ -2207,10 +2207,11 @@ describe("Phase 2 governed settlement rule schema contract", () => {
       "parameter_hash text not null",
       "variable_catalog_version text not null",
       "data_selection_hash text not null",
-      "simulation_id uuid not null",
+      "simulation_id uuid",
     ]) {
       expect(version).toContain(column);
     }
+    expect(version).not.toContain("simulation_id uuid not null");
     expect(version).toMatch(
       /status in \(\s*'draft',\s*'pending_review',\s*'changes_requested',\s*'active',\s*'archived'\s*\)/u,
     );
@@ -2431,12 +2432,52 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(template).toContain(
       "foreign key ( source_rule_version_id, organization_id, source_project_id, source_version_number, source_scope ) references public.custom_settlement_rule_versions( id, organization_id, project_id, version_number, scope )",
     );
-    expect(normalizedSettlementGovernanceMigration).not.toMatch(
-      /insert into public\.settlement_rule_templates/u,
-    );
     expect(normalizedSettlementGovernanceMigration).not.toContain(
       "system_template",
     );
+    expect(normalizedSettlementGovernanceMigration).not.toContain(
+      "system settlement rule template",
+    );
+  });
+
+  it("persists clone, parameter, and organization template reuse through server RPCs", () => {
+    const clone = extractSettlementGovernanceFunction(
+      "clone_custom_settlement_rule_to_draft",
+    ).body;
+    expect(clone).toContain("insert into public.custom_settlement_rule_versions");
+    expect(clone).toContain("p_clone -> 'version'");
+    expect(clone).toContain("simulation_id");
+    expect(clone).toContain("null");
+    expect(clone).toContain("p_source_rule_version_id");
+    expect(clone).toContain("p_target_project_id");
+
+    const parameter = extractSettlementGovernanceFunction(
+      "create_custom_settlement_rule_parameter_draft",
+    ).body;
+    expect(parameter).toContain(
+      "insert into public.custom_settlement_rule_versions",
+    );
+    expect(parameter).toContain("p_draft");
+    expect(parameter).toContain("p_edits");
+    expect(parameter).toContain("simulation_id");
+
+    const saveTemplate = extractSettlementGovernanceFunction(
+      "save_organization_settlement_rule_template",
+    ).body;
+    expect(saveTemplate).toContain("insert into public.settlement_rule_templates");
+    expect(saveTemplate).toContain("p_confirmed_contract_hash");
+    expect(saveTemplate).toContain("v_source.rule_contract_hash");
+    expect(saveTemplate).not.toContain("approved_by");
+    expect(saveTemplate).not.toContain("effective_from");
+
+    const archiveTemplate = extractSettlementGovernanceFunction(
+      "archive_organization_settlement_rule_template",
+    ).body;
+    expect(archiveTemplate).toContain(
+      "update public.settlement_rule_templates",
+    );
+    expect(archiveTemplate).toContain("where template.id = p_template_id");
+    expect(archiveTemplate).toContain("template.organization_id = p_organization_id");
   });
 
   it("freezes submitted payloads, governance fields, deletes, and review history", () => {

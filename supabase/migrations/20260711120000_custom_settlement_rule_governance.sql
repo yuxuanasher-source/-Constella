@@ -92,7 +92,7 @@ create table public.custom_settlement_rule_versions (
   parameter_hash text not null,
   variable_catalog_version text not null,
   data_selection_hash text not null,
-  simulation_id uuid not null,
+  simulation_id uuid,
   effective_from timestamptz,
   effective_until timestamptz,
   created_by uuid not null,
@@ -2295,6 +2295,302 @@ begin
     v_result -> 'version'
   );
   return v_result;
+end;
+$$;
+
+create or replace function public.clone_custom_settlement_rule_to_draft(
+  p_organization_id uuid,
+  p_source_project_id uuid,
+  p_target_project_id uuid,
+  p_source_rule_version_id uuid,
+  p_rule_version_id uuid,
+  p_clone jsonb,
+  p_reason text,
+  p_client_request_id text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_source public.custom_settlement_rule_versions%rowtype;
+  v_version public.custom_settlement_rule_versions%rowtype;
+  v_payload jsonb := p_clone -> 'version';
+begin
+  if v_actor_id is null then
+    raise exception 'custom_settlement_rule_auth_required';
+  end if;
+  select member.role
+    into v_actor_role
+  from public.organization_members as member
+  where member.organization_id = p_organization_id
+    and member.user_id = v_actor_id
+  limit 1;
+  if v_actor_role is null or v_actor_role not in ('owner', 'ops_manager', 'operator_business') then
+    raise exception 'custom_settlement_rule_clone_not_allowed';
+  end if;
+  select *
+    into v_source
+  from public.custom_settlement_rule_versions as version
+  where version.id = p_source_rule_version_id
+    and version.organization_id = p_organization_id
+    and version.project_id = p_source_project_id
+  for update;
+  if not found then
+    raise exception 'custom_settlement_rule_source_not_found';
+  end if;
+  if not exists (
+    select 1
+    from public.projects as project
+    where project.id = p_target_project_id
+      and project.organization_id = p_organization_id
+  ) then
+    raise exception 'custom_settlement_rule_target_project_not_found';
+  end if;
+
+  insert into public.custom_settlement_rule_versions (
+    id, organization_id, project_id, scope, target_type, target_id,
+    execution_grain, composition_mode, priority, version_number, status,
+    formula, compiled_ast, variables, parameters, rule_contract,
+    system_explanation_template, missing_data_policy, test_cases,
+    simulation_summary, formula_hash, rule_contract_hash, parameter_hash,
+    variable_catalog_version, data_selection_hash, simulation_id,
+    effective_from, effective_until, created_by, approved_by, ai_draft_id,
+    reason, approved_at, archived_at
+  ) values (
+    p_rule_version_id, p_organization_id, p_target_project_id,
+    v_source.scope, v_payload #>> '{target,targetType}',
+    nullif(v_payload #>> '{target,targetId}', '')::uuid,
+    v_source.execution_grain, v_source.composition_mode,
+    coalesce((v_payload ->> 'priority')::integer, v_source.priority),
+    coalesce((v_payload ->> 'versionNumber')::integer, 1),
+    'draft',
+    v_payload ->> 'formula', v_payload -> 'compiledAst',
+    coalesce(v_payload -> 'variables', '[]'::jsonb),
+    coalesce(v_payload -> 'parameters', '{}'::jsonb),
+    v_payload -> 'ruleContract',
+    v_payload ->> 'systemExplanationTemplate',
+    coalesce(v_payload -> 'missingDataPolicy', '{}'::jsonb),
+    coalesce(v_payload -> 'testCases', '[]'::jsonb),
+    '{}'::jsonb,
+    v_payload ->> 'formulaHash',
+    v_payload ->> 'contractHash',
+    v_payload ->> 'parameterHash',
+    v_payload ->> 'catalogHash',
+    v_payload ->> 'dataSelectionHash',
+    null,
+    null, null, v_actor_id, null, null, p_reason, null, null
+  )
+  returning * into v_version;
+
+  return pg_catalog.jsonb_build_object(
+    'version', to_jsonb(v_version),
+    'simulation', null,
+    'event', null
+  );
+end;
+$$;
+
+create or replace function public.create_custom_settlement_rule_parameter_draft(
+  p_organization_id uuid,
+  p_project_id uuid,
+  p_source_rule_version_id uuid,
+  p_rule_version_id uuid,
+  p_edits jsonb,
+  p_draft jsonb,
+  p_reason text,
+  p_client_request_id text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_source public.custom_settlement_rule_versions%rowtype;
+  v_version public.custom_settlement_rule_versions%rowtype;
+begin
+  if v_actor_id is null then
+    raise exception 'custom_settlement_rule_auth_required';
+  end if;
+  select member.role
+    into v_actor_role
+  from public.organization_members as member
+  where member.organization_id = p_organization_id
+    and member.user_id = v_actor_id
+  limit 1;
+  if v_actor_role is null or v_actor_role not in ('owner', 'ops_manager', 'operator_business') then
+    raise exception 'custom_settlement_rule_parameter_edit_not_allowed';
+  end if;
+  select *
+    into v_source
+  from public.custom_settlement_rule_versions as version
+  where version.id = p_source_rule_version_id
+    and version.organization_id = p_organization_id
+    and version.project_id = p_project_id
+  for update;
+  if not found then
+    raise exception 'custom_settlement_rule_source_not_found';
+  end if;
+
+  insert into public.custom_settlement_rule_versions (
+    id, organization_id, project_id, scope, target_type, target_id,
+    execution_grain, composition_mode, priority, version_number, status,
+    formula, compiled_ast, variables, parameters, rule_contract,
+    system_explanation_template, missing_data_policy, test_cases,
+    simulation_summary, formula_hash, rule_contract_hash, parameter_hash,
+    variable_catalog_version, data_selection_hash, simulation_id,
+    effective_from, effective_until, created_by, approved_by, ai_draft_id,
+    reason, approved_at, archived_at
+  ) values (
+    p_rule_version_id, p_organization_id, p_project_id,
+    v_source.scope, v_source.target_type, v_source.target_id,
+    v_source.execution_grain, v_source.composition_mode,
+    coalesce((p_draft ->> 'priority')::integer, v_source.priority),
+    coalesce((p_draft ->> 'versionNumber')::integer, v_source.version_number + 1),
+    'draft',
+    p_draft ->> 'formula', p_draft -> 'compiledAst',
+    coalesce(p_draft -> 'variables', '[]'::jsonb),
+    coalesce(p_draft -> 'parameters', '{}'::jsonb),
+    p_draft -> 'ruleContract',
+    p_draft ->> 'systemExplanationTemplate',
+    coalesce(p_draft -> 'missingDataPolicy', '{}'::jsonb),
+    coalesce(p_draft -> 'testCases', '[]'::jsonb),
+    '{}'::jsonb,
+    p_draft ->> 'formulaHash',
+    p_draft ->> 'contractHash',
+    p_draft ->> 'parameterHash',
+    p_draft ->> 'catalogHash',
+    p_draft ->> 'dataSelectionHash',
+    null,
+    null, null, v_actor_id, null, null, p_reason, null, null
+  )
+  returning * into v_version;
+
+  return pg_catalog.jsonb_build_object(
+    'version', to_jsonb(v_version),
+    'simulation', null,
+    'event', null,
+    'edits', p_edits
+  );
+end;
+$$;
+
+create or replace function public.save_organization_settlement_rule_template(
+  p_organization_id uuid,
+  p_project_id uuid,
+  p_source_rule_version_id uuid,
+  p_name text,
+  p_description text,
+  p_confirmed_contract_hash text,
+  p_reason text,
+  p_client_request_id text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_source public.custom_settlement_rule_versions%rowtype;
+  v_template public.settlement_rule_templates%rowtype;
+begin
+  if v_actor_id is null then
+    raise exception 'custom_settlement_rule_auth_required';
+  end if;
+  select member.role
+    into v_actor_role
+  from public.organization_members as member
+  where member.organization_id = p_organization_id
+    and member.user_id = v_actor_id
+  limit 1;
+  if v_actor_role is null or v_actor_role not in ('owner', 'ops_manager') then
+    raise exception 'settlement_rule_template_manage_not_allowed';
+  end if;
+  select *
+    into v_source
+  from public.custom_settlement_rule_versions as version
+  where version.id = p_source_rule_version_id
+    and version.organization_id = p_organization_id
+    and version.project_id = p_project_id
+  for update;
+  if not found then
+    raise exception 'custom_settlement_rule_source_not_found';
+  end if;
+  if v_source.rule_contract_hash <> p_confirmed_contract_hash then
+    raise exception 'settlement_rule_template_contract_stale';
+  end if;
+
+  insert into public.settlement_rule_templates (
+    organization_id, name, description, source_rule_version_id,
+    source_project_id, source_version_number, source_scope,
+    execution_grain, composition_mode, formula, compiled_ast, variables,
+    parameters, rule_contract, missing_data_policy, test_cases, status,
+    created_by
+  ) values (
+    p_organization_id, pg_catalog.btrim(p_name),
+    nullif(pg_catalog.btrim(coalesce(p_description, '')), ''),
+    v_source.id, v_source.project_id, v_source.version_number, v_source.scope,
+    v_source.execution_grain, v_source.composition_mode, v_source.formula,
+    v_source.compiled_ast, v_source.variables, v_source.parameters,
+    v_source.rule_contract, v_source.missing_data_policy, v_source.test_cases,
+    'active', v_actor_id
+  )
+  returning * into v_template;
+
+  return to_jsonb(v_template);
+end;
+$$;
+
+create or replace function public.archive_organization_settlement_rule_template(
+  p_organization_id uuid,
+  p_project_id uuid,
+  p_template_id uuid,
+  p_archived_at timestamptz,
+  p_reason text,
+  p_client_request_id text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_template public.settlement_rule_templates%rowtype;
+begin
+  if v_actor_id is null then
+    raise exception 'custom_settlement_rule_auth_required';
+  end if;
+  select member.role
+    into v_actor_role
+  from public.organization_members as member
+  where member.organization_id = p_organization_id
+    and member.user_id = v_actor_id
+  limit 1;
+  if v_actor_role is null or v_actor_role not in ('owner', 'ops_manager') then
+    raise exception 'settlement_rule_template_manage_not_allowed';
+  end if;
+
+  update public.settlement_rule_templates as template
+     set status = 'archived',
+         archived_at = p_archived_at
+   where template.id = p_template_id
+     and template.organization_id = p_organization_id
+  returning * into v_template;
+  if not found then
+    raise exception 'settlement_rule_template_not_found';
+  end if;
+
+  return to_jsonb(v_template);
 end;
 $$;
 

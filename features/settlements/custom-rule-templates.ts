@@ -11,6 +11,11 @@ import type {
   TypedRuntimeValue,
 } from "./custom-rule-types";
 import {
+  centsToLegacyYuan,
+  percentToBpsStrict,
+  yuanToCentsStrict,
+} from "./custom-rule-types";
+import {
   hashCustomRuleContract,
   hashCustomRuleParameters,
 } from "./custom-rule-simulation";
@@ -28,6 +33,13 @@ export type RuleParameterEdit = Pick<
   RuleParameterDefinition,
   "key" | "type" | "value"
 >;
+
+export type RuleParameterUiDefinition = Omit<
+  RuleParameterDefinition,
+  "type"
+> & {
+  type: "money_yuan" | "percent" | "integer" | "number";
+};
 
 export type ReusableRuleVersion = {
   id: string;
@@ -292,6 +304,50 @@ export function applyRuleParameterEdits(input: {
   };
 }
 
+export function parameterDefinitionsToUiDto(
+  definitions: readonly RuleParameterDefinition[],
+): RuleParameterUiDefinition[] {
+  return normalizeRuleParameterDefinitions(definitions).map((definition) => ({
+    ...definition,
+    type: parameterTypeToUiType(definition.type),
+    value: parameterValueToUiValue(definition.type, definition.value),
+    min:
+      definition.min === undefined
+        ? undefined
+        : parameterValueToUiValue(definition.type, definition.min),
+    max:
+      definition.max === undefined
+        ? undefined
+        : parameterValueToUiValue(definition.type, definition.max),
+  }));
+}
+
+export function parameterDefinitionsFromUiDto(
+  definitions: readonly RuleParameterUiDefinition[],
+): RuleParameterDefinition[] {
+  return normalizeRuleParameterDefinitions(
+    definitions.map((definition) => ({
+      ...definition,
+      type: uiTypeToParameterType(definition.type),
+      value: uiValueToParameterValue(definition.type, definition.value),
+      min:
+        definition.min === undefined
+          ? undefined
+          : uiValueToParameterValue(definition.type, definition.min),
+      max:
+        definition.max === undefined
+          ? undefined
+          : uiValueToParameterValue(definition.type, definition.max),
+    })),
+  );
+}
+
+export function materializeParameterDefinitionsForPersistence(
+  definitions: readonly RuleParameterDefinition[],
+): Record<string, TypedRuntimeValue> {
+  return materializeParameters(definitions);
+}
+
 export function normalizeRuleParameterDefinitions(
   definitions: readonly RuleParameterDefinition[],
 ): RuleParameterDefinition[] {
@@ -462,6 +518,64 @@ function parameterDefinitionToValue(
       return { type: "integer", value: definition.value };
     case "number":
       return { type: "number", value: definition.value };
+  }
+}
+
+function parameterTypeToUiType(
+  type: RuleParameterDefinition["type"],
+): RuleParameterUiDefinition["type"] {
+  switch (type) {
+    case "money_cents":
+      return "money_yuan";
+    case "rate_bps":
+      return "percent";
+    case "integer":
+    case "number":
+      return type;
+  }
+}
+
+function uiTypeToParameterType(
+  type: RuleParameterUiDefinition["type"],
+): RuleParameterDefinition["type"] {
+  switch (type) {
+    case "money_yuan":
+      return "money_cents";
+    case "percent":
+      return "rate_bps";
+    case "integer":
+    case "number":
+      return type;
+  }
+}
+
+function parameterValueToUiValue(
+  type: RuleParameterDefinition["type"],
+  value: number,
+): number {
+  switch (type) {
+    case "money_cents":
+      return centsToLegacyYuan(value);
+    case "rate_bps":
+      return value / 100;
+    case "integer":
+    case "number":
+      return value;
+  }
+}
+
+function uiValueToParameterValue(
+  type: RuleParameterUiDefinition["type"],
+  value: number,
+): number {
+  switch (type) {
+    case "money_yuan":
+      return yuanToCentsStrict(value);
+    case "percent":
+      return percentToBpsStrict(value);
+    case "integer":
+    case "number":
+      return value;
   }
 }
 

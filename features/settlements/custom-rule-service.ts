@@ -5059,6 +5059,10 @@ export type CustomRuleLifecycleRepositoryPort = Pick<
   saveOrganizationRuleTemplate(
     input: SaveOrganizationRuleTemplateInput,
   ): Promise<OrganizationRuleTemplate>;
+  getOrganizationRuleTemplate(input: {
+    organizationId: string;
+    templateId: string;
+  }): Promise<OrganizationRuleTemplate | null>;
   archiveOrganizationRuleTemplate(
     input: ArchiveOrganizationRuleTemplateInput,
   ): Promise<OrganizationRuleTemplate>;
@@ -6065,13 +6069,21 @@ export function createCustomRuleLifecycleService(dependencies: {
         projectId: input.projectId,
       });
       requireCapability(context.actor.role, "manage_templates");
-      if (context.organizationTemplate !== undefined) {
-        assertReusableTemplateEditable({
-          templateKind: "organization",
-          templateOrganizationId: context.organizationTemplate.organizationId,
-          actorOrganizationId: context.actor.organizationId,
-        });
+      const template = await repository.getOrganizationRuleTemplate({
+        organizationId: context.actor.organizationId,
+        templateId: input.templateId,
+      });
+      if (template === null) {
+        throw new CustomRuleGovernanceError(
+          "CUSTOM_RULE_TEMPLATE_NOT_FOUND",
+          "Organization template was not found",
+        );
       }
+      assertReusableTemplateEditable({
+        templateKind: "organization",
+        templateOrganizationId: template.organizationId,
+        actorOrganizationId: context.actor.organizationId,
+      });
       return repository.archiveOrganizationRuleTemplate({
         organizationId: context.actor.organizationId,
         projectId: input.projectId,

@@ -27,6 +27,7 @@ import {
 import type {
   CloneRuleVersionToEditableDraftResult,
   EditableReusableRuleDraft,
+  OrganizationRuleTemplate,
   RuleParameterEdit,
 } from "./custom-rule-templates";
 
@@ -879,6 +880,22 @@ export type CustomRuleRepository = CustomRuleReadRepository & {
   listCustomRuleReviewEvents(
     input: ListCustomRuleReviewEventsInput,
   ): Promise<CustomSettlementRuleReviewEvent[]>;
+  cloneCustomRuleToDraft(
+    input: CloneCustomRuleToDraftInput,
+  ): Promise<CloneRuleVersionToEditableDraftResult>;
+  createCustomRuleParameterDraft(
+    input: CreateCustomRuleParameterDraftInput,
+  ): Promise<EditableReusableRuleDraft>;
+  saveOrganizationRuleTemplate(
+    input: SaveOrganizationRuleTemplateInput,
+  ): Promise<OrganizationRuleTemplate>;
+  getOrganizationRuleTemplate(input: {
+    organizationId: string;
+    templateId: string;
+  }): Promise<OrganizationRuleTemplate | null>;
+  archiveOrganizationRuleTemplate(
+    input: ArchiveOrganizationRuleTemplateInput,
+  ): Promise<OrganizationRuleTemplate>;
   createSettlementRuleGroup(
     input: CreateSettlementRuleGroupInput,
   ): Promise<SettlementRuleGroup>;
@@ -994,7 +1011,9 @@ export class CustomRulePersistenceDataError extends Error {
       | "simulation"
       | "lifecycle"
       | "group"
-      | "assignment",
+      | "assignment"
+      | "reuse draft"
+      | "organization template",
     message: string,
   ) {
     super(`Invalid persisted custom-rule ${entity}: ${message}`);
@@ -1718,6 +1737,59 @@ const listCustomRuleReviewEventsInputSchema = z.strictObject({
   projectId: uuidSchema,
   ruleVersionId: uuidSchema,
 });
+const cloneCustomRuleToDraftInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  sourceProjectId: uuidSchema,
+  targetProjectId: uuidSchema,
+  sourceRuleVersionId: uuidSchema,
+  targetVariableCatalogVersion: hashSchema,
+  targetAvailableVariableIds: z.array(nonemptyTextSchema.max(200)).max(500),
+  newVersionId: uuidSchema,
+  clone: z.unknown(),
+  reason: boundedTextSchema,
+  clientRequestId: nonemptyTextSchema.max(120),
+});
+const createCustomRuleParameterDraftInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  sourceRuleVersionId: uuidSchema,
+  newVersionId: uuidSchema,
+  edits: z
+    .array(
+      z.strictObject({
+        key: z.string().regex(IDENTIFIER_PATTERN),
+        type: z.enum(["money_cents", "rate_bps", "integer", "number"]),
+        value: z.number().finite(),
+      }),
+    )
+    .min(1)
+    .max(100),
+  draft: z.unknown(),
+  reason: boundedTextSchema,
+  clientRequestId: nonemptyTextSchema.max(120),
+});
+const saveOrganizationRuleTemplateInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  sourceRuleVersionId: uuidSchema,
+  name: nonemptyTextSchema.max(120),
+  description: boundedTextSchema.max(2_000).nullable(),
+  confirmedContractHash: hashSchema,
+  reason: boundedTextSchema,
+  clientRequestId: nonemptyTextSchema.max(120),
+});
+const archiveOrganizationRuleTemplateInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  templateId: uuidSchema,
+  archivedAt: timestampSchema,
+  reason: boundedTextSchema,
+  clientRequestId: nonemptyTextSchema.max(120),
+});
+const getOrganizationRuleTemplateInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  templateId: uuidSchema,
+});
 const createSettlementRuleGroupInputSchema = z.strictObject({
   organizationId: uuidSchema,
   projectId: uuidSchema,
@@ -2177,7 +2249,7 @@ const lifecycleVersionRowSchema = z.strictObject({
   parameter_hash: hashSchema,
   variable_catalog_version: hashSchema,
   data_selection_hash: hashSchema,
-  simulation_id: uuidSchema,
+  simulation_id: uuidSchema.nullable(),
   effective_from: timestampSchema.nullable(),
   effective_until: timestampSchema.nullable(),
   created_by: uuidSchema,
@@ -2223,6 +2295,34 @@ const lifecycleResultRowSchema = z.strictObject({
 });
 const savedDraftResultRowSchema = lifecycleResultRowSchema.omit({
   event: true,
+});
+const reuseDraftResultRowSchema = z.strictObject({
+  version: lifecycleVersionRowSchema,
+  simulation: completeSimulationRowSchema.nullable().optional(),
+  event: lifecycleReviewEventRowSchema.nullable().optional(),
+});
+const organizationRuleTemplateRowSchema = z.strictObject({
+  id: uuidSchema,
+  organization_id: uuidSchema,
+  name: nonemptyTextSchema.max(120),
+  description: boundedTextSchema.max(2_000).nullable(),
+  source_rule_version_id: uuidSchema.nullable(),
+  source_project_id: uuidSchema.nullable(),
+  source_version_number: z.number().int().positive().nullable(),
+  source_scope: z.enum(CUSTOM_RULE_SCOPES).nullable(),
+  execution_grain: z.enum(CUSTOM_RULE_EXECUTION_GRAINS),
+  composition_mode: z.enum(CUSTOM_RULE_COMPOSITION_MODES),
+  formula: boundedTextSchema,
+  compiled_ast: normalizedAstNodeSchema,
+  variables: z.array(jsonValueSchema),
+  parameters: z.record(z.string(), jsonValueSchema),
+  rule_contract: businessRuleContractSchema,
+  missing_data_policy: z.record(z.string(), jsonValueSchema),
+  test_cases: z.array(jsonValueSchema),
+  status: z.enum(["active", "archived"]),
+  created_by: uuidSchema,
+  created_at: timestampSchema,
+  archived_at: timestampSchema.nullable(),
 });
 const settlementRuleGroupRowSchema = z.strictObject({
   id: uuidSchema,
@@ -2314,6 +2414,9 @@ const SETTLEMENT_RULE_GROUP_SELECT = [
   "created_at",
   "archived_at",
 ].join(", ");
+const ORGANIZATION_RULE_TEMPLATE_SELECT = Object.keys(
+  organizationRuleTemplateRowSchema.shape,
+).join(", ");
 
 export const customSettlementRuleVersionSchema = z.strictObject({
   id: uuidSchema,
@@ -2340,7 +2443,7 @@ export const customSettlementRuleVersionSchema = z.strictObject({
   parameterHash: hashSchema,
   catalogHash: hashSchema,
   dataSelectionHash: hashSchema,
-  simulationId: uuidSchema,
+  simulationId: uuidSchema.nullable(),
   effectiveFrom: timestampSchema.nullable(),
   effectiveUntil: timestampSchema.nullable(),
   createdBy: uuidSchema,
@@ -2973,6 +3076,184 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
     return data.map((row) =>
       toCustomSettlementRuleReviewEvent(
         parsePersistenceRow(lifecycleReviewEventRowSchema, row, "lifecycle"),
+      ),
+    );
+  }
+
+  async cloneCustomRuleToDraft(
+    unsafeInput: CloneCustomRuleToDraftInput,
+  ): Promise<CloneRuleVersionToEditableDraftResult> {
+    const input = parsePersistenceInput(
+      cloneCustomRuleToDraftInputSchema,
+      unsafeInput,
+      "clone custom rule to draft input",
+    ) as CloneCustomRuleToDraftInput;
+    const { data, error } = await this.client.rpc(
+      "clone_custom_settlement_rule_to_draft",
+      {
+        p_organization_id: input.organizationId,
+        p_source_project_id: input.sourceProjectId,
+        p_target_project_id: input.targetProjectId,
+        p_source_rule_version_id: input.sourceRuleVersionId,
+        p_rule_version_id: input.newVersionId,
+        p_clone: input.clone,
+        p_reason: input.reason,
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError("clone_rule_to_draft", error);
+    }
+    const row = parsePersistenceRow(
+      reuseDraftResultRowSchema,
+      data,
+      "reuse draft",
+    );
+    return {
+      ...input.clone,
+      version: {
+        ...input.clone.version,
+        ...toCustomSettlementRuleVersion(row.version),
+      } as CloneRuleVersionToEditableDraftResult["version"],
+    };
+  }
+
+  async createCustomRuleParameterDraft(
+    unsafeInput: CreateCustomRuleParameterDraftInput,
+  ): Promise<EditableReusableRuleDraft> {
+    const input = parsePersistenceInput(
+      createCustomRuleParameterDraftInputSchema,
+      unsafeInput,
+      "create custom rule parameter draft input",
+    ) as CreateCustomRuleParameterDraftInput;
+    const { data, error } = await this.client.rpc(
+      "create_custom_settlement_rule_parameter_draft",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_source_rule_version_id: input.sourceRuleVersionId,
+        p_rule_version_id: input.newVersionId,
+        p_edits: input.edits,
+        p_draft: input.draft,
+        p_reason: input.reason,
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "create_parameter_draft",
+        error,
+      );
+    }
+    const row = parsePersistenceRow(
+      reuseDraftResultRowSchema,
+      data,
+      "reuse draft",
+    );
+    return {
+      ...input.draft,
+      ...toCustomSettlementRuleVersion(row.version),
+    } as EditableReusableRuleDraft;
+  }
+
+  async saveOrganizationRuleTemplate(
+    unsafeInput: SaveOrganizationRuleTemplateInput,
+  ): Promise<OrganizationRuleTemplate> {
+    const input = parsePersistenceInput(
+      saveOrganizationRuleTemplateInputSchema,
+      unsafeInput,
+      "save organization rule template input",
+    );
+    const { data, error } = await this.client.rpc(
+      "save_organization_settlement_rule_template",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_source_rule_version_id: input.sourceRuleVersionId,
+        p_name: input.name,
+        p_description: input.description,
+        p_confirmed_contract_hash: input.confirmedContractHash,
+        p_reason: input.reason,
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "save_organization_template",
+        error,
+      );
+    }
+    return toOrganizationRuleTemplate(
+      parsePersistenceRow(
+        organizationRuleTemplateRowSchema,
+        data,
+        "organization template",
+      ),
+    );
+  }
+
+  async getOrganizationRuleTemplate(input: {
+    organizationId: string;
+    templateId: string;
+  }): Promise<OrganizationRuleTemplate | null> {
+    const parsed = parsePersistenceInput(
+      getOrganizationRuleTemplateInputSchema,
+      input,
+      "get organization rule template input",
+    );
+    const { data, error } = await this.client
+      .from("settlement_rule_templates")
+      .select(ORGANIZATION_RULE_TEMPLATE_SELECT)
+      .eq("organization_id", parsed.organizationId)
+      .eq("id", parsed.templateId)
+      .maybeSingle();
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "get_organization_template",
+        error,
+      );
+    }
+    return data === null
+      ? null
+      : toOrganizationRuleTemplate(
+          parsePersistenceRow(
+            organizationRuleTemplateRowSchema,
+            data,
+            "organization template",
+          ),
+        );
+  }
+
+  async archiveOrganizationRuleTemplate(
+    unsafeInput: ArchiveOrganizationRuleTemplateInput,
+  ): Promise<OrganizationRuleTemplate> {
+    const input = parsePersistenceInput(
+      archiveOrganizationRuleTemplateInputSchema,
+      unsafeInput,
+      "archive organization rule template input",
+    );
+    const { data, error } = await this.client.rpc(
+      "archive_organization_settlement_rule_template",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_template_id: input.templateId,
+        p_archived_at: input.archivedAt,
+        p_reason: input.reason,
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "archive_organization_template",
+        error,
+      );
+    }
+    return toOrganizationRuleTemplate(
+      parsePersistenceRow(
+        organizationRuleTemplateRowSchema,
+        data,
+        "organization template",
       ),
     );
   }
@@ -4445,7 +4726,14 @@ function parsePersistenceInput<Output>(
 function parsePersistenceRow<Output>(
   schema: z.ZodType<Output>,
   value: unknown,
-  entity: "draft" | "simulation" | "lifecycle" | "group" | "assignment",
+  entity:
+    | "draft"
+    | "simulation"
+    | "lifecycle"
+    | "group"
+    | "assignment"
+    | "reuse draft"
+    | "organization template",
 ): Output {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -5237,6 +5525,34 @@ function toCustomSettlementRuleVersion(
     approvedAt: row.approved_at,
     archivedAt: row.archived_at,
   });
+}
+
+function toOrganizationRuleTemplate(
+  row: z.infer<typeof organizationRuleTemplateRowSchema>,
+): OrganizationRuleTemplate {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    name: row.name,
+    description: row.description,
+    sourceRuleVersionId: row.source_rule_version_id,
+    sourceProjectId: row.source_project_id,
+    sourceVersionNumber: row.source_version_number,
+    sourceScope: row.source_scope,
+    executionGrain: row.execution_grain,
+    compositionMode: row.composition_mode,
+    formula: row.formula,
+    compiledAst: row.compiled_ast,
+    variables: row.variables,
+    parameters: row.parameters as OrganizationRuleTemplate["parameters"],
+    ruleContract: row.rule_contract,
+    missingDataPolicy: row.missing_data_policy,
+    testCases: row.test_cases,
+    status: row.status,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    archivedAt: row.archived_at,
+  };
 }
 
 function toCustomSettlementRuleReviewEvent(

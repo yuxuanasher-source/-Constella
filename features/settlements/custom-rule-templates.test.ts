@@ -5,7 +5,10 @@ import {
   assertReusableTemplateEditable,
   assertTemplateSimulationReady,
   cloneRuleVersionToEditableDraft,
+  materializeParameterDefinitionsForPersistence,
   listReusableSettlementRuleTemplates,
+  parameterDefinitionsFromUiDto,
+  parameterDefinitionsToUiDto,
   type RuleParameterDefinition,
 } from "./custom-rule-templates";
 import { hashCustomRuleParameters } from "./custom-rule-simulation";
@@ -144,6 +147,85 @@ describe("custom settlement rule reuse templates", () => {
         reason: "Out of bounds.",
       }),
     ).toThrow(/minimum/u);
+  });
+
+  it("adapts persisted cents and bps to UI yuan and percent values", () => {
+    const persisted: RuleParameterDefinition[] = [
+      {
+        key: "hourly_rate",
+        labelZh: "Hourly rate",
+        type: "money_cents",
+        value: 12_500,
+        min: 0,
+        max: 100_000,
+      },
+      {
+        key: "bonus_rate",
+        labelZh: "Bonus rate",
+        type: "rate_bps",
+        value: 2_500,
+        min: 0,
+        max: 10_000,
+      },
+    ];
+
+    const ui = parameterDefinitionsToUiDto(persisted);
+
+    expect(ui).toEqual([
+      expect.objectContaining({
+        key: "hourly_rate",
+        type: "money_yuan",
+        value: 125,
+        min: 0,
+        max: 1_000,
+      }),
+      expect.objectContaining({
+        key: "bonus_rate",
+        type: "percent",
+        value: 25,
+        min: 0,
+        max: 100,
+      }),
+    ]);
+    expect(parameterDefinitionsFromUiDto(ui)).toEqual(persisted);
+  });
+
+  it("validates UI yuan and percent precision before persistence", () => {
+    expect(() =>
+      parameterDefinitionsFromUiDto([
+        {
+          key: "hourly_rate",
+          labelZh: "Hourly rate",
+          type: "money_yuan",
+          value: 1.001,
+          min: 0,
+        },
+      ]),
+    ).toThrow(/fractional cents/u);
+    expect(() =>
+      parameterDefinitionsFromUiDto([
+        {
+          key: "bonus_rate",
+          labelZh: "Bonus rate",
+          type: "percent",
+          value: 12.345,
+          min: 0,
+          max: 100,
+        },
+      ]),
+    ).toThrow(/fractional basis points/u);
+    expect(() =>
+      materializeParameterDefinitionsForPersistence([
+        {
+          key: "bonus_rate",
+          labelZh: "Bonus rate",
+          type: "rate_bps",
+          value: 10_001,
+          min: 0,
+          max: 10_000,
+        },
+      ]),
+    ).toThrow(/maximum/u);
   });
 
   it("marks system templates read-only and organization templates editable", () => {

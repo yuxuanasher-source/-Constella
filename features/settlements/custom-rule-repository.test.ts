@@ -21,6 +21,11 @@ import {
   type SettlementFormulaSimulation,
   type SettlementSimulationOwner,
 } from "./custom-rule-repository";
+import {
+  cloneRuleVersionToEditableDraft,
+  type EditableReusableRuleDraft,
+  type ReusableRuleVersion,
+} from "./custom-rule-templates";
 
 describe("Phase 2 custom rule lifecycle repository", () => {
   it("creates settlement rule groups through a role-gated RPC", async () => {
@@ -855,7 +860,7 @@ describe("Phase 2 custom rule lifecycle repository", () => {
         sourceAiDraftId: DRAFT_ID,
         sourceSimulationId: SIMULATION_ID,
         ruleVersionId: lifecycleResultRow().version.id,
-        versionSimulationId: lifecycleResultRow().simulation.id,
+        versionSimulationId: SIMULATION_ID,
         scope: "payable",
         target: { targetType: "project", targetId: null },
         draft: {
@@ -974,6 +979,9 @@ function createLifecycleListQuery(rows: unknown[]) {
 
 function lifecycleSavedDraftResultRow() {
   const result = lifecycleResultRow();
+  if (result.simulation === null) {
+    throw new Error("expected default lifecycle result to include simulation");
+  }
   return {
     version: { ...result.version, status: "draft", effective_from: null },
     simulation: result.simulation,
@@ -999,7 +1007,13 @@ function lifecycleSubmitInput(): Record<string, unknown> {
   };
 }
 
-function lifecycleResultRow() {
+function lifecycleResultRow(
+  overrides: {
+    version?: Record<string, unknown>;
+    simulation?: ReturnType<typeof simulationRow> | null;
+    event?: Record<string, unknown> | null;
+  } = {},
+) {
   const simulationInput = validSimulationInput({
     kind: "rule_version",
     id: "00000000-0000-4000-8000-000000000005",
@@ -1046,18 +1060,22 @@ function lifecycleResultRow() {
       created_at: "2026-07-13T02:00:00.000Z",
       approved_at: null,
       archived_at: null,
+      ...(overrides.version ?? {}),
     },
-    simulation: simulationRow(
-      {
-        kind: "rule_version",
-        id: "00000000-0000-4000-8000-000000000005",
-      },
-      {
-        id: "00000000-0000-4000-8000-000000000006",
-        idempotency_key: "custom-rule-version:phase2-submit-1",
-      },
-    ),
-    event: {
+    simulation:
+      overrides.simulation === undefined
+        ? simulationRow(
+            {
+              kind: "rule_version",
+              id: "00000000-0000-4000-8000-000000000005",
+            },
+            {
+              id: "00000000-0000-4000-8000-000000000006",
+              idempotency_key: "custom-rule-version:phase2-submit-1",
+            },
+          )
+        : overrides.simulation,
+    event: overrides.event ?? {
       id: "00000000-0000-4000-8000-000000000007",
       organization_id: "00000000-0000-4000-8000-000000000001",
       project_id: "00000000-0000-4000-8000-000000000002",
@@ -1077,6 +1095,86 @@ function lifecycleResultRow() {
       data_selection_hash: HASH_E,
       created_at: "2026-07-13T02:00:00.000Z",
     },
+  };
+}
+
+function customRuleVersionFromLifecycleRow(): ReusableRuleVersion {
+  const row = lifecycleResultRow().version;
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    scope: "payable",
+    target: { targetType: "project", targetId: null },
+    executionGrain: row.execution_grain,
+    compositionMode: row.composition_mode,
+    priority: row.priority,
+    versionNumber: row.version_number,
+    status: "pending_review",
+    formula: row.formula,
+    compiledAst: row.compiled_ast,
+    variables: row.variables,
+    parameters: {
+      minimumAmount: { type: "money_cents" as const, amountCents: 0 },
+    },
+    parameterDefinitions: [
+      {
+        key: "minimumAmount",
+        labelZh: "Minimum amount",
+        type: "money_cents" as const,
+        value: 0,
+        min: 0,
+      },
+    ],
+    ruleContract: row.rule_contract,
+    systemExplanationTemplate: row.system_explanation_template,
+    missingDataPolicy: row.missing_data_policy,
+    testCases: row.test_cases,
+    simulationSummary: row.simulation_summary,
+    formulaHash: row.formula_hash,
+    contractHash: row.rule_contract_hash,
+    parameterHash: row.parameter_hash,
+    catalogHash: row.variable_catalog_version,
+    dataSelectionHash: row.data_selection_hash,
+    variableCatalogVersion: row.variable_catalog_version,
+    simulationId: row.simulation_id,
+    effectiveFrom: row.effective_from,
+    effectiveUntil: row.effective_until,
+    createdBy: row.created_by,
+    approvedBy: row.approved_by,
+    aiDraftId: row.ai_draft_id,
+    reason: row.reason,
+    createdAt: row.created_at,
+    approvedAt: row.approved_at,
+    archivedAt: row.archived_at,
+  };
+}
+
+function organizationTemplateRow(overrides: Record<string, unknown> = {}) {
+  const source = lifecycleResultRow().version;
+  return {
+    id: TEMPLATE_ID,
+    organization_id: ORGANIZATION_ID,
+    name: "Reusable receivable rule",
+    description: "Use across projects.",
+    source_rule_version_id: RULE_VERSION_ID,
+    source_project_id: PROJECT_ID,
+    source_version_number: source.version_number,
+    source_scope: source.scope,
+    execution_grain: source.execution_grain,
+    composition_mode: source.composition_mode,
+    formula: source.formula,
+    compiled_ast: source.compiled_ast,
+    variables: source.variables,
+    parameters: source.parameters,
+    rule_contract: source.rule_contract,
+    missing_data_policy: source.missing_data_policy,
+    test_cases: source.test_cases,
+    status: "active",
+    created_by: CREATOR_ID,
+    created_at: "2026-07-13T02:00:00.000Z",
+    archived_at: null,
+    ...overrides,
   };
 }
 
@@ -3397,6 +3495,217 @@ describe("custom-rule draft and simulation persistence", () => {
     );
   });
 
+  it("persists cloned rules through the reuse-draft RPC without copying simulation state", async () => {
+    const source = customRuleVersionFromLifecycleRow();
+    const clone = cloneRuleVersionToEditableDraft({
+      sourceVersion: source,
+      targetProjectId: OTHER_PROJECT_ID,
+      targetCatalog: {
+        version: HASH_F,
+        variables: [{ id: "grossRevenue", availability: "available" }],
+      },
+      newVersionId: RULE_VERSION_2_ID,
+      reason: "Clone to another project.",
+    });
+    const mock = createPersistenceClient({
+      reuseDraftRpcData: lifecycleResultRow({
+        version: {
+          id: RULE_VERSION_2_ID,
+          project_id: OTHER_PROJECT_ID,
+          version_number: 1,
+          status: "draft",
+          simulation_summary: {},
+          variable_catalog_version: HASH_F,
+          data_selection_hash: "0".repeat(64),
+          simulation_id: null,
+          effective_from: null,
+          approved_by: null,
+          ai_draft_id: null,
+          approved_at: null,
+        },
+        simulation: null,
+        event: null,
+      }),
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const result = await repository.cloneCustomRuleToDraft({
+      organizationId: ORGANIZATION_ID,
+      sourceProjectId: PROJECT_ID,
+      targetProjectId: OTHER_PROJECT_ID,
+      sourceRuleVersionId: RULE_VERSION_ID,
+      targetVariableCatalogVersion: HASH_F,
+      targetAvailableVariableIds: ["grossRevenue"],
+      newVersionId: RULE_VERSION_2_ID,
+      clone,
+      reason: "Clone to another project.",
+      clientRequestId: "clone-rpc-1",
+    });
+
+    expect(mock.rpc).toHaveBeenCalledWith("clone_custom_settlement_rule_to_draft", {
+      p_organization_id: ORGANIZATION_ID,
+      p_source_project_id: PROJECT_ID,
+      p_target_project_id: OTHER_PROJECT_ID,
+      p_source_rule_version_id: RULE_VERSION_ID,
+      p_rule_version_id: RULE_VERSION_2_ID,
+      p_clone: clone,
+      p_reason: "Clone to another project.",
+      p_client_request_id: "clone-rpc-1",
+    });
+    expect(result.version).toMatchObject({
+      id: RULE_VERSION_2_ID,
+      projectId: OTHER_PROJECT_ID,
+      status: "draft",
+      simulationId: null,
+      aiDraftId: null,
+      approvedBy: null,
+      effectiveFrom: null,
+    });
+  });
+
+  it("persists parameter edits through a draft RPC and stales the prior simulation", async () => {
+    const source = customRuleVersionFromLifecycleRow();
+    const draft: EditableReusableRuleDraft = {
+      ...source,
+      id: RULE_VERSION_2_ID,
+      versionNumber: source.versionNumber + 1,
+      status: "draft" as const,
+      parameters: { minimumAmount: { type: "money_cents" as const, amountCents: 12_500 } },
+      parameterDefinitions: [
+        {
+          key: "minimumAmount",
+          labelZh: "Minimum amount",
+          type: "money_cents" as const,
+          value: 12_500,
+          min: 0,
+        },
+      ],
+      parameterHash: HASH_F,
+      simulationSummary: {},
+      dataSelectionHash: "0".repeat(64),
+      simulationId: null,
+      effectiveFrom: null,
+      effectiveUntil: null,
+      approvedBy: null,
+      approvedAt: null,
+      archivedAt: null,
+      aiDraftId: null,
+    };
+    const mock = createPersistenceClient({
+      reuseDraftRpcData: lifecycleResultRow({
+        version: {
+          id: RULE_VERSION_2_ID,
+          version_number: 3,
+          status: "draft",
+          parameters: draft.parameters,
+          parameter_hash: HASH_F,
+          simulation_summary: {},
+          data_selection_hash: "0".repeat(64),
+          simulation_id: null,
+          effective_from: null,
+          approved_by: null,
+          ai_draft_id: null,
+          approved_at: null,
+        },
+        simulation: null,
+        event: null,
+      }),
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const result = await repository.createCustomRuleParameterDraft({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      sourceRuleVersionId: RULE_VERSION_ID,
+      newVersionId: RULE_VERSION_2_ID,
+      edits: [{ key: "minimumAmount", type: "money_cents", value: 12_500 }],
+      draft,
+      reason: "Adjust minimum amount.",
+      clientRequestId: "parameter-draft-rpc-1",
+    });
+
+    expect(mock.rpc).toHaveBeenCalledWith(
+      "create_custom_settlement_rule_parameter_draft",
+      {
+        p_organization_id: ORGANIZATION_ID,
+        p_project_id: PROJECT_ID,
+        p_source_rule_version_id: RULE_VERSION_ID,
+        p_rule_version_id: RULE_VERSION_2_ID,
+        p_edits: [{ key: "minimumAmount", type: "money_cents", value: 12_500 }],
+        p_draft: draft,
+        p_reason: "Adjust minimum amount.",
+        p_client_request_id: "parameter-draft-rpc-1",
+      },
+    );
+    expect(result).toMatchObject({
+      id: RULE_VERSION_2_ID,
+      status: "draft",
+      simulationId: null,
+      parameterHash: HASH_F,
+    });
+  });
+
+  it("persists organization templates and archives only the requested template row", async () => {
+    const template = organizationTemplateRow();
+    const mock = createPersistenceClient({
+      organizationTemplateRpcData: template,
+      organizationTemplateRows: [template],
+    });
+    const repository: CustomRuleRepository =
+      new SupabaseCustomRuleReadRepository(mock.client);
+
+    const saved = await repository.saveOrganizationRuleTemplate({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      sourceRuleVersionId: RULE_VERSION_ID,
+      name: "Reusable receivable rule",
+      description: "Use across projects.",
+      confirmedContractHash: HASH_B,
+      reason: "Save reusable template.",
+      clientRequestId: "org-template-save-1",
+    });
+    const loaded = await repository.getOrganizationRuleTemplate({
+      organizationId: ORGANIZATION_ID,
+      templateId: TEMPLATE_ID,
+    });
+    await repository.archiveOrganizationRuleTemplate({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      templateId: TEMPLATE_ID,
+      archivedAt: "2026-09-01T00:00:00.000Z",
+      reason: "Archive requested template.",
+      clientRequestId: "org-template-archive-1",
+    });
+
+    expect(saved).toMatchObject({ id: TEMPLATE_ID, organizationId: ORGANIZATION_ID });
+    expect(loaded).toMatchObject({ id: TEMPLATE_ID, organizationId: ORGANIZATION_ID });
+    expect(mock.rpc).toHaveBeenCalledWith("save_organization_settlement_rule_template", {
+      p_organization_id: ORGANIZATION_ID,
+      p_project_id: PROJECT_ID,
+      p_source_rule_version_id: RULE_VERSION_ID,
+      p_name: "Reusable receivable rule",
+      p_description: "Use across projects.",
+      p_confirmed_contract_hash: HASH_B,
+      p_reason: "Save reusable template.",
+      p_client_request_id: "org-template-save-1",
+    });
+    expect(mock.rpc).toHaveBeenCalledWith("archive_organization_settlement_rule_template", {
+      p_organization_id: ORGANIZATION_ID,
+      p_project_id: PROJECT_ID,
+      p_template_id: TEMPLATE_ID,
+      p_archived_at: "2026-09-01T00:00:00.000Z",
+      p_reason: "Archive requested template.",
+      p_client_request_id: "org-template-archive-1",
+    });
+    expect(mock.queryCalls).toContainEqual([
+      "settlement_rule_templates",
+      "eq",
+      ["id", TEMPLATE_ID],
+    ]);
+  });
+
   it.each([
     ["missing owner", {}],
     [
@@ -4171,6 +4480,8 @@ const USER_MESSAGE_ID = "00000000-0000-4000-8000-000000000006";
 const ASSISTANT_MESSAGE_ID = "00000000-0000-4000-8000-000000000007";
 const CREATOR_ID = "00000000-0000-4000-8000-000000000008";
 const RULE_VERSION_ID = "00000000-0000-4000-8000-000000000009";
+const RULE_VERSION_2_ID = "00000000-0000-4000-8000-000000000109";
+const TEMPLATE_ID = "00000000-0000-4000-8000-000000000209";
 const SIMULATION_ID = "00000000-0000-4000-8000-000000000010";
 const GROUP_ID = "00000000-0000-4000-8000-000000000011";
 const PROJECT_STREAMER_ID = "00000000-0000-4000-8000-000000000012";
@@ -4636,7 +4947,8 @@ function legacySimulationRow(
 
 type PersistenceTableName =
   | "ai_settlement_rule_drafts"
-  | "settlement_formula_simulations";
+  | "settlement_formula_simulations"
+  | "settlement_rule_templates";
 type PersistenceQueryCall = [
   PersistenceTableName,
   "select" | "eq" | "order" | "limit" | "returns" | "maybeSingle",
@@ -4660,6 +4972,9 @@ function createPersistenceClient(
     finalizedDraftRpcData?: unknown;
     finalizedSimulationRpcData?: unknown;
     finalizedFailedRpcData?: unknown;
+    reuseDraftRpcData?: unknown;
+    organizationTemplateRpcData?: unknown;
+    organizationTemplateRows?: unknown[];
   } = {},
 ) {
   const queryCalls: PersistenceQueryCall[] = [];
@@ -4725,13 +5040,35 @@ function createPersistenceClient(
         error: null,
       };
     }
+    if (
+      fn === "clone_custom_settlement_rule_to_draft" ||
+      fn === "create_custom_settlement_rule_parameter_draft"
+    ) {
+      return {
+        data:
+          options.reuseDraftRpcData ??
+          lifecycleResultRow({ simulation: null, event: null }),
+        error: null,
+      };
+    }
+    if (
+      fn === "save_organization_settlement_rule_template" ||
+      fn === "archive_organization_settlement_rule_template"
+    ) {
+      return {
+        data: options.organizationTemplateRpcData ?? organizationTemplateRow(),
+        error: null,
+      };
+    }
     return { data: null, error: new Error(`Unexpected RPC: ${fn}`) };
   });
   const from = vi.fn((table: PersistenceTableName) => {
     const rows =
       table === "ai_settlement_rule_drafts"
         ? (options.draftRows ?? [])
-        : (options.simulationRows ?? []);
+        : table === "settlement_formula_simulations"
+          ? (options.simulationRows ?? [])
+          : (options.organizationTemplateRows ?? []);
     const record = (
       method: PersistenceQueryCall[1],
       args: unknown[],
