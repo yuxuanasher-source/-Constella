@@ -114,7 +114,11 @@ describe("settlement rule clone route", () => {
         reason: "复制为新项目草稿",
         clientRequestId: "clone-request-0001",
       });
-      expect(JSON.stringify(await response.json())).not.toContain("secret");
+      const json = await response.json();
+      expect(JSON.stringify(json)).not.toContain("secret");
+      expect(json).not.toHaveProperty("lineage");
+      expect(JSON.stringify(json)).not.toContain("sourceRuleVersionId");
+      expect(JSON.stringify(json)).not.toContain("sourceProjectId");
     },
   );
 

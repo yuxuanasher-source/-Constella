@@ -490,6 +490,81 @@ describe("custom rule route context", () => {
     );
   });
 
+  it("loads server-owned group governance for group-targeted submissions", async () => {
+    const groupId = "99999999-9999-4999-8999-999999999999";
+    const assignedId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const unassignedId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const snapshotHash = "f".repeat(64);
+    const simulation = {
+      ...routeGovernanceSimulation(REQUEST_SIMULATION_ID),
+      sampleSelection: {
+        ...routeGovernanceSimulation(REQUEST_SIMULATION_ID).sampleSelection,
+        groupPopulation: {
+          assignedProjectStreamerIds: [assignedId],
+          unassignedProjectStreamerIds: [unassignedId],
+          groupSnapshotHash: snapshotHash,
+        },
+      },
+    };
+    const repository = routeGovernanceRepositoryFixture({
+      version: routeGovernanceVersion({
+        target: { targetType: "streamer_group", targetId: groupId },
+      }),
+      simulations: { [REQUEST_SIMULATION_ID]: simulation },
+    });
+    mocks.createServerClient.mockResolvedValue(
+      routeGovernanceSupabase({
+        snapshotHash,
+        projectStreamers: [{ id: assignedId }, { id: unassignedId }],
+        assignments: [
+          {
+            project_streamer_id: assignedId,
+            group_id: groupId,
+            effective_from: "2026-07-01T00:00:00.000Z",
+            effective_until: null,
+          },
+        ],
+        rules: [
+          {
+            id: SAVED_DRAFT_RULE_ID,
+            target_id: groupId,
+            priority: 100,
+            composition_mode: "replace",
+            status: "pending_review",
+          },
+        ],
+      }),
+    );
+    mocks.repositoryConstructor.mockReturnValue(repository);
+    const { getCustomRuleRouteContext } =
+      await import("./custom-rule-route-context");
+
+    const context = await getCustomRuleRouteContext();
+    expect(context).not.toBeInstanceOf(Response);
+    if (context instanceof Response) throw new Error("Expected route context");
+
+    await expect(
+      context.lifecycle.applyAndSubmitCustomRule({
+        actor: context.actor,
+        projectId: PROJECT_ID,
+        source: { kind: "saved_draft", id: SAVED_DRAFT_RULE_ID },
+        sourceSimulationId: REQUEST_SIMULATION_ID,
+        destinationVersionId: "77777777-7777-4777-8777-777777777777",
+        destinationSimulationId: "88888888-8888-4888-8888-888888888888",
+        scope: "payable",
+        target: { targetType: "streamer_group", targetId: groupId },
+        effectiveFrom: "2026-07-31T00:00:00.000Z",
+        reason: "Submit group draft with complete population.",
+        clientRequestId: "group-submit-0001",
+      }),
+    ).resolves.toBeDefined();
+
+    const submitted = repository.applyAndSubmitCustomRule.mock.calls[0]?.[0];
+    expect(submitted).toMatchObject({
+      target: { targetType: "streamer_group", targetId: groupId },
+    });
+  });
+
   it.each([
     "custom_settlement_rule_archive_fallback_invalid",
     "custom_settlement_rule_archive_period_invalid",
@@ -1003,7 +1078,12 @@ function routeGovernanceRepositoryFixture(input: {
   };
 }
 
-function routeGovernanceSupabase() {
+function routeGovernanceSupabase(input?: {
+  snapshotHash?: string;
+  projectStreamers?: unknown[];
+  assignments?: unknown[];
+  rules?: unknown[];
+}) {
   const project = projectQuery();
   const memberQuery = {
     select: vi.fn(),
@@ -1019,9 +1099,38 @@ function routeGovernanceSupabase() {
   memberQuery.eq.mockReturnValue(memberQuery);
   memberQuery.in.mockReturnValue(memberQuery);
   memberQuery.order.mockReturnValue(memberQuery);
+  const rowsQuery = (rows: unknown[]) => {
+    const query = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      in: vi.fn(),
+      order: vi.fn(),
+      returns: vi.fn().mockResolvedValue({ data: rows, error: null }),
+    };
+    query.select.mockReturnValue(query);
+    query.eq.mockReturnValue(query);
+    query.in.mockReturnValue(query);
+    query.order.mockReturnValue(query);
+    return query;
+  };
+  const projectStreamerQuery = rowsQuery(input?.projectStreamers ?? []);
+  const assignmentQuery = rowsQuery(input?.assignments ?? []);
+  const ruleQuery = rowsQuery(input?.rules ?? []);
   return {
+    rpc: vi.fn().mockResolvedValue({
+      data: input?.snapshotHash ?? "0".repeat(64),
+      error: null,
+    }),
     from: vi.fn((table: string) =>
-      table === "organization_members" ? memberQuery : project,
+      table === "organization_members"
+        ? memberQuery
+        : table === "project_streamers"
+          ? projectStreamerQuery
+          : table === "project_streamer_settlement_group_assignments"
+            ? assignmentQuery
+            : table === "custom_settlement_rule_versions"
+              ? ruleQuery
+              : project,
     ),
   };
 }

@@ -5042,6 +5042,7 @@ export type CustomRuleLifecycleRepositoryPort = Pick<
     projectId: string;
     actorUserId: string;
     ruleVersionId?: string;
+    target?: ApplyAndSubmitCustomRuleInput["target"];
     source?: ApplyAndSubmitCustomRuleInput["source"];
     sourceSimulationId?: string;
     archiveFallbackProof?: ArchiveFallbackProofServiceInput;
@@ -5382,6 +5383,7 @@ export function createCustomRuleLifecycleService(dependencies: {
     actor: LifecycleActorInput;
     projectId: string;
     ruleVersionId?: string;
+    target?: ApplyAndSubmitCustomRuleInput["target"];
     source?: ApplyAndSubmitCustomRuleInput["source"];
     sourceSimulationId?: string;
     archiveFallbackProof?: ArchiveFallbackProofServiceInput;
@@ -5391,6 +5393,7 @@ export function createCustomRuleLifecycleService(dependencies: {
       projectId: input.projectId,
       actorUserId: input.actor.userId,
       ruleVersionId: input.ruleVersionId,
+      target: input.target,
       source: input.source,
       sourceSimulationId: input.sourceSimulationId,
       archiveFallbackProof: input.archiveFallbackProof,
@@ -5775,6 +5778,7 @@ export function createCustomRuleLifecycleService(dependencies: {
         projectId: input.projectId,
         source: input.source,
         sourceSimulationId: input.sourceSimulationId,
+        target: input.target,
       });
       requireCapability(context.actor.role, "submit_review");
       requireSimulationContext(context);
@@ -5850,6 +5854,7 @@ export function createCustomRuleLifecycleService(dependencies: {
         projectId: input.projectId,
         source: input.source,
         sourceSimulationId: input.sourceSimulationId,
+        target: input.target,
         ruleVersionId:
           input.source.kind === "saved_draft" ? input.source.id : undefined,
       });

@@ -38,6 +38,10 @@ import {
 } from "./custom-rule-data-readiness";
 import { buildCustomRuleTemplateExplanation } from "./custom-rule-explanation";
 import { isCustomSettlementRulesEnabled } from "./custom-rule-feature-flag";
+import {
+  determineSettlementPopulationCoverage,
+  type SettlementGroupScopedRule,
+} from "./custom-rule-groups";
 import { parseCustomRuleFormula } from "./custom-rule-parser";
 import {
   SupabaseCustomRuleReadRepository,
@@ -57,6 +61,7 @@ import {
   createCustomRuleAuthoringService,
   createCustomRuleLifecycleService,
   createSettlementGroupMembershipGovernanceService,
+  type CustomRuleLifecycleGovernanceContext,
   type CustomRuleLifecycleRepositoryPort,
   type CustomRuleLifecycleService,
   type SettlementGroupMembershipRepositoryPort,
@@ -77,6 +82,7 @@ import {
 } from "./custom-rule-simulation";
 import type {
   CustomRuleMissingDataPolicy,
+  CustomRuleTarget,
   TypedRuntimeValue,
 } from "./custom-rule-types";
 import {
@@ -816,10 +822,6 @@ export function toReusableSettlementRuleTemplateDto(
     id: template.id,
     name: template.name,
     description: template.description,
-    sourceRuleVersionId: template.sourceRuleVersionId,
-    sourceProjectId: template.sourceProjectId,
-    sourceVersionNumber: template.sourceVersionNumber,
-    sourceScope: template.sourceScope,
     executionGrain: template.executionGrain,
     compositionMode: template.compositionMode,
     parameters: template.parameters,
@@ -4132,6 +4134,34 @@ const routeOrganizationTemplateSchema = z.strictObject({
   archived_at: canonicalOffsetDateTimeSchema.nullable(),
 });
 
+const routeGroupProjectStreamerSchema = z.strictObject({
+  id: z.string().uuid(),
+});
+
+const routeGroupAssignmentSchema = z.strictObject({
+  project_streamer_id: z.string().uuid(),
+  group_id: z.string().uuid(),
+  effective_from: canonicalOffsetDateTimeSchema,
+  effective_until: canonicalOffsetDateTimeSchema.nullable(),
+});
+
+const routeGroupScopedRuleSchema = z.strictObject({
+  id: z.string().uuid(),
+  target_id: z.string().uuid(),
+  priority: z.number().int().nonnegative(),
+  composition_mode: z.enum([
+    "replace",
+    "add",
+    "multiply",
+    "clamp",
+    "emit_items",
+    "check",
+  ]),
+  status: z.enum(["active", "pending_review"]),
+});
+
+const routeGroupSnapshotHashSchema = z.string().regex(/^[0-9a-f]{64}$/u);
+
 function createCustomRuleTemplateListingService(input: {
   supabase: SupabaseClient;
   actor: { organizationId: string; userId: string };
@@ -4162,6 +4192,7 @@ function createRouteGovernanceRepository(input: {
       projectId: string;
       actorUserId: string;
       ruleVersionId?: string;
+      target?: CustomRuleTarget;
       source?: { kind: "ai_draft" | "saved_draft"; id: string };
       sourceSimulationId?: string;
       archiveFallbackProof?: {
@@ -4260,6 +4291,17 @@ function createRouteGovernanceRepository(input: {
         supabase: input.supabase,
         organizationId: scope.organizationId,
       });
+      const target = version?.target ?? scope.target;
+      const groupGovernance =
+        target?.targetType === "streamer_group"
+          ? await loadRouteGroupGovernance({
+              supabase: input.supabase,
+              organizationId: scope.organizationId,
+              projectId: scope.projectId,
+              target,
+              simulation: rawSimulation,
+            })
+          : undefined;
       return {
         actor,
         ...(version ? { version } : {}),
@@ -4273,7 +4315,7 @@ function createRouteGovernanceRepository(input: {
             ? rawSimulation.deltas.marginImpactCents
             : null,
         contractFacts: {
-          target: version?.target ?? { targetType: "project", targetId: null },
+          target: target ?? { targetType: "project", targetId: null },
           compositionMode: version?.compositionMode ?? "replace",
           missingDataPolicy:
             version?.missingDataPolicy &&
@@ -4298,6 +4340,7 @@ function createRouteGovernanceRepository(input: {
                 fallbackSimulation,
               }
             : undefined,
+        ...(groupGovernance ? { groupGovernance } : {}),
       };
     },
   });
@@ -4331,6 +4374,156 @@ async function loadRouteEligibleApprovers(input: {
     const parsed = routeEligibleApproverSchema.parse(row);
     return { userId: parsed.user_id, role: parsed.role };
   });
+}
+
+async function loadRouteGroupGovernance(input: {
+  supabase: SupabaseClient;
+  organizationId: string;
+  projectId: string;
+  target: Extract<CustomRuleTarget, { targetType: "streamer_group" }>;
+  simulation: SettlementFormulaSimulation | null;
+}): Promise<
+  NonNullable<CustomRuleLifecycleGovernanceContext["groupGovernance"]>
+> {
+  const effectiveAt = new Date().toISOString();
+  const { data: snapshotHashData, error: snapshotHashError } =
+    await input.supabase.rpc("settlement_rule_group_project_snapshot_hash", {
+      p_organization_id: input.organizationId,
+      p_project_id: input.projectId,
+      p_effective_at: effectiveAt,
+    });
+  if (snapshotHashError) {
+    throw new CustomRulePersistenceQueryError(
+      "load_settlement_group_snapshot_hash",
+      snapshotHashError,
+    );
+  }
+  const currentGroupSnapshotHash =
+    routeGroupSnapshotHashSchema.parse(snapshotHashData);
+
+  const { data: projectStreamerData, error: projectStreamerError } =
+    await input.supabase
+      .from("project_streamers")
+      .select("id")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("status", "joined")
+      .order("id", { ascending: true })
+      .returns<unknown[]>();
+  if (projectStreamerError) {
+    throw new CustomRulePersistenceQueryError(
+      "load_settlement_group_project_streamers",
+      projectStreamerError,
+    );
+  }
+  if (!Array.isArray(projectStreamerData)) {
+    throw new CustomRulePersistenceDataError(
+      "group",
+      "project streamer result must be an array",
+    );
+  }
+
+  const { data: assignmentData, error: assignmentError } = await input.supabase
+    .from("project_streamer_settlement_group_assignments")
+    .select("project_streamer_id, group_id, effective_from, effective_until")
+    .eq("organization_id", input.organizationId)
+    .eq("project_id", input.projectId)
+    .order("project_streamer_id", { ascending: true })
+    .returns<unknown[]>();
+  if (assignmentError) {
+    throw new CustomRulePersistenceQueryError(
+      "load_settlement_group_assignments",
+      assignmentError,
+    );
+  }
+  if (!Array.isArray(assignmentData)) {
+    throw new CustomRulePersistenceDataError(
+      "assignment",
+      "assignment result must be an array",
+    );
+  }
+
+  const { data: ruleData, error: ruleError } = await input.supabase
+    .from("custom_settlement_rule_versions")
+    .select("id, target_id, priority, composition_mode, status")
+    .eq("organization_id", input.organizationId)
+    .eq("project_id", input.projectId)
+    .eq("target_type", "streamer_group")
+    .in("status", ["active", "pending_review"])
+    .order("priority", { ascending: true })
+    .order("id", { ascending: true })
+    .returns<unknown[]>();
+  if (ruleError) {
+    throw new CustomRulePersistenceQueryError(
+      "load_settlement_group_rules",
+      ruleError,
+    );
+  }
+  if (!Array.isArray(ruleData)) {
+    throw new CustomRulePersistenceDataError(
+      "group",
+      "group rule result must be an array",
+    );
+  }
+
+  const projectStreamerIds = projectStreamerData
+    .map((row) => routeGroupProjectStreamerSchema.parse(row).id)
+    .sort();
+  const assignments = assignmentData.map((row) =>
+    routeGroupAssignmentSchema.parse(row),
+  );
+  const activeAssignments = assignments.filter(
+    (assignment) =>
+      assignment.effective_from <= effectiveAt &&
+      (assignment.effective_until === null ||
+        effectiveAt < assignment.effective_until),
+  );
+  const population = determineSettlementPopulationCoverage({
+    joinedProjectStreamerIds: projectStreamerIds,
+    activeAssignments: activeAssignments.map((assignment) => ({
+      projectStreamerId: assignment.project_streamer_id,
+      groupId: assignment.group_id,
+    })),
+  });
+  const projectStreamerIdsByGroupId = new Map<string, string[]>();
+  for (const assignment of activeAssignments) {
+    const list = projectStreamerIdsByGroupId.get(assignment.group_id) ?? [];
+    list.push(assignment.project_streamer_id);
+    projectStreamerIdsByGroupId.set(assignment.group_id, list);
+  }
+  const activePendingRules: SettlementGroupScopedRule[] = ruleData.map(
+    (row) => {
+      const parsed = routeGroupScopedRuleSchema.parse(row);
+      return {
+        id: parsed.id,
+        targetGroupId: parsed.target_id,
+        priority: parsed.priority,
+        compositionMode: parsed.composition_mode,
+        status: parsed.status,
+        projectStreamerIds: [
+          ...(projectStreamerIdsByGroupId.get(parsed.target_id) ?? []),
+        ].sort(),
+      };
+    },
+  );
+  const simulationPopulation =
+    input.simulation?.summarySchemaVersion === 2 &&
+    input.simulation.sampleSelection.groupPopulation
+      ? input.simulation.sampleSelection.groupPopulation
+      : {
+          assignedProjectStreamerIds: [],
+          unassignedProjectStreamerIds: [],
+          groupSnapshotHash:
+            input.simulation?.dataSelectionHash ?? currentGroupSnapshotHash,
+        };
+
+  return {
+    assignedProjectStreamerIds: [...population.assignedProjectStreamerIds],
+    unassignedProjectStreamerIds: [...population.unassignedProjectStreamerIds],
+    currentGroupSnapshotHash,
+    simulationPopulation,
+    activePendingRules,
+  };
 }
 
 async function loadRouteFallbackSimulation(input: {

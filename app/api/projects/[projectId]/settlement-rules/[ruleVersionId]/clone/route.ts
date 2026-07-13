@@ -65,7 +65,6 @@ export async function POST(
         rule: toCustomRuleGovernanceRuleDto(
           clone.version as unknown as CustomSettlementRuleVersion,
         ),
-        lineage: clone.lineage,
         missingTargetVariables: clone.missingTargetVariables,
       },
       { status: 201 },

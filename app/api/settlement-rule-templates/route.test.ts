@@ -112,7 +112,10 @@ describe("settlement rule templates route", () => {
       expect(routeContext.templates.listReusableSettlementRuleTemplates).toHaveBeenCalledWith({
         actor: routeContext.actor,
       });
-      expect(JSON.stringify(await response.json())).not.toContain("secret formula");
+      const json = await response.json();
+      expect(JSON.stringify(json)).not.toContain("secret formula");
+      expect(JSON.stringify(json)).not.toContain("sourceRuleVersionId");
+      expect(JSON.stringify(json)).not.toContain("sourceProjectId");
     },
   );
 
@@ -148,6 +151,9 @@ describe("settlement rule templates route", () => {
         sourceRuleVersionId: RULE_ID,
       }),
     );
+    const json = await response.json();
+    expect(JSON.stringify(json)).not.toContain("sourceRuleVersionId");
+    expect(JSON.stringify(json)).not.toContain("sourceProjectId");
   });
 
   it.each(["operator_business", "finance", "streamer"])(
