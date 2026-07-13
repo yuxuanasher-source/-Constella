@@ -269,24 +269,22 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
     scopes: ["payable", "receivable", "external_cost"] as const,
     grains: ALL_GRAINS,
   }),
-  source({
+  unavailable({
     id: "import_type",
     label: "导入类型",
     runtimeType: STRING_TYPE,
     unit: "文本",
-    sourceLabel: "规范化成本导入批次类型",
-    sourceKey: "project_cost_import_batches.import_type",
+    sourceLabel: "暂未接入可验证覆盖的规范化导入批次类型",
     scopes: EXTERNAL_COST_ONLY,
     grains: REPORT_GRAIN,
     coverageFrom: "project_id",
   }),
-  source({
+  unavailable({
     id: "import_row_index",
     label: "导入行号",
     runtimeType: INTEGER_TYPE,
     unit: "行",
-    sourceLabel: "规范化成本导入行序号",
-    sourceKey: "derived:project_cost_import_batches.parsed_payload.row_index",
+    sourceLabel: "暂未接入可验证覆盖的规范化导入行序号",
     scopes: EXTERNAL_COST_ONLY,
     grains: REPORT_GRAIN,
     coverageFrom: "project_id",
@@ -414,26 +412,22 @@ const VARIABLE_DEFINITIONS: readonly VariableDefinition[] =
     grains: REPORT_GRAIN,
     coverageFrom: "project_id",
   }),
-  source({
+  unavailable({
     id: "sales_amount",
     label: "销售金额",
     runtimeType: MONEY_TYPE,
     unit: "元",
-    sourceLabel: "规范化导入销售金额字段",
-    sourceKey:
-      "project_cost_items.source_payload.sales_amount_cents@normalized_import",
+    sourceLabel: "暂未接入可验证覆盖的规范化导入销售金额",
     scopes: EXTERNAL_COST_ONLY,
     grains: REPORT_GRAIN,
     coverageFrom: "project_id",
   }),
-  source({
+  unavailable({
     id: "order_count",
     label: "订单数",
     runtimeType: INTEGER_TYPE,
     unit: "单",
-    sourceLabel: "规范化导入订单数字段",
-    sourceKey:
-      "project_cost_items.source_payload.order_count@normalized_import",
+    sourceLabel: "暂未接入可验证覆盖的规范化导入订单数",
     scopes: EXTERNAL_COST_ONLY,
     grains: REPORT_GRAIN,
     coverageFrom: "project_id",

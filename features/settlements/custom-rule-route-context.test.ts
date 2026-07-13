@@ -4155,7 +4155,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     },
   );
 
-  it("populates advertised external-cost identifier variables from authorized cost rows", async () => {
+  it("populates advertised external-cost report and supplier identifiers from authorized cost rows", async () => {
     const report = approvedReport();
     const supplierId = "51515151-5151-4151-8151-515151515151";
     const catalog = {
@@ -4163,7 +4163,7 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
         businessTimezone: "Asia/Shanghai",
         businessTimezoneConfirmed: true,
         businessTimezoneSource: "confirmed_contract",
-        variables: ["import_type", "report_id", "supplier_id"].map((id) => ({
+        variables: ["report_id", "supplier_id"].map((id) => ({
           id,
           availability: "available",
           coverageNumerator: 1,
@@ -4197,10 +4197,63 @@ describe("Supabase custom-rule authorized evidence adapter", () => {
     });
 
     expect(evidence.records[0]?.variables).toMatchObject({
-      import_type: { type: "string", value: "supplier" },
       report_id: { type: "string", value: report.id },
       supplier_id: { type: "string", value: supplierId },
     });
+    expect(evidence.records[0]?.variables).not.toHaveProperty("import_type");
+  });
+
+  it("does not expose raw external-cost import payload fields as authorized variables", async () => {
+    const report = approvedReport();
+    const catalog = {
+      getCatalog: vi.fn().mockResolvedValue({
+        businessTimezone: "Asia/Shanghai",
+        businessTimezoneConfirmed: true,
+        businessTimezoneSource: "confirmed_contract",
+        variables: ["report_id"].map((id) => ({
+          id,
+          availability: "available",
+          coverageNumerator: 1,
+          coverageDenominator: 1,
+        })),
+      }),
+    };
+    const harness = await evidenceHarness({
+      draft: externalCostReportIdentifierDraft(),
+      catalog,
+      reports: [report],
+      costs: [
+        confirmedCostItem({
+          live_report_id: report.id,
+          item_type: "traffic",
+          import_type: "raw-import-type",
+          amount_cents: "12345",
+          source_payload: {
+            sales_amount_cents: "99999999",
+            order_count: 88,
+            row_index: 7,
+            arbitrary_secret: "must-not-leak",
+          },
+        }),
+      ],
+    });
+
+    const authorized = await harness.adapter.authorizeSelection(
+      authorizationInput(),
+    );
+    const evidence = await harness.adapter.loadAuthorizedEvidence({
+      actor: { organizationId: ORGANIZATION_ID, userId: USER_ID },
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      selection: authorized,
+    });
+    const variables = evidence.records[0]?.variables ?? {};
+
+    expect(variables).not.toHaveProperty("import_type");
+    expect(variables).not.toHaveProperty("import_row_index");
+    expect(variables).not.toHaveProperty("sales_amount");
+    expect(variables).not.toHaveProperty("order_count");
+    expect(JSON.stringify(variables)).not.toContain("must-not-leak");
   });
 
   it("rejects typed-output user examples that do not match the draft scope", async () => {
@@ -5327,13 +5380,6 @@ function externalCostIdentifierDraft() {
     ...base.businessContract,
     requiredInputs: [
       {
-        name: "import_type",
-        description: "normalized import type",
-        source: "project_cost_import_batches.import_type",
-        valueType: { kind: "scalar", scalarType: "string" },
-        userFacingUnit: "text",
-      },
-      {
         name: "report_id",
         description: "authorized report id",
         source: "project_cost_items.live_report_id",
@@ -5352,7 +5398,6 @@ function externalCostIdentifierDraft() {
       ...example,
       inputs: {
         ...example.inputs,
-        import_type: { type: "string", value: "supplier" },
         report_id: {
           type: "string",
           value: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -5360,6 +5405,37 @@ function externalCostIdentifierDraft() {
         supplier_id: {
           type: "string",
           value: "51515151-5151-4151-8151-515151515151",
+        },
+      },
+    })),
+  });
+  return {
+    ...base,
+    businessContract: contract,
+    contractHash: hashCustomRuleContract(contract),
+  };
+}
+
+function externalCostReportIdentifierDraft() {
+  const base = typedOutputSimulationDraft("external_cost");
+  const contract = businessRuleContractSchema.parse({
+    ...base.businessContract,
+    requiredInputs: [
+      {
+        name: "report_id",
+        description: "authorized report id",
+        source: "project_cost_items.live_report_id",
+        valueType: { kind: "scalar", scalarType: "string" },
+        userFacingUnit: "id",
+      },
+    ],
+    examples: base.businessContract.examples.map((example) => ({
+      ...example,
+      inputs: {
+        ...example.inputs,
+        report_id: {
+          type: "string",
+          value: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         },
       },
     })),

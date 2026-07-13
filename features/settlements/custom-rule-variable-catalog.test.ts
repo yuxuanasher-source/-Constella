@@ -228,9 +228,14 @@ describe("buildCustomRuleVariableCatalog", () => {
       coverageDenominator: 3,
     });
     expect(variable(catalog, "import_type")).toMatchObject({
-      availability: "available",
+      availability: "unavailable",
       runtimeType: { kind: "scalar", scalarType: "string" },
     });
+    for (const id of ["import_row_index", "sales_amount", "order_count"]) {
+      expect(variable(catalog, id)).toMatchObject({
+        availability: "unavailable",
+      });
+    }
     expect(JSON.stringify(catalog)).not.toContain("rawImport");
     expect(JSON.stringify(catalog)).not.toContain("parsedPayload");
     expect(JSON.stringify(catalog)).not.toContain("json");

@@ -3764,25 +3764,6 @@ function addExternalCostVariables(
     "supplier_fee",
   );
   addCostTypeAmountVariable(variables, "traffic_cost", costs, "traffic");
-  const salesAmount = sumPayloadMoneyCents(costs, "sales_amount_cents");
-  if (salesAmount !== null) {
-    variables.sales_amount = {
-      type: "money_cents",
-      amountCents: bigintAsSafeNumber(salesAmount),
-    };
-  }
-  const orderCount = sumPayloadInteger(costs, "order_count");
-  if (orderCount !== null) {
-    variables.order_count = { type: "integer", value: orderCount };
-  }
-  const rowIndex = firstPayloadInteger(costs, "row_index");
-  if (rowIndex !== null) {
-    variables.import_row_index = { type: "integer", value: rowIndex };
-  }
-  const importType = firstCostString(costs, "import_type");
-  if (importType !== null) {
-    variables.import_type = { type: "string", value: importType };
-  }
   const supplierId = firstCostString(costs, "supplier_organization_id");
   if (supplierId !== null) {
     variables.supplier_id = { type: "string", value: supplierId };
@@ -3807,76 +3788,13 @@ function addCostTypeAmountVariable(
   };
 }
 
-function sumPayloadMoneyCents(
-  costs: ProjectCostRow[],
-  key: "sales_amount_cents",
-): bigint | null {
-  let total = BigInt(0);
-  let found = false;
-  for (const cost of costs) {
-    const value = payloadValue(cost, key);
-    const amount = integerPayloadValue(value);
-    if (amount === null) continue;
-    found = true;
-    total += BigInt(amount);
-  }
-  return found ? total : null;
-}
-
-function sumPayloadInteger(
-  costs: ProjectCostRow[],
-  key: "order_count",
-): number | null {
-  let total = 0;
-  let found = false;
-  for (const cost of costs) {
-    const value = integerPayloadValue(payloadValue(cost, key));
-    if (value === null) continue;
-    found = true;
-    total += value;
-  }
-  return found ? total : null;
-}
-
-function firstPayloadInteger(
-  costs: ProjectCostRow[],
-  key: "row_index",
-): number | null {
-  for (const cost of costs) {
-    const value = integerPayloadValue(payloadValue(cost, key));
-    if (value !== null) return value;
-  }
-  return null;
-}
-
 function firstCostString(
   costs: ProjectCostRow[],
-  key: "import_type" | "supplier_organization_id",
+  key: "supplier_organization_id",
 ): string | null {
   for (const cost of costs) {
     const value = cost[key];
     if (typeof value === "string" && value.length > 0) return value;
-  }
-  return null;
-}
-
-function payloadValue(cost: ProjectCostRow, key: string): unknown {
-  const payload = cost.source_payload;
-  if (!payload || Array.isArray(payload) || typeof payload !== "object") {
-    return null;
-  }
-  return Object.prototype.hasOwnProperty.call(payload, key)
-    ? payload[key]
-    : null;
-}
-
-function integerPayloadValue(value: unknown): number | null {
-  if (typeof value === "number") {
-    return Number.isSafeInteger(value) && value >= 0 ? value : null;
-  }
-  if (typeof value === "string" && /^\d+$/u.test(value)) {
-    const numeric = Number(value);
-    return Number.isSafeInteger(numeric) ? numeric : null;
   }
   return null;
 }
