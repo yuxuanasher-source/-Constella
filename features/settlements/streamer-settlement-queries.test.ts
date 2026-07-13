@@ -107,12 +107,15 @@ describe("streamer settlement safe DTO", () => {
           groupRoster: ["other-streamer"],
           reviewerComments: "内部规则评审意见",
           internalRiskThresholds: { marginFloorBps: 2000 },
-          namedOutputsCents: {
+          personalComponentsCents: {
             baseSalary: 80000,
-            "rule-version-payable-123456:margin": 90000,
-            "internal-layer:unknownPayoutBasis": 12345,
             cptPay: 24000,
             final: 104000,
+          },
+          namedOutputsCents: {
+            "rule-version-payable-123456:baseSalary": 80000,
+            "rule-version-payable-123456:margin": 90000,
+            "internal-layer:unknownPayoutBasis": 12345,
             marginCents: 90000,
             taxCents: 6000,
             externalCostCents: 12000,
@@ -145,6 +148,45 @@ describe("streamer settlement safe DTO", () => {
     const serialized = JSON.stringify(item);
     expect(serialized).not.toMatch(
       /formula|compiledAst|receivableRules|margin|unknownPayoutBasis|rule-version-payable|internal-layer|tax|externalCost|other-streamer|groupRoster|reviewerComments|internalRiskThresholds|内部规则评审意见|内部复核备注/i,
+    );
+  });
+
+  it("does not derive personal components from generic project-period named outputs", () => {
+    const item = toStreamerPayableItem({
+      id: "item-project-period-outputs",
+      project_name: "Aggregate Project",
+      period_start: "2026-06-01",
+      period_end: "2026-06-30",
+      computed_amount: 800,
+      manual_amount: 0,
+      adjustment_amount: 0,
+      payable_amount: 800,
+      evidence_level: "yellow",
+      evidence_snapshot: {
+        settlementDuration: 120,
+        timeSource: "system",
+        ruleEngine: {
+          grain: "project_period",
+          namedOutputsCents: {
+            "550e8400-e29b-41d4-a716-446655440000:baseSalary": 80000,
+            "550e8400-e29b-41d4-a716-446655440000:cptPay": 20000,
+            "550e8400-e29b-41d4-a716-446655440000:final": 100000,
+          },
+          componentOutputsCents: {
+            baseSalary: 80000,
+          },
+          sourceReportIds: ["report-a", "report-b"],
+        },
+      },
+      created_at: "2026-06-20T12:00:00.000Z",
+    });
+
+    expect(item.explanation?.components).toEqual([]);
+    expect(item.explanation?.explanationZh).toBe(
+      "本次 Aggregate Project 结算包含个人结算项，最终应付 ¥800；有效时长 2.0 小时，时间来源 system。",
+    );
+    expect(JSON.stringify(item)).not.toMatch(
+      /550e8400|baseSalary|cptPay|最终金额/,
     );
   });
 

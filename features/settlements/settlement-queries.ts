@@ -757,11 +757,14 @@ function toRuleComponents(
 
   return Object.entries(outputs)
     .filter((entry): entry is [string, number] => Number.isFinite(entry[1]))
-    .map(([key, amountCents]) => ({
-      key,
-      label: settlementComponentLabel(key),
-      amountCents,
-    }));
+    .map(([key, amountCents]) => {
+      const componentKey = settlementComponentKeyFromOutputKey(key);
+      return {
+        key,
+        label: settlementComponentLabel(componentKey),
+        amountCents,
+      };
+    });
 }
 
 function toAppliedVersionLabel(value: unknown): string | null {
@@ -784,7 +787,22 @@ function versionLabelFromId(versionId: string | null): string | null {
   if (!versionId) {
     return null;
   }
-  return `规则版本 ${versionId.slice(0, 8)}`;
+  return `规则版本 ${shortVersionId(versionId)}`;
+}
+
+function shortVersionId(versionId: string): string {
+  const uuidMatch = versionId.match(
+    /^([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  );
+  if (uuidMatch) {
+    return uuidMatch[1];
+  }
+  const parts = versionId.split(/[-_:]/).filter(Boolean);
+  const tail = parts[parts.length - 1];
+  if (tail && tail.length >= 6) {
+    return tail.slice(0, 8);
+  }
+  return versionId.length <= 16 ? versionId : versionId.slice(0, 16);
 }
 
 function toMissingDataDecision(
@@ -816,7 +834,7 @@ function toOpenSettlementRuleExceptions(
   rows: SettlementRuleExceptionRow[] | null | undefined,
 ): OpsSettlementRuleExceptionSummary[] {
   return (rows ?? [])
-    .filter((row) => row.status !== "resolved")
+    .filter((row) => row.status === "review_required")
     .map((row) => ({
       id: row.id,
       liveReportId: row.live_report_id ?? null,
@@ -843,6 +861,11 @@ function settlementComponentLabel(key: string): string {
     final: "最终金额",
   };
   return labels[key] ?? key;
+}
+
+function settlementComponentKeyFromOutputKey(key: string): string {
+  const parts = key.split(":");
+  return parts[parts.length - 1] ?? key;
 }
 
 function arrayValue(value: unknown): unknown[] {

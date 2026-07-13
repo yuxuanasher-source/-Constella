@@ -208,10 +208,7 @@ function toStreamerPayableExplanation(
 function toPersonalComponents(
   ruleEngine: Record<string, unknown>,
 ): StreamerPayableExplanation["components"] {
-  const outputs =
-    recordValue(ruleEngine.personalComponentsCents) ??
-    recordValue(ruleEngine.componentOutputsCents) ??
-    recordValue(ruleEngine.namedOutputsCents);
+  const outputs = recordValue(ruleEngine.personalComponentsCents);
   if (!outputs) {
     return [];
   }

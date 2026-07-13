@@ -207,7 +207,7 @@ describe("settlement DTO mappers", () => {
           grain: "project_streamer_period",
           appliedLayers: [
             {
-              versionId: "project-rule-version-abcdef123456",
+              versionId: "550e8400-e29b-41d4-a716-446655440000",
               targetType: "project",
             },
             {
@@ -216,9 +216,9 @@ describe("settlement DTO mappers", () => {
             },
           ],
           namedOutputsCents: {
-            baseSalary: 80000,
-            cptPay: 24000,
-            final: 104000,
+            "550e8400-e29b-41d4-a716-446655440000:baseSalary": 80000,
+            "streamer-rule-version-fedcba654321:cptPay": 24000,
+            "streamer-rule-version-fedcba654321:final": 104000,
           },
           missingDataDecisions: [
             {
@@ -241,6 +241,14 @@ describe("settlement DTO mappers", () => {
           resolution_reason: null,
         },
         {
+          id: "exception-voided",
+          live_report_id: "report-3",
+          variable_name: "platformFeeCents",
+          policy: "route_item_to_review",
+          status: "voided",
+          resolution_reason: "作废",
+        },
+        {
           id: "exception-resolved",
           live_report_id: "report-1",
           variable_name: "giftAmountCents",
@@ -256,13 +264,25 @@ describe("settlement DTO mappers", () => {
       mode: "custom",
       executionGrain: "project_streamer_period",
       appliedVersionLabels: [
-        "规则版本 project-",
-        "规则版本 streamer",
+        "规则版本 550e8400",
+        "规则版本 fedcba65",
       ],
       components: [
-        { key: "baseSalary", label: "底薪", amountCents: 80000 },
-        { key: "cptPay", label: "有效时长", amountCents: 24000 },
-        { key: "final", label: "最终金额", amountCents: 104000 },
+        {
+          key: "550e8400-e29b-41d4-a716-446655440000:baseSalary",
+          label: "底薪",
+          amountCents: 80000,
+        },
+        {
+          key: "streamer-rule-version-fedcba654321:cptPay",
+          label: "有效时长",
+          amountCents: 24000,
+        },
+        {
+          key: "streamer-rule-version-fedcba654321:final",
+          label: "最终金额",
+          amountCents: 104000,
+        },
       ],
       sourceReportCount: 2,
       missingDataDecisions: [
