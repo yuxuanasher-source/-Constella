@@ -19,6 +19,7 @@ import {
   type NormalizedAstNode,
   type TypedRuntimeValue,
 } from "./custom-rule-types";
+import type { SettlementGroupMembershipSnapshot } from "./custom-rule-groups";
 
 import {
   assertCoverageCounts,
@@ -636,6 +637,76 @@ export type ListCustomRuleReviewEventsInput = {
   ruleVersionId: string;
 };
 
+export type CreateSettlementRuleGroupInput = {
+  organizationId: string;
+  projectId: string;
+  name: string;
+  description: string | null;
+  reason: string;
+  clientRequestId: string;
+};
+
+export type ListSettlementRuleGroupsInput = {
+  organizationId: string;
+  projectId: string;
+  includeArchived?: boolean;
+};
+
+export type ArchiveSettlementRuleGroupInput = {
+  organizationId: string;
+  projectId: string;
+  groupId: string;
+  archivedAt: string;
+  reason: string;
+  clientRequestId: string;
+};
+
+export type ChangeSettlementGroupAssignmentInput = {
+  organizationId: string;
+  projectId: string;
+  projectStreamerId: string;
+  groupId: string;
+  effectiveFrom: string;
+  effectiveUntil: string | null;
+  reason: string;
+  clientRequestId: string;
+};
+
+export type SettlementRuleGroup = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  name: string;
+  description: string | null;
+  status: "active" | "archived";
+  createdBy: string;
+  createdAt: string;
+  archivedAt: string | null;
+  assignmentCount: number;
+  activeRuleCount: number;
+  pendingRuleCount: number;
+  futureAssignmentCount: number;
+};
+
+export type ProjectStreamerSettlementGroupAssignment = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  projectStreamerId: string;
+  groupId: string;
+  effectiveFrom: string;
+  effectiveUntil: string | null;
+  assignedBy: string;
+  reason: string;
+  createdAt: string;
+};
+
+export type SettlementGroupAssignmentChangeResult = {
+  insertedAssignment: ProjectStreamerSettlementGroupAssignment;
+  closedAssignmentIds: string[];
+  newGroupSnapshotHash: SettlementGroupMembershipSnapshot["snapshotHash"];
+};
+
 export type CustomSettlementRuleVersion = z.infer<
   typeof customSettlementRuleVersionSchema
 >;
@@ -709,6 +780,18 @@ export type CustomRuleRepository = CustomRuleReadRepository & {
   listCustomRuleReviewEvents(
     input: ListCustomRuleReviewEventsInput,
   ): Promise<CustomSettlementRuleReviewEvent[]>;
+  createSettlementRuleGroup(
+    input: CreateSettlementRuleGroupInput,
+  ): Promise<SettlementRuleGroup>;
+  listSettlementRuleGroups(
+    input: ListSettlementRuleGroupsInput,
+  ): Promise<SettlementRuleGroup[]>;
+  archiveSettlementRuleGroup(
+    input: ArchiveSettlementRuleGroupInput,
+  ): Promise<SettlementRuleGroup>;
+  changeSettlementGroupAssignment(
+    input: ChangeSettlementGroupAssignmentInput,
+  ): Promise<SettlementGroupAssignmentChangeResult>;
 };
 
 export type ResolvedCustomRuleBusinessTimezone = {
@@ -804,7 +887,12 @@ export class CustomRulePersistenceDataError extends Error {
   readonly code = "CUSTOM_RULE_PERSISTENCE_DATA_INVALID";
 
   constructor(
-    readonly entity: "draft" | "simulation" | "lifecycle",
+    readonly entity:
+      | "draft"
+      | "simulation"
+      | "lifecycle"
+      | "group"
+      | "assignment",
     message: string,
   ) {
     super(`Invalid persisted custom-rule ${entity}: ${message}`);
@@ -1522,6 +1610,37 @@ const listCustomRuleReviewEventsInputSchema = z.strictObject({
   projectId: uuidSchema,
   ruleVersionId: uuidSchema,
 });
+const createSettlementRuleGroupInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  name: nonemptyTextSchema.max(120),
+  description: boundedTextSchema.max(2_000).nullable(),
+  reason: boundedTextSchema,
+  clientRequestId: nonemptyTextSchema.max(120),
+});
+const listSettlementRuleGroupsInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  includeArchived: z.boolean().optional(),
+});
+const archiveSettlementRuleGroupInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  groupId: uuidSchema,
+  archivedAt: timestampSchema,
+  reason: boundedTextSchema,
+  clientRequestId: nonemptyTextSchema.max(120),
+});
+const changeSettlementGroupAssignmentInputSchema = z.strictObject({
+  organizationId: uuidSchema,
+  projectId: uuidSchema,
+  projectStreamerId: uuidSchema,
+  groupId: uuidSchema,
+  effectiveFrom: timestampSchema,
+  effectiveUntil: timestampSchema.nullable(),
+  reason: boundedTextSchema,
+  clientRequestId: nonemptyTextSchema.max(120),
+});
 const turnCompletionInputSchema = z.strictObject({
   providerName: nonemptyTextSchema.max(200),
   content: preservedBoundedTextSchema,
@@ -1991,6 +2110,38 @@ const lifecycleResultRowSchema = z.strictObject({
 const savedDraftResultRowSchema = lifecycleResultRowSchema.omit({
   event: true,
 });
+const settlementRuleGroupRowSchema = z.strictObject({
+  id: uuidSchema,
+  organization_id: uuidSchema,
+  project_id: uuidSchema,
+  name: nonemptyTextSchema.max(120),
+  description: boundedTextSchema.max(2_000).nullable(),
+  status: z.enum(["active", "archived"]),
+  created_by: uuidSchema,
+  created_at: timestampSchema,
+  archived_at: timestampSchema.nullable(),
+  assignment_count: nonnegativeSafeIntegerSchema.default(0),
+  active_rule_count: nonnegativeSafeIntegerSchema.default(0),
+  pending_rule_count: nonnegativeSafeIntegerSchema.default(0),
+  future_assignment_count: nonnegativeSafeIntegerSchema.default(0),
+});
+const settlementGroupAssignmentRowSchema = z.strictObject({
+  id: uuidSchema,
+  organization_id: uuidSchema,
+  project_id: uuidSchema,
+  project_streamer_id: uuidSchema,
+  group_id: uuidSchema,
+  effective_from: timestampSchema,
+  effective_until: timestampSchema.nullable(),
+  assigned_by: uuidSchema,
+  reason: boundedTextSchema,
+  created_at: timestampSchema,
+});
+const settlementGroupAssignmentChangeRowSchema = z.strictObject({
+  inserted_assignment: settlementGroupAssignmentRowSchema,
+  closed_assignment_ids: z.array(uuidSchema),
+  new_group_snapshot_hash: hashSchema,
+});
 
 const LIFECYCLE_VERSION_SELECT = Object.keys(
   lifecycleVersionRowSchema.shape,
@@ -1998,6 +2149,17 @@ const LIFECYCLE_VERSION_SELECT = Object.keys(
 const LIFECYCLE_REVIEW_EVENT_SELECT = Object.keys(
   lifecycleReviewEventRowSchema.shape,
 ).join(", ");
+const SETTLEMENT_RULE_GROUP_SELECT = [
+  "id",
+  "organization_id",
+  "project_id",
+  "name",
+  "description",
+  "status",
+  "created_by",
+  "created_at",
+  "archived_at",
+].join(", ");
 
 export const customSettlementRuleVersionSchema = z.strictObject({
   id: uuidSchema,
@@ -2657,6 +2819,140 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
     return data.map((row) =>
       toCustomSettlementRuleReviewEvent(
         parsePersistenceRow(lifecycleReviewEventRowSchema, row, "lifecycle"),
+      ),
+    );
+  }
+
+  async createSettlementRuleGroup(
+    unsafeInput: CreateSettlementRuleGroupInput,
+  ): Promise<SettlementRuleGroup> {
+    const input = parsePersistenceInput(
+      createSettlementRuleGroupInputSchema,
+      unsafeInput,
+      "create settlement rule group input",
+    );
+    const { data, error } = await this.client.rpc(
+      "create_settlement_rule_group",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_name: input.name,
+        p_description: input.description,
+        p_reason: input.reason,
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "create_settlement_rule_group",
+        error,
+      );
+    }
+    return toSettlementRuleGroup(
+      parsePersistenceRow(settlementRuleGroupRowSchema, data, "group"),
+    );
+  }
+
+  async listSettlementRuleGroups(
+    unsafeInput: ListSettlementRuleGroupsInput,
+  ): Promise<SettlementRuleGroup[]> {
+    const input = parsePersistenceInput(
+      listSettlementRuleGroupsInputSchema,
+      unsafeInput,
+      "list settlement rule groups input",
+    );
+    let query = this.client
+      .from("settlement_rule_groups")
+      .select(SETTLEMENT_RULE_GROUP_SELECT)
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId);
+    if (!input.includeArchived) query = query.eq("status", "active");
+    const { data, error } = await query
+      .order("status", { ascending: true })
+      .order("name", { ascending: true })
+      .order("id", { ascending: true })
+      .returns<unknown[]>();
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "list_settlement_rule_groups",
+        error,
+      );
+    }
+    if (!Array.isArray(data)) {
+      throw new CustomRulePersistenceDataError(
+        "group",
+        "group list result must be an array",
+      );
+    }
+    return data.map((row) =>
+      toSettlementRuleGroup(
+        parsePersistenceRow(settlementRuleGroupRowSchema, row, "group"),
+      ),
+    );
+  }
+
+  async archiveSettlementRuleGroup(
+    unsafeInput: ArchiveSettlementRuleGroupInput,
+  ): Promise<SettlementRuleGroup> {
+    const input = parsePersistenceInput(
+      archiveSettlementRuleGroupInputSchema,
+      unsafeInput,
+      "archive settlement rule group input",
+    );
+    const { data, error } = await this.client.rpc(
+      "archive_settlement_rule_group",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_group_id: input.groupId,
+        p_archived_at: input.archivedAt,
+        p_reason: input.reason,
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "archive_settlement_rule_group",
+        error,
+      );
+    }
+    return toSettlementRuleGroup(
+      parsePersistenceRow(settlementRuleGroupRowSchema, data, "group"),
+    );
+  }
+
+  async changeSettlementGroupAssignment(
+    unsafeInput: ChangeSettlementGroupAssignmentInput,
+  ): Promise<SettlementGroupAssignmentChangeResult> {
+    const input = parsePersistenceInput(
+      changeSettlementGroupAssignmentInputSchema,
+      unsafeInput,
+      "change settlement group assignment input",
+    );
+    const { data, error } = await this.client.rpc(
+      "change_settlement_group_assignment",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_project_streamer_id: input.projectStreamerId,
+        p_group_id: input.groupId,
+        p_effective_from: input.effectiveFrom,
+        p_effective_until: input.effectiveUntil,
+        p_reason: input.reason,
+        p_client_request_id: input.clientRequestId,
+      },
+    );
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "change_settlement_group_assignment",
+        error,
+      );
+    }
+    return toSettlementGroupAssignmentChange(
+      parsePersistenceRow(
+        settlementGroupAssignmentChangeRowSchema,
+        data,
+        "assignment",
       ),
     );
   }
@@ -3785,7 +4081,7 @@ function parsePersistenceInput<Output>(
 function parsePersistenceRow<Output>(
   schema: z.ZodType<Output>,
   value: unknown,
-  entity: "draft" | "simulation" | "lifecycle",
+  entity: "draft" | "simulation" | "lifecycle" | "group" | "assignment",
 ): Output {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -4434,6 +4730,55 @@ function scopeSimulationOwnerQuery<
   return owner.kind === "ai_draft"
     ? query.eq("ai_draft_id", owner.id)
     : query.eq("rule_version_id", owner.id);
+}
+
+function toSettlementRuleGroup(
+  row: z.infer<typeof settlementRuleGroupRowSchema>,
+): SettlementRuleGroup {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    name: row.name,
+    description: row.description,
+    status: row.status,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    archivedAt: row.archived_at,
+    assignmentCount: row.assignment_count,
+    activeRuleCount: row.active_rule_count,
+    pendingRuleCount: row.pending_rule_count,
+    futureAssignmentCount: row.future_assignment_count,
+  };
+}
+
+function toProjectStreamerSettlementGroupAssignment(
+  row: z.infer<typeof settlementGroupAssignmentRowSchema>,
+): ProjectStreamerSettlementGroupAssignment {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    projectStreamerId: row.project_streamer_id,
+    groupId: row.group_id,
+    effectiveFrom: row.effective_from,
+    effectiveUntil: row.effective_until,
+    assignedBy: row.assigned_by,
+    reason: row.reason,
+    createdAt: row.created_at,
+  };
+}
+
+function toSettlementGroupAssignmentChange(
+  row: z.infer<typeof settlementGroupAssignmentChangeRowSchema>,
+): SettlementGroupAssignmentChangeResult {
+  return {
+    insertedAssignment: toProjectStreamerSettlementGroupAssignment(
+      row.inserted_assignment,
+    ),
+    closedAssignmentIds: [...row.closed_assignment_ids].sort(),
+    newGroupSnapshotHash: row.new_group_snapshot_hash,
+  };
 }
 
 function toCustomSettlementRuleVersion(

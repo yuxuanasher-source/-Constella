@@ -54,6 +54,12 @@ import type {
   InsertedSettlementFormulaSimulation,
   ForceApproveCustomRuleRepositoryInput,
   ListCustomRulesInput,
+  CreateSettlementRuleGroupInput,
+  ListSettlementRuleGroupsInput,
+  ArchiveSettlementRuleGroupInput,
+  ChangeSettlementGroupAssignmentInput,
+  SettlementRuleGroup,
+  SettlementGroupAssignmentChangeResult,
   RequestCustomRuleChangesInput,
   SaveCustomRuleDraftInput,
   SavedCustomRuleDraftResult,
@@ -5085,6 +5091,151 @@ export type CustomRuleLifecycleService = {
     status?: ListCustomRulesInput["status"];
   }): Promise<CustomRuleLifecycleListDto[]>;
 };
+
+export type SettlementGroupMembershipRepositoryPort = Pick<
+  CustomRuleRepository,
+  | "createSettlementRuleGroup"
+  | "listSettlementRuleGroups"
+  | "archiveSettlementRuleGroup"
+  | "changeSettlementGroupAssignment"
+> & {
+  getCustomRuleGovernanceContext(input: {
+    organizationId: string;
+    projectId: string;
+    actorUserId: string;
+  }): Promise<Pick<CustomRuleLifecycleGovernanceContext, "actor">>;
+};
+
+type GroupServiceInput<Input> = Omit<Input, "organizationId" | "projectId"> & {
+  actor: LifecycleActorInput;
+  projectId: string;
+};
+
+export type SettlementGroupMembershipGovernanceService = {
+  createSettlementRuleGroup(
+    input: GroupServiceInput<CreateSettlementRuleGroupInput>,
+  ): Promise<SettlementRuleGroup>;
+  listSettlementRuleGroups(input: {
+    actor: LifecycleActorInput;
+    projectId: string;
+    includeArchived?: ListSettlementRuleGroupsInput["includeArchived"];
+  }): Promise<SettlementRuleGroup[]>;
+  archiveSettlementRuleGroup(
+    input: GroupServiceInput<ArchiveSettlementRuleGroupInput>,
+  ): Promise<SettlementRuleGroup>;
+  changeSettlementGroupAssignment(
+    input: GroupServiceInput<ChangeSettlementGroupAssignmentInput>,
+  ): Promise<SettlementGroupAssignmentChangeResult>;
+};
+
+export function createSettlementGroupMembershipGovernanceService(dependencies: {
+  repository: SettlementGroupMembershipRepositoryPort;
+}): SettlementGroupMembershipGovernanceService {
+  const repository = dependencies.repository;
+
+  const loadActorContext = async (input: {
+    actor: LifecycleActorInput;
+    projectId: string;
+  }) => {
+    const context = await repository.getCustomRuleGovernanceContext({
+      organizationId: input.actor.organizationId,
+      projectId: input.projectId,
+      actorUserId: input.actor.userId,
+    });
+    if (
+      context.actor.organizationId !== input.actor.organizationId ||
+      context.actor.userId !== input.actor.userId
+    ) {
+      throw new CustomRuleGovernanceError(
+        "CUSTOM_RULE_SERVER_CONTEXT_MISMATCH",
+        "Server-owned settlement group context does not match the request scope",
+      );
+    }
+    return context;
+  };
+
+  const requireCapability = (
+    role: AppRole,
+    capability: Parameters<typeof canRolePerformCustomRuleGovernanceAction>[1],
+  ): void => {
+    if (!canRolePerformCustomRuleGovernanceAction(role, capability)) {
+      throw new CustomRuleGovernanceError(
+        "CUSTOM_RULE_ACTION_NOT_ALLOWED",
+        `Server role ${role} cannot perform ${capability}`,
+      );
+    }
+  };
+
+  return {
+    async createSettlementRuleGroup(input) {
+      const context = await loadActorContext(input);
+      requireCapability(context.actor.role, "manage_groups");
+      return repository.createSettlementRuleGroup({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        name: input.name,
+        description: input.description,
+        reason: input.reason,
+        clientRequestId: input.clientRequestId,
+      });
+    },
+
+    async listSettlementRuleGroups(input) {
+      const context = await loadActorContext(input);
+      requireCapability(context.actor.role, "view_internal");
+      return repository.listSettlementRuleGroups({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        includeArchived: input.includeArchived,
+      });
+    },
+
+    async archiveSettlementRuleGroup(input) {
+      const context = await loadActorContext(input);
+      requireCapability(context.actor.role, "manage_groups");
+      const groups = await repository.listSettlementRuleGroups({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        includeArchived: false,
+      });
+      const group = groups.find((candidate) => candidate.id === input.groupId);
+      if (
+        group?.id === input.groupId &&
+        (group.activeRuleCount > 0 ||
+          group.pendingRuleCount > 0 ||
+          group.futureAssignmentCount > 0)
+      ) {
+        throw new CustomRuleGovernanceError(
+          "SETTLEMENT_GROUP_ARCHIVE_BLOCKED",
+          "Settlement group archive requires no active or pending group rules and no future assignments",
+        );
+      }
+      return repository.archiveSettlementRuleGroup({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        groupId: input.groupId,
+        archivedAt: input.archivedAt,
+        reason: input.reason,
+        clientRequestId: input.clientRequestId,
+      });
+    },
+
+    async changeSettlementGroupAssignment(input) {
+      const context = await loadActorContext(input);
+      requireCapability(context.actor.role, "assign_groups");
+      return repository.changeSettlementGroupAssignment({
+        organizationId: context.actor.organizationId,
+        projectId: input.projectId,
+        projectStreamerId: input.projectStreamerId,
+        groupId: input.groupId,
+        effectiveFrom: input.effectiveFrom,
+        effectiveUntil: input.effectiveUntil,
+        reason: input.reason,
+        clientRequestId: input.clientRequestId,
+      });
+    },
+  };
+}
 
 export function createCustomRuleLifecycleService(dependencies: {
   repository: CustomRuleLifecycleRepositoryPort;

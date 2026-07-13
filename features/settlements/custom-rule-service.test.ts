@@ -67,6 +67,121 @@ import { validateCustomRuleFormula } from "./custom-rule-validator";
 import { CUSTOM_RULE_FORCE_APPROVAL_ACKNOWLEDGEMENT } from "./custom-rule-governance";
 
 describe("Phase 2 custom rule lifecycle service", () => {
+  it("exports a settlement group membership governance service", () => {
+    expect(customRuleServiceModule).toHaveProperty(
+      "createSettlementGroupMembershipGovernanceService",
+    );
+  });
+
+  it("allows finance to list groups but rejects finance membership mutations", async () => {
+    const fixture = phase2GroupGovernanceFixture({
+      actor: { ...phase2Actor(), role: "finance" },
+    });
+    const service = phase2GroupGovernanceService(fixture);
+
+    await expect(
+      service.listSettlementRuleGroups({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        includeArchived: true,
+      }),
+    ).resolves.toHaveLength(1);
+
+    await expect(
+      service.createSettlementRuleGroup({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        name: "Gold streamers",
+        description: null,
+        reason: "Create a governed group.",
+        clientRequestId: "finance-create-denied-1",
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_ACTION_NOT_ALLOWED" });
+    await expect(
+      service.changeSettlementGroupAssignment({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        projectStreamerId: uuid(931),
+        groupId: uuid(932),
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        effectiveUntil: null,
+        reason: "Finance cannot mutate membership.",
+        clientRequestId: "finance-assign-denied-1",
+      }),
+    ).rejects.toMatchObject({ code: "CUSTOM_RULE_ACTION_NOT_ALLOWED" });
+
+    expect(fixture.repository.createSettlementRuleGroup).not.toHaveBeenCalled();
+    expect(
+      fixture.repository.changeSettlementGroupAssignment,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("allows owners and ops managers to create, archive, and assign groups", async () => {
+    const owner = phase2GroupGovernanceFixture();
+    const ownerService = phase2GroupGovernanceService(owner);
+    await ownerService.createSettlementRuleGroup({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+      name: "Gold streamers",
+      description: "High-volume exception group.",
+      reason: "Create the exception group.",
+      clientRequestId: "owner-group-create-1",
+    });
+
+    const ops = phase2GroupGovernanceFixture({
+      actor: { ...phase2Actor(), role: "ops_manager" },
+    });
+    const opsService = phase2GroupGovernanceService(ops);
+    await opsService.changeSettlementGroupAssignment({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+      projectStreamerId: uuid(931),
+      groupId: uuid(932),
+      effectiveFrom: "2026-08-01T00:00:00.000Z",
+      effectiveUntil: null,
+      reason: "Assign streamer to the governed group.",
+      clientRequestId: "ops-group-assign-1",
+    });
+    await opsService.archiveSettlementRuleGroup({
+      actor: phase2Actor(),
+      projectId: PROJECT_ID,
+      groupId: uuid(932),
+      archivedAt: "2026-09-01T00:00:00.000Z",
+      reason: "Archive after group rules and future assignments ended.",
+      clientRequestId: "ops-group-archive-1",
+    });
+
+    expect(owner.repository.createSettlementRuleGroup).toHaveBeenCalled();
+    expect(ops.repository.changeSettlementGroupAssignment).toHaveBeenCalled();
+    expect(ops.repository.archiveSettlementRuleGroup).toHaveBeenCalled();
+  });
+
+  it("rejects archived groups with active rules or future assignments before persistence", async () => {
+    const fixture = phase2GroupGovernanceFixture({
+      group: {
+        activeRuleCount: 1,
+        pendingRuleCount: 0,
+        futureAssignmentCount: 1,
+      },
+    });
+    const service = phase2GroupGovernanceService(fixture);
+
+    await expect(
+      service.archiveSettlementRuleGroup({
+        actor: phase2Actor(),
+        projectId: PROJECT_ID,
+        groupId: uuid(932),
+        archivedAt: "2026-09-01T00:00:00.000Z",
+        reason: "Archive while still referenced.",
+        clientRequestId: "archive-active-group-denied-1",
+      }),
+    ).rejects.toMatchObject({ code: "SETTLEMENT_GROUP_ARCHIVE_BLOCKED" });
+
+    expect(
+      fixture.repository.archiveSettlementRuleGroup,
+    ).not.toHaveBeenCalled();
+  });
+
   it("exports an injected lifecycle service with production execution disabled by default", () => {
     expect(customRuleServiceModule).toHaveProperty(
       "createCustomRuleLifecycleService",
@@ -805,6 +920,79 @@ function phase2LifecycleService(
     executionCapability,
     now: () => now,
   });
+}
+
+function phase2GroupGovernanceFixture(overrides: Record<string, unknown> = {}) {
+  const group = {
+    id: uuid(932),
+    organizationId: ORGANIZATION_ID,
+    projectId: PROJECT_ID,
+    name: "Gold streamers",
+    description: "High-volume exception group.",
+    status: "active",
+    createdBy: USER_ID,
+    createdAt: "2026-07-13T00:00:00.000Z",
+    archivedAt: null,
+    assignmentCount: 1,
+    activeRuleCount: 0,
+    pendingRuleCount: 0,
+    futureAssignmentCount: 0,
+    ...((overrides.group as Record<string, unknown> | undefined) ?? {}),
+  };
+  const context = {
+    actor: (overrides.actor ?? {
+      ...phase2Actor(),
+      role: "owner",
+    }) as Record<string, unknown>,
+  };
+  const repository = {
+    getCustomRuleGovernanceContext: vi.fn(async () => context),
+    createSettlementRuleGroup: vi.fn(async () => group),
+    listSettlementRuleGroups: vi.fn(async () => [group]),
+    archiveSettlementRuleGroup: vi.fn(async () => ({
+      ...group,
+      status: "archived",
+      archivedAt: "2026-09-01T00:00:00.000Z",
+    })),
+    changeSettlementGroupAssignment: vi.fn(async () => ({
+      insertedAssignment: {
+        id: uuid(933),
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        projectStreamerId: uuid(931),
+        groupId: group.id,
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        effectiveUntil: null,
+        assignedBy: USER_ID,
+        reason: "Assign streamer to the governed group.",
+        createdAt: "2026-07-13T00:00:00.000Z",
+      },
+      closedAssignmentIds: [],
+      newGroupSnapshotHash: "f".repeat(64),
+    })),
+  };
+  return { repository, context, group };
+}
+
+function phase2GroupGovernanceService(
+  fixture: ReturnType<typeof phase2GroupGovernanceFixture>,
+) {
+  const create = (customRuleServiceModule as Record<string, unknown>)
+    .createSettlementGroupMembershipGovernanceService as (
+    input: Record<string, unknown>,
+  ) => {
+    createSettlementRuleGroup(input: Record<string, unknown>): Promise<unknown>;
+    listSettlementRuleGroups(
+      input: Record<string, unknown>,
+    ): Promise<unknown[]>;
+    archiveSettlementRuleGroup(
+      input: Record<string, unknown>,
+    ): Promise<unknown>;
+    changeSettlementGroupAssignment(
+      input: Record<string, unknown>,
+    ): Promise<unknown>;
+  };
+  return create({ repository: fixture.repository });
 }
 
 const STANDALONE_RETRY_SOURCE_TURN_ID = uuid(210);

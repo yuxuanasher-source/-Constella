@@ -23,6 +23,164 @@ import {
 } from "./custom-rule-repository";
 
 describe("Phase 2 custom rule lifecycle repository", () => {
+  it("creates settlement rule groups through a role-gated RPC", async () => {
+    const rpc = vi.fn(async () => ({
+      data: settlementRuleGroupRow(),
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      createSettlementRuleGroup(
+        input: Record<string, unknown>,
+      ): Promise<unknown>;
+    };
+
+    const result = await repository.createSettlementRuleGroup({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      name: "Gold streamers",
+      description: "High-volume settlement exception group.",
+      reason: "Create the high-volume settlement group.",
+      clientRequestId: "group-create-1",
+    });
+
+    expect(result).toMatchObject({
+      id: GROUP_ID,
+      name: "Gold streamers",
+      status: "active",
+    });
+    expect(rpc).toHaveBeenCalledWith("create_settlement_rule_group", {
+      p_organization_id: ORGANIZATION_ID,
+      p_project_id: PROJECT_ID,
+      p_name: "Gold streamers",
+      p_description: "High-volume settlement exception group.",
+      p_reason: "Create the high-volume settlement group.",
+      p_client_request_id: "group-create-1",
+    });
+  });
+
+  it("lists active and archived settlement rule groups with scoped assignment counts", async () => {
+    const from = vi.fn((table: string) => {
+      expect(table).toBe("settlement_rule_groups");
+      return {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        returns: vi.fn(async () => ({
+          data: [
+            settlementRuleGroupRow({
+              assignment_count: 2,
+              future_assignment_count: 1,
+              active_rule_count: 0,
+              pending_rule_count: 1,
+            }),
+          ],
+          error: null,
+        })),
+      };
+    });
+    const repository = new SupabaseCustomRuleReadRepository({
+      from,
+    } as unknown as SupabaseClient) as unknown as {
+      listSettlementRuleGroups(
+        input: Record<string, unknown>,
+      ): Promise<unknown[]>;
+    };
+
+    const result = await repository.listSettlementRuleGroups({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      includeArchived: true,
+    });
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        id: GROUP_ID,
+        assignmentCount: 2,
+        futureAssignmentCount: 1,
+        activeRuleCount: 0,
+        pendingRuleCount: 1,
+      }),
+    ]);
+  });
+
+  it("archives settlement groups through a guarded RPC", async () => {
+    const rpc = vi.fn(async () => ({
+      data: settlementRuleGroupRow({
+        status: "archived",
+        archived_at: "2026-08-01T00:00:00.000Z",
+      }),
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      archiveSettlementRuleGroup(
+        input: Record<string, unknown>,
+      ): Promise<unknown>;
+    };
+
+    await repository.archiveSettlementRuleGroup({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      groupId: GROUP_ID,
+      archivedAt: "2026-08-01T00:00:00.000Z",
+      reason: "Archive after all group rules and assignments have ended.",
+      clientRequestId: "group-archive-1",
+    });
+
+    expect(rpc).toHaveBeenCalledWith("archive_settlement_rule_group", {
+      p_organization_id: ORGANIZATION_ID,
+      p_project_id: PROJECT_ID,
+      p_group_id: GROUP_ID,
+      p_archived_at: "2026-08-01T00:00:00.000Z",
+      p_reason: "Archive after all group rules and assignments have ended.",
+      p_client_request_id: "group-archive-1",
+    });
+  });
+
+  it("changes group assignment through one atomic close-and-insert RPC", async () => {
+    const rpc = vi.fn(async () => ({
+      data: settlementGroupAssignmentChangeRow(),
+      error: null,
+    }));
+    const repository = new SupabaseCustomRuleReadRepository({
+      rpc,
+    } as unknown as SupabaseClient) as unknown as {
+      changeSettlementGroupAssignment(
+        input: Record<string, unknown>,
+      ): Promise<unknown>;
+    };
+
+    const result = await repository.changeSettlementGroupAssignment({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      projectStreamerId: PROJECT_STREAMER_ID,
+      groupId: GROUP_ID,
+      effectiveFrom: "2026-08-01T00:00:00.000Z",
+      effectiveUntil: null,
+      reason: "Move streamer into the August rule group.",
+      clientRequestId: "group-assignment-1",
+    });
+
+    expect(result).toMatchObject({
+      insertedAssignment: { groupId: GROUP_ID },
+      closedAssignmentIds: [ASSIGNMENT_ID],
+      newGroupSnapshotHash: HASH_F,
+    });
+    expect(rpc).toHaveBeenCalledWith("change_settlement_group_assignment", {
+      p_organization_id: ORGANIZATION_ID,
+      p_project_id: PROJECT_ID,
+      p_project_streamer_id: PROJECT_STREAMER_ID,
+      p_group_id: GROUP_ID,
+      p_effective_from: "2026-08-01T00:00:00.000Z",
+      p_effective_until: null,
+      p_reason: "Move streamer into the August rule group.",
+      p_client_request_id: "group-assignment-1",
+    });
+  });
+
   it("submits one atomic RPC with distinct source and destination identities", async () => {
     const rpcData = lifecycleResultRow();
     const rpc = vi.fn(async () => ({ data: rpcData, error: null }));
@@ -169,7 +327,10 @@ describe("Phase 2 custom rule lifecycle repository", () => {
   });
 
   it("records activation failures through the public lifecycle repository contract", async () => {
-    const rpc = vi.fn(async () => ({ data: lifecycleResultRow(), error: null }));
+    const rpc = vi.fn(async () => ({
+      data: lifecycleResultRow(),
+      error: null,
+    }));
     const repository = new SupabaseCustomRuleReadRepository({
       rpc,
     } as unknown as SupabaseClient) as unknown as {
@@ -3850,12 +4011,58 @@ const ASSISTANT_MESSAGE_ID = "00000000-0000-4000-8000-000000000007";
 const CREATOR_ID = "00000000-0000-4000-8000-000000000008";
 const RULE_VERSION_ID = "00000000-0000-4000-8000-000000000009";
 const SIMULATION_ID = "00000000-0000-4000-8000-000000000010";
+const GROUP_ID = "00000000-0000-4000-8000-000000000011";
+const PROJECT_STREAMER_ID = "00000000-0000-4000-8000-000000000012";
+const ASSIGNMENT_ID = "00000000-0000-4000-8000-000000000013";
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
 const HASH_D = "d".repeat(64);
 const HASH_E = "e".repeat(64);
 const HASH_F = "f".repeat(64);
+
+function settlementRuleGroupRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: GROUP_ID,
+    organization_id: ORGANIZATION_ID,
+    project_id: PROJECT_ID,
+    name: "Gold streamers",
+    description: "High-volume settlement exception group.",
+    status: "active",
+    created_by: CREATOR_ID,
+    created_at: "2026-07-13T00:00:00.000Z",
+    archived_at: null,
+    assignment_count: 0,
+    active_rule_count: 0,
+    pending_rule_count: 0,
+    future_assignment_count: 0,
+    ...overrides,
+  };
+}
+
+function settlementGroupAssignmentRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: ASSIGNMENT_ID,
+    organization_id: ORGANIZATION_ID,
+    project_id: PROJECT_ID,
+    project_streamer_id: PROJECT_STREAMER_ID,
+    group_id: GROUP_ID,
+    effective_from: "2026-08-01T00:00:00.000Z",
+    effective_until: null,
+    assigned_by: CREATOR_ID,
+    reason: "Move streamer into the August rule group.",
+    created_at: "2026-07-13T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function settlementGroupAssignmentChangeRow() {
+  return {
+    inserted_assignment: settlementGroupAssignmentRow(),
+    closed_assignment_ids: [ASSIGNMENT_ID],
+    new_group_snapshot_hash: HASH_F,
+  };
+}
 
 function validBusinessContract() {
   const moneyType = {

@@ -1013,6 +1013,94 @@ as $$
   where version.id = p_rule_version_id;
 $$;
 
+create or replace function public.create_settlement_rule_group(
+  p_organization_id uuid,
+  p_project_id uuid,
+  p_name text,
+  p_description text,
+  p_reason text,
+  p_client_request_id text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_group public.settlement_rule_groups%rowtype;
+begin
+  if auth.uid() is null or v_actor_id is null then
+    raise exception 'authentication_required';
+  end if;
+  v_actor_role := public.current_user_role(p_organization_id);
+  if not public.is_org_member(p_organization_id)
+     or not public.can_access_project(p_project_id)
+     or v_actor_role is null
+     or v_actor_role not in (
+       'owner',
+       'ops_manager'
+     ) then
+    raise exception 'settlement_rule_group_create_access_denied';
+  end if;
+  if p_name is null
+     or p_name <> pg_catalog.btrim(p_name)
+     or pg_catalog.char_length(p_name) not between 1 and 120
+     or (
+       p_description is not null
+       and (
+         p_description <> pg_catalog.btrim(p_description)
+         or pg_catalog.char_length(p_description) not between 1 and 2000
+       )
+     )
+     or p_reason is null
+     or p_reason <> pg_catalog.btrim(p_reason)
+     or pg_catalog.char_length(p_reason) not between 1 and 4000
+     or p_client_request_id is null
+     or p_client_request_id <> pg_catalog.btrim(p_client_request_id)
+     or pg_catalog.char_length(p_client_request_id) not between 1 and 120 then
+    raise exception 'settlement_rule_group_input_invalid';
+  end if;
+
+  perform public.settlement_ai_lock_authoring_parents(
+    p_organization_id,
+    v_actor_id,
+    p_project_id
+  );
+  perform 1
+  from public.projects as project
+  where project.id = p_project_id
+    and project.organization_id = p_organization_id
+  for update;
+  if not found then
+    raise exception 'settlement_rule_group_project_scope_mismatch';
+  end if;
+  if exists (
+    select 1
+    from public.settlement_rule_groups as rule_group
+    where rule_group.project_id = p_project_id
+      and pg_catalog.lower(rule_group.name) = pg_catalog.lower(p_name)
+      and rule_group.status = 'active'
+  ) then
+    raise exception 'settlement_rule_group_duplicate_active_name';
+  end if;
+
+  insert into public.settlement_rule_groups (
+    organization_id, project_id, name, description, created_by
+  ) values (
+    p_organization_id, p_project_id, p_name, p_description, v_actor_id
+  ) returning * into v_group;
+
+  return pg_catalog.to_jsonb(v_group) || pg_catalog.jsonb_build_object(
+    'assignment_count', 0,
+    'active_rule_count', 0,
+    'pending_rule_count', 0,
+    'future_assignment_count', 0
+  );
+end;
+$$;
+
 create or replace function public.save_custom_settlement_rule_draft(
   p_organization_id uuid,
   p_project_id uuid,
@@ -2748,6 +2836,144 @@ begin
 end;
 $$;
 
+create or replace function public.archive_settlement_rule_group(
+  p_organization_id uuid,
+  p_project_id uuid,
+  p_group_id uuid,
+  p_archived_at timestamptz,
+  p_reason text,
+  p_client_request_id text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_group public.settlement_rule_groups%rowtype;
+  v_active_rule_count integer;
+  v_pending_rule_count integer;
+  v_future_assignment_count integer;
+begin
+  if auth.uid() is null or v_actor_id is null then
+    raise exception 'authentication_required';
+  end if;
+  v_actor_role := public.current_user_role(p_organization_id);
+  if not public.is_org_member(p_organization_id)
+     or not public.can_access_project(p_project_id)
+     or v_actor_role is null
+     or v_actor_role not in (
+       'owner',
+       'ops_manager'
+     ) then
+    raise exception 'settlement_rule_group_archive_access_denied';
+  end if;
+  if p_archived_at is null
+     or p_reason is null
+     or p_reason <> pg_catalog.btrim(p_reason)
+     or pg_catalog.char_length(p_reason) not between 1 and 4000
+     or p_client_request_id is null
+     or p_client_request_id <> pg_catalog.btrim(p_client_request_id)
+     or pg_catalog.char_length(p_client_request_id) not between 1 and 120 then
+    raise exception 'settlement_rule_group_archive_input_invalid';
+  end if;
+
+  perform public.settlement_ai_lock_authoring_parents(
+    p_organization_id,
+    v_actor_id,
+    p_project_id
+  );
+  select rule_group.*
+  into v_group
+  from public.settlement_rule_groups as rule_group
+  where rule_group.id = p_group_id
+    and rule_group.organization_id = p_organization_id
+    and rule_group.project_id = p_project_id
+  for update;
+  if not found then
+    raise exception 'settlement_rule_group_scope_mismatch';
+  end if;
+  if v_group.status <> 'active' then
+    raise exception 'settlement_rule_group_archive_status_invalid';
+  end if;
+
+  perform 1
+  from public.custom_settlement_rule_versions as version
+  where version.organization_id = p_organization_id
+    and version.project_id = p_project_id
+    and version.target_type = 'streamer_group'
+    and version.target_id = p_group_id
+    and version.status = 'active'
+  for update;
+  select pg_catalog.count(*)::integer
+  into v_active_rule_count
+  from public.custom_settlement_rule_versions as version
+  where version.organization_id = p_organization_id
+    and version.project_id = p_project_id
+    and version.target_type = 'streamer_group'
+    and version.target_id = p_group_id
+    and version.status = 'active';
+  perform 1
+  from public.custom_settlement_rule_versions as version
+  where version.organization_id = p_organization_id
+    and version.project_id = p_project_id
+    and version.target_type = 'streamer_group'
+    and version.target_id = p_group_id
+    and version.status = 'pending_review'
+  for update;
+  select pg_catalog.count(*)::integer
+  into v_pending_rule_count
+  from public.custom_settlement_rule_versions as version
+  where version.organization_id = p_organization_id
+    and version.project_id = p_project_id
+    and version.target_type = 'streamer_group'
+    and version.target_id = p_group_id
+    and version.status = 'pending_review';
+  perform 1
+  from public.project_streamer_settlement_group_assignments as assignment
+  where assignment.organization_id = p_organization_id
+    and assignment.project_id = p_project_id
+    and assignment.group_id = p_group_id
+    and (
+      assignment.effective_from >= p_archived_at
+      or assignment.effective_until is null
+      or assignment.effective_until > p_archived_at
+    )
+  for update;
+  select pg_catalog.count(*)::integer
+  into v_future_assignment_count
+  from public.project_streamer_settlement_group_assignments as assignment
+  where assignment.organization_id = p_organization_id
+    and assignment.project_id = p_project_id
+    and assignment.group_id = p_group_id
+    and (
+      assignment.effective_from >= p_archived_at
+      or assignment.effective_until is null
+      or assignment.effective_until > p_archived_at
+    );
+  if v_active_rule_count > 0
+     or v_pending_rule_count > 0
+     or v_future_assignment_count > 0 then
+    raise exception 'settlement_rule_group_archive_blocked';
+  end if;
+
+  update public.settlement_rule_groups
+  set status = 'archived',
+      archived_at = p_archived_at
+  where id = p_group_id
+  returning * into v_group;
+
+  return pg_catalog.to_jsonb(v_group) || pg_catalog.jsonb_build_object(
+    'assignment_count', 0,
+    'active_rule_count', v_active_rule_count,
+    'pending_rule_count', v_pending_rule_count,
+    'future_assignment_count', v_future_assignment_count
+  );
+end;
+$$;
+
 create or replace function public.change_settlement_group_assignment(
   p_organization_id uuid,
   p_project_id uuid,
@@ -2765,14 +2991,19 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_actor_id uuid := auth.uid();
+  v_actor_role text;
+  v_inserted public.project_streamer_settlement_group_assignments%rowtype;
+  v_closed_ids uuid[];
+  v_snapshot_hash text;
 begin
   if auth.uid() is null or v_actor_id is null then
     raise exception 'authentication_required';
   end if;
+  v_actor_role := public.current_user_role(p_organization_id);
   if not public.is_org_member(p_organization_id)
      or not public.can_access_project(p_project_id)
-     or public.current_user_role(p_organization_id) is null
-     or public.current_user_role(p_organization_id) not in (
+     or v_actor_role is null
+     or v_actor_role not in (
        'owner',
        'ops_manager'
      ) then
@@ -2785,8 +3016,21 @@ begin
      )
      or p_reason is null
      or p_reason <> pg_catalog.btrim(p_reason)
-     or pg_catalog.char_length(p_reason) not between 1 and 4000 then
+     or pg_catalog.char_length(p_reason) not between 1 and 4000
+     or p_client_request_id is null
+     or p_client_request_id <> pg_catalog.btrim(p_client_request_id)
+     or pg_catalog.char_length(p_client_request_id) not between 1 and 120 then
     raise exception 'settlement_group_assignment_input_invalid';
+  end if;
+  if exists (
+    select 1
+    from public.settlement_batches as batch
+    where batch.organization_id = p_organization_id
+      and batch.project_id = p_project_id
+      and batch.status = 'locked'
+      and batch.period_end >= p_effective_from::date
+  ) then
+    raise exception 'settlement_group_assignment_locked_history_rewrite';
   end if;
 
   perform public.settlement_ai_lock_authoring_parents(
@@ -2818,11 +3062,90 @@ begin
   where assignment.organization_id = p_organization_id
     and assignment.project_id = p_project_id
     and assignment.project_streamer_id = p_project_streamer_id
-    and assignment.group_id = p_group_id
   order by assignment.effective_from, assignment.id
   for update;
+  if exists (
+    select 1
+    from public.project_streamer_settlement_group_assignments as assignment
+    where assignment.organization_id = p_organization_id
+      and assignment.project_id = p_project_id
+      and assignment.project_streamer_id = p_project_streamer_id
+      and assignment.group_id = p_group_id
+      and tstzrange(
+        assignment.effective_from,
+        assignment.effective_until,
+        '[)'
+      ) && tstzrange(p_effective_from, p_effective_until, '[)')
+  ) then
+    raise exception 'settlement_group_assignment_overlap';
+  end if;
 
-  raise exception 'change_settlement_group_assignment_not_implemented_phase2_task1';
+  with closed as (
+    update public.project_streamer_settlement_group_assignments
+    set effective_until = p_effective_from
+    where organization_id = p_organization_id
+      and project_id = p_project_id
+      and project_streamer_id = p_project_streamer_id
+      and effective_from < p_effective_from
+      and (effective_until is null or effective_until > p_effective_from)
+      and group_id <> p_group_id
+    returning id
+  )
+  select coalesce(pg_catalog.array_agg(id order by id), array[]::uuid[])
+  into v_closed_ids
+  from closed;
+
+  insert into public.project_streamer_settlement_group_assignments (
+    organization_id, project_id, project_streamer_id, group_id,
+    effective_from, effective_until, assigned_by, reason
+  ) values (
+    p_organization_id, p_project_id, p_project_streamer_id, p_group_id,
+    p_effective_from, p_effective_until, v_actor_id, p_reason
+  ) returning * into v_inserted;
+
+  select public.custom_settlement_rule_request_fingerprint(
+    'settlement_group_membership_snapshot',
+    pg_catalog.jsonb_build_object(
+      'projectStreamerId', p_project_streamer_id,
+      'effectiveAt', p_effective_from,
+      'groups', coalesce(
+        (
+          select pg_catalog.jsonb_agg(
+            pg_catalog.jsonb_build_object(
+              'id', rule_group.id,
+              'name', rule_group.name,
+              'assignmentId', assignment.id
+            )
+            order by rule_group.id, assignment.id
+          )
+          from public.project_streamer_settlement_group_assignments
+            as assignment
+          join public.settlement_rule_groups as rule_group
+            on rule_group.id = assignment.group_id
+           and rule_group.organization_id = assignment.organization_id
+           and rule_group.project_id = assignment.project_id
+          where assignment.organization_id = p_organization_id
+            and assignment.project_id = p_project_id
+            and assignment.project_streamer_id = p_project_streamer_id
+            and assignment.effective_from <= p_effective_from
+            and (
+              assignment.effective_until is null
+              or p_effective_from < assignment.effective_until
+            )
+        ),
+        '[]'::jsonb
+      )
+    )
+  ) into v_snapshot_hash;
+
+  return pg_catalog.jsonb_build_object(
+    'insertedAssignment', pg_catalog.to_jsonb(v_inserted),
+    'inserted_assignment', pg_catalog.to_jsonb(v_inserted),
+    'closedAssignmentIds', coalesce(v_closed_ids, array[]::uuid[]),
+    'closed_assignment_ids', coalesce(v_closed_ids, array[]::uuid[]),
+    'newGroupSnapshotHash', v_snapshot_hash,
+    'new_group_snapshot_hash', v_snapshot_hash
+  );
 end;
 $$;
 
@@ -2862,6 +3185,23 @@ revoke all on function public.custom_settlement_rule_lifecycle_result(
   uuid,
   uuid
 ) from public, anon, authenticated, service_role;
+
+revoke all on function public.create_settlement_rule_group(
+  uuid,
+  uuid,
+  text,
+  text,
+  text,
+  text
+) from public, anon, authenticated, service_role;
+grant execute on function public.create_settlement_rule_group(
+  uuid,
+  uuid,
+  text,
+  text,
+  text,
+  text
+) to authenticated;
 
 revoke all on function public.save_custom_settlement_rule_draft(
   uuid,
@@ -2968,6 +3308,23 @@ grant execute on function public.archive_custom_settlement_rule(
   timestamptz,
   text,
   jsonb,
+  text
+) to authenticated;
+
+revoke all on function public.archive_settlement_rule_group(
+  uuid,
+  uuid,
+  uuid,
+  timestamptz,
+  text,
+  text
+) from public, anon, authenticated, service_role;
+grant execute on function public.archive_settlement_rule_group(
+  uuid,
+  uuid,
+  uuid,
+  timestamptz,
+  text,
   text
 ) to authenticated;
 

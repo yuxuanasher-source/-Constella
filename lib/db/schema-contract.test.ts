@@ -2584,8 +2584,9 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     );
   });
 
-  it("exposes five fixed-search-path, role-gated lifecycle RPCs", () => {
+  it("exposes fixed-search-path, role-gated lifecycle and group RPCs", () => {
     const expectedRoles: Record<string, string[]> = {
+      create_settlement_rule_group: ["'owner'", "'ops_manager'"],
       save_custom_settlement_rule_draft: [
         "'owner'",
         "'ops_manager'",
@@ -2603,6 +2604,7 @@ describe("Phase 2 governed settlement rule schema contract", () => {
         "'finance'",
       ],
       archive_custom_settlement_rule: ["'owner'", "'ops_manager'"],
+      archive_settlement_rule_group: ["'owner'", "'ops_manager'"],
       change_settlement_group_assignment: ["'owner'", "'ops_manager'"],
     };
 
@@ -2614,11 +2616,7 @@ describe("Phase 2 governed settlement rule schema contract", () => {
       expect(rpc.body).toContain("public.is_org_member(p_organization_id)");
       expect(rpc.body).toContain("public.can_access_project(p_project_id)");
       expect(rpc.body).toContain("for update");
-      if (fn === "change_settlement_group_assignment") {
-        expect(rpc.body).toContain(`${fn}_not_implemented_phase2_task1`);
-      } else {
-        expect(rpc.body).not.toContain(`${fn}_not_implemented_phase2_task1`);
-      }
+      expect(rpc.body).not.toContain(`${fn}_not_implemented_phase2_task1`);
       const roleList = rpc.body.match(
         /(?:public\.current_user_role\(p_organization_id\)|v_actor_role) not in \(([^)]+)\)/u,
       )?.[1];
@@ -2803,11 +2801,15 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     );
     expect(save).toContain("simulation.rule_version_id = v_existing.id");
     expect(save).toContain("custom_settlement_rule_resimulation_required");
-    expect(save).toContain("p_version_simulation_id = v_existing.simulation_id");
+    expect(save).toContain(
+      "p_version_simulation_id = v_existing.simulation_id",
+    );
     expect(save).toContain("v_existing.reopened_at is null");
     expect(save).toContain("simulation.ai_draft_id = v_existing.ai_draft_id");
     expect(save).toContain("simulation.created_at > v_existing.reopened_at");
-    expect(save).toContain("where old_simulation.id = v_existing.simulation_id");
+    expect(save).toContain(
+      "where old_simulation.id = v_existing.simulation_id",
+    );
     expect(save).toContain("rule_version_id = null");
     expect(save).toContain("ai_draft_id = v_existing.ai_draft_id");
     expect(save).toContain("simulation_id = p_version_simulation_id");
@@ -2905,6 +2907,37 @@ describe("Phase 2 governed settlement rule schema contract", () => {
     expect(assignment).toContain("project_streamer_scope_mismatch");
     expect(assignment).toContain(
       "p_effective_until is not null and p_effective_until <= p_effective_from",
+    );
+    expect(assignment).toContain("insertedassignment");
+    expect(assignment).toContain("closedassignmentids");
+    expect(assignment).toContain("newgroupsnapshothash");
+    expect(assignment).toContain(
+      "update public.project_streamer_settlement_group_assignments",
+    );
+    expect(assignment).toContain(
+      "insert into public.project_streamer_settlement_group_assignments",
+    );
+    expect(assignment).toContain(
+      "settlement_group_assignment_locked_history_rewrite",
+    );
+
+    const createGroup = extractSettlementGovernanceFunction(
+      "create_settlement_rule_group",
+    ).body;
+    expect(createGroup).toContain("insert into public.settlement_rule_groups");
+    expect(createGroup).toContain(
+      "settlement_rule_group_duplicate_active_name",
+    );
+
+    const archiveGroup = extractSettlementGovernanceFunction(
+      "archive_settlement_rule_group",
+    ).body;
+    expect(archiveGroup).toContain("settlement_rule_group_archive_blocked");
+    expect(archiveGroup).toContain(
+      "from public.custom_settlement_rule_versions",
+    );
+    expect(archiveGroup).toContain(
+      "from public.project_streamer_settlement_group_assignments",
     );
 
     const archive = extractSettlementGovernanceFunction(
@@ -3391,10 +3424,12 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
                 ('settlement_rule_templates')
             ), governance_rpcs(name) as (
               values
+                ('create_settlement_rule_group'),
                 ('save_custom_settlement_rule_draft'),
                 ('apply_and_submit_custom_settlement_rule'),
                 ('review_custom_settlement_rule'),
                 ('archive_custom_settlement_rule'),
+                ('archive_settlement_rule_group'),
                 ('change_settlement_group_assignment')
             )
             select pg_catalog.jsonb_build_object(
@@ -3543,7 +3578,7 @@ describe.runIf(Boolean(settlementRuntimeRegressionContainer))(
         exactly_one_owner: 1,
         exclusions: 2,
         immutability_triggers: 3,
-        secure_rpcs: 5,
+        secure_rpcs: 7,
       });
     });
 
