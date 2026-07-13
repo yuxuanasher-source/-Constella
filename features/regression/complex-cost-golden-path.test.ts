@@ -13,6 +13,7 @@ import {
   type CreateProjectCostItemRepoInput,
   type CreateRuleVersionRepoInput,
 } from "@/features/complex-cost/complex-cost-service";
+import type { ConfirmCostImportWithRuleItemsInput } from "@/features/complex-cost/complex-cost-repository";
 import { toComplexCostDashboardDto } from "@/features/complex-cost/complex-cost-ui-dto";
 import type {
   ComplexCostRuleVersionRecord,
@@ -300,6 +301,49 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
     }
     Object.assign(batch, patch);
     return batch;
+  }
+
+  async confirmCostImportWithRuleItems(input: ConfirmCostImportWithRuleItemsInput) {
+    const batch = await this.getImportBatchById(input.importBatchId);
+    if (!batch) {
+      throw new Error("Project cost import batch not found");
+    }
+    const sourceItems =
+      input.mode === "custom" ? input.customItems ?? [] : input.legacyItems ?? [];
+    const items = sourceItems.map((source) => {
+      const item: ProjectCostItemRecord = {
+        id: `cost-${this.costItems.length + 1}`,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        streamerId: source.streamerId,
+        supplierOrganizationId: source.supplierOrganizationId,
+        liveReportId: source.liveReportId,
+        settlementBatchId: null,
+        itemType: source.itemType,
+        amountCents: source.amountCents,
+        direction: source.direction,
+        evidenceLevel: source.evidenceLevel,
+        source: input.mode === "custom" ? "system" : "import",
+        sourcePayload: source.sourcePayload,
+        sourceRuleVersionId: source.ruleVersionId,
+        sourceImportBatchId: input.importBatchId,
+        sourceExecutionKey: source.sourceExecutionKey,
+        sourceInputHash: source.sourceInputHash,
+        sourceExplanation: source.sourceExplanation,
+        reason: input.reason,
+        status: source.status,
+        createdBy: input.createdBy,
+      };
+      this.costItems.push(item);
+      return item;
+    });
+    batch.status = "confirmed";
+    return {
+      importBatch: batch,
+      items,
+      exceptions: [],
+      idempotencyStatus: "created" as const,
+    };
   }
 
   async attachCostItemsToSettlementBatch(input: {

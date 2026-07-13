@@ -1,5 +1,12 @@
+import { createHash } from "node:crypto";
+
 import type { AuditLogInput } from "@/lib/audit/audit";
 
+import type {
+  ConfirmCostImportItemInput,
+  ConfirmCostImportWithRuleItemsInput,
+  ConfirmCostImportWithRuleItemsResult,
+} from "./complex-cost-repository";
 import type {
   ComplexCostActor,
   ComplexCostRuleStatus,
@@ -15,6 +22,14 @@ import type {
   SettlementReconciliationRunRecord,
 } from "./complex-cost-types";
 import { calculateImportedCostAmountCents } from "./complex-cost-calculator";
+import {
+  executeExternalCostRuleForImport,
+} from "@/features/settlements/custom-rule-external-cost";
+import type {
+  CustomSettlementRuleVersion,
+  ResolvedExecutableCustomRuleLayers,
+} from "@/features/settlements/custom-rule-repository";
+import type { CustomRuleExecutionUnit } from "@/features/settlements/custom-rule-types";
 
 export type ComplexCostAuditWriter = (input: AuditLogInput) => Promise<void>;
 
@@ -114,6 +129,19 @@ export type ComplexCostRepository = {
   replayExternalCostRuleExceptionItems(
     input: ReplayExternalCostRuleExceptionItemsInput,
   ): Promise<ReplayExternalCostRuleExceptionItemsResult>;
+  confirmCostImportWithRuleItems(
+    input: ConfirmCostImportWithRuleItemsInput,
+  ): Promise<ConfirmCostImportWithRuleItemsResult>;
+};
+
+export type ExternalCostRuleReadRepository = {
+  resolveExecutableCustomRuleLayers(input: {
+    organizationId: string;
+    projectId: string;
+    scope: "external_cost";
+    executionTimestamp: string;
+    executionUnits: CustomRuleExecutionUnit[];
+  }): Promise<ResolvedExecutableCustomRuleLayers>;
 };
 
 export async function saveComplexCostRuleDraft(args: {
@@ -296,10 +324,10 @@ export async function confirmProjectCostImportBatch(args: {
   repo: Pick<
     ComplexCostRepository,
     | "getImportBatchById"
-    | "createProjectCostItem"
-    | "updateImportBatch"
     | "getProjectEntitlement"
+    | "confirmCostImportWithRuleItems"
   >;
+  customRuleRepo?: ExternalCostRuleReadRepository;
   audit: ComplexCostAuditWriter;
   actor: ComplexCostActor;
   batchId: string;
@@ -324,40 +352,43 @@ export async function confirmProjectCostImportBatch(args: {
     throw new Error("Project cost import batch is already confirmed");
   }
 
-  const items: ProjectCostItemRecord[] = [];
-  for (const row of batch.parsedPayload) {
-    const itemType = importRowItemType(row, batch.importType);
-    const amountCents = calculateImportedCostAmountCents({
-      itemType,
-      unitCount: numberFromRow(row, "unitCount"),
-      unitPriceCents: numberFromRow(row, "unitPriceCents"),
-      salesAmountCents: numberFromRow(row, "salesAmountCents"),
-      rateBps: numberFromRow(row, "rateBps"),
-      directAmountCents: numberFromRow(row, "directAmountCents"),
-    });
-    const item = await args.repo.createProjectCostItem({
-      organizationId: args.actor.organizationId,
-      projectId: batch.projectId,
-      streamerId: stringFromRow(row, "streamerId"),
-      supplierOrganizationId: stringFromRow(row, "supplierOrganizationId"),
-      liveReportId: stringFromRow(row, "liveReportId"),
-      settlementBatchId: null,
-      itemType,
-      amountCents,
-      direction: "cost",
-      evidenceLevel: "yellow",
-      source: "import",
-      sourcePayload: row,
-      reason: args.reason.trim(),
-      status: "confirmed",
-      createdBy: args.actor.userId,
-    });
-    items.push(item);
-  }
-
-  const updatedBatch = await args.repo.updateImportBatch(batch.id, {
-    status: "confirmed",
+  const activeExternalRule = await resolveEffectiveExternalCostRule({
+    customRuleRepo: args.customRuleRepo,
+    actor: args.actor,
+    batch,
   });
+  const prepared = activeExternalRule
+    ? executeExternalCostRuleForImport({
+        organizationId: args.actor.organizationId,
+        projectId: batch.projectId,
+        importBatch: batch,
+        ruleVersion: activeExternalRule,
+        reason: args.reason.trim(),
+        createdBy: args.actor.userId,
+      })
+    : legacyImportConfirmationPayload({
+        actor: args.actor,
+        batch,
+        reason: args.reason.trim(),
+      });
+
+  const confirmed = await args.repo.confirmCostImportWithRuleItems({
+    organizationId: args.actor.organizationId,
+    projectId: batch.projectId,
+    importBatchId: batch.id,
+    idempotencyKey: prepared.idempotencyKey,
+    inputHash: prepared.inputHash,
+    mode: prepared.kind === "custom" ? "custom" : "legacy",
+    reason: args.reason.trim(),
+    createdBy: args.actor.userId,
+    ...(prepared.kind === "custom"
+      ? {
+          customItems: prepared.items,
+          exceptions: prepared.exceptions,
+        }
+      : { legacyItems: prepared.items }),
+  });
+  const updatedBatch = confirmed.importBatch;
 
   await args.audit({
     organizationId: args.actor.organizationId,
@@ -370,13 +401,151 @@ export async function confirmProjectCostImportBatch(args: {
     objectId: batch.id,
     projectId: batch.projectId,
     before: batch as unknown as Record<string, unknown>,
-    after: updatedBatch as unknown as Record<string, unknown>,
+    after: {
+      ...(updatedBatch as unknown as Record<string, unknown>),
+      mode: prepared.kind,
+      ruleVersionId:
+        prepared.kind === "custom" ? prepared.ruleVersionId : null,
+      itemCount: confirmed.items.length,
+      exceptionCount: confirmed.exceptions.length,
+      inputHash: prepared.inputHash,
+    },
     changedFields: ["status"],
     reason: args.reason,
     isHighRisk: true,
   });
 
-  return { importBatch: updatedBatch, items };
+  return { importBatch: updatedBatch, items: confirmed.items };
+}
+
+type PreparedImportConfirmation =
+  | {
+      kind: "legacy";
+      inputHash: string;
+      idempotencyKey: string;
+      items: ConfirmCostImportItemInput[];
+    }
+  | ReturnType<typeof executeExternalCostRuleForImport>;
+
+function legacyImportConfirmationPayload(input: {
+  actor: ComplexCostActor;
+  batch: ProjectCostImportBatchRecord;
+  reason: string;
+}): PreparedImportConfirmation {
+  const items = input.batch.parsedPayload.map((row, rowIndex) => {
+    const itemType = importRowItemType(row, input.batch.importType);
+    const amountCents = calculateImportedCostAmountCents({
+      itemType,
+      unitCount: numberFromRow(row, "unitCount"),
+      unitPriceCents: numberFromRow(row, "unitPriceCents"),
+      salesAmountCents: numberFromRow(row, "salesAmountCents"),
+      rateBps: numberFromRow(row, "rateBps"),
+      directAmountCents: numberFromRow(row, "directAmountCents"),
+    });
+    const sourceInputHash = serviceHash({
+      mode: "legacy",
+      rowIndex,
+      row,
+      itemType,
+      amountCents,
+    });
+    return {
+      importRowIndex: rowIndex,
+      ruleVersionId: null,
+      streamerId: stringFromRow(row, "streamerId"),
+      supplierOrganizationId: stringFromRow(row, "supplierOrganizationId"),
+      liveReportId: stringFromRow(row, "liveReportId"),
+      itemType,
+      amountCents,
+      direction: "cost" as const,
+      evidenceLevel: "yellow" as const,
+      sourcePayload: row,
+      sourceExecutionKey: serviceHash([
+        input.actor.organizationId,
+        input.batch.projectId,
+        input.batch.id,
+        rowIndex,
+        "legacy",
+        0,
+        sourceInputHash,
+      ]),
+      sourceInputHash,
+      sourceExplanation: "Legacy complex-cost import calculation.",
+      status: "confirmed" as const,
+    };
+  });
+  const inputHash = serviceHash({
+    mode: "legacy",
+    importBatchId: input.batch.id,
+    items: items.map((item) => ({
+      row: item.importRowIndex,
+      type: item.itemType,
+      amount: item.amountCents,
+      sourceInputHash: item.sourceInputHash,
+    })),
+  });
+  return {
+    kind: "legacy",
+    inputHash,
+    idempotencyKey: serviceHash([
+      input.actor.organizationId,
+      input.batch.projectId,
+      input.batch.id,
+      "legacy",
+      "legacy",
+      inputHash,
+    ]),
+    items,
+  };
+}
+
+async function resolveEffectiveExternalCostRule(input: {
+  customRuleRepo?: ExternalCostRuleReadRepository;
+  actor: ComplexCostActor;
+  batch: ProjectCostImportBatchRecord;
+}): Promise<CustomSettlementRuleVersion | null> {
+  if (!input.customRuleRepo) {
+    return null;
+  }
+  const executionTimestamp =
+    input.batch.parsedPayload
+      .map((row) => stringFromRow(row, "sourceTimestamp"))
+      .find((value): value is string => Boolean(value)) ??
+    input.batch.createdAt ??
+    new Date().toISOString();
+  const lookup = await input.customRuleRepo.resolveExecutableCustomRuleLayers({
+    organizationId: input.actor.organizationId,
+    projectId: input.batch.projectId,
+    scope: "external_cost",
+    executionTimestamp,
+    executionUnits: [
+      {
+        key: `cost_import:${input.batch.id}`,
+        grain: "report",
+        projectId: input.batch.projectId,
+        projectStreamerId: "import",
+        streamerId: undefined,
+        periodStart: executionTimestamp,
+        periodEnd: executionTimestamp,
+        sourceReportIds: [],
+        membershipSnapshot: {
+          projectStreamerId: "import",
+          effectiveAt: executionTimestamp,
+          groups: [],
+          snapshotHash: serviceHash({
+            importBatchId: input.batch.id,
+            executionTimestamp,
+          }),
+        },
+        variables: {},
+      },
+    ],
+  });
+  const version = lookup.projectBaseVersion;
+  if (!version || version.scope !== "external_cost") {
+    return null;
+  }
+  return version;
 }
 
 // Transition a manual project cost item's review status (pending_review/draft
@@ -614,6 +783,25 @@ async function auditCostItemCreate({
     reason: item.reason,
     isHighRisk,
   });
+}
+
+function serviceHash(value: unknown): string {
+  const text = Array.isArray(value) ? value.join("\u001f") : stableServiceJson(value);
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function stableServiceJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableServiceJson).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableServiceJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function importRowItemType(

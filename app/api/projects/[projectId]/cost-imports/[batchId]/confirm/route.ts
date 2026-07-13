@@ -9,6 +9,7 @@ import {
   requiredString,
 } from "@/features/complex-cost/complex-cost-route-utils";
 import { confirmProjectCostImportBatch } from "@/features/complex-cost/complex-cost-service";
+import { SupabaseCustomRuleReadRepository } from "@/features/settlements/custom-rule-repository";
 
 export async function POST(
   request: Request,
@@ -27,6 +28,7 @@ export async function POST(
 
     const result = await confirmProjectCostImportBatch({
       repo: context.repo,
+      customRuleRepo: new SupabaseCustomRuleReadRepository(context.supabase),
       audit: (input) => context.audit(context.supabase, input),
       actor: complexCostActorFromContext(context),
       batchId,

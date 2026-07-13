@@ -5,12 +5,20 @@ import { POST } from "./route";
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { getComplexCostRouteContext } from "@/features/complex-cost/complex-cost-route-utils";
 import { confirmProjectCostImportBatch } from "@/features/complex-cost/complex-cost-service";
+import { SupabaseCustomRuleReadRepository } from "@/features/settlements/custom-rule-repository";
 
 vi.mock("@/features/billing/route-guard", () => ({
   assertBillingWriteAllowed: vi.fn(),
 }));
 vi.mock("@/features/complex-cost/complex-cost-service", () => ({
   confirmProjectCostImportBatch: vi.fn(),
+}));
+vi.mock("@/features/settlements/custom-rule-repository", () => ({
+  SupabaseCustomRuleReadRepository: vi.fn(function SupabaseCustomRuleReadRepository(
+    this: { marker: string },
+  ) {
+    this.marker = "custom-rule-repo";
+  }),
 }));
 vi.mock("@/features/complex-cost/complex-cost-route-utils", () => ({
   getComplexCostRouteContext: vi.fn(),
@@ -66,5 +74,19 @@ describe("project cost import confirm route", () => {
     await expect(response.json()).resolves.toMatchObject({
       importBatch: { id: "batch-1", status: "confirmed" },
     });
+    expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+      client: {},
+      organizationId: "org-1",
+      featureKey: "complex_cost_rules",
+    });
+    expect(SupabaseCustomRuleReadRepository).toHaveBeenCalledWith({});
+    expect(confirmProjectCostImportBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repo: {},
+        customRuleRepo: expect.objectContaining({ marker: "custom-rule-repo" }),
+        batchId: "batch-1",
+        reason: "Finance confirmed.",
+      }),
+    );
   });
 });

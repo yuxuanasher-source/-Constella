@@ -4,10 +4,12 @@ import type { ProjectCostItemRecord } from "./complex-cost-types";
 import {
   attachProjectCostItemsToSettlementBatch,
   approveComplexCostRuleVersion,
+  confirmProjectCostImportBatch,
   createManualProjectCostItem,
   saveComplexCostRuleDraft,
   updateProjectCostItemStatus,
 } from "./complex-cost-service";
+import { validateCustomRuleFormula } from "@/features/settlements/custom-rule-validator";
 
 const actor = {
   userId: "user-1",
@@ -275,3 +277,256 @@ describe("updateProjectCostItemStatus", () => {
     expect(repo.getProjectCostItemById).not.toHaveBeenCalled();
   });
 });
+
+describe("confirmProjectCostImportBatch custom external-cost execution", () => {
+  const entitlement = {
+    id: "ent-1",
+    organizationId: "org-1",
+    projectId: "project-1",
+    enabledSource: "plan" as const,
+    billingMode: "included" as const,
+  };
+  const parsedBatch = {
+    id: "import-1",
+    organizationId: "org-1",
+    projectId: "project-1",
+    importType: "supplier_bill" as const,
+    rowCount: 1,
+    parsedPayload: [
+      {
+        directAmountCents: 12_000,
+        salesAmountCents: 200_000,
+        liveReportId: "report-1",
+      },
+    ],
+    status: "parsed" as const,
+    createdBy: "user-1",
+    createdAt: "2026-07-14T00:00:00.000Z",
+  };
+
+  it("keeps the legacy calculation/status path when no active custom external-cost rule applies", async () => {
+    const repo = {
+      getProjectEntitlement: vi.fn(async () => entitlement),
+      getImportBatchById: vi.fn(async () => parsedBatch),
+      confirmCostImportWithRuleItems: vi.fn(async (input) => ({
+        importBatch: { ...parsedBatch, status: "confirmed" as const },
+        items: input.legacyItems.map((item: Record<string, unknown>, index: number) => ({
+          id: `item-${index}`,
+          organizationId: "org-1",
+          projectId: "project-1",
+          itemType: item.itemType,
+          amountCents: item.amountCents,
+          direction: item.direction,
+          evidenceLevel: item.evidenceLevel,
+          source: "import",
+          sourcePayload: item.sourcePayload,
+          reason: "Finance confirmed.",
+          status: item.status,
+        })),
+        exceptions: [],
+        idempotencyStatus: "created" as const,
+      })),
+      createProjectCostItem: vi.fn(),
+      updateImportBatch: vi.fn(),
+    };
+    const customRuleRepo = {
+      resolveExecutableCustomRuleLayers: vi.fn(async () => ({
+        projectBaseVersion: null,
+        groupVersions: [],
+        projectStreamerVersions: [],
+        assignmentsByUnitKey: {},
+      })),
+    };
+
+    const result = await confirmProjectCostImportBatch({
+      repo,
+      customRuleRepo: customRuleRepo as never,
+      audit: vi.fn(),
+      actor,
+      batchId: "import-1",
+      reason: "Finance confirmed.",
+    });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        itemType: "supplier_fee",
+        amountCents: 12_000,
+        status: "confirmed",
+      }),
+    ]);
+    expect(repo.confirmCostImportWithRuleItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "legacy",
+        legacyItems: [
+          expect.objectContaining({
+            itemType: "supplier_fee",
+            amountCents: 12_000,
+            status: "confirmed",
+          }),
+        ],
+      }),
+    );
+    expect(repo.createProjectCostItem).not.toHaveBeenCalled();
+    expect(repo.updateImportBatch).not.toHaveBeenCalled();
+  });
+
+  it("uses the custom atomic RPC with pending-review generated items when an active external-cost rule applies", async () => {
+    const rule = externalRule(
+      'external_cost = cost_items([{ category: "traffic", amount: percent(sales_amount, rate_percent(10)), memo: "投流" }])',
+      ["sales_amount"],
+    );
+    const repo = {
+      getProjectEntitlement: vi.fn(async () => entitlement),
+      getImportBatchById: vi.fn(async () => parsedBatch),
+      confirmCostImportWithRuleItems: vi.fn(async (input) => ({
+        importBatch: { ...parsedBatch, status: "confirmed" as const },
+        items: input.customItems.map((item: Record<string, unknown>, index: number) => ({
+          id: `item-${index}`,
+          organizationId: "org-1",
+          projectId: "project-1",
+          itemType: item.itemType,
+          amountCents: item.amountCents,
+          direction: item.direction,
+          evidenceLevel: item.evidenceLevel,
+          source: "system",
+          sourcePayload: item.sourcePayload,
+          sourceRuleVersionId: item.ruleVersionId,
+          sourceExecutionKey: item.sourceExecutionKey,
+          sourceInputHash: item.sourceInputHash,
+          reason: "Finance confirmed.",
+          status: item.status,
+        })),
+        exceptions: [],
+        idempotencyStatus: "created" as const,
+      })),
+    };
+    const customRuleRepo = {
+      resolveExecutableCustomRuleLayers: vi.fn(async () => ({
+        projectBaseVersion: rule,
+        groupVersions: [],
+        projectStreamerVersions: [],
+        assignmentsByUnitKey: {},
+      })),
+    };
+    const audit = vi.fn();
+
+    const result = await confirmProjectCostImportBatch({
+      repo,
+      customRuleRepo: customRuleRepo as never,
+      audit,
+      actor,
+      batchId: "import-1",
+      reason: "Finance confirmed.",
+    });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        itemType: "traffic",
+        amountCents: 20_000,
+        status: "pending_review",
+      }),
+    ]);
+    expect(repo.confirmCostImportWithRuleItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "custom",
+        customItems: [
+          expect.objectContaining({
+            ruleVersionId: "rule-v1",
+            itemType: "traffic",
+            amountCents: 20_000,
+            status: "pending_review",
+          }),
+        ],
+        exceptions: [],
+      }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        after: expect.objectContaining({
+          mode: "custom",
+          ruleVersionId: "rule-v1",
+          itemCount: 1,
+          inputHash: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        }),
+      }),
+    );
+  });
+
+  it("does not confirm or create items when custom formula execution fails", async () => {
+    const rule = externalRule(
+      'external_cost = cost_items([{ category: "traffic", amount: yuan(10000001), memo: "超限" }])',
+      [],
+    );
+    const repo = {
+      getProjectEntitlement: vi.fn(async () => entitlement),
+      getImportBatchById: vi.fn(async () => parsedBatch),
+      confirmCostImportWithRuleItems: vi.fn(),
+    };
+    const customRuleRepo = {
+      resolveExecutableCustomRuleLayers: vi.fn(async () => ({
+        projectBaseVersion: rule,
+        groupVersions: [],
+        projectStreamerVersions: [],
+        assignmentsByUnitKey: {},
+      })),
+    };
+
+    await expect(
+      confirmProjectCostImportBatch({
+        repo,
+        customRuleRepo: customRuleRepo as never,
+        audit: vi.fn(),
+        actor,
+        batchId: "import-1",
+        reason: "Finance confirmed.",
+      }),
+    ).rejects.toThrow("CUSTOM_RULE_EXECUTION_BLOCKED");
+    expect(repo.confirmCostImportWithRuleItems).not.toHaveBeenCalled();
+  });
+});
+
+function externalRule(formula: string, variables: string[]) {
+  const validation = validateCustomRuleFormula(formula, {
+    scope: "external_cost",
+    executionGrain: "report",
+    compositionMode: "emit_items",
+  });
+  if (!validation.ok) {
+    throw new Error(validation.issues[0]?.code ?? "formula invalid");
+  }
+  return {
+    id: "rule-v1",
+    organizationId: "org-1",
+    projectId: "project-1",
+    scope: "external_cost" as const,
+    target: { targetType: "project" as const, targetId: null },
+    executionGrain: "report" as const,
+    compositionMode: "emit_items" as const,
+    priority: 0,
+    versionNumber: 1,
+    status: "active" as const,
+    formula,
+    compiledAst: validation.compiledAst,
+    variables: variables.map((name) => ({
+      variableId: name,
+      name,
+      required: true,
+      category: "formula_input",
+      valueType:
+        name === "order_count"
+          ? { kind: "scalar" as const, scalarType: "integer" as const }
+          : { kind: "scalar" as const, scalarType: "money_cents" as const },
+    })),
+    parameters: {},
+    ruleContract: {
+      businessTimezone: "Asia/Shanghai",
+      requiredInputs: [],
+      parameters: [],
+      missingDataPolicy: { action: "block_batch" as const },
+    },
+    formulaHash: validation.formulaHash,
+    contractHash: "contract-hash",
+    effectiveFrom: "2026-07-01T00:00:00.000Z",
+    effectiveUntil: null,
+  };
+}
