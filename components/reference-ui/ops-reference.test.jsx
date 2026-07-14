@@ -10791,6 +10791,88 @@ describe("OpsReferenceApp complex cost smoke", () => {
       ),
     );
   });
+  it("loads unresolved import-row exceptions even when no cost items were emitted", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/projects/project-live/cost-items") {
+        return {
+          ok: true,
+          json: async () => ({ items: [] }),
+        };
+      }
+      if (String(url) === "/api/projects/project-live/cost-imports") {
+        return {
+          ok: true,
+          json: async () => ({
+            batches: [
+              {
+                id: "batch-exception-only",
+                projectId: "project-live",
+                importType: "external_cost",
+                status: "review_required",
+              },
+            ],
+          }),
+        };
+      }
+      if (
+        String(url) ===
+        "/api/projects/project-live/cost-imports/batch-exception-only/rule-exceptions"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            exceptions: [
+              {
+                id: "exception-only-1",
+                importBatchId: "batch-exception-only",
+                rowIndex: 0,
+                variableName: "supplier_fee",
+                policy: "route_item_to_review",
+                status: "review_required",
+                sourceRefs: {
+                  ruleVersionId: "rule-v5",
+                  sourceContextHash: "ctx-exception-only",
+                },
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={taskProjectCards}
+        settlementScope={{
+          projectId: "project-live",
+          projectName: "Fixture Project",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+        }}
+        complexCost={{ enabled: true, includedProjects: 5, usedProjects: 2 }}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "项目开支" }));
+    fireEvent.click(screen.getByRole("button", { name: "加载/刷新" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-live/cost-imports",
+        undefined,
+      ),
+    );
+    expect(await screen.findByLabelText("导入行异常待审核")).toBeInTheDocument();
+    expect(
+      screen.getByText("exception-only-1 · batch batch-exception-only"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/supplier_fee/)).toBeInTheDocument();
+    expect(screen.queryByText("本项目暂无外部成本记录")).not.toBeInTheDocument();
+  });
+
 });
 
 describe("OpsReferenceApp war room smoke", () => {

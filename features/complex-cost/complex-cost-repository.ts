@@ -427,6 +427,31 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
     return mapImportBatchRow(requireSingle({ data, error }));
   }
 
+  async listImportBatches(input: {
+    organizationId: string;
+    projectId: string;
+    importType?: ProjectCostImportType;
+    limit?: number;
+  }): Promise<ProjectCostImportBatchRecord[]> {
+    let query = this.client
+      .from("project_cost_import_batches")
+      .select("*")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .order("created_at", { ascending: false })
+      .limit(input.limit ?? 25);
+
+    if (input.importType) {
+      query = query.eq("import_type", input.importType);
+    }
+
+    const { data, error } = await query.returns<ImportBatchRow[]>();
+    if (error) {
+      throw error;
+    }
+    return (data ?? []).map(mapImportBatchRow);
+  }
+
   async getImportBatchById(
     batchId: string,
   ): Promise<ProjectCostImportBatchRecord | null> {

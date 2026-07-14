@@ -287,6 +287,22 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
     return batch;
   }
 
+  async listImportBatches(input: {
+    organizationId: string;
+    projectId: string;
+    importType?: ProjectCostImportBatchRecord["importType"];
+    limit?: number;
+  }) {
+    return this.importBatches
+      .filter(
+        (batch) =>
+          batch.organizationId === input.organizationId &&
+          batch.projectId === input.projectId &&
+          (!input.importType || batch.importType === input.importType),
+      )
+      .slice(0, input.limit ?? this.importBatches.length);
+  }
+
   async getImportBatchById(batchId: string) {
     return this.importBatches.find((batch) => batch.id === batchId) ?? null;
   }

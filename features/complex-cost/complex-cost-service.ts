@@ -113,6 +113,12 @@ export type ComplexCostRepository = {
   createImportBatch(
     input: CreateImportBatchRepoInput,
   ): Promise<ProjectCostImportBatchRecord>;
+  listImportBatches(input: {
+    organizationId: string;
+    projectId: string;
+    importType?: ProjectCostImportType;
+    limit?: number;
+  }): Promise<ProjectCostImportBatchRecord[]>;
   getImportBatchById(
     batchId: string,
   ): Promise<ProjectCostImportBatchRecord | null>;

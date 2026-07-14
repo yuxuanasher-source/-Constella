@@ -341,6 +341,26 @@ function createSeedContract({
     inputs: { [inputName]: { type: "integer", value } },
     expectedResult: { type: "money_cents", amountCents },
   });
+  const externalCostExample = (
+    name,
+    kind,
+    descriptionText,
+    amountCents,
+    items,
+  ) => ({
+    name,
+    kind,
+    description: descriptionText,
+    inputs: { [inputName]: { type: "money_cents", amountCents } },
+    expectedResult: {
+      type: "cost_items",
+      items: items.map((item) => ({
+        category: item.category,
+        amountCents: item.amountCents,
+        status: "pending_review",
+      })),
+    },
+  });
 
   return {
     schemaVersion: 1,
@@ -357,7 +377,9 @@ function createSeedContract({
       {
         name: "final",
         description,
-        expression: "按确认后的业务条件计算最终金额",
+        expression: externalCost
+          ? "cost_items([{ category, amount: sales_amount * cost_rate, status: 'pending_review' }])"
+          : "按确认后的业务条件计算最终金额",
         resultType: externalCost
           ? { kind: "array", itemType: { kind: "object", fields: {} } }
           : { kind: "scalar", scalarType: "money_cents" },
@@ -378,7 +400,11 @@ function createSeedContract({
     parameters: [
       {
         name: "unit_price",
-        description: payable ? "基础结算单价" : "基础应收单价",
+        description: externalCost
+          ? "项目成本金额或比例参数"
+          : payable
+            ? "基础结算单价"
+            : "基础应收单价",
         valueType: { kind: "scalar", scalarType: "money_cents" },
         userFacingUnit: "元",
         defaultValue: { type: "money_cents", amountCents: 0 },
@@ -393,11 +419,38 @@ function createSeedContract({
       ? "替换当前项目的主播应付基础规则。"
       : "替换当前项目的客户应收基础规则。",
     businessTimezone,
-    examples: [
-      example("标准情况", "normal", "按一个标准单位计算。", 1, 0),
-      example("零值情况", "boundary", "业务数量为零时金额为零。", 0, 0),
-      example("最小单位", "boundary", "按最小业务单位计算。", 1, 0),
-    ],
+    examples: externalCost
+      ? [
+          externalCostExample(
+            "导入行生成流量成本",
+            "normal",
+            "销售金额生成一条待审核项目成本。",
+            100_000,
+            [{ category: "traffic", amountCents: 12_000 }],
+          ),
+          externalCostExample(
+            "零金额导入行",
+            "boundary",
+            "没有可计算金额时不生成已确认成本。",
+            0,
+            [],
+          ),
+          externalCostExample(
+            "多类别成本",
+            "normal",
+            "同一导入行可生成多条待审核项目成本。",
+            200_000,
+            [
+              { category: "traffic", amountCents: 18_000 },
+              { category: "supplier_fee", amountCents: 6_000 },
+            ],
+          ),
+        ]
+      : [
+          example("标准情况", "normal", "按一个标准单位计算。", 1, 0),
+          example("零值情况", "boundary", "业务数量为零时金额为零。", 0, 0),
+          example("最小单位", "boundary", "按最小业务单位计算。", 1, 0),
+        ],
   };
 }
 
@@ -964,6 +1017,216 @@ function RevisionDiff({ diff }) {
   );
 }
 
+function previewAmountLabel(value) {
+  if (value?.amountYuan !== undefined) return formatYuan(value.amountYuan);
+  if (Number.isSafeInteger(value?.amountCents)) {
+    return formatYuan(formatSafeHundredths(value.amountCents));
+  }
+  if (value?.amount !== undefined) return formatYuan(value.amount);
+  return formatYuan(undefined);
+}
+
+function externalPreviewFrom(authority) {
+  return (
+    authority.summary?.externalCostPreview ??
+    authority.simulation?.externalCostPreview ??
+    authority.simulation?.summary?.externalCostPreview ??
+    null
+  );
+}
+
+function ExternalCostSimulationView({ authority, headingRef }) {
+  const preview = externalPreviewFrom(authority);
+  if (!preview) {
+    return (
+      <section
+        className="crw-band crw-simulation"
+        role="region"
+        aria-label="内部试算"
+      >
+        <div className="crw-band-heading">
+          <div>
+            <h2 ref={headingRef} tabIndex={-1} data-focus-heading="result">
+              内部试算结果
+            </h2>
+            <span className="crw-preview-status">项目成本预览</span>
+          </div>
+        </div>
+        <p>项目成本预览暂不可用，请重新试算。</p>
+      </section>
+    );
+  }
+
+  const categoryEntries = Object.entries(preview.categoryTotals ?? {});
+  const coverage = preview.sourceCoverage ?? {};
+  const sampleRows = Array.isArray(preview.sampleRows) ? preview.sampleRows : [];
+  const missingData = Array.isArray(preview.missingDataOutcomes)
+    ? preview.missingDataOutcomes
+    : [];
+  const warnings = Array.isArray(preview.warnings) ? preview.warnings : [];
+  const sourceRule = preview.ruleSource ?? {};
+  const totalCents = categoryEntries.reduce(
+    (sum, [, total]) =>
+      Number.isSafeInteger(total?.amountCents) ? sum + total.amountCents : sum,
+    0,
+  );
+  const totalLabel = totalCents
+    ? formatYuan(formatSafeHundredths(totalCents))
+    : categoryEntries.length === 1
+      ? previewAmountLabel(categoryEntries[0][1])
+      : formatYuan(undefined);
+  const ruleVersionLabel =
+    sourceRule.ruleVersionId ??
+    (sourceRule.versionNumber ? `v${sourceRule.versionNumber}` : "未提供");
+
+  return (
+    <section
+      className="crw-band crw-simulation"
+      role="region"
+      aria-label="内部试算"
+    >
+      <div className="crw-band-heading">
+        <div>
+          <h2 ref={headingRef} tabIndex={-1} data-focus-heading="result">
+            内部试算结果
+          </h2>
+          <span className="crw-preview-status">项目成本预览</span>
+        </div>
+        {preview.pendingReview ? (
+          <span className="crw-no-history">待审核项目成本</span>
+        ) : null}
+      </div>
+
+      <div className="crw-metrics">
+        <div>
+          <span>待审核项目成本</span>
+          <strong>{preview.itemCount ?? 0} 项</strong>
+        </div>
+        <div>
+          <span>发生成本合计</span>
+          <strong>{totalLabel}</strong>
+        </div>
+        <div>
+          <span>导入批次</span>
+          <strong>{preview.importBatchId ?? "未提供"}</strong>
+        </div>
+        <div>
+          <span>规则版本</span>
+          <strong>{ruleVersionLabel}</strong>
+        </div>
+        <div>
+          <span>覆盖行</span>
+          <strong>
+            {coverage.evaluatedRows ?? 0}/{coverage.totalRows ?? 0} 行
+          </strong>
+        </div>
+        <div>
+          <span>转复核行</span>
+          <strong>{coverage.reviewRows ?? 0} 行</strong>
+        </div>
+      </div>
+
+      <div className="crw-change-columns">
+        <div>
+          <h3>类别合计</h3>
+          <ul>
+            {categoryEntries.length ? (
+              categoryEntries.map(([category, total]) => (
+                <li key={category}>
+                  <span>{category}</span>
+                  <strong>{previewAmountLabel(total)}</strong>
+                  <small>{total?.itemCount ?? 0} 项</small>
+                </li>
+              ))
+            ) : (
+              <li>暂无发生成本类别</li>
+            )}
+          </ul>
+        </div>
+        <div>
+          <h3>来源与证据</h3>
+          <ul>
+            <li>
+              <span>预览指纹</span>
+              <strong>{preview.previewHash ?? "未提供"}</strong>
+            </li>
+            <li>
+              <span>规则来源</span>
+              <strong>{sourceRule.kind ?? "未提供"}</strong>
+            </li>
+            <li>
+              <span>已发生成本行</span>
+              <strong>{coverage.emittedRows ?? preview.itemCount ?? 0} 行</strong>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <div className="crw-risk-columns">
+        <div>
+          <h3>样本行</h3>
+          {sampleRows.length ? (
+            <ul>
+              {sampleRows.map((row) => (
+                <li key={`${row.rowIndex}-${row.status}`}>
+                  第 {(row.rowIndex ?? 0) + 1} 行 · {row.status ?? "待审核"}
+                  {(row.items ?? []).map((item, index) => (
+                    <div key={`${item.category}-${index}`}>
+                      <span>{item.category}</span>
+                      <strong>{previewAmountLabel(item)}</strong>
+                      <small>
+                        {item.status ?? "pending_review"} ·{" "}
+                        {item.evidenceLevel ?? "evidence"} ·{" "}
+                        {item.ruleVersionId ?? ruleVersionLabel}
+                      </small>
+                      {item.sourceRefs ? (
+                        <small>
+                          {item.sourceRefs.sourceExecutionKey ?? "无执行引用"} ·{" "}
+                          {item.sourceRefs.sourceInputHash ?? "无输入指纹"} ·{" "}
+                          {item.sourceRefs.explanation ?? "无解释"}
+                        </small>
+                      ) : null}
+                    </div>
+                  ))}
+                  {row.evidenceRefs?.length ? (
+                    <small>{row.evidenceRefs.join(" · ")}</small>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>暂无样本行</p>
+          )}
+        </div>
+        <div>
+          <h3>待复核输入</h3>
+          {missingData.length ? (
+            <ul>
+              {missingData.map((item, index) => (
+                <li key={`${item.variableName}-${index}`}>
+                  第 {(item.rowIndex ?? 0) + 1} 行 · {item.variableName} ·{" "}
+                  {item.policy ?? "route_item_to_review"} ·{" "}
+                  {item.outcome ?? "pending_review"}
+                </li>
+              ))}
+            </ul>
+          ) : warnings.length ? (
+            <ul>
+              {warnings.map((item, index) => (
+                <li key={`${item.code}-${index}`}>
+                  {item.code}: {safeRiskMessage(item.message, "warning")}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>暂无待复核输入</p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function SimulationView({ authority, headingRef }) {
   const scope = authority.draft.businessContract.scope;
   const summary = authority.summary;
@@ -986,6 +1249,11 @@ function SimulationView({ authority, headingRef }) {
         </div>
         <p>{persisted.message}</p>
       </section>
+    );
+  }
+  if (scope === "external_cost") {
+    return (
+      <ExternalCostSimulationView authority={authority} headingRef={headingRef} />
     );
   }
 

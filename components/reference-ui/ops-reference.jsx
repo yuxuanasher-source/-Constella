@@ -20036,13 +20036,45 @@ function ScreenSettlement({ go }) {
     const nextItems = Array.isArray(items) ? items : [];
     setCostItems(nextItems);
     setCostItemsLoadedFor(projectId);
-    const batchIds = [
+    const itemBatchIds = [
       ...new Set(
         nextItems
           .map((item) => item.sourceImportBatchId)
           .filter((batchId) => typeof batchId === "string" && batchId),
       ),
     ];
+    let importBatches = [];
+    try {
+      importBatches =
+        (await actions.fetchProjectCostImportBatches?.(projectId)) ?? [];
+    } catch {
+      importBatches = [];
+    }
+    const exceptionBatchIds = Array.isArray(importBatches)
+      ? importBatches
+          .filter(
+            (batch) =>
+              typeof batch?.id === "string" &&
+              (!batch.projectId || batch.projectId === projectId) &&
+              (!batch.importType ||
+                [
+                  "external_cost",
+                  "cpa",
+                  "cps",
+                  "gift",
+                  "traffic",
+                  "supplier_bill",
+                ].includes(batch.importType)) &&
+              [
+                "parsed",
+                "review_required",
+                "pending_review",
+                "previewed",
+              ].includes(batch.status),
+          )
+          .map((batch) => batch.id)
+      : [];
+    const batchIds = [...new Set([...itemBatchIds, ...exceptionBatchIds])];
     if (!actions.fetchExternalCostRuleExceptions || batchIds.length === 0) {
       setCostRuleExceptions([]);
       return;
@@ -21307,6 +21339,16 @@ function ScreenSettlement({ go }) {
                     </div>
                   </div>
                 ))}
+              </div>
+            ) : costRuleExceptions.length > 0 ? (
+              <div
+                style={{
+                  marginTop: 12,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                }}
+              >
+                尚未生成项目成本项，请先处理下方导入行异常
               </div>
             ) : (
               <div
@@ -34847,6 +34889,13 @@ function OpsReferenceInner({
           "load project cost items failed",
         );
         return body.items ?? [];
+      },
+      fetchProjectCostImportBatches: async (projectId) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/cost-imports`,
+          "load project cost imports failed",
+        );
+        return body.batches ?? [];
       },
       fetchExternalCostRuleExceptions: async (projectId, batchId) => {
         const body = await fetchJson(

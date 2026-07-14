@@ -115,6 +115,63 @@ function contract(overrides = {}) {
   };
 }
 
+function externalCostContract(overrides = {}) {
+  return contract({
+    scope: "external_cost",
+    target: { targetType: "project", targetId: null },
+    executionGrain: "report",
+    compositionMode: "emit_items",
+    title: "项目成本规则草案",
+    summary: "按成本导入行生成待审核项目成本。",
+    calculationComponents: [
+      {
+        name: "final",
+        description: "生成待审核项目成本",
+        expression: "cost_items([{ category: 'traffic' }])",
+        resultType: { kind: "array", itemType: { kind: "object", fields: {} } },
+      },
+    ],
+    requiredInputs: [
+      {
+        name: "sales_amount",
+        description: "导入行销售金额",
+        source: "项目成本导入",
+        valueType: { kind: "scalar", scalarType: "money_cents" },
+        userFacingUnit: "元",
+      },
+    ],
+    parameters: [
+      {
+        name: "traffic_rate",
+        description: "流量成本比例",
+        valueType: { kind: "scalar", scalarType: "rate_bps" },
+        userFacingUnit: "%",
+        defaultValue: { type: "rate_bps", rateBps: 1200 },
+      },
+    ],
+    compositionDescription: "生成项目成本待审核明细，不自动确认入账。",
+    examples: [
+      {
+        name: "导入行生成流量成本",
+        kind: "normal",
+        description: "销售金额生成一条待审核项目成本。",
+        inputs: { sales_amount: { type: "money_cents", amountCents: 100_000 } },
+        expectedResult: {
+          type: "cost_items",
+          items: [
+            {
+              category: "traffic",
+              amountCents: 12_000,
+              status: "pending_review",
+            },
+          ],
+        },
+      },
+    ],
+    ...overrides,
+  });
+}
+
 function draft(status = "clarifying", overrides = {}) {
   const simulated = status === "simulated";
   const failed = status === "failed";
@@ -605,6 +662,20 @@ async function startRule(prompt = "每场按直播时长和单价结算") {
   fireEvent.click(screen.getByRole("button", { name: "开始澄清" }));
 }
 
+async function startProjectCostRule(prompt = "按导入销售金额生成待审核项目成本") {
+  const projectCostScope = screen.getByRole("button", { name: "项目成本" });
+  if (projectCostScope.getAttribute("aria-pressed") !== "true") {
+    fireEvent.click(projectCostScope);
+  }
+  await waitFor(() =>
+    expect(screen.getByLabelText("规则说明")).not.toBeDisabled(),
+  );
+  fireEvent.change(screen.getByLabelText("规则说明"), {
+    target: { value: prompt },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "开始澄清" }));
+}
+
 describe("CustomSettlementRuleWorkspace", () => {
   it("offers settlement and project-cost business scopes on a full-width operational surface", async () => {
     const apiClient = api({
@@ -684,6 +755,176 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(screen.getByText("gift_amount")).toBeInTheDocument();
     expect(screen.getByText("生成待审核项目成本")).toBeInTheDocument();
     expect(screen.queryByText(/自动确认/)).not.toBeInTheDocument();
+  });
+
+  it("seeds project-cost examples as emitted pending-review cost items", async () => {
+    const apiClient = api({
+      startSession: vi
+        .fn()
+        .mockResolvedValue(
+          startEnvelope(draft("clarifying", { businessContract: externalCostContract() })),
+        ),
+    });
+    renderWorkspace(apiClient);
+
+    await startProjectCostRule();
+
+    await waitFor(() =>
+      expect(apiClient.startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            seedContract: expect.objectContaining({
+              scope: "external_cost",
+              compositionMode: "emit_items",
+              calculationComponents: expect.arrayContaining([
+                expect.objectContaining({
+                  expression: expect.stringContaining("cost_items"),
+                  resultType: expect.objectContaining({ kind: "array" }),
+                }),
+              ]),
+              requiredInputs: expect.arrayContaining([
+                expect.objectContaining({
+                  name: "sales_amount",
+                  valueType: {
+                    kind: "scalar",
+                    scalarType: "money_cents",
+                  },
+                }),
+              ]),
+              examples: expect.arrayContaining([
+                expect.objectContaining({
+                  inputs: expect.objectContaining({
+                    sales_amount: expect.objectContaining({
+                      type: "money_cents",
+                    }),
+                  }),
+                  expectedResult: expect.objectContaining({
+                    type: "cost_items",
+                    items: expect.arrayContaining([
+                      expect.objectContaining({
+                        category: expect.any(String),
+                        status: "pending_review",
+                      }),
+                    ]),
+                  }),
+                }),
+              ]),
+            }),
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("renders external-cost previews as emitted pending-review items with source refs", async () => {
+    const previewFormula = {
+      expression:
+        'cost_items([{ category: "traffic", amount: sales_amount * 0.12 }])',
+    };
+    const ready = confirmableDraft({
+      businessContract: externalCostContract(),
+    });
+    const simulatedDraft = draft("simulated", {
+      revisionNumber: 3,
+      businessContract: externalCostContract(),
+      generatedFormula: previewFormula,
+      generatedExplanation: "按导入行生成待审核项目成本。",
+    });
+    const externalCostPreview = {
+      importBatchId: "batch-cost-1",
+      ruleSource: {
+        kind: "draft",
+        ruleVersionId: "rule-v5",
+        versionNumber: 5,
+        status: "draft",
+      },
+      itemCount: 2,
+      categoryTotals: {
+        traffic: { amountCents: 32100, amountYuan: "321.00", itemCount: 2 },
+      },
+      sourceCoverage: {
+        totalRows: 3,
+        evaluatedRows: 2,
+        reviewRows: 1,
+        emittedRows: 2,
+        emptyRows: 0,
+      },
+      missingDataOutcomes: [
+        {
+          rowIndex: 2,
+          variableName: "supplier_fee",
+          policy: "route_item_to_review",
+          outcome: "pending_review",
+        },
+      ],
+      warnings: [
+        {
+          code: "EXTERNAL_COST_PREVIEW_REVIEW_REQUIRED",
+          message: "Some import rows need reviewed values before costs exist.",
+        },
+      ],
+      pendingReview: true,
+      sampleRows: [
+        {
+          rowIndex: 0,
+          status: "emitted",
+          items: [
+            {
+              category: "traffic",
+              amountYuan: "200.00",
+              evidenceLevel: "yellow",
+              status: "pending_review",
+              ruleVersionId: "rule-v5",
+              sourceRefs: {
+                sourceExecutionKey: "exec-preview-1",
+                sourceInputHash: "ctx-row-1",
+                explanation: "traffic cost from sales amount",
+              },
+            },
+          ],
+          evidenceRefs: ["invoice:2026-07-01"],
+        },
+      ],
+      previewHash: "preview-hash-1",
+    };
+    const apiClient = api({
+      startSession: vi.fn().mockResolvedValue(startEnvelope(ready)),
+      confirmAndSimulate: vi.fn().mockResolvedValue({
+        result: {
+          ok: true,
+          kind: "simulated",
+          conversationId: SESSION_ID,
+          draft: simulatedDraft,
+          simulation: {
+            id: "66666666-6666-4666-8666-666666666666",
+            createdAt: "2026-07-12T01:02:00.000Z",
+            externalCostPreview,
+          },
+          summary: { externalCostPreview },
+          duplicate: false,
+        },
+      }),
+    });
+    renderWorkspace(apiClient);
+
+    await startProjectCostRule();
+    await screen.findByRole("heading", { name: "业务规则草案" });
+    fireEvent.click(screen.getByRole("button", { name: "确认业务规则并试算" }));
+
+    const simulation = await screen.findByRole("region", { name: "内部试算" });
+    expect(simulation).toHaveTextContent("项目成本预览");
+    expect(simulation).toHaveTextContent("待审核项目成本");
+    expect(simulation).toHaveTextContent("traffic");
+    expect(simulation).toHaveTextContent("¥321.00");
+    expect(simulation).toHaveTextContent("2 项");
+    expect(simulation).toHaveTextContent("batch-cost-1");
+    expect(simulation).toHaveTextContent("rule-v5");
+    expect(simulation).toHaveTextContent("exec-preview-1");
+    expect(simulation).toHaveTextContent("ctx-row-1");
+    expect(simulation).toHaveTextContent("supplier_fee");
+    expect(simulation).not.toHaveTextContent("当前金额");
+    expect(simulation).not.toHaveTextContent("差额");
+    expect(simulation).not.toHaveTextContent("自动确认");
   });
 
   it("shows one focused AI question and highlights every unresolved contract field", async () => {
