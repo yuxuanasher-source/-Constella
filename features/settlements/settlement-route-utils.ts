@@ -104,6 +104,11 @@ export function createSettlementBatchGate({
         periodEnd: batch.periodEnd,
         triggerType: "settlement_batch",
         triggerBatchId: batchId,
+        transitionBatch: {
+          id: batch.id,
+          batchType: batch.batchType,
+          status: trigger === "confirm" ? "confirmed" : "locked",
+        },
         onStep: undefined,
       });
     },

@@ -24,7 +24,11 @@ import {
   type ReconciliationConfig,
   type ReconciliationEvidence,
 } from "./project-settlement-reconciliation";
-import type { SettlementActor } from "./settlement-service";
+import type {
+  SettlementActor,
+  SettlementBatchStatus,
+  SettlementBatchType,
+} from "./settlement-service";
 
 // Wires the pure §3.4 reconciliation core to real project data: it gathers the
 // period's receivable/payable batch totals, the project's confirmed external
@@ -87,6 +91,12 @@ export type PersistReconciliationRunInput = {
   createdBy: string;
 };
 
+export type ReconciliationTransitionBatch = {
+  id: string;
+  batchType: SettlementBatchType;
+  status: Extract<SettlementBatchStatus, "confirmed" | "locked">;
+};
+
 export type ReconciliationDataSource = {
   getBatchTotals(input: {
     organizationId: string;
@@ -94,10 +104,12 @@ export type ReconciliationDataSource = {
     batchType: "receivable" | "payable";
     periodStart: string;
     periodEnd: string;
+    transitionBatch?: ReconciliationTransitionBatch | null;
   }): Promise<{
     totals: BatchTotals;
     evidence: ReconciliationEvidence;
     finalized?: boolean;
+    present?: boolean;
   }>;
   getConfirmedCostSummary(input: {
     organizationId: string;
@@ -135,6 +147,7 @@ export async function runProjectSettlementReconciliation({
   expectedInputHash,
   triggerType = "manual",
   triggerBatchId = null,
+  transitionBatch = null,
   onStep,
 }: {
   source: ReconciliationDataSource;
@@ -147,6 +160,7 @@ export async function runProjectSettlementReconciliation({
   expectedInputHash?: string;
   triggerType?: SettlementReconciliationRunTriggerType;
   triggerBatchId?: string | null;
+  transitionBatch?: ReconciliationTransitionBatch | null;
   onStep?: (step: string) => void;
 }): Promise<ProjectSettlementReconciliationRunResult> {
   if (!isMcnStaff(actor.role)) {
@@ -161,6 +175,7 @@ export async function runProjectSettlementReconciliation({
       batchType: "receivable",
       periodStart,
       periodEnd,
+      transitionBatch,
     }),
     source.getBatchTotals({
       organizationId: actor.organizationId,
@@ -168,6 +183,7 @@ export async function runProjectSettlementReconciliation({
       batchType: "payable",
       periodStart,
       periodEnd,
+      transitionBatch,
     }),
     source.getConfirmedCostSummary({
       organizationId: actor.organizationId,
@@ -187,6 +203,9 @@ export async function runProjectSettlementReconciliation({
     : null;
 
   assertFinalizedInputs(receivable, payable, cost, settings);
+  if (activeRule) {
+    assertPresentInputs(receivable, payable);
+  }
 
   // Both batch types are priced from the same approved reports, so use the
   // receivable evidence as the income-side signal and fall back to payable when
@@ -309,9 +328,16 @@ function assertFinalizedInputs(
   }
 }
 
+function assertPresentInputs(...inputs: Array<{ present?: boolean }>): void {
+  if (inputs.some((input) => input.present === false)) {
+    throw new Error("Settlement reconciliation requires finalized inputs");
+  }
+}
+
 // --- Supabase implementation ------------------------------------------------
 
 type SettlementBatchTotalsRow = {
+  id: string | null;
   computed_amount: number | null;
   manual_amount: number | null;
   adjustment_amount: number | null;
@@ -338,15 +364,17 @@ export class SupabaseReconciliationDataSource
     batchType: "receivable" | "payable";
     periodStart: string;
     periodEnd: string;
+    transitionBatch?: ReconciliationTransitionBatch | null;
   }): Promise<{
     totals: BatchTotals;
     evidence: ReconciliationEvidence;
     finalized?: boolean;
+    present?: boolean;
   }> {
     const { data, error } = await this.client
       .from("settlement_batches")
       .select(
-        "computed_amount, manual_amount, adjustment_amount, evidence_summary, status",
+        "id, computed_amount, manual_amount, adjustment_amount, evidence_summary, status",
       )
       .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
@@ -372,12 +400,19 @@ export class SupabaseReconciliationDataSource
       unknown: 0,
     };
     let finalized = true;
+    let present = false;
 
     for (const row of data ?? []) {
-      if (EXCLUDED_SETTLEMENT_BATCH_STATUSES.has(row.status ?? "")) {
+      const status = transitionAwareStatus(
+        row,
+        input.transitionBatch,
+        input.batchType,
+      );
+      if (EXCLUDED_SETTLEMENT_BATCH_STATUSES.has(status)) {
         continue;
       }
-      if (!FINALIZED_SETTLEMENT_BATCH_STATUSES.has(row.status ?? "")) {
+      present = true;
+      if (!FINALIZED_SETTLEMENT_BATCH_STATUSES.has(status)) {
         finalized = false;
         continue;
       }
@@ -395,7 +430,7 @@ export class SupabaseReconciliationDataSource
       evidence.unknown = (evidence.unknown ?? 0) + countOf(summary, "unknown");
     }
 
-    return { totals, evidence, finalized };
+    return { totals, evidence, finalized, present };
   }
 
   async getConfirmedCostSummary(input: {
@@ -519,6 +554,21 @@ export class SupabaseReconciliationDataSource
       },
     };
   }
+}
+
+function transitionAwareStatus(
+  row: Pick<SettlementBatchTotalsRow, "id" | "status">,
+  transitionBatch: ReconciliationTransitionBatch | null | undefined,
+  batchType: SettlementBatchType,
+): string {
+  if (
+    transitionBatch &&
+    transitionBatch.batchType === batchType &&
+    row.id === transitionBatch.id
+  ) {
+    return transitionBatch.status;
+  }
+  return row.status ?? "";
 }
 
 function yuanToCents(value: number | null | undefined): number {

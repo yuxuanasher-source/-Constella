@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createSettlementBatchGate,
   getSettlementRouteContext,
   isUuid,
   jsonError,
@@ -112,5 +113,71 @@ describe("getSettlementRouteContext", () => {
       evaluateReconciliation: expect.any(Function),
     });
     expect(context.supabase).toBe(supabase);
+  });
+});
+
+describe("createSettlementBatchGate", () => {
+  it("evaluates confirmation against the current batch as a confirmed transition candidate", async () => {
+    const getBatchTotals = vi.fn(async () => ({
+      totals: { computedCents: 1_000_000, manualCents: 0, adjustmentCents: 0 },
+      evidence: { green: 1, yellow: 0, red: 0, unknown: 0 },
+      finalized: true,
+      present: true,
+    }));
+    const gate = createSettlementBatchGate({
+      organizationId: "org-1",
+      repo: {
+        getSettlementBatchById: vi.fn(async () => ({
+          id: "batch-confirming",
+          organizationId: "org-1",
+          projectId: "project-1",
+          batchType: "receivable" as const,
+          status: "generated" as const,
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          computedAmount: 10_000,
+          manualAmount: 0,
+          adjustmentAmount: 0,
+          evidenceSummary: {},
+        })),
+        hasOpenSettlementRuleExceptions: vi.fn(async () => false),
+      },
+      source: {
+        getBatchTotals,
+        getConfirmedCostSummary: vi.fn(async () => ({
+          costCents: 100_000,
+          revenueOffsetCents: 0,
+          adjustmentCents: 0,
+        })),
+        getFinancialSettings: vi.fn(async () => ({
+          isInvoiced: false,
+          outputVatRateBps: 0,
+          surtaxRateBps: 0,
+          procurementCostCents: 0,
+        })),
+      },
+    });
+
+    await gate.evaluateReconciliation({
+      batchId: "batch-confirming",
+      actor: {
+        userId: "user-finance",
+        name: "Finance",
+        role: "finance",
+        organizationId: "org-1",
+      },
+      trigger: "confirm",
+    });
+
+    expect(getBatchTotals).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchType: "receivable",
+        transitionBatch: {
+          id: "batch-confirming",
+          batchType: "receivable",
+          status: "confirmed",
+        },
+      }),
+    );
   });
 });

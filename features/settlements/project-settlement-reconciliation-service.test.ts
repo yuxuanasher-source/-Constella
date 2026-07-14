@@ -365,6 +365,41 @@ describe("runProjectSettlementReconciliation", () => {
     expect(source.persistReconciliationRun).not.toHaveBeenCalled();
   });
 
+  it("fails closed for missing counterpart batches when an active custom check exists", async () => {
+    const source = createSource() as ReconciliationDataSource &
+      Record<string, ReturnType<typeof vi.fn>>;
+    vi.mocked(source.getBatchTotals).mockImplementation(async ({ batchType }) =>
+      batchType === "receivable"
+        ? {
+            totals: { computedCents: 1_000_000, manualCents: 0, adjustmentCents: 0 },
+            evidence: { green: 2, yellow: 0, red: 0, unknown: 0 },
+            finalized: true,
+            present: true,
+          }
+        : {
+            totals: { computedCents: 0, manualCents: 0, adjustmentCents: 0 },
+            evidence: { green: 0, yellow: 0, red: 0, unknown: 0 },
+            finalized: true,
+            present: false,
+          },
+    );
+    source.resolveActiveReconciliationRule = vi.fn(async () =>
+      reconciliationRule('pass_if(true, "核对通过")'),
+    );
+    source.persistReconciliationRun = vi.fn();
+
+    await expect(
+      runProjectSettlementReconciliation({
+        source,
+        actor,
+        projectId: "p-1",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      }),
+    ).rejects.toThrow(/finalized inputs/);
+    expect(source.persistReconciliationRun).not.toHaveBeenCalled();
+  });
+
   it("verifies the caller hash for confirm or lock style rechecks and does not expose formula or AST", async () => {
     const source = createSource() as ReconciliationDataSource &
       Record<string, ReturnType<typeof vi.fn>>;
@@ -519,6 +554,7 @@ describe("SupabaseReconciliationDataSource", () => {
               ? {
                   data: [
                     {
+                      id: "batch-1",
                       status: "confirmed",
                       computed_amount: 1234.56,
                       manual_amount: 10.0,
@@ -568,6 +604,7 @@ describe("SupabaseReconciliationDataSource", () => {
       returns: vi.fn(async () => ({
         data: [
           {
+            id: "confirmed-batch",
             status: "confirmed",
             computed_amount: 100,
             manual_amount: 1,
@@ -575,6 +612,7 @@ describe("SupabaseReconciliationDataSource", () => {
             evidence_summary: { green: 1 },
           },
           {
+            id: "locked-batch",
             status: "locked",
             computed_amount: 20,
             manual_amount: 0,
@@ -582,6 +620,7 @@ describe("SupabaseReconciliationDataSource", () => {
             evidence_summary: { yellow: 1 },
           },
           {
+            id: "generated-batch",
             status: "generated",
             computed_amount: 999,
             manual_amount: 0,
@@ -589,6 +628,7 @@ describe("SupabaseReconciliationDataSource", () => {
             evidence_summary: { red: 1 },
           },
           {
+            id: "draft-batch",
             status: "draft",
             computed_amount: 999,
             manual_amount: 0,
@@ -596,6 +636,7 @@ describe("SupabaseReconciliationDataSource", () => {
             evidence_summary: { red: 1 },
           },
           {
+            id: "pending-batch",
             status: "pending",
             computed_amount: 999,
             manual_amount: 0,
@@ -603,6 +644,7 @@ describe("SupabaseReconciliationDataSource", () => {
             evidence_summary: { red: 1 },
           },
           {
+            id: "reopened-batch",
             status: "reopened",
             computed_amount: 999,
             manual_amount: 0,
@@ -630,7 +672,7 @@ describe("SupabaseReconciliationDataSource", () => {
     });
 
     expect(select).toHaveBeenCalledWith(
-      "computed_amount, manual_amount, adjustment_amount, evidence_summary, status",
+      "id, computed_amount, manual_amount, adjustment_amount, evidence_summary, status",
     );
     expect(result.finalized).toBe(false);
     expect(result.totals).toEqual({
@@ -641,10 +683,72 @@ describe("SupabaseReconciliationDataSource", () => {
     expect(result.evidence).toMatchObject({ green: 1, yellow: 1, red: 0 });
   });
 
+  it("counts the transition batch as finalized while confirm gate persists before mutation", async () => {
+    const query = {
+      select: vi.fn(function () {
+        return query;
+      }),
+      eq: vi.fn(function () {
+        return query;
+      }),
+      neq: vi.fn(function () {
+        return query;
+      }),
+      lte: vi.fn(function () {
+        return query;
+      }),
+      gte: vi.fn(function () {
+        return query;
+      }),
+      returns: vi.fn(async () => ({
+        data: [
+          {
+            id: "batch-confirming",
+            status: "generated",
+            computed_amount: 100,
+            manual_amount: 1,
+            adjustment_amount: 0,
+            evidence_summary: { green: 1 },
+          },
+        ],
+        error: null,
+      })),
+    };
+    const client = {
+      from: (table: string) => {
+        expect(table).toBe("settlement_batches");
+        return query;
+      },
+    };
+
+    const source = new SupabaseReconciliationDataSource(client as never);
+    const result = await source.getBatchTotals({
+      organizationId: "org-1",
+      projectId: "p-1",
+      batchType: "receivable",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+      transitionBatch: {
+        id: "batch-confirming",
+        batchType: "receivable",
+        status: "confirmed",
+      },
+    });
+
+    expect(result.finalized).toBe(true);
+    expect(result.present).toBe(true);
+    expect(result.totals).toEqual({
+      computedCents: 10_000,
+      manualCents: 100,
+      adjustmentCents: 0,
+    });
+  });
+
   it("ignores overlapping voided batches while keeping finalized inputs true", async () => {
     let excludedStatus: string | null = null;
     const rows = [
       {
+        id: "confirmed-batch",
         status: "confirmed",
         computed_amount: 100,
         manual_amount: 1,
@@ -652,6 +756,7 @@ describe("SupabaseReconciliationDataSource", () => {
         evidence_summary: { green: 1 },
       },
       {
+        id: "voided-batch",
         status: "voided",
         computed_amount: 999,
         manual_amount: 0,
