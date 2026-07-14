@@ -10,6 +10,7 @@ import { isMcnStaff } from "@/lib/rbac/roles";
 import type { CustomSettlementRuleVersion } from "./custom-rule-repository";
 import { SupabaseCustomRuleReadRepository } from "./custom-rule-repository";
 import {
+  assertActiveReconciliationRuleAstFresh,
   calculateCustomReconciliationInputHash,
   deepFreeze,
   executeCustomRuleReconciliationChecks,
@@ -211,6 +212,9 @@ export async function runProjectSettlementReconciliation({
   };
   onStep?.("compute:core");
   const coreResult = reconcileProjectSettlement(coreInput);
+  if (activeRule) {
+    assertActiveReconciliationRuleAstFresh(activeRule);
+  }
   const inputHash = calculateCustomReconciliationInputHash({
     coreInput,
     activeRule,

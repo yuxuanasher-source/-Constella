@@ -65,7 +65,7 @@ export function executeCustomRuleReconciliationChecks(input: {
     "id" | "formulaHash" | "compiledAst" | "parameters" | "ruleContract"
   >;
 }): CustomProjectSettlementReconciliationResult {
-  assertActiveAstFresh(input.ruleVersion);
+  assertActiveReconciliationRuleAstFresh(input.ruleVersion);
   const variables = buildReconciliationVariables(input.coreResult);
   const result = executeCompiledCustomRule<CustomRuleExecutionResult>({
     ast: input.ruleVersion.compiledAst as unknown as CompiledAstNode,
@@ -95,6 +95,14 @@ export function executeCustomRuleReconciliationChecks(input: {
       formulaHash: input.ruleVersion.formulaHash,
     },
   });
+}
+
+export function assertActiveReconciliationRuleAstFresh(
+  ruleVersion: Pick<CustomSettlementRuleVersion, "compiledAst" | "formulaHash">,
+): void {
+  if (sha256CanonicalAst(ruleVersion.compiledAst) !== ruleVersion.formulaHash) {
+    throw new Error("CUSTOM_RULE_RECONCILIATION_RULE_STALE");
+  }
 }
 
 export function calculateCustomReconciliationInputHash(input: {
@@ -180,14 +188,6 @@ function customChecksWithSource(
       ruleVersionId: ruleVersion.id,
       formulaHash: ruleVersion.formulaHash,
     }));
-}
-
-function assertActiveAstFresh(
-  ruleVersion: Pick<CustomSettlementRuleVersion, "compiledAst" | "formulaHash">,
-): void {
-  if (sha256CanonicalAst(ruleVersion.compiledAst) !== ruleVersion.formulaHash) {
-    throw new Error("CUSTOM_RULE_RECONCILIATION_RULE_STALE");
-  }
 }
 
 function typedParameterValues(

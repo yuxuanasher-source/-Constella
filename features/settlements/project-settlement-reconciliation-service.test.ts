@@ -306,6 +306,39 @@ describe("runProjectSettlementReconciliation", () => {
     expect(source.persistReconciliationRun).not.toHaveBeenCalled();
   });
 
+  it("rejects a stale active rule before returning a matching cached run", async () => {
+    const freshRule = reconciliationRule('pass_if(true, "核对通过")');
+    const staleRule: CustomSettlementRuleVersion = {
+      ...freshRule,
+      compiledAst: reconciliationRule('pass_if(false, "核对通过")').compiledAst,
+    };
+    const source = createSource() as ReconciliationDataSource &
+      Record<string, ReturnType<typeof vi.fn>>;
+    source.resolveActiveReconciliationRule = vi.fn(async () => staleRule);
+    source.getCachedReconciliationRun = vi.fn(async ({ inputHash }: any) => ({
+      id: "cached-run",
+      inputHash,
+      result: {
+        ...cachedCoreResult(),
+        run: { id: "cached-run", inputHash },
+      },
+      createdAt: "2026-07-14T00:00:00.000Z",
+    }));
+    source.persistReconciliationRun = vi.fn();
+
+    await expect(
+      runProjectSettlementReconciliation({
+        source,
+        actor,
+        projectId: "p-1",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      }),
+    ).rejects.toThrow("CUSTOM_RULE_RECONCILIATION_RULE_STALE");
+    expect(source.getCachedReconciliationRun).not.toHaveBeenCalled();
+    expect(source.persistReconciliationRun).not.toHaveBeenCalled();
+  });
+
   it("requires finalized money, evidence, and financial inputs before persisting", async () => {
     const source = createSource({
       receivable: {
