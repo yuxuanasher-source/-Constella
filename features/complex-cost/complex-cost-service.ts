@@ -454,7 +454,7 @@ export async function resolveExternalCostRuleExceptionWithReplay(args: {
     replay: ReplayExternalCostRuleExceptionItemsResult | null;
   }
 > {
-  assertCanReviewCostItems(args.actor);
+  assertCanResolveExternalCostRuleExceptions(args.actor);
   assertReason(
     args.resolutionReason,
     "Resolving an external cost rule exception requires a reason",
@@ -886,6 +886,20 @@ function assertCanCreateCostItems(actor: ComplexCostActor): void {
 function assertCanReviewCostItems(actor: ComplexCostActor): void {
   if (actor.role !== "owner" && actor.role !== "ops_manager") {
     throw new Error("Current role cannot review project cost items");
+  }
+}
+
+function assertCanResolveExternalCostRuleExceptions(
+  actor: ComplexCostActor,
+): void {
+  if (
+    actor.role !== "owner" &&
+    actor.role !== "ops_manager" &&
+    actor.role !== "finance"
+  ) {
+    throw new Error(
+      "Current role cannot resolve external cost rule exceptions",
+    );
   }
 }
 

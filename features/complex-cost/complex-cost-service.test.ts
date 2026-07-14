@@ -709,6 +709,77 @@ describe("resolveExternalCostRuleExceptionWithReplay", () => {
     });
     expect(repo.resolveExternalCostRuleException).not.toHaveBeenCalled();
   });
+
+  it("allows finance to resolve and replay external-cost rule exceptions", async () => {
+    const rule = externalRule(
+      'external_cost = cost_items([{ category: "supplier_fee", amount: supplier_fee, memo: "supplier" }])',
+      [{ name: "supplier_fee", required: false, missingDataPolicy: { action: "route_item_to_review" } }],
+    );
+    const initial = executeExternalCostRuleForImportFixture(rule);
+    const resolvedException = {
+      ...initial.exceptions[0]!,
+      id: "exception-1",
+      organizationId: "org-1",
+      projectId: "project-1",
+      importBatchId: "import-1",
+      status: "resolved" as const,
+      resolutionValue: { type: "money_cents" as const, amountCents: 3456 },
+    };
+    const repo = {
+      getProjectEntitlement: vi.fn(async () => entitlement),
+      getExternalCostRuleExceptionById: vi.fn(async () => ({
+        ...initial.exceptions[0]!,
+        id: "exception-1",
+        organizationId: "org-1",
+        projectId: "project-1",
+        importBatchId: "import-1",
+        status: "review_required" as const,
+      })),
+      resolveExternalCostRuleException: vi.fn(async () => ({
+        exception: resolvedException,
+        items: [],
+        replayed: false,
+        replayDeferred: true,
+        openSiblingCount: 0,
+        needsReplay: true,
+      })),
+      listExternalCostRuleExceptionsForImportRow: vi.fn(async () => [
+        resolvedException,
+      ]),
+      replayExternalCostRuleExceptionItems: vi.fn(async (input) => ({
+        items: input.items.map((item: Record<string, unknown>) => ({
+          id: "item-1",
+          organizationId: "org-1",
+          projectId: "project-1",
+          itemType: item.itemType,
+          amountCents: item.amountCents,
+          direction: item.direction,
+          evidenceLevel: item.evidenceLevel,
+          source: "system",
+          sourcePayload: item.sourcePayload,
+          reason: "Replay.",
+          status: item.status,
+        })),
+        idempotencyStatus: "created" as const,
+      })),
+    };
+
+    const result = await resolveExternalCostRuleExceptionWithReplay({
+      repo,
+      audit: vi.fn(),
+      actor: { ...actor, role: "finance" as const },
+      exceptionId: "exception-1",
+      resolutionValue: { type: "money_cents", amountCents: 3456 },
+      resolutionReason: "Record supplier amount.",
+    });
+
+    expect(repo.resolveExternalCostRuleException).toHaveBeenCalledOnce();
+    expect(repo.replayExternalCostRuleExceptionItems).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      replayed: true,
+      replay: { idempotencyStatus: "created" },
+    });
+  });
 });
 
 function externalRule(
