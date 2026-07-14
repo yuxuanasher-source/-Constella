@@ -1026,6 +1026,27 @@ function previewAmountLabel(value) {
   return formatYuan(undefined);
 }
 
+function formatEvidenceRef(ref) {
+  if (typeof ref === "string") {
+    return ref.trim() || "evidence_ref";
+  }
+  if (!ref || typeof ref !== "object" || Array.isArray(ref)) {
+    return "evidence_ref";
+  }
+  const kind = typeof ref.kind === "string" && ref.kind.trim()
+    ? ref.kind.trim()
+    : "evidence_ref";
+  const value =
+    typeof ref.liveReportId === "string" && ref.liveReportId.trim()
+      ? ref.liveReportId.trim()
+      : typeof ref.reference === "string" && ref.reference.trim()
+        ? ref.reference.trim()
+        : typeof ref.id === "string" && ref.id.trim()
+          ? ref.id.trim()
+          : null;
+  return value ? `${kind}: ${value}` : kind;
+}
+
 function externalPreviewFrom(authority) {
   return (
     authority.summary?.externalCostPreview ??
@@ -1189,7 +1210,9 @@ function ExternalCostSimulationView({ authority, headingRef }) {
                     </div>
                   ))}
                   {row.evidenceRefs?.length ? (
-                    <small>{row.evidenceRefs.join(" · ")}</small>
+                    <small>
+                      {row.evidenceRefs.map(formatEvidenceRef).join(" · ")}
+                    </small>
                   ) : null}
                 </li>
               ))}

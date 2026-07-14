@@ -882,7 +882,11 @@ describe("CustomSettlementRuleWorkspace", () => {
               },
             },
           ],
-          evidenceRefs: ["invoice:2026-07-01"],
+          evidenceRefs: [
+            { kind: "linked_report", liveReportId: "report-1" },
+            { kind: "import_reference", reference: "yellow_review" },
+            "invoice:2026-07-01",
+          ],
         },
       ],
       previewHash: "preview-hash-1",
@@ -922,6 +926,10 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(simulation).toHaveTextContent("exec-preview-1");
     expect(simulation).toHaveTextContent("ctx-row-1");
     expect(simulation).toHaveTextContent("supplier_fee");
+    expect(simulation).toHaveTextContent("linked_report: report-1");
+    expect(simulation).toHaveTextContent("import_reference: yellow_review");
+    expect(simulation).toHaveTextContent("invoice:2026-07-01");
+    expect(simulation).not.toHaveTextContent("[object Object]");
     expect(simulation).not.toHaveTextContent("当前金额");
     expect(simulation).not.toHaveTextContent("差额");
     expect(simulation).not.toHaveTextContent("自动确认");
