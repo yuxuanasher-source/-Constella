@@ -23,6 +23,7 @@
     "test:p5-commercialization": "vitest run lib/db/p5-schema-contract.test.ts features/billing app/api/billing features/regression/p5-commercialization.test.ts",
     "test:p6-payment": "vitest run lib/db/p6-schema-contract.test.ts features/billing features/regression/p6-payment.test.ts",
     "test:onboarding-funnel": "vitest run lib/db/funnel-schema-contract.test.ts features/funnel features/regression/onboarding-funnel.test.ts",
+    "test:async-tasks": "vitest run lib/db/async-task-schema-contract.test.ts features/async-tasks",
     "test:ai-system": "vitest run lib/db/ai-schema-contract.test.ts features/ai app/api/ai app/api/ocr",
     "test:permissions": "vitest run features/live-operations/live-operations-service.test.ts features/settlements/settlement-service.test.ts",
     "test:custom-settlement": "vitest run features/settlements app/api/settlement-batches features/regression/custom-settlement-rules-golden-path.test.ts features/regression/custom-settlement-cost-reconciliation.test.ts",
