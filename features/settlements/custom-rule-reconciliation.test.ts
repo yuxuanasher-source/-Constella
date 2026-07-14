@@ -7,7 +7,10 @@ import {
   executeCustomRuleReconciliationChecks,
 } from "./custom-rule-reconciliation";
 import { validateCustomRuleFormula } from "./custom-rule-validator";
-import type { ProjectSettlementReconciliationResult } from "./project-settlement-reconciliation";
+import {
+  DEFAULT_RECONCILIATION_CONFIG,
+  type ProjectSettlementReconciliationResult,
+} from "./project-settlement-reconciliation";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -151,6 +154,42 @@ describe("custom reconciliation rule execution", () => {
         activeRule: { id: ruleVersion.id, formulaHash: "f".repeat(64) },
       }),
     ).not.toBe(base);
+  });
+
+  it("hashes force approval and normalized reconciliation config", () => {
+    const ruleVersion = reconciliationRule('pass_if(true, "鏍稿閫氳繃")');
+    const base = calculateCustomReconciliationInputHash({
+      coreInput: coreInput(),
+      activeRule: ruleVersion,
+    });
+
+    expect(
+      calculateCustomReconciliationInputHash({
+        coreInput: coreInput({ forceApproved: true }),
+        activeRule: ruleVersion,
+      }),
+    ).not.toBe(base);
+    expect(
+      calculateCustomReconciliationInputHash({
+        coreInput: coreInput({ config: { marginRateFloorBps: 1_500 } }),
+        activeRule: ruleVersion,
+      }),
+    ).not.toBe(base);
+    expect(
+      calculateCustomReconciliationInputHash({
+        coreInput: coreInput({
+          config: {
+            warnOnRedEvidence: DEFAULT_RECONCILIATION_CONFIG.warnOnRedEvidence,
+            yellowRatioWarnBps: DEFAULT_RECONCILIATION_CONFIG.yellowRatioWarnBps,
+            marginRateFloorBps: DEFAULT_RECONCILIATION_CONFIG.marginRateFloorBps,
+            blockOnNegativeMargin:
+              DEFAULT_RECONCILIATION_CONFIG.blockOnNegativeMargin,
+            allowZeroReceivable: DEFAULT_RECONCILIATION_CONFIG.allowZeroReceivable,
+          },
+        }),
+        activeRule: ruleVersion,
+      }),
+    ).toBe(base);
   });
 });
 

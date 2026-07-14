@@ -607,4 +607,70 @@ describe("SupabaseReconciliationDataSource", () => {
     });
     expect(result.evidence).toMatchObject({ green: 1, yellow: 1, red: 0 });
   });
+
+  it("treats overlapping voided batches as non-finalized while summing only finalized batches", async () => {
+    let excludedStatus: string | null = null;
+    const rows = [
+      {
+        status: "confirmed",
+        computed_amount: 100,
+        manual_amount: 1,
+        adjustment_amount: 0,
+        evidence_summary: { green: 1 },
+      },
+      {
+        status: "voided",
+        computed_amount: 999,
+        manual_amount: 0,
+        adjustment_amount: 0,
+        evidence_summary: { red: 1 },
+      },
+    ];
+    const query = {
+      select: vi.fn(function () {
+        return query;
+      }),
+      eq: vi.fn(function () {
+        return query;
+      }),
+      neq: vi.fn(function (_column: string, status: string) {
+        excludedStatus = status;
+        return query;
+      }),
+      lte: vi.fn(function () {
+        return query;
+      }),
+      gte: vi.fn(function () {
+        return query;
+      }),
+      returns: vi.fn(async () => ({
+        data: rows.filter((row) => row.status !== excludedStatus),
+        error: null,
+      })),
+    };
+    const client = {
+      from: (table: string) => {
+        expect(table).toBe("settlement_batches");
+        return query;
+      },
+    };
+
+    const source = new SupabaseReconciliationDataSource(client as never);
+    const result = await source.getBatchTotals({
+      organizationId: "org-1",
+      projectId: "p-1",
+      batchType: "receivable",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+    });
+
+    expect(query.neq).not.toHaveBeenCalled();
+    expect(result.finalized).toBe(false);
+    expect(result.totals).toEqual({
+      computedCents: 10_000,
+      manualCents: 100,
+      adjustmentCents: 0,
+    });
+    expect(result.evidence).toMatchObject({ green: 1, yellow: 0, red: 0 });
+  });
 });

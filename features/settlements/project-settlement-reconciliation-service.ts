@@ -346,7 +346,6 @@ export class SupabaseReconciliationDataSource
       .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
       .eq("batch_type", input.batchType)
-      .neq("status", "voided")
       // Any batch whose period overlaps the requested window.
       .lte("period_start", input.periodEnd)
       .gte("period_end", input.periodStart)

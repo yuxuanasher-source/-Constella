@@ -10,11 +10,13 @@ import type {
   ReconciliationRuleResult,
   TypedRuntimeValue,
 } from "./custom-rule-types";
-import type {
-  ProjectSettlementReconciliationInput,
-  ProjectSettlementReconciliationResult,
-  ReconciliationCheck,
-  ReconciliationSeverity,
+import {
+  DEFAULT_RECONCILIATION_CONFIG,
+  type ReconciliationConfig,
+  type ProjectSettlementReconciliationInput,
+  type ProjectSettlementReconciliationResult,
+  type ReconciliationCheck,
+  type ReconciliationSeverity,
 } from "./project-settlement-reconciliation";
 
 export type ReconciliationCheckWithSource = {
@@ -100,12 +102,14 @@ export function calculateCustomReconciliationInputHash(input: {
   activeRule: Pick<CustomSettlementRuleVersion, "id" | "formulaHash"> | null;
 }): string {
   return sha256({
-    version: 1,
+    version: 2,
     receivableComputedCents: integerNumber(input.coreInput.receivableComputedCents),
     receivableManualCents: integerNumber(input.coreInput.receivableManualCents),
     payableTotalCents: integerNumber(input.coreInput.payableTotalCents),
     externalCostCents: integerNumber(input.coreInput.externalCostCents),
     manualAdjustmentCents: integerNumber(input.coreInput.manualAdjustmentCents),
+    forceApproved: Boolean(input.coreInput.forceApproved),
+    config: normalizedReconciliationConfig(input.coreInput.config),
     financialSettings: {
       isInvoiced: Boolean(input.coreInput.financialSettings.isInvoiced),
       outputVatRateBps: integerNumber(
@@ -129,6 +133,19 @@ export function calculateCustomReconciliationInputHash(input: {
         }
       : null,
   });
+}
+
+function normalizedReconciliationConfig(
+  config: ProjectSettlementReconciliationInput["config"],
+): ReconciliationConfig {
+  const normalized = { ...DEFAULT_RECONCILIATION_CONFIG, ...config };
+  return {
+    blockOnNegativeMargin: Boolean(normalized.blockOnNegativeMargin),
+    marginRateFloorBps: integerNumber(normalized.marginRateFloorBps),
+    yellowRatioWarnBps: integerNumber(normalized.yellowRatioWarnBps),
+    warnOnRedEvidence: Boolean(normalized.warnOnRedEvidence),
+    allowZeroReceivable: Boolean(normalized.allowZeroReceivable),
+  };
 }
 
 export function coreCheckWithSource(
