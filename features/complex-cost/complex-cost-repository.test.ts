@@ -362,6 +362,37 @@ describe("SupabaseComplexCostRepository custom import confirmation", () => {
 });
 
 describe("SupabaseComplexCostRepository exception resolution", () => {
+  it("loads an exception by id before a service-level resolve mutation", async () => {
+    const query = {
+      select: vi.fn(() => query),
+      eq: vi.fn(() => query),
+      maybeSingle: vi.fn(async () => ({ data: exceptionRow, error: null })),
+    };
+    const from = vi.fn(() => query);
+    const repo = new SupabaseComplexCostRepository({ from } as never);
+    const contractRepo: Pick<
+      ComplexCostRepository,
+      "getExternalCostRuleExceptionById"
+    > = repo;
+
+    await expect(
+      contractRepo.getExternalCostRuleExceptionById({
+        organizationId: "org-1",
+        exceptionId: "exception-1",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        id: "exception-1",
+        projectId: "project-1",
+        importBatchId: "import-1",
+      }),
+    );
+
+    expect(from).toHaveBeenCalledWith("external_cost_rule_exceptions");
+    expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(query.eq).toHaveBeenCalledWith("id", "exception-1");
+  });
+
   it("maps reviewed exception resolution and defers Task 3 replay insertion", async () => {
     const rpc = vi.fn(async () => ({
       data: {

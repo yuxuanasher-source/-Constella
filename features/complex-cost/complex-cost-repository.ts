@@ -207,6 +207,11 @@ export type ListExternalCostRuleExceptionsForImportRowInput = {
   importRowIndex: number;
 };
 
+export type GetExternalCostRuleExceptionByIdInput = {
+  organizationId: string;
+  exceptionId: string;
+};
+
 type ProjectCostItemProvenanceInput = {
   sourceRuleVersionId?: string | null;
   sourceImportBatchId?: string | null;
@@ -555,6 +560,22 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
         Boolean(payload.replay_deferred) &&
         Number(payload.openSiblingCount ?? 0) === 0,
     };
+  }
+
+  async getExternalCostRuleExceptionById(
+    input: GetExternalCostRuleExceptionByIdInput,
+  ): Promise<ExternalCostRuleExceptionRecord | null> {
+    const { data, error } = await this.client
+      .from("external_cost_rule_exceptions")
+      .select("*")
+      .eq("organization_id", input.organizationId)
+      .eq("id", input.exceptionId)
+      .maybeSingle<ExternalCostRuleExceptionRow>();
+
+    if (error) {
+      throw error;
+    }
+    return data ? mapExternalCostRuleExceptionRow(data) : null;
   }
 
   async listExternalCostRuleExceptionsForImportRow(

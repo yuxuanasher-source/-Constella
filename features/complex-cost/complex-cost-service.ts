@@ -130,6 +130,10 @@ export type ComplexCostRepository = {
     organizationId: string;
     projectId: string;
   }): Promise<SettlementReconciliationRunRecord[]>;
+  getExternalCostRuleExceptionById(input: {
+    organizationId: string;
+    exceptionId: string;
+  }): Promise<ExternalCostRuleExceptionRecord | null>;
   resolveExternalCostRuleException(
     input: ResolveExternalCostRuleExceptionInput,
   ): Promise<ResolveExternalCostRuleExceptionResult>;
@@ -435,10 +439,12 @@ export async function resolveExternalCostRuleExceptionWithReplay(args: {
   repo: Pick<
     ComplexCostRepository,
     | "getProjectEntitlement"
+    | "getExternalCostRuleExceptionById"
     | "resolveExternalCostRuleException"
     | "listExternalCostRuleExceptionsForImportRow"
     | "replayExternalCostRuleExceptionItems"
   >;
+  audit: ComplexCostAuditWriter;
   actor: ComplexCostActor;
   exceptionId: string;
   resolutionValue: Record<string, unknown>;
@@ -454,6 +460,16 @@ export async function resolveExternalCostRuleExceptionWithReplay(args: {
     "Resolving an external cost rule exception requires a reason",
   );
 
+  const before = await args.repo.getExternalCostRuleExceptionById({
+    organizationId: args.actor.organizationId,
+    exceptionId: args.exceptionId,
+  });
+  if (!before) {
+    throw new Error("External cost rule exception not found");
+  }
+  assertSameOrganization(args.actor, before.organizationId);
+  await requireProjectEntitlement(args.repo, args.actor, before.projectId);
+
   const resolved = await args.repo.resolveExternalCostRuleException({
     organizationId: args.actor.organizationId,
     exceptionId: args.exceptionId,
@@ -462,13 +478,19 @@ export async function resolveExternalCostRuleExceptionWithReplay(args: {
     resolvedBy: args.actor.userId,
   });
   assertSameOrganization(args.actor, resolved.exception.organizationId);
-  await requireProjectEntitlement(
-    args.repo,
-    args.actor,
-    resolved.exception.projectId,
-  );
 
   if (!resolved.needsReplay || resolved.openSiblingCount !== 0) {
+    await auditExternalCostRuleExceptionResolution({
+      audit: args.audit,
+      actor: args.actor,
+      before,
+      resolved,
+      replayInputHash: null,
+      replayedItemSourceInputHashes: [],
+      replayedItemExecutionKeys: [],
+      replayedItemCount: 0,
+      reason: args.resolutionReason.trim(),
+    });
     return { ...resolved, replay: null };
   }
 
@@ -487,12 +509,38 @@ export async function resolveExternalCostRuleExceptionWithReplay(args: {
     exceptions: siblings,
   });
   if (!replayInput) {
+    await auditExternalCostRuleExceptionResolution({
+      audit: args.audit,
+      actor: args.actor,
+      before,
+      resolved,
+      replayInputHash: null,
+      replayedItemSourceInputHashes: [],
+      replayedItemExecutionKeys: [],
+      replayedItemCount: 0,
+      reason: args.resolutionReason.trim(),
+    });
     return { ...resolved, replay: null };
   }
 
   const replay = await args.repo.replayExternalCostRuleExceptionItems(
     replayInput,
   );
+  await auditExternalCostRuleExceptionResolution({
+    audit: args.audit,
+    actor: args.actor,
+    before,
+    resolved,
+    replayInputHash: replayInput.inputHash,
+    replayedItemSourceInputHashes: replayInput.items.map(
+      (item) => item.sourceInputHash,
+    ),
+    replayedItemExecutionKeys: replayInput.items.map(
+      (item) => item.sourceExecutionKey,
+    ),
+    replayedItemCount: replay.items.length,
+    reason: args.resolutionReason.trim(),
+  });
 
   return {
     ...resolved,
@@ -500,6 +548,61 @@ export async function resolveExternalCostRuleExceptionWithReplay(args: {
     replayed: true,
     replay,
   };
+}
+
+async function auditExternalCostRuleExceptionResolution(input: {
+  audit: ComplexCostAuditWriter;
+  actor: ComplexCostActor;
+  before: ExternalCostRuleExceptionRecord;
+  resolved: ResolveExternalCostRuleExceptionResult;
+  replayInputHash: string | null;
+  replayedItemSourceInputHashes: string[];
+  replayedItemExecutionKeys: string[];
+  replayedItemCount: number;
+  reason: string;
+}): Promise<void> {
+  await input.audit({
+    organizationId: input.actor.organizationId,
+    actorUserId: input.actor.userId,
+    actorName: input.actor.name,
+    actorRole: input.actor.role,
+    action: "approve",
+    module: "complex_cost",
+    objectType: "external_cost_rule_exception",
+    objectId: input.resolved.exception.id,
+    projectId: input.resolved.exception.projectId,
+    before: {
+      status: input.before.status,
+      importBatchId: input.before.importBatchId,
+      importRowIndex: input.before.importRowIndex,
+      ruleVersionId: input.before.ruleVersionId ?? null,
+      sourceContextHash: sourceContextHashFromException(input.before),
+    },
+    after: {
+      status: input.resolved.exception.status,
+      importBatchId: input.resolved.exception.importBatchId,
+      importRowIndex: input.resolved.exception.importRowIndex,
+      ruleVersionId: input.resolved.exception.ruleVersionId ?? null,
+      needsReplay: input.resolved.needsReplay,
+      openSiblingCount: input.resolved.openSiblingCount,
+      replayed: input.resolved.replayed || input.replayedItemCount > 0,
+      replayedItemCount: input.replayedItemCount,
+      sourceContextHash: sourceContextHashFromException(input.resolved.exception),
+      replayInputHash: input.replayInputHash,
+      replayedItemSourceInputHashes: input.replayedItemSourceInputHashes,
+      replayedItemExecutionKeys: input.replayedItemExecutionKeys,
+    },
+    changedFields: ["status", "resolution_value", "resolution_reason", "replay"],
+    reason: input.reason,
+    isHighRisk: true,
+  });
+}
+
+function sourceContextHashFromException(
+  exception: ExternalCostRuleExceptionRecord,
+): string | null {
+  const value = exception.sourceContextSnapshot.__source_context_hash;
+  return typeof value === "string" ? value : null;
 }
 
 type PreparedImportConfirmation =

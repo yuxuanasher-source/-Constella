@@ -74,9 +74,18 @@ describe("executeExternalCostRuleForImport", () => {
     expect(result.items[0]?.sourcePayload).toMatchObject({
       provenance: { source: "custom_rule_import", importBatchId: "import-1" },
       evidence: { kind: "linked_report", liveReportId: "report-1" },
-      row: batch.parsedPayload[0],
+      row: expect.objectContaining({
+        salesAmountCents: 200_000,
+        directAmountCents: 12_345,
+        streamerId: "streamer-1",
+        supplierOrganizationId: "supplier-1",
+        liveReportId: "report-1",
+      }),
     });
     expect(JSON.stringify(result.items[0]?.sourcePayload)).toContain(
+      "salesAmountCents",
+    );
+    expect(JSON.stringify(result.items[0]?.sourcePayload)).not.toContain(
       "ignoredRawAmount",
     );
     expect(result.items[0]?.sourceExecutionKey).toBe(
@@ -244,6 +253,45 @@ describe("executeExternalCostRuleForImport", () => {
       }),
     ).toThrow("CUSTOM_RULE_EXECUTION_BLOCKED");
   });
+
+  it("stores sanitized row evidence for generated items without arbitrary upload columns", () => {
+    const rule = externalRule(
+      'external_cost = cost_items([{ category: "traffic", amount: percent(sales_amount, rate_percent(10)), memo: "traffic" }])',
+      ["sales_amount"],
+    );
+
+    const result = executeExternalCostRuleForImport({
+      organizationId: ORG_ID,
+      projectId: PROJECT_ID,
+      importBatch: importBatch([
+        {
+          salesAmountCents: 90_000,
+          directAmountCents: 123,
+          liveReportId: "report-1",
+          arbitrarySecret: "do-not-copy",
+        },
+      ]),
+      ruleVersion: rule,
+      reason: "Finance confirmed.",
+      createdBy: "user-1",
+    });
+
+    expect(result.items[0]?.sourcePayload).toMatchObject({
+      provenance: { importBatchId: "import-1" },
+      evidence: { kind: "linked_report", liveReportId: "report-1" },
+      row: {
+        salesAmountCents: 90_000,
+        directAmountCents: 123,
+        liveReportId: "report-1",
+      },
+    });
+    expect(JSON.stringify(result.items[0]?.sourcePayload)).not.toContain(
+      "arbitrarySecret",
+    );
+    expect(JSON.stringify(result.items[0]?.sourcePayload)).not.toContain(
+      "do-not-copy",
+    );
+  });
 });
 
 describe("buildExternalCostRuleExceptionReplay", () => {
@@ -377,6 +425,76 @@ describe("buildExternalCostRuleExceptionReplay", () => {
           }),
         }),
       ],
+    });
+  });
+
+  it("replays routed rows with explicit defaults applied and sanitized row evidence", () => {
+    const rule = externalRule(
+      `external_cost = cost_items([
+        { category: "supplier_fee", amount: supplier_fee, memo: "resolved supplier" },
+        { category: "traffic", amount: traffic_cost, memo: "default traffic" }
+      ])`,
+      [
+        { name: "supplier_fee", required: false, missingDataPolicy: { action: "route_item_to_review" } },
+        {
+          name: "traffic_cost",
+          required: false,
+          missingDataPolicy: {
+            action: "use_explicit_default",
+            defaultValue: { type: "money_cents", amountCents: 777 },
+          },
+        },
+      ],
+    );
+    const initial = executeExternalCostRuleForImport({
+      organizationId: ORG_ID,
+      projectId: PROJECT_ID,
+      importBatch: importBatch([
+        {
+          supplierOrganizationId: "supplier-1",
+          directAmountCents: undefined,
+          arbitrarySecret: "do-not-copy",
+        },
+      ]),
+      ruleVersion: rule,
+      reason: "Finance confirmed.",
+      createdBy: "user-1",
+    });
+
+    const replay = buildExternalCostRuleExceptionReplay({
+      organizationId: ORG_ID,
+      projectId: PROJECT_ID,
+      importBatchId: "import-1",
+      importRowIndex: 0,
+      createdBy: "user-1",
+      exceptions: [
+        {
+          ...initial.exceptions[0]!,
+          id: "exception-1",
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          importBatchId: "import-1",
+          status: "resolved",
+          resolutionValue: { type: "money_cents", amountCents: 3456 },
+        },
+      ],
+    });
+
+    expect(replay?.items).toEqual([
+      expect.objectContaining({
+        itemType: "supplier_fee",
+        amountCents: 3456,
+      }),
+      expect.objectContaining({
+        itemType: "traffic",
+        amountCents: 777,
+      }),
+    ]);
+    expect(JSON.stringify(replay?.items[0]?.sourcePayload)).not.toContain(
+      "arbitrarySecret",
+    );
+    expect(replay?.items[0]?.sourcePayload).toMatchObject({
+      row: { supplierOrganizationId: "supplier-1" },
     });
   });
 });

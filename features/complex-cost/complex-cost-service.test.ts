@@ -572,6 +572,14 @@ describe("resolveExternalCostRuleExceptionWithReplay", () => {
     };
     const repo = {
       getProjectEntitlement: vi.fn(async () => entitlement),
+      getExternalCostRuleExceptionById: vi.fn(async () => ({
+        ...initial.exceptions[0]!,
+        id: "exception-1",
+        organizationId: "org-1",
+        projectId: "project-1",
+        importBatchId: "import-1",
+        status: "review_required" as const,
+      })),
       resolveExternalCostRuleException: vi.fn(async () => ({
         exception: resolvedException,
         items: [],
@@ -600,9 +608,11 @@ describe("resolveExternalCostRuleExceptionWithReplay", () => {
         idempotencyStatus: "created" as const,
       })),
     };
+    const audit = vi.fn();
 
     const result = await resolveExternalCostRuleExceptionWithReplay({
       repo,
+      audit,
       actor,
       exceptionId: "exception-1",
       resolutionValue: { type: "money_cents", amountCents: 3456 },
@@ -633,6 +643,71 @@ describe("resolveExternalCostRuleExceptionWithReplay", () => {
       replayed: true,
       replay: { idempotencyStatus: "created" },
     });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "approve",
+        objectType: "external_cost_rule_exception",
+        objectId: "exception-1",
+        isHighRisk: true,
+        after: expect.objectContaining({
+          importBatchId: "import-1",
+          importRowIndex: 0,
+          ruleVersionId: "rule-v1",
+          needsReplay: true,
+          openSiblingCount: 0,
+          replayedItemCount: 1,
+          sourceContextHash:
+            initial.exceptions[0]!.sourceContextSnapshot.__source_context_hash,
+          replayInputHash:
+            initial.exceptions[0]!.sourceContextSnapshot.__source_context_hash,
+        }),
+      }),
+    );
+    expect(JSON.stringify(audit.mock.calls[0]?.[0])).not.toContain(
+      "compiledAst",
+    );
+    expect(JSON.stringify(audit.mock.calls[0]?.[0])).not.toContain(
+      "supplierOrganizationId",
+    );
+  });
+
+  it("requires entitlement before mutating an exception resolution", async () => {
+    const rule = externalRule(
+      'external_cost = cost_items([{ category: "supplier_fee", amount: supplier_fee, memo: "supplier" }])',
+      [{ name: "supplier_fee", required: false, missingDataPolicy: { action: "route_item_to_review" } }],
+    );
+    const initial = executeExternalCostRuleForImportFixture(rule);
+    const repo = {
+      getProjectEntitlement: vi.fn(async () => null),
+      getExternalCostRuleExceptionById: vi.fn(async () => ({
+        ...initial.exceptions[0]!,
+        id: "exception-1",
+        organizationId: "org-1",
+        projectId: "project-1",
+        importBatchId: "import-1",
+        status: "review_required" as const,
+      })),
+      resolveExternalCostRuleException: vi.fn(),
+      listExternalCostRuleExceptionsForImportRow: vi.fn(),
+      replayExternalCostRuleExceptionItems: vi.fn(),
+    };
+
+    await expect(
+      resolveExternalCostRuleExceptionWithReplay({
+        repo,
+        audit: vi.fn(),
+        actor,
+        exceptionId: "exception-1",
+        resolutionValue: { type: "money_cents", amountCents: 3456 },
+        resolutionReason: "Record supplier amount.",
+      }),
+    ).rejects.toThrow("Complex cost rules are not enabled for this project");
+
+    expect(repo.getExternalCostRuleExceptionById).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      exceptionId: "exception-1",
+    });
+    expect(repo.resolveExternalCostRuleException).not.toHaveBeenCalled();
   });
 });
 

@@ -104,12 +104,15 @@ export function executeExternalCostRuleForImport(
       throw new Error(prepared.error.issue.code);
     }
 
+    const replayVariables =
+      prepared.kind === "ready"
+        ? prepared.variables
+        : variablesWithExplicitDefaults(context.variables, declarations);
     const replaySnapshot = replaySnapshotForContext({
       input,
       context,
       parameters,
-      variables:
-        prepared.kind === "ready" ? prepared.variables : context.variables,
+      variables: replayVariables,
     });
 
     if (prepared.kind === "review") {
@@ -123,7 +126,7 @@ export function executeExternalCostRuleForImport(
             ...replaySnapshot,
             policy: exception.policy,
             variableName: exception.variable,
-            normalizedInputs: context.variables,
+            normalizedInputs: replayVariables,
             __source_context_hash: context.sourceContextHash,
             __confirmation_idempotency_key: confirmationIdempotencyKey({
               organizationId: input.organizationId,
@@ -256,7 +259,7 @@ export function buildExternalCostRuleExceptionReplay(input: {
           resolutionHash,
         },
         evidence: evidenceSnapshot(snapshot.liveReportId),
-        row: snapshot.rawRow,
+        row: sanitizedImportRow(snapshot.rawRow),
         memo: item.memo,
       },
       sourceExecutionKey: stableExecutionKey({
@@ -347,7 +350,7 @@ function costItemForOutput(input: {
         formulaHash: input.ruleVersion.formulaHash,
       },
       evidence: evidenceSnapshot(liveReportId),
-      row,
+      row: sanitizedImportRow(row),
       memo: input.item.memo,
     },
     sourceExecutionKey: stableExecutionKey({
@@ -404,6 +407,22 @@ function normalizeImportRow(input: {
   };
 }
 
+function variablesWithExplicitDefaults(
+  variables: Record<string, TypedRuntimeValue>,
+  declarations: MissingDataVariableDeclaration[],
+): Record<string, TypedRuntimeValue> {
+  const withDefaults = { ...variables };
+  for (const declaration of declarations) {
+    if (
+      withDefaults[declaration.name] === undefined &&
+      declaration.missingDataPolicy?.action === "use_explicit_default"
+    ) {
+      withDefaults[declaration.name] = declaration.missingDataPolicy.defaultValue;
+    }
+  }
+  return withDefaults;
+}
+
 function setMappedDirectAmount(
   variables: Record<string, TypedRuntimeValue>,
   importType: ProjectCostImportBatchRecord["importType"],
@@ -417,6 +436,43 @@ function setMappedDirectAmount(
     setMoney(variables, "gift_amount", value);
   } else {
     setMoney(variables, "supplier_fee", value);
+  }
+}
+
+function sanitizedImportRow(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  copyNumberField(row, sanitized, "unitCount");
+  copyNumberField(row, sanitized, "unitPriceCents");
+  copyNumberField(row, sanitized, "salesAmountCents");
+  copyNumberField(row, sanitized, "rateBps");
+  copyNumberField(row, sanitized, "directAmountCents");
+  copyStringField(row, sanitized, "streamerId");
+  copyStringField(row, sanitized, "supplierOrganizationId");
+  copyStringField(row, sanitized, "liveReportId");
+  return sanitized;
+}
+
+function copyNumberField(
+  source: Record<string, unknown>,
+  target: Record<string, unknown>,
+  key: string,
+): void {
+  const value = source[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    target[key] = value;
+  }
+}
+
+function copyStringField(
+  source: Record<string, unknown>,
+  target: Record<string, unknown>,
+  key: string,
+): void {
+  const value = source[key];
+  if (typeof value === "string" && value.trim()) {
+    target[key] = value.trim();
   }
 }
 
