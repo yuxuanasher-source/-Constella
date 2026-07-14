@@ -21,7 +21,6 @@ import type {
   ExternalCostRuleExceptionRecord,
   ExternalCostRuleReplayItemInput,
   ProjectCostImportBatchRecord,
-  ProjectCostItemType,
   ReplayExternalCostRuleExceptionItemsInput,
 } from "@/features/complex-cost/complex-cost-types";
 import type {
@@ -640,7 +639,15 @@ function evidenceSnapshot(liveReportId: string | null) {
 function deterministicExplanation(
   item: ExternalCostRuleResult["items"][number],
 ): string {
-  return `Custom external-cost rule emitted ${item.category} for ${item.amountCents} cents: ${item.memo}`;
+  return `Custom external-cost rule emitted ${item.category} for ${item.amountCents} cents: ${sanitizeMemoForExplanation(item.memo)}`;
+}
+
+function sanitizeMemoForExplanation(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f]/gu, " ")
+    .replace(/[<>]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function executionUnitKey(importBatchId: string, rowIndex: number): string {

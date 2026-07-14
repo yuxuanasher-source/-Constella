@@ -7,6 +7,7 @@ import {
   jsonError,
   readJsonBody,
   requiredString,
+  RouteError,
 } from "@/features/complex-cost/complex-cost-route-utils";
 import { confirmProjectCostImportBatch } from "@/features/complex-cost/complex-cost-service";
 import { SupabaseCustomRuleReadRepository } from "@/features/settlements/custom-rule-repository";
@@ -16,10 +17,24 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string; batchId: string }> },
 ) {
   try {
-    const { batchId } = await params;
+    const { projectId, batchId } = await params;
     const body = await readJsonBody(request);
     const context = await getComplexCostRouteContext();
 
+    const batch = await context.repo.getImportBatchById(batchId);
+    if (
+      !batch ||
+      batch.organizationId !== context.auth.organizationId ||
+      batch.projectId !== projectId
+    ) {
+      throw new RouteError("Project cost import batch not found", 404);
+    }
+
+    await assertBillingWriteAllowed({
+      client: context.supabase,
+      organizationId: context.auth.organizationId,
+      featureKey: "settlement",
+    });
     await assertBillingWriteAllowed({
       client: context.supabase,
       organizationId: context.auth.organizationId,

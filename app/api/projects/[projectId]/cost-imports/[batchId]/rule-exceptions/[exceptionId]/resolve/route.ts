@@ -59,6 +59,11 @@ export async function POST(
     await assertBillingWriteAllowed({
       client: context.supabase,
       organizationId: context.auth.organizationId,
+      featureKey: "settlement",
+    });
+    await assertBillingWriteAllowed({
+      client: context.supabase,
+      organizationId: context.auth.organizationId,
       featureKey: "complex_cost_rules",
     });
 

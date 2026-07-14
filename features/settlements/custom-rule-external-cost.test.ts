@@ -10,7 +10,6 @@ import { validateCustomRuleFormula } from "./custom-rule-validator";
 import type { ProjectCostImportBatchRecord } from "@/features/complex-cost/complex-cost-types";
 import type { CustomSettlementRuleVersion } from "./custom-rule-repository";
 import type {
-  CompiledAstNode,
   RuntimeScalarType,
   RuntimeValueType,
   TypedRuntimeValue,
@@ -291,6 +290,29 @@ describe("executeExternalCostRuleForImport", () => {
     expect(JSON.stringify(result.items[0]?.sourcePayload)).not.toContain(
       "do-not-copy",
     );
+  });
+
+  it("sanitizes formula memo before persisting the authoritative explanation", () => {
+    const rule = externalRule(
+      'external_cost = cost_items([{ category: "traffic", amount: yuan(12), memo: "<script>alert(1)</script>\\u0000投流" }])',
+      [],
+    );
+
+    const result = executeExternalCostRuleForImport({
+      organizationId: ORG_ID,
+      projectId: PROJECT_ID,
+      importBatch: importBatch([{}]),
+      ruleVersion: rule,
+      reason: "Finance confirmed.",
+      createdBy: "user-1",
+    });
+
+    expect(JSON.stringify(result.items[0]?.sourcePayload)).toContain("<script>");
+    expect(result.items[0]?.sourceExplanation).toContain(
+      "script alert(1) /script u0000投流",
+    );
+    expect(result.items[0]?.sourceExplanation).not.toContain("<script>");
+    expect(result.items[0]?.sourceExplanation).not.toContain("\u0000");
   });
 });
 

@@ -126,7 +126,12 @@ describe("external-cost rule exception resolve route", () => {
       const body = await response.json();
 
       expect(response.status, JSON.stringify(body)).toBe(200);
-      expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
+      expect(assertBillingWriteAllowed).toHaveBeenNthCalledWith(1, {
+        client: {},
+        organizationId: ORG_ID,
+        featureKey: "settlement",
+      });
+      expect(assertBillingWriteAllowed).toHaveBeenNthCalledWith(2, {
         client: {},
         organizationId: ORG_ID,
         featureKey: "complex_cost_rules",
