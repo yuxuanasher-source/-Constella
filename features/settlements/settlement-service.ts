@@ -2,6 +2,7 @@ import type { AuditLogInput } from "@/lib/audit/audit";
 import type { NotificationInput } from "@/lib/notify/notify";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 
+import type { ProjectSettlementReconciliationRunResult } from "./project-settlement-reconciliation-service";
 import {
   calculateCpsManualAmount,
   calculateSettlementItem,
@@ -303,9 +304,29 @@ export type SettlementRepository = {
 export type SettlementAuditWriter = (input: AuditLogInput) => Promise<void>;
 export type SettlementNotifier = (input: NotificationInput) => Promise<void>;
 export type ManualSettlementItemType = "cpa" | "cps" | "gift" | "manual";
+export type SettlementTransitionTrigger = "confirm" | "lock";
+export type SettlementTransitionReconciliationMetadata = {
+  reconciliationRunId?: string;
+  blockedCheckCodes: string[];
+  warningCheckCodes: string[];
+  trigger: SettlementTransitionTrigger;
+};
+export type SettlementBatchTransitionResult = SettlementBatchRecord & {
+  reconciliation?: SettlementTransitionReconciliationMetadata;
+};
 export type SettlementBatchGate = {
   assertNoOpenRuleExceptions(batchId: string): Promise<void>;
+  evaluateReconciliation(input: {
+    batchId: string;
+    actor: SettlementActor;
+    trigger: SettlementTransitionTrigger;
+  }): Promise<ProjectSettlementReconciliationRunResult>;
 };
+type SettlementTransitionGate = Pick<
+  SettlementBatchGate,
+  "assertNoOpenRuleExceptions"
+> &
+  Partial<Pick<SettlementBatchGate, "evaluateReconciliation">>;
 
 export async function listSettlementPool({
   repo,
@@ -669,8 +690,8 @@ export async function confirmSettlementBatch({
   actor: SettlementActor;
   batchId: string;
   reason: string;
-  gate?: SettlementBatchGate;
-}): Promise<SettlementBatchRecord> {
+  gate?: SettlementTransitionGate;
+}): Promise<SettlementBatchTransitionResult> {
   assertCanConfirmSettlement(actor.role);
   assertReason(reason, "Confirming a settlement batch requires a reason");
   const before = await requireSettlementBatch(repo, batchId);
@@ -680,10 +701,22 @@ export async function confirmSettlementBatch({
     );
   }
   await gate?.assertNoOpenRuleExceptions(batchId);
-
-  const after = await repo.updateSettlementBatch(batchId, {
-    status: "confirmed",
+  const reconciliation = await evaluateSettlementTransitionGate({
+    gate,
+    actor,
+    before,
+    audit,
+    reason,
+    trigger: "confirm",
+    action: "approve",
   });
+
+  const after = withReconciliationMetadata(
+    await repo.updateSettlementBatch(batchId, {
+      status: "confirmed",
+    }),
+    reconciliation,
+  );
 
   await auditSettlementTransition({
     audit,
@@ -725,8 +758,8 @@ export async function lockSettlementBatch({
   batchId: string;
   reason: string;
   now?: string;
-  gate?: SettlementBatchGate;
-}): Promise<SettlementBatchRecord> {
+  gate?: SettlementTransitionGate;
+}): Promise<SettlementBatchTransitionResult> {
   assertCanLockSettlement(actor.role);
   assertReason(reason, "Locking a settlement batch requires a reason");
   const before = await requireSettlementBatch(repo, batchId);
@@ -734,12 +767,24 @@ export async function lockSettlementBatch({
     throw new Error("Only open settlement batches can be locked");
   }
   await gate?.assertNoOpenRuleExceptions(batchId);
-
-  const after = await repo.updateSettlementBatch(batchId, {
-    status: "locked",
-    lockedAt: now,
-    lockReason: reason,
+  const reconciliation = await evaluateSettlementTransitionGate({
+    gate,
+    actor,
+    before,
+    audit,
+    reason,
+    trigger: "lock",
+    action: "lock",
   });
+
+  const after = withReconciliationMetadata(
+    await repo.updateSettlementBatch(batchId, {
+      status: "locked",
+      lockedAt: now,
+      lockReason: reason,
+    }),
+    reconciliation,
+  );
 
   await auditSettlementTransition({
     audit,
@@ -1233,7 +1278,7 @@ async function auditSettlementTransition({
   audit: SettlementAuditWriter;
   actor: SettlementActor;
   before: SettlementBatchRecord;
-  after: SettlementBatchRecord;
+  after: SettlementBatchTransitionResult;
   action: "approve" | "lock" | "reopen";
   reason: string;
   changedFields: string[];
@@ -1254,6 +1299,101 @@ async function auditSettlementTransition({
     reason,
     isHighRisk: true,
   });
+}
+
+async function evaluateSettlementTransitionGate({
+  gate,
+  actor,
+  before,
+  audit,
+  reason,
+  trigger,
+  action,
+}: {
+  gate?: SettlementTransitionGate;
+  actor: SettlementActor;
+  before: SettlementBatchRecord;
+  audit: SettlementAuditWriter;
+  reason: string;
+  trigger: SettlementTransitionTrigger;
+  action: "approve" | "lock";
+}): Promise<SettlementTransitionReconciliationMetadata | undefined> {
+  if (!gate?.evaluateReconciliation) {
+    return undefined;
+  }
+
+  const result = await gate.evaluateReconciliation({
+    batchId: before.id,
+    actor,
+    trigger,
+  });
+  const metadata = settlementReconciliationMetadata(result, trigger);
+  const allowed =
+    !result.hasBlocking && (trigger === "confirm" ? result.canConfirm : result.canLock);
+  if (allowed) {
+    return metadata;
+  }
+
+  await audit({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action,
+    module: "settlement",
+    objectType: "settlement_batch",
+    objectId: before.id,
+    projectId: before.projectId,
+    before: before as unknown as Record<string, unknown>,
+    after: metadata as unknown as Record<string, unknown>,
+    changedFields: [],
+    reason,
+    isHighRisk: true,
+    result: "failure",
+    errorMessage: "Settlement batch reconciliation blocked",
+  });
+  throw new Error("Settlement batch reconciliation blocked");
+}
+
+function withReconciliationMetadata(
+  batch: SettlementBatchRecord,
+  reconciliation: SettlementTransitionReconciliationMetadata | undefined,
+): SettlementBatchTransitionResult {
+  return reconciliation ? { ...batch, reconciliation } : batch;
+}
+
+function settlementReconciliationMetadata(
+  result: ProjectSettlementReconciliationRunResult,
+  trigger: SettlementTransitionTrigger,
+): SettlementTransitionReconciliationMetadata {
+  const blockedCheckCodes = safeCheckCodes(result, "block");
+  const warningCheckCodes = safeCheckCodes(result, "warn");
+  return {
+    ...(result.run?.id ? { reconciliationRunId: result.run.id } : {}),
+    blockedCheckCodes,
+    warningCheckCodes,
+    trigger,
+  };
+}
+
+function safeCheckCodes(
+  result: ProjectSettlementReconciliationRunResult,
+  severity: "warn" | "block",
+): string[] {
+  return result.checks
+    .filter((check) => check.severity === severity)
+    .map(checkCode)
+    .filter((code): code is string => Boolean(code));
+}
+
+function checkCode(check: ProjectSettlementReconciliationRunResult["checks"][number]): string | null {
+  if ("code" in check && typeof check.code === "string") {
+    return check.code;
+  }
+  if ("key" in check && typeof check.key === "string") {
+    return check.key;
+  }
+  return null;
 }
 
 async function notifyHighRiskSettlement({

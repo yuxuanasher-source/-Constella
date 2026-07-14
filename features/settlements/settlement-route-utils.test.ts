@@ -1,11 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  getSettlementRouteContext,
   isUuid,
   jsonError,
   requiredUuid,
   RouteError,
 } from "./settlement-route-utils";
+
+vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseServerClient: vi.fn(),
+}));
+
+vi.mock("@/lib/auth/context", () => ({
+  getAuthContext: vi.fn(),
+}));
+
+const { createSupabaseServerClient } = await import("@/lib/db/supabase-server");
+const { getAuthContext } = await import("@/lib/auth/context");
 
 const VALID_UUID = "2ba8b258-b9f6-4ac2-bd3e-b55f686ac608";
 
@@ -75,5 +87,30 @@ describe("jsonError", () => {
     const response = jsonError("weird");
     expect(response.status).toBe(500);
     expect((await body(response)).error).toBe("Unexpected error");
+  });
+});
+
+describe("getSettlementRouteContext", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("builds a settlement transition gate with the authenticated Supabase client", async () => {
+    const supabase = {};
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
+    vi.mocked(getAuthContext).mockResolvedValue({
+      userId: "user-finance",
+      name: "Finance",
+      role: "finance",
+      organizationId: "org-1",
+    } as never);
+
+    const context = await getSettlementRouteContext();
+
+    expect(context.gate).toEqual({
+      assertNoOpenRuleExceptions: expect.any(Function),
+      evaluateReconciliation: expect.any(Function),
+    });
+    expect(context.supabase).toBe(supabase);
   });
 });

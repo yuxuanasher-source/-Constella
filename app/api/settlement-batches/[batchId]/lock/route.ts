@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
-import { createSettlementBatchRuleExceptionGate } from "@/features/settlements/custom-rule-exception-service";
 import {
   getSettlementRouteContext,
   jsonError,
@@ -25,6 +24,9 @@ export async function POST(
       organizationId: context.auth.organizationId,
       featureKey: "settlement",
     });
+    if (!context.gate) {
+      throw new Error("Settlement transition gate is unavailable");
+    }
     const batch = await lockSettlementBatch({
       repo: context.repo,
       audit: (input) => context.audit(context.supabase, input),
@@ -32,13 +34,10 @@ export async function POST(
       actor: settlementActorFromContext(context),
       batchId,
       reason,
-      gate: createSettlementBatchRuleExceptionGate({
-        repo: context.repo,
-        organizationId: context.auth.organizationId,
-      }),
+      gate: context.gate,
     });
 
-    return NextResponse.json({ batch });
+    return NextResponse.json({ batch, reconciliation: batch.reconciliation });
   } catch (error) {
     return lockError(error);
   }
@@ -47,7 +46,8 @@ export async function POST(
 function lockError(error: unknown) {
   if (
     error instanceof Error &&
-    error.message === "Settlement batch has unresolved rule exceptions"
+    (error.message === "Settlement batch has unresolved rule exceptions" ||
+      error.message === "Settlement batch reconciliation blocked")
   ) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }

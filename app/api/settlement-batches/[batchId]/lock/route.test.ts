@@ -5,7 +5,6 @@ import {
   getSettlementRouteContext,
   RouteError,
 } from "@/features/settlements/settlement-route-utils";
-import { createSettlementBatchRuleExceptionGate } from "@/features/settlements/custom-rule-exception-service";
 import { lockSettlementBatch } from "@/features/settlements/settlement-service";
 
 import { POST } from "./route";
@@ -21,18 +20,16 @@ vi.mock("@/features/settlements/settlement-route-utils", async () => {
   return { ...actual, getSettlementRouteContext: vi.fn() };
 });
 
-vi.mock("@/features/settlements/custom-rule-exception-service", () => ({
-  createSettlementBatchRuleExceptionGate: vi.fn(() => ({
-    assertNoOpenRuleExceptions: vi.fn(),
-  })),
-}));
-
 vi.mock("@/features/settlements/settlement-service", () => ({
   lockSettlementBatch: vi.fn(),
 }));
 
 const supabase = {};
 const repo = {};
+const gate = {
+  assertNoOpenRuleExceptions: vi.fn(),
+  evaluateReconciliation: vi.fn(),
+};
 
 describe("settlement batch lock route", () => {
   beforeEach(() => {
@@ -41,6 +38,7 @@ describe("settlement batch lock route", () => {
     vi.mocked(getSettlementRouteContext).mockResolvedValue({
       supabase,
       repo,
+      gate,
       audit: vi.fn(),
       notify: vi.fn(),
       auth: {
@@ -57,26 +55,58 @@ describe("settlement batch lock route", () => {
   });
 
   it("runs billing guard and passes the unresolved-exception gate", async () => {
+    vi.mocked(lockSettlementBatch).mockResolvedValueOnce({
+      id: "batch-1",
+      status: "locked",
+      reconciliation: {
+        reconciliationRunId: "run-1",
+        blockedCheckCodes: [],
+        warningCheckCodes: ["custom_rule:rule-1:0"],
+        trigger: "lock",
+      },
+    } as never);
+
     const response = await POST(jsonRequest({ reason: "Checked" }), {
       params: Promise.resolve({ batchId: "batch-1" }),
     });
 
     expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      batch: expect.objectContaining({ id: "batch-1", status: "locked" }),
+      reconciliation: {
+        reconciliationRunId: "run-1",
+        blockedCheckCodes: [],
+        warningCheckCodes: ["custom_rule:rule-1:0"],
+        trigger: "lock",
+      },
+    });
     expect(assertBillingWriteAllowed).toHaveBeenCalledWith({
       client: supabase,
       organizationId: "org-1",
       featureKey: "settlement",
     });
-    expect(createSettlementBatchRuleExceptionGate).toHaveBeenCalledWith({
-      repo,
-      organizationId: "org-1",
-    });
     expect(lockSettlementBatch).toHaveBeenCalledWith(
       expect.objectContaining({
-        gate: vi.mocked(createSettlementBatchRuleExceptionGate).mock.results[0]
-          .value,
+        gate,
       }),
     );
+  });
+
+  it("does not enter reconciliation when billing is read-only", async () => {
+    vi.mocked(assertBillingWriteAllowed).mockRejectedValueOnce(
+      new Error("Organization is read-only because billing is cancelled"),
+    );
+
+    const response = await POST(jsonRequest({ reason: "Checked" }), {
+      params: Promise.resolve({ batchId: "batch-1" }),
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Organization is read-only because billing is cancelled",
+    });
+    expect(lockSettlementBatch).not.toHaveBeenCalled();
+    expect(gate.evaluateReconciliation).not.toHaveBeenCalled();
   });
 
   it("returns a safe 409 when unresolved rule exceptions block locking", async () => {
