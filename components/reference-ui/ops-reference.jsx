@@ -19452,6 +19452,8 @@ function toReferenceBatchFromApi(batch, items, context = {}) {
     project: projectName,
     vendor: isPayable ? "—" : projectName,
     period: `${batch.periodStart} → ${batch.periodEnd}`,
+    periodStart: batch.periodStart,
+    periodEnd: batch.periodEnd,
     items:
       typeof batch.itemCount === "number"
         ? batch.itemCount
@@ -20350,6 +20352,16 @@ function ScreenSettlement({ go }) {
   const confirmBatch = () =>
     runSettlementAction("confirm", async () => {
       if (!activeBatch) return false;
+      if (!activeGate.evaluated) {
+        setSettlementMessage(
+          "确认前请先为本批次周期运行「单项目结算校验」",
+        );
+        return false;
+      }
+      if (!activeGate.canLock) {
+        setSettlementMessage(reconciliationBlockMessage(activeReconciliation));
+        return false;
+      }
       const reason = globalThis.prompt?.("财务确认原因");
       if (!reason || !reason.trim()) {
         setSettlementMessage("操作已取消：财务确认需填写原因");
@@ -22284,6 +22296,15 @@ function BatchDetail({
 
   const isPayable = b.type === "streamer_payable";
   const isLocked = b.status === "locked";
+  const confirmBlockMessage = !lockGate?.evaluated
+    ? "确认前请先运行「单项目结算校验」"
+    : lockBlockMessage.replace("无法锁定", "无法确认");
+  const lockTitle = !lockGate?.canLock
+    ? lockBlockMessage
+    : lockGate?.evaluated
+      ? undefined
+      : "锁定前请先运行「单项目结算校验」";
+  const confirmTitle = !lockGate?.canLock ? confirmBlockMessage : undefined;
   const batchStatus = BATCH_STATUS[b.status] || BATCH_STATUS.pending_confirm;
   const isReferenceBatch = BATCHES.some((x) => x.id === b.id);
   const apiDetailRows = Array.isArray(batchDetails[b.id])
@@ -23047,9 +23068,14 @@ function BatchDetail({
                   kind="default"
                   icon={<Icon.Check size={14} />}
                   onClick={onConfirmBatch}
-                  disabled={!!busyAction}
+                  disabled={!!busyAction || !lockGate?.canLock}
+                  title={confirmTitle}
                 >
-                  {busyAction === "confirm" ? "处理中…" : "财务确认"}
+                  {busyAction === "confirm"
+                    ? "处理中…"
+                    : !lockGate?.canLock && lockGate?.evaluated
+                      ? "校验未通过 · 不可确认"
+                      : "财务确认"}
                 </Button>
               ) : null}
               {isPayable && b.status === "confirmed" && onNotifyStreamers ? (
@@ -23067,13 +23093,7 @@ function BatchDetail({
                 icon={<Icon.Lock size={14} stroke="#fff" />}
                 onClick={onLockBatch}
                 disabled={!!busyAction || !lockGate?.canLock}
-                title={
-                  !lockGate?.canLock
-                    ? lockBlockMessage
-                    : lockGate?.evaluated
-                      ? undefined
-                      : "锁定前请先运行「单项目结算校验」"
-                }
+                title={lockTitle}
               >
                 {busyAction === "lock"
                   ? "处理中…"

@@ -8748,6 +8748,8 @@ describe("OpsReferenceApp settlement smoke", () => {
       project: "Real Project",
       vendor: "-",
       period: "2026-06-01 -> 2026-06-30",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
       items: 1,
       amount: 5200,
       status: "generated",
@@ -8770,21 +8772,68 @@ describe("OpsReferenceApp settlement smoke", () => {
       createdBy: "Finance",
       updatedAt: "2026-06-03T10:00:00.000Z",
     };
+    const generatedApiBatch = {
+      ...confirmedApiBatch,
+      status: "generated",
+    };
+    let confirmSucceeded = false;
     const fetchMock = vi.fn(async (url) => {
       const target = String(url);
       if (target === "/api/settlement-batches/batch-confirmable/confirm") {
+        confirmSucceeded = true;
         return { ok: true, json: async () => ({ batch: confirmedApiBatch }) };
+      }
+      if (
+        target ===
+        "/api/projects/project-real/settlement-reconciliation?periodStart=2026-06-01&periodEnd=2026-06-30"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            reconciliation: {
+              runAt: "2026-06-03T09:00:00.000Z",
+              inputFreshness: { stale: false },
+              income: { receivableCents: 800_000 },
+              cost: {
+                payableCents: 520_000,
+                externalCostCents: 0,
+                procurementCents: 0,
+                totalCents: 520_000,
+              },
+              tax: {
+                outputVatCents: 0,
+                surtaxCents: 0,
+                taxTotalCents: 0,
+                invoiceAmountCents: 800_000,
+              },
+              profit: { grossMarginCents: 280_000, marginRateBps: 3500 },
+              checks: [
+                {
+                  key: "core_margin",
+                  source: "core",
+                  severity: "pass",
+                  message: "毛利通过",
+                },
+              ],
+            },
+          }),
+        };
       }
       if (target === "/api/settlement-batches/batch-confirmable") {
         return {
           ok: true,
-          json: async () => ({ batch: confirmedApiBatch, items: [] }),
+          json: async () => ({
+            batch: confirmSucceeded ? confirmedApiBatch : generatedApiBatch,
+            items: [],
+          }),
         };
       }
       if (target === "/api/settlement-batches") {
         return {
           ok: true,
-          json: async () => ({ batches: [confirmedApiBatch] }),
+          json: async () => ({
+            batches: [confirmSucceeded ? confirmedApiBatch : generatedApiBatch],
+          }),
         };
       }
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
@@ -8801,6 +8850,13 @@ describe("OpsReferenceApp settlement smoke", () => {
       />,
     );
 
+    const confirmButton = screen.getByRole("button", { name: "财务确认" });
+    expect(confirmButton).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "运行校验" }));
+    await screen.findByRole("region", { name: "单项目结算校验结果" });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "财务确认" })).not.toBeDisabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "财务确认" }));
 
     expect(promptMock).toHaveBeenCalledWith("财务确认原因");
@@ -9043,7 +9099,7 @@ describe("OpsReferenceApp settlement smoke", () => {
             periodEnd: "2026-07-31",
             items: 1,
             amount: 900,
-            status: "confirmed",
+            status: "generated",
             updated: "2026-07-31 12:00",
             creator: "Finance Owner",
           },
@@ -9092,6 +9148,14 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(reconciliation).not.toHaveTextContent("identifier");
     expect(screen.getByLabelText("锁定原因")).toHaveValue(
       "已核对流水，等待补投流成本",
+    );
+    const confirmButton = screen.getByRole("button", {
+      name: "校验未通过 · 不可确认",
+    });
+    expect(confirmButton).toBeDisabled();
+    expect(confirmButton).toHaveAttribute(
+      "title",
+      "结算校验未通过，无法确认：缺少数据：缺少投流成本确认值",
     );
     const lockButton = screen.getByRole("button", {
       name: "校验未通过 · 不可锁定",
