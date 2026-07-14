@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
@@ -64,6 +64,10 @@ describe("console route", () => {
       drilldowns: [],
       generatedAt: "2026-06-16T09:30:00.000Z",
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("passes the authenticated staff identity and dashboardHome into the ops UI", async () => {
@@ -171,6 +175,28 @@ describe("console route", () => {
     } finally {
       consoleErrorSpy.mockRestore();
     }
+  });
+
+  it("renders the v2 ops shell when the feature flag is enabled", async () => {
+    vi.stubEnv("NEXT_PUBLIC_OPS_UI_V2", "true");
+    const supabase = {};
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
+    vi.mocked(getAuthContext).mockResolvedValue({
+      userId: "user-ops",
+      email: "alice@example.test",
+      name: "Alice Ops",
+      organizationId: "org-1",
+      organizationName: "Demo Org",
+      role: "ops_manager",
+    });
+
+    render(await ConsolePage());
+
+    expect(
+      screen.getByRole("heading", { name: "经营总览" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Demo Org")).toBeInTheDocument();
+    expect(OpsReferenceApp).not.toHaveBeenCalled();
   });
 
   it("redirects unauthenticated visitors to login", async () => {

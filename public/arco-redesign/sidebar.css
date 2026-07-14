@@ -1,0 +1,223 @@
+.app-shell {
+  grid-template-columns: 248px minmax(0, 1fr);
+}
+
+.sidebar {
+  --sidebar-bg: var(--color-bg-1, var(--bg-1, var(--surface, #fff)));
+  --sidebar-border: var(--color-border, var(--border, #e5e6eb));
+  --sidebar-fill: var(--color-fill-1, var(--fill-1, #f7f8fa));
+  --sidebar-fill-strong: var(--color-fill-2, var(--fill-2, #f2f3f5));
+  --sidebar-text: var(--color-text-1, var(--text-1, #1d2129));
+  --sidebar-text-muted: var(--color-text-2, var(--text-2, #4e5969));
+  --sidebar-text-subtle: var(--color-text-3, var(--text-3, #86909c));
+  --sidebar-primary-soft: var(--primary-1, var(--primary-soft, #e8f3ff));
+  --sidebar-primary-soft-strong: var(--primary-2, #bedaff);
+  --sidebar-primary: var(--primary-7, var(--primary, #0e42d2));
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  height: 100vh;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-right: 1px solid var(--sidebar-border);
+  background: var(--sidebar-bg);
+}
+
+.brand {
+  display: flex;
+  height: 68px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--sidebar-border);
+}
+
+.brand img {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+.brand-title {
+  line-height: 20px;
+}
+
+.brand-subtitle {
+  margin-top: 2px;
+  color: var(--sidebar-text-subtle);
+  line-height: normal;
+}
+
+.topbar {
+  height: 68px;
+}
+
+.nav-scroll,
+.sidebar > .nav-group {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 12px 0;
+}
+
+.nav-section {
+  padding: 14px 12px 0;
+}
+
+.nav-scroll .nav-group {
+  padding: 0;
+}
+
+.nav-scroll .nav-group + .nav-group {
+  margin-top: 12px;
+}
+
+.nav-title {
+  padding: 8px 10px;
+  color: var(--sidebar-text-subtle);
+  font-weight: 600;
+}
+
+.nav-item {
+  display: grid;
+  width: 100%;
+  height: 38px;
+  min-height: 38px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--sidebar-text-muted);
+  text-decoration: none;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease;
+}
+
+.nav-item > iconify-icon {
+  width: 18px;
+  height: 18px;
+  justify-self: center;
+  font-size: 18px;
+}
+
+.nav-icon {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  color: currentColor;
+}
+
+.nav-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.nav-item:not(.active):hover {
+  color: var(--sidebar-text);
+  background: var(--sidebar-fill);
+}
+
+.nav-item.active {
+  color: var(--sidebar-primary);
+  background: var(--sidebar-primary-soft);
+  font-weight: 600;
+}
+
+.nav-badge {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0 6px;
+  border-radius: 10px;
+  color: var(--sidebar-text-subtle);
+  background: var(--sidebar-fill-strong);
+  line-height: 20px;
+}
+
+.nav-item.active .nav-badge {
+  color: var(--sidebar-primary);
+  background: var(--sidebar-primary-soft-strong);
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 14px 16px 18px;
+  border-top: 1px solid var(--sidebar-border);
+}
+
+@media (max-width: 1024px) and (min-width: 901px) {
+  .app-shell {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    display: block;
+  }
+
+  .sidebar {
+    position: static;
+    height: auto;
+    overflow: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--sidebar-border);
+  }
+
+  .brand {
+    height: 60px;
+    border-bottom: 0;
+  }
+
+  .nav-scroll,
+  .sidebar > .nav-group,
+  .nav-section.primary-nav {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 0 12px 10px;
+    scrollbar-width: none;
+  }
+
+  .nav-scroll::-webkit-scrollbar,
+  .sidebar > .nav-group::-webkit-scrollbar,
+  .nav-section.primary-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-scroll .nav-group {
+    display: flex;
+    gap: 6px;
+    margin: 0 !important;
+  }
+
+  .sidebar > .nav-section:not(.primary-nav),
+  .nav-title,
+  .sidebar-footer {
+    display: none;
+  }
+
+  .nav-item {
+    width: auto;
+    min-width: max-content;
+    flex: 0 0 auto;
+    grid-template-columns: 22px auto auto;
+    margin: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .topbar {
+    height: 60px;
+  }
+}

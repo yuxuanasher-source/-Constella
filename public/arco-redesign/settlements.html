@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>结算中心 · 经营舱</title>
+    <script src="https://code.iconify.design/iconify-icon/3.0.0/iconify-icon.min.js"></script>
+    <link rel="stylesheet" href="./operations.css" />
+    <link rel="stylesheet" href="./sidebar.css" />
+    <link rel="stylesheet" href="./typography.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="../brand/ops-mascot-logo.png" alt="经营舱品牌标识" />
+          <div>
+            <div class="brand-title">经营舱</div>
+            <div class="brand-subtitle">MCN Operations Suite</div>
+          </div>
+        </div>
+        <div class="nav-scroll">
+          <nav class="nav-group" aria-label="工作台导航">
+            <div class="nav-title">工作台</div>
+            <a class="nav-item" href="./index.html"
+              ><iconify-icon
+                icon="lucide:layout-dashboard"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>经营总览</span><span class="nav-badge">12</span></a
+            >
+            <a class="nav-item" href="./projects.html"
+              ><iconify-icon
+                icon="lucide:folder-kanban"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>项目管理</span><span class="nav-badge">19</span></a
+            >
+            <a class="nav-item" href="./streamers.html"
+              ><iconify-icon
+                icon="lucide:users"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>主播资源池</span><span class="nav-badge">86</span></a
+            >
+            <a class="nav-item" href="./admissions.html"
+              ><iconify-icon
+                icon="lucide:circle-play"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>选播准入</span><span class="nav-badge">27</span></a
+            >
+            <a class="nav-item" href="./schedules.html"
+              ><iconify-icon
+                icon="lucide:calendar-days"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>排班直播</span><span class="nav-badge">8</span></a
+            >
+          </nav>
+          <nav class="nav-group" aria-label="财务与治理导航">
+            <div class="nav-title">财务与治理</div>
+            <a class="nav-item" href="./reports.html"
+              ><iconify-icon
+                icon="lucide:clipboard-check"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>报数审核</span><span class="nav-badge">35</span></a
+            >
+            <a
+              class="nav-item active"
+              href="./settlements.html"
+              aria-current="page"
+              ><iconify-icon
+                icon="lucide:wallet-cards"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>结算中心</span><span class="nav-badge">5</span></a
+            >
+            <a class="nav-item" href="./audit.html"
+              ><iconify-icon
+                icon="lucide:file-search"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>审计与导出</span><span class="nav-badge">4</span></a
+            >
+            <a class="nav-item" href="./ai-workbench.html"
+              ><iconify-icon
+                icon="lucide:sparkles"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>星耀 AI 作战台</span><span class="nav-badge">AI</span></a
+            >
+            <a class="nav-item" href="./knowledge-base.html"
+              ><iconify-icon
+                icon="lucide:library-big"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>知识库</span><span class="nav-badge">48</span></a
+            >
+          </nav>
+        </div>
+        <div class="sidebar-footer">
+          <div
+            class="side-note"
+            style="
+              border-left-color: var(--green);
+              background: var(--green-soft);
+            "
+          >
+            <strong>本周待付金额 ¥184,620</strong>5 个结算批次等待锁定或付款。
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="breadcrumb">
+            <span>经营舱</span><span>/</span><b>结算中心</b>
+          </div>
+          <div class="top-actions">
+            <button class="icon-button" type="button" aria-label="通知">
+              <iconify-icon
+                icon="lucide:bell"
+                aria-hidden="true"
+              ></iconify-icon></button
+            ><button class="icon-button" type="button" aria-label="帮助">
+              <iconify-icon
+                icon="lucide:circle-help"
+                aria-hidden="true"
+              ></iconify-icon></button
+            ><button class="avatar-button" type="button" aria-label="账号菜单">
+              河
+            </button>
+          </div>
+        </header>
+        <div class="content">
+          <section class="page-head">
+            <div class="page-title">
+              <h1>结算中心</h1>
+              <p>最近数据更新于 14:32。</p>
+            </div>
+            <div class="page-actions">
+              <button class="button" id="export-button" type="button">
+                <iconify-icon
+                  icon="lucide:download"
+                  aria-hidden="true"
+                ></iconify-icon
+                >导出对账单</button
+              ><button class="button" id="recalculate-button" type="button">
+                <iconify-icon
+                  icon="lucide:calculator"
+                  aria-hidden="true"
+                ></iconify-icon
+                >重新计算</button
+              ><button
+                class="button primary"
+                id="new-batch-button"
+                type="button"
+              >
+                <iconify-icon
+                  icon="lucide:plus"
+                  aria-hidden="true"
+                ></iconify-icon
+                >新建结算批次
+              </button>
+            </div>
+          </section>
+
+          <section class="card summary-strip" aria-label="结算概览">
+            <div class="summary-item">
+              <span class="summary-icon"
+                ><iconify-icon
+                  icon="lucide:badge-dollar-sign"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>本周待付</span><strong id="payable-total">¥184,620</strong
+                ><small>42 人</small>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span class="summary-icon orange"
+                ><iconify-icon
+                  icon="lucide:layers-3"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>待锁定批次</span><strong id="batch-total">5</strong
+                ><small>个</small>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span class="summary-icon green"
+                ><iconify-icon
+                  icon="lucide:chart-no-axes-combined"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>预计毛利率</span><strong>27.8%</strong
+                ><small>+2.1%</small>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span class="summary-icon red"
+                ><iconify-icon
+                  icon="lucide:circle-alert"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>金额异常</span><strong id="exception-total">3</strong
+                ><small>待复核</small>
+              </div>
+            </div>
+          </section>
+
+          <div class="card stage-tabs" role="tablist" aria-label="结算状态">
+            <button
+              class="stage-tab active"
+              data-stage="all"
+              role="tab"
+              aria-selected="true"
+              type="button"
+            >
+              全部明细 <b>42</b></button
+            ><button
+              class="stage-tab"
+              data-stage="draft"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              待核算 <b>18</b></button
+            ><button
+              class="stage-tab"
+              data-stage="review"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              异常复核 <b>3</b></button
+            ><button
+              class="stage-tab"
+              data-stage="locked"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              已锁定 <b>12</b></button
+            ><button
+              class="stage-tab"
+              data-stage="paid"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              已付款 <b>9</b>
+            </button>
+          </div>
+
+          <div class="work-layout with-rail">
+            <aside class="card rail-panel">
+              <div class="section-head">
+                <h2>结算批次</h2>
+                <span id="rail-count">5 个</span>
+              </div>
+              <div class="rail-list" id="batch-list"></div>
+              <div class="batch-total">
+                <div><span>已结算</span><b>¥96,840</b></div>
+                <div><span>待结算</span><b id="rail-payable">¥184,620</b></div>
+                <div class="grand"><span>本月累计</span><b>¥281,460</b></div>
+              </div>
+            </aside>
+            <section class="card list-panel">
+              <div class="filter-strip">
+                <div class="filter-group">
+                  <label class="search-control"
+                    ><iconify-icon
+                      icon="lucide:search"
+                      aria-hidden="true"
+                    ></iconify-icon
+                    ><input
+                      class="input"
+                      id="settlement-search"
+                      type="search"
+                      aria-label="搜索结算"
+                      placeholder="主播 / 项目 / 明细号" /></label
+                  ><select
+                    class="select"
+                    id="rule-filter"
+                    aria-label="结算规则筛选"
+                  >
+                    <option value="all">全部规则</option>
+                    <option value="CPT">CPT</option>
+                    <option value="CPS">CPS</option>
+                    <option value="CPA">CPA</option>
+                    <option value="mixed">混合结算</option></select
+                  ><select
+                    class="select"
+                    id="risk-filter"
+                    aria-label="异常筛选"
+                  >
+                    <option value="all">全部风险</option>
+                    <option value="normal">正常</option>
+                    <option value="exception">金额异常</option>
+                  </select>
+                </div>
+                <span class="filter-count"
+                  ><b id="result-count">8</b> 条明细</span
+                >
+              </div>
+              <div class="table-wrap" id="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 145px">主播</th>
+                      <th style="width: 145px">项目</th>
+                      <th style="width: 78px">工作量</th>
+                      <th style="width: 90px">结算规则</th>
+                      <th style="width: 92px">应付金额</th>
+                      <th style="width: 72px">毛利率</th>
+                      <th style="width: 82px">状态</th>
+                    </tr>
+                  </thead>
+                  <tbody id="settlement-rows"></tbody>
+                </table>
+              </div>
+              <div class="mobile-list" id="mobile-list"></div>
+              <div class="empty-state" id="empty-state">
+                <div>
+                  <iconify-icon
+                    icon="lucide:receipt-text"
+                    aria-hidden="true"
+                  ></iconify-icon
+                  >当前条件下没有结算明细
+                </div>
+              </div>
+            </section>
+            <aside class="card detail-panel" id="detail-panel">
+              <div class="detail-head">
+                <div class="detail-profile">
+                  <div class="detail-avatar" id="detail-avatar">鹿</div>
+                  <div style="min-width: 0">
+                    <h2 class="detail-name" id="detail-name">小鹿</h2>
+                    <div class="detail-sub">
+                      <span id="detail-id">SET-1042</span> ·
+                      <span id="detail-batch">BAT-0713-A</span>
+                    </div>
+                    <div class="detail-status" id="detail-status"></div>
+                  </div>
+                </div>
+                <button
+                  class="icon-button"
+                  id="detail-export"
+                  type="button"
+                  aria-label="导出单条对账单"
+                >
+                  <iconify-icon
+                    icon="lucide:file-down"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                </button>
+              </div>
+              <section class="detail-section">
+                <h3>
+                  <span>结算结果</span
+                  ><small id="detail-project">王者荣耀暑期代播</small>
+                </h3>
+                <div class="detail-grid">
+                  <div class="detail-item">
+                    <span>核定工作量</span><b id="detail-workload">16 小时</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>结算规则</span><b id="detail-rule">CPT ¥80/h</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>主播应付</span
+                    ><b class="money" id="detail-payable">¥1,280</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>项目收入</span
+                    ><b class="money" id="detail-revenue">¥1,920</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>预计毛利</span
+                    ><b class="metric-good" id="detail-margin-value">¥640</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>毛利率</span
+                    ><b class="metric-good" id="detail-margin">33.3%</b>
+                  </div>
+                </div>
+              </section>
+              <section class="detail-section">
+                <h3><span>计算链路</span><small>数据可追溯</small></h3>
+                <div class="check-list" id="calculation-list"></div>
+              </section>
+              <section class="detail-section">
+                <h3>
+                  <span>调整项</span><small id="adjustment-label">无调整</small>
+                </h3>
+                <div class="detail-grid">
+                  <div class="detail-item">
+                    <span>奖励金额</span><b id="detail-bonus">¥0</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>扣减金额</span><b id="detail-deduction">¥0</b>
+                  </div>
+                </div>
+                <textarea
+                  class="textarea"
+                  id="finance-note"
+                  aria-label="财务备注"
+                  placeholder="记录金额调整依据"
+                  style="margin-top: 10px"
+                ></textarea>
+              </section>
+              <div class="detail-actions">
+                <button
+                  class="button danger"
+                  id="exception-button"
+                  type="button"
+                >
+                  标记异常</button
+                ><button class="button" id="lock-button" type="button">
+                  锁定明细</button
+                ><button class="button primary" id="pay-button" type="button">
+                  确认付款
+                </button>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="batch-modal" role="presentation">
+      <form
+        class="modal"
+        id="batch-form"
+        aria-labelledby="batch-modal-title"
+        novalidate
+      >
+        <div class="modal-head">
+          <h2 id="batch-modal-title">新建结算批次</h2>
+          <button
+            class="icon-button"
+            id="close-modal"
+            type="button"
+            aria-label="关闭"
+          >
+            <iconify-icon icon="lucide:x" aria-hidden="true"></iconify-icon>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-field full">
+            <label for="new-batch-name">批次名称</label
+            ><input
+              class="input"
+              id="new-batch-name"
+              required
+              value="7月第二周主播结算"
+            />
+          </div>
+          <div class="modal-field">
+            <label for="new-batch-project">项目范围</label
+            ><select class="select" id="new-batch-project">
+              <option>全部已通过报数</option>
+              <option>王者荣耀暑期代播</option>
+              <option>新品服饰矩阵直播</option>
+            </select>
+          </div>
+          <div class="modal-field">
+            <label for="new-batch-date">结算截止日</label
+            ><input
+              class="input"
+              id="new-batch-date"
+              type="date"
+              value="2026-07-19"
+            />
+          </div>
+          <div class="modal-field full">
+            <label for="new-batch-note">批次备注</label
+            ><textarea
+              class="textarea"
+              id="new-batch-note"
+              placeholder="例如：含 7 月 13 日至 19 日通过审核的全部班次"
+            ></textarea>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="button" id="cancel-modal" type="button">取消</button
+          ><button class="button primary" type="submit">创建批次</button>
+        </div>
+      </form>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite">
+      <iconify-icon icon="lucide:circle-check" aria-hidden="true"></iconify-icon
+      ><span id="toast-message">操作成功</span>
+    </div>
+
+    <script>
+      const batches = [
+        {
+          id: "all",
+          name: "全部待结算",
+          count: 42,
+          amount: 184620,
+          meta: "5 个批次",
+        },
+        {
+          id: "BAT-0713-A",
+          name: "7月第一周游戏项目",
+          count: 12,
+          amount: 48200,
+          meta: "待锁定",
+        },
+        {
+          id: "BAT-0713-B",
+          name: "7月第一周电商项目",
+          count: 9,
+          amount: 56340,
+          meta: "异常 2 条",
+        },
+        {
+          id: "BAT-0706-C",
+          name: "7月第一周内容项目",
+          count: 8,
+          amount: 31800,
+          meta: "已锁定",
+        },
+        {
+          id: "BAT-0630-A",
+          name: "6月月末结算批次",
+          count: 13,
+          amount: 48280,
+          meta: "已付款",
+        },
+      ];
+      const settlements = [
+        {
+          id: "SET-1042",
+          batch: "BAT-0713-A",
+          alias: "小鹿",
+          project: "王者荣耀暑期代播",
+          workload: "16 小时",
+          ruleType: "CPT",
+          rule: "CPT ¥80/h",
+          payable: 1280,
+          revenue: 1920,
+          bonus: 0,
+          deduction: 0,
+          status: "draft",
+          exception: false,
+        },
+        {
+          id: "SET-1041",
+          batch: "BAT-0713-B",
+          alias: "橙子",
+          project: "新品服饰矩阵直播",
+          workload: "GMV ¥36,820",
+          ruleType: "CPS",
+          rule: "CPS 15%",
+          payable: 5523,
+          revenue: 8469,
+          bonus: 300,
+          deduction: 0,
+          status: "review",
+          exception: true,
+        },
+        {
+          id: "SET-1040",
+          batch: "BAT-0713-A",
+          alias: "阿森",
+          project: "王者荣耀暑期代播",
+          workload: "14 小时",
+          ruleType: "CPT",
+          rule: "CPT ¥75/h",
+          payable: 1050,
+          revenue: 1680,
+          bonus: 0,
+          deduction: 150,
+          status: "review",
+          exception: true,
+        },
+        {
+          id: "SET-1039",
+          batch: "BAT-0706-C",
+          alias: "七月",
+          project: "二次元手游预约",
+          workload: "2,350 预约",
+          ruleType: "CPA",
+          rule: "CPA ¥3.2",
+          payable: 7520,
+          revenue: 10810,
+          bonus: 0,
+          deduction: 0,
+          status: "locked",
+          exception: false,
+        },
+        {
+          id: "SET-1038",
+          batch: "BAT-0713-B",
+          alias: "可可",
+          project: "食品快消冲榜项目",
+          workload: "586 订单",
+          ruleType: "CPS",
+          rule: "CPS 12%",
+          payable: 6830,
+          revenue: 9520,
+          bonus: 500,
+          deduction: 0,
+          status: "draft",
+          exception: false,
+        },
+        {
+          id: "SET-1037",
+          batch: "BAT-0706-C",
+          alias: "阿黎",
+          project: "二次元手游预约",
+          workload: "12 小时",
+          ruleType: "CPT",
+          rule: "CPT ¥90/h",
+          payable: 1080,
+          revenue: 1620,
+          bonus: 0,
+          deduction: 0,
+          status: "paid",
+          exception: false,
+        },
+        {
+          id: "SET-1036",
+          batch: "BAT-0630-A",
+          alias: "Momo",
+          project: "新品服饰矩阵直播",
+          workload: "GMV ¥29,400",
+          ruleType: "CPS",
+          rule: "CPS 18%",
+          payable: 5292,
+          revenue: 7350,
+          bonus: 0,
+          deduction: 0,
+          status: "paid",
+          exception: false,
+        },
+        {
+          id: "SET-1035",
+          batch: "BAT-0713-A",
+          alias: "北辰",
+          project: "王者荣耀暑期代播",
+          workload: "10 小时",
+          ruleType: "mixed",
+          rule: "保底 + CPT",
+          payable: 1800,
+          revenue: 2400,
+          bonus: 200,
+          deduction: 0,
+          status: "draft",
+          exception: false,
+        },
+      ];
+      const statusNames = {
+        draft: "待核算",
+        review: "异常复核",
+        locked: "已锁定",
+        paid: "已付款",
+      };
+      let activeBatch = "all";
+      let activeStage = "all";
+      let activeId = settlements[0].id;
+      let toastTimer;
+      const search = document.querySelector("#settlement-search");
+      const ruleFilter = document.querySelector("#rule-filter");
+      const riskFilter = document.querySelector("#risk-filter");
+      function escapeHtml(value) {
+        const entities = {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#039;",
+        };
+        return String(value).replace(
+          /[&<>"']/g,
+          (character) => entities[character],
+        );
+      }
+      function currency(value) {
+        return `¥${Number(value).toLocaleString("zh-CN")}`;
+      }
+      function visibleSettlements() {
+        const query = search.value.trim().toLowerCase();
+        return settlements.filter(
+          (item) =>
+            (!query ||
+              [item.alias, item.project, item.id]
+                .join(" ")
+                .toLowerCase()
+                .includes(query)) &&
+            (activeBatch === "all" || item.batch === activeBatch) &&
+            (activeStage === "all" || item.status === activeStage) &&
+            (ruleFilter.value === "all" ||
+              item.ruleType === ruleFilter.value) &&
+            (riskFilter.value === "all" ||
+              (riskFilter.value === "exception"
+                ? item.exception
+                : !item.exception)),
+        );
+      }
+      function renderBatches() {
+        document.querySelector("#batch-list").innerHTML = batches
+          .map(
+            (batch) =>
+              `<button class="rail-item ${batch.id === activeBatch ? "active" : ""}" data-batch-id="${batch.id}" type="button"><div class="rail-name"><span>${escapeHtml(batch.name)}</span><b>${batch.count}</b></div><div class="rail-meta"><span>${escapeHtml(batch.meta)}</span><strong>${currency(batch.amount)}</strong></div></button>`,
+          )
+          .join("");
+        document.querySelector("#rail-count").textContent =
+          `${batches.length} 个`;
+      }
+      function rowTemplate(item) {
+        const margin = ((item.revenue - item.payable) / item.revenue) * 100;
+        return `<tr data-id="${item.id}" class="${item.id === activeId ? "active" : ""}"><td><div class="person"><span class="person-avatar">${escapeHtml(item.alias.slice(0, 1))}</span><div><div class="person-name">${escapeHtml(item.alias)}</div><div class="person-sub">${item.id}</div></div></div></td><td><div class="primary-text">${escapeHtml(item.project)}</div><div class="secondary-text">${item.batch}</div></td><td><b>${escapeHtml(item.workload)}</b></td><td><span class="tag gray">${escapeHtml(item.rule)}</span></td><td><span class="money">${currency(item.payable)}</span></td><td><span class="${margin < 20 ? "metric-bad" : "metric-good"}">${margin.toFixed(1)}%</span></td><td><span class="status-pill ${item.status}">${statusNames[item.status]}</span></td></tr>`;
+      }
+      function mobileTemplate(item) {
+        const margin = ((item.revenue - item.payable) / item.revenue) * 100;
+        return `<article class="mobile-row ${item.id === activeId ? "active" : ""}" data-id="${item.id}" tabindex="0"><div class="mobile-row-head"><div class="person"><span class="person-avatar">${escapeHtml(item.alias.slice(0, 1))}</span><div><div class="person-name">${escapeHtml(item.alias)}</div><div class="person-sub">${item.id}</div></div></div><span class="status-pill ${item.status}">${statusNames[item.status]}</span></div><div class="mobile-row-meta"><span class="tag gray">${escapeHtml(item.project)}</span><span class="tag blue">${escapeHtml(item.rule)}</span></div><div class="mobile-row-stats"><div><span>应付</span><b>${currency(item.payable)}</b></div><div><span>收入</span><b>${currency(item.revenue)}</b></div><div><span>毛利率</span><b>${margin.toFixed(1)}%</b></div></div></article>`;
+      }
+      function renderDetail() {
+        const item = settlements.find((entry) => entry.id === activeId);
+        if (!item) return;
+        const setText = (selector, value) =>
+          (document.querySelector(selector).textContent = value);
+        const marginValue = item.revenue - item.payable;
+        const margin = (marginValue / item.revenue) * 100;
+        setText("#detail-avatar", item.alias.slice(0, 1));
+        setText("#detail-name", item.alias);
+        setText("#detail-id", item.id);
+        setText("#detail-batch", item.batch);
+        setText("#detail-project", item.project);
+        setText("#detail-workload", item.workload);
+        setText("#detail-rule", item.rule);
+        setText("#detail-payable", currency(item.payable));
+        setText("#detail-revenue", currency(item.revenue));
+        setText("#detail-margin-value", currency(marginValue));
+        setText("#detail-margin", `${margin.toFixed(1)}%`);
+        setText("#detail-bonus", currency(item.bonus));
+        setText("#detail-deduction", currency(item.deduction));
+        setText(
+          "#adjustment-label",
+          item.bonus || item.deduction ? "含人工调整" : "无调整",
+        );
+        document.querySelector("#detail-status").innerHTML =
+          `<span class="status-pill ${item.status}">${statusNames[item.status]}</span> ${item.exception ? '<span class="risk-pill">金额异常</span>' : '<span class="tag green">核算正常</span>'}`;
+        document.querySelector("#calculation-list").innerHTML = [
+          "关联报数已通过",
+          `匹配结算规则：${item.rule}`,
+          `计入奖励 ${currency(item.bonus)}`,
+          `计入扣减 ${currency(item.deduction)}`,
+        ]
+          .map(
+            (label, index) =>
+              `<div class="check-item ${item.exception && index === 1 ? "warn" : ""}"><iconify-icon icon="lucide:${item.exception && index === 1 ? "triangle-alert" : "circle-check"}" aria-hidden="true"></iconify-icon><span>${label}</span><b>${index < 2 ? "自动" : "已记录"}</b></div>`,
+          )
+          .join("");
+        document.querySelector("#finance-note").value = item.note || "";
+        document.querySelector("#lock-button").disabled = [
+          "locked",
+          "paid",
+        ].includes(item.status);
+        document.querySelector("#pay-button").disabled = item.status === "paid";
+      }
+      function render() {
+        renderBatches();
+        const visible = visibleSettlements();
+        if (!visible.some((item) => item.id === activeId))
+          activeId = visible[0]?.id || "";
+        document.querySelector("#settlement-rows").innerHTML = visible
+          .map(rowTemplate)
+          .join("");
+        document.querySelector("#mobile-list").innerHTML = visible
+          .map(mobileTemplate)
+          .join("");
+        document.querySelector("#result-count").textContent = String(
+          visible.length,
+        );
+        document.querySelector("#empty-state").style.display = visible.length
+          ? "none"
+          : "grid";
+        document.querySelector("#table-wrap").hidden = visible.length === 0;
+        document.querySelector("#mobile-list").hidden = visible.length === 0;
+        document.querySelector("#detail-panel").hidden = visible.length === 0;
+        renderDetail();
+        document.querySelector("#exception-total").textContent = String(
+          settlements.filter((item) => item.exception).length,
+        );
+      }
+      function showToast(message) {
+        clearTimeout(toastTimer);
+        document.querySelector("#toast-message").textContent = message;
+        document.querySelector("#toast").classList.add("show");
+        toastTimer = setTimeout(
+          () => document.querySelector("#toast").classList.remove("show"),
+          2200,
+        );
+      }
+      function updateStatus(status, message) {
+        const item = settlements.find((entry) => entry.id === activeId);
+        item.status = status;
+        item.note = document.querySelector("#finance-note").value.trim();
+        if (status !== "review") item.exception = false;
+        render();
+        showToast(message);
+      }
+      document
+        .querySelector("#batch-list")
+        .addEventListener("click", (event) => {
+          const button = event.target.closest("[data-batch-id]");
+          if (button) {
+            activeBatch = button.dataset.batchId;
+            render();
+          }
+        });
+      document
+        .querySelector("#settlement-rows")
+        .addEventListener("click", (event) => {
+          const row = event.target.closest("[data-id]");
+          if (row) {
+            activeId = row.dataset.id;
+            render();
+          }
+        });
+      document
+        .querySelector("#mobile-list")
+        .addEventListener("click", (event) => {
+          const row = event.target.closest("[data-id]");
+          if (row) {
+            activeId = row.dataset.id;
+            render();
+          }
+        });
+      [search, ruleFilter, riskFilter].forEach((control) =>
+        control.addEventListener("input", render),
+      );
+      document.querySelectorAll(".stage-tab").forEach((tab) =>
+        tab.addEventListener("click", () => {
+          activeStage = tab.dataset.stage;
+          document.querySelectorAll(".stage-tab").forEach((item) => {
+            const active = item === tab;
+            item.classList.toggle("active", active);
+            item.setAttribute("aria-selected", String(active));
+          });
+          render();
+        }),
+      );
+      document
+        .querySelector("#lock-button")
+        .addEventListener("click", () =>
+          updateStatus("locked", "结算明细已锁定"),
+        );
+      document
+        .querySelector("#pay-button")
+        .addEventListener("click", () =>
+          updateStatus("paid", "付款状态已确认"),
+        );
+      document
+        .querySelector("#exception-button")
+        .addEventListener("click", () => {
+          const item = settlements.find((entry) => entry.id === activeId);
+          item.exception = true;
+          item.status = "review";
+          render();
+          showToast("已转入金额异常复核");
+        });
+      document
+        .querySelector("#recalculate-button")
+        .addEventListener("click", () => {
+          settlements.forEach((item) => {
+            if (item.status === "draft")
+              item.payable = Math.round(item.payable);
+          });
+          render();
+          showToast("已按最新报数重新计算");
+        });
+      document
+        .querySelector("#detail-export")
+        .addEventListener("click", () => showToast("单条对账单已生成"));
+      const modal = document.querySelector("#batch-modal");
+      function closeModal() {
+        modal.classList.remove("open");
+        document.body.style.overflow = "";
+      }
+      document
+        .querySelector("#new-batch-button")
+        .addEventListener("click", () => {
+          document.querySelector("#batch-form").reset();
+          modal.classList.add("open");
+          document.body.style.overflow = "hidden";
+          requestAnimationFrame(() =>
+            document.querySelector("#new-batch-name").focus(),
+          );
+        });
+      document
+        .querySelector("#close-modal")
+        .addEventListener("click", closeModal);
+      document
+        .querySelector("#cancel-modal")
+        .addEventListener("click", closeModal);
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal) closeModal();
+      });
+      document
+        .querySelector("#batch-form")
+        .addEventListener("submit", (event) => {
+          event.preventDefault();
+          const name = document.querySelector("#new-batch-name").value.trim();
+          if (!name) {
+            showToast("请填写批次名称");
+            return;
+          }
+          const id = `BAT-0719-${String.fromCharCode(65 + batches.length)}`;
+          batches.splice(1, 0, {
+            id,
+            name,
+            count: 0,
+            amount: 0,
+            meta: "新建·待添加明细",
+          });
+          activeBatch = id;
+          closeModal();
+          render();
+          showToast("结算批次已创建");
+        });
+      document.querySelector("#export-button").addEventListener("click", () => {
+        const header = [
+          "明细",
+          "主播",
+          "项目",
+          "工作量",
+          "规则",
+          "应付",
+          "收入",
+          "状态",
+        ];
+        const csvRows = visibleSettlements().map((item) => [
+          item.id,
+          item.alias,
+          item.project,
+          item.workload,
+          item.rule,
+          item.payable,
+          item.revenue,
+          statusNames[item.status],
+        ]);
+        const csv = [header, ...csvRows]
+          .map((row) =>
+            row
+              .map((cell) => `"${String(cell).replaceAll('"', '""')}"`)
+              .join(","),
+          )
+          .join("\n");
+        const url = URL.createObjectURL(
+          new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }),
+        );
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "经营舱-结算对账单.csv";
+        link.click();
+        URL.revokeObjectURL(url);
+        showToast("结算对账单已导出");
+      });
+      render();
+    </script>
+  </body>
+</html>

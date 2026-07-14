@@ -1,5 +1,7 @@
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
+import { OpsConsoleV2Home } from "@/components/ops-shell/ops-console-v2-home";
 import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
+import { isOpsUiV2Enabled } from "@/features/ui-route-contracts/ops-ui-v2-flag";
 
 import {
   currentUserFromAuth,
@@ -19,13 +21,27 @@ export default async function ConsolePage() {
     console.error("Failed to load role dashboard", error);
   }
 
+  const currentUser = currentUserFromAuth(auth);
+  const organizationSettings = organizationSettingsFromAuth(auth);
+
+  if (isOpsUiV2Enabled()) {
+    return (
+      <OpsConsoleV2Home
+        dashboardHome={dashboardHome}
+        dashboardHomeError={dashboardHomeError}
+        currentUser={currentUser}
+        organizationSettings={organizationSettings}
+      />
+    );
+  }
+
   return (
     <OpsReferenceApp
       initialRoute="home"
       dashboardHome={dashboardHome}
       dashboardHomeError={dashboardHomeError}
-      currentUser={currentUserFromAuth(auth)}
-      organizationSettings={organizationSettingsFromAuth(auth)}
+      currentUser={currentUser}
+      organizationSettings={organizationSettings}
     />
   );
 }

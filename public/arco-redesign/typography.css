@@ -1,0 +1,86 @@
+body,
+button,
+input,
+select,
+textarea {
+  font-size: 12px !important;
+}
+
+body :not(iconify-icon) {
+  font-size: 12px !important;
+}
+
+body h1,
+body h1 * {
+  font-size: 22px !important;
+}
+
+body h2,
+body h2 * {
+  font-size: 14px !important;
+}
+
+body h3,
+body h3 * {
+  font-size: 13px !important;
+}
+
+body .brand-title,
+body .panel-title,
+body .panel-head h2,
+body .modal-head h2,
+body .drawer-head h2,
+body .detail-name,
+body .drawer-name {
+  font-size: 16px !important;
+}
+
+body .review-section-title {
+  font-size: 14px !important;
+}
+
+body .document-title-field input {
+  font-size: 17px !important;
+}
+
+body .metric-value {
+  font-size: 28px !important;
+}
+
+body .summary-copy strong {
+  font-size: 21px !important;
+}
+
+body .metric-primary strong,
+body .evidence-number {
+  font-size: 26px !important;
+}
+
+body .metric-item strong {
+  font-size: 18px !important;
+}
+
+body .detail-metric strong,
+body .score-ring,
+body .batch-total .grand b {
+  font-size: 16px !important;
+}
+
+body .video-person {
+  font-size: 34px !important;
+}
+
+body .markdown-preview h1,
+body .markdown-preview h1 * {
+  font-size: 24px !important;
+}
+
+body .markdown-preview h2,
+body .markdown-preview h2 * {
+  font-size: 18px !important;
+}
+
+body .markdown-preview h3,
+body .markdown-preview h3 * {
+  font-size: 15px !important;
+}

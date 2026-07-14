@@ -1,0 +1,2386 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>项目管理 · 经营舱</title>
+    <script src="https://code.iconify.design/iconify-icon/3.0.0/iconify-icon.min.js"></script>
+    <style>
+      :root {
+        --bg-1: #fff;
+        --bg-2: #f7f8fa;
+        --fill-1: #f7f8fa;
+        --fill-2: #f2f3f5;
+        --border: #e5e6eb;
+        --border-strong: #c9cdd4;
+        --text-1: #1d2129;
+        --text-2: #4e5969;
+        --text-3: #86909c;
+        --primary-1: #e8f3ff;
+        --primary-2: #bedaff;
+        --primary-6: #165dff;
+        --primary-7: #0e42d2;
+        --success-1: #e8ffea;
+        --success-6: #00b42a;
+        --warning-1: #fff7e8;
+        --warning-6: #ff7d00;
+        --danger-1: #ffece8;
+        --danger-6: #f53f3f;
+        --purple-1: #f5e8ff;
+        --purple-6: #722ed1;
+        --cyan-1: #e8fffb;
+        --cyan-6: #14c9c9;
+        --radius: 6px;
+        --shadow: 0 1px 2px rgba(29, 33, 41, 0.04);
+        --focus: 0 0 0 3px rgba(22, 93, 255, 0.16);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        background: var(--bg-2);
+        color: var(--text-1);
+        font-family:
+          Inter, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial,
+          sans-serif;
+        letter-spacing: 0;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button,
+      input,
+      select,
+      a {
+        outline: none;
+      }
+
+      button {
+        border: 0;
+      }
+
+      iconify-icon {
+        pointer-events: none;
+      }
+
+      .app-shell {
+        display: grid;
+        grid-template-columns: 248px minmax(0, 1fr);
+        min-height: 100dvh;
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 0;
+        height: 100dvh;
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        border-right: 1px solid var(--border);
+        background: var(--bg-1);
+      }
+
+      .brand {
+        height: 68px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 20px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .brand img {
+        width: 36px;
+        height: 36px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+
+      .brand-title {
+        font-size: 16px;
+        line-height: 20px;
+        font-weight: 700;
+      }
+
+      .brand-subtitle {
+        margin-top: 2px;
+        color: var(--text-3);
+        font-size: 11px;
+      }
+
+      .nav-group {
+        padding: 14px 12px 0;
+      }
+
+      .nav-title {
+        padding: 8px 10px;
+        color: var(--text-3);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .nav-item {
+        min-width: 0;
+        height: 38px;
+        display: grid;
+        grid-template-columns: 24px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 4px;
+        padding: 0 10px;
+        border-radius: var(--radius);
+        color: var(--text-2);
+        font-size: 13px;
+        text-decoration: none;
+        transition:
+          color 160ms ease,
+          background-color 160ms ease;
+      }
+
+      .nav-item iconify-icon {
+        font-size: 18px;
+      }
+
+      .nav-item:hover {
+        background: var(--fill-1);
+        color: var(--text-1);
+      }
+
+      .nav-item.active {
+        background: var(--primary-1);
+        color: var(--primary-7);
+        font-weight: 600;
+      }
+
+      .nav-badge {
+        min-width: 20px;
+        height: 20px;
+        display: grid;
+        place-items: center;
+        padding: 0 6px;
+        border-radius: 10px;
+        background: var(--fill-2);
+        color: var(--text-3);
+        font-size: 11px;
+      }
+
+      .active .nav-badge {
+        background: var(--primary-2);
+        color: var(--primary-7);
+      }
+
+      .sidebar-footer {
+        margin-top: auto;
+        padding: 14px 16px 18px;
+        border-top: 1px solid var(--border);
+      }
+
+      .health-card {
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-2);
+      }
+
+      .health-card strong {
+        display: block;
+        font-size: 12px;
+      }
+
+      .health-card span {
+        display: block;
+        margin-top: 4px;
+        color: var(--text-3);
+        font-size: 11px;
+        line-height: 17px;
+      }
+
+      .main {
+        min-width: 0;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        height: 68px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 0 24px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.94);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+      }
+
+      .breadcrumb {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        color: var(--text-3);
+        font-size: 13px;
+      }
+
+      .breadcrumb b {
+        color: var(--text-1);
+        font-weight: 600;
+      }
+
+      .top-actions,
+      .page-actions,
+      .toolbar,
+      .toolbar-group,
+      .segmented {
+        display: flex;
+        align-items: center;
+      }
+
+      .top-actions,
+      .page-actions {
+        gap: 10px;
+      }
+
+      .icon-button,
+      .button {
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-1);
+        color: var(--text-2);
+        cursor: pointer;
+        transition:
+          border-color 160ms ease,
+          background-color 160ms ease,
+          color 160ms ease,
+          box-shadow 160ms ease,
+          transform 100ms ease;
+      }
+
+      .icon-button {
+        position: relative;
+        width: 34px;
+        padding: 0;
+      }
+
+      .button {
+        padding: 0 12px;
+        font-size: 13px;
+      }
+
+      .button iconify-icon,
+      .icon-button iconify-icon {
+        font-size: 16px;
+      }
+
+      .icon-button:hover,
+      .button:hover {
+        border-color: var(--border-strong);
+        background: var(--fill-1);
+        color: var(--text-1);
+      }
+
+      .button.primary {
+        border-color: var(--primary-6);
+        background: var(--primary-6);
+        color: #fff;
+      }
+
+      .button.primary:hover {
+        border-color: var(--primary-7);
+        background: var(--primary-7);
+        color: #fff;
+      }
+
+      .button:active,
+      .icon-button:active {
+        transform: translateY(1px);
+      }
+
+      .notification-dot {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        width: 7px;
+        height: 7px;
+        border: 1.5px solid var(--bg-1);
+        border-radius: 50%;
+        background: var(--danger-6);
+      }
+
+      .avatar {
+        width: 32px;
+        height: 32px;
+        display: grid;
+        place-items: center;
+        border-radius: 50%;
+        background: var(--primary-1);
+        color: var(--primary-7);
+        font-size: 13px;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .content {
+        padding: 20px 24px 32px;
+      }
+
+      .page-head {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 20px;
+        margin-bottom: 16px;
+      }
+
+      .page-head h1 {
+        margin: 0;
+        font-size: 24px;
+        line-height: 32px;
+        font-weight: 700;
+      }
+
+      .page-head p {
+        margin: 5px 0 0;
+        color: var(--text-3);
+        font-size: 13px;
+        line-height: 20px;
+      }
+
+      .summary-strip {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-bottom: 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-1);
+        box-shadow: var(--shadow);
+      }
+
+      .summary-item {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 16px;
+      }
+
+      .summary-item + .summary-item {
+        border-left: 1px solid var(--border);
+      }
+
+      .summary-icon {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        border-radius: 8px;
+        background: var(--primary-1);
+        color: var(--primary-7);
+      }
+
+      .summary-icon iconify-icon {
+        font-size: 18px;
+      }
+
+      .summary-copy span {
+        display: block;
+        color: var(--text-3);
+        font-size: 12px;
+      }
+
+      .summary-copy strong {
+        display: block;
+        margin-top: 2px;
+        font-size: 20px;
+        line-height: 26px;
+      }
+
+      .card {
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-1);
+        box-shadow: var(--shadow);
+      }
+
+      .status-tabs {
+        display: flex;
+        gap: 4px;
+        overflow-x: auto;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--border);
+        scrollbar-width: none;
+      }
+
+      .status-tabs::-webkit-scrollbar {
+        display: none;
+      }
+
+      .status-tab {
+        position: relative;
+        height: 44px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        flex: 0 0 auto;
+        padding: 0 10px;
+        background: transparent;
+        color: var(--text-2);
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .status-tab::after {
+        content: "";
+        position: absolute;
+        right: 10px;
+        bottom: -1px;
+        left: 10px;
+        height: 2px;
+        background: transparent;
+      }
+
+      .status-tab.active {
+        color: var(--primary-6);
+        font-weight: 600;
+      }
+
+      .status-tab.active::after {
+        background: var(--primary-6);
+      }
+
+      .status-tab small {
+        color: var(--text-3);
+        font-size: 11px;
+      }
+
+      .toolbar {
+        min-height: 58px;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .toolbar-group {
+        min-width: 0;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .segmented {
+        height: 34px;
+        flex: 0 0 auto;
+        gap: 2px;
+        padding: 2px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--fill-1);
+      }
+
+      .segment {
+        height: 28px;
+        display: grid;
+        place-items: center;
+        padding: 0 10px;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--text-3);
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .segment.active {
+        background: var(--bg-1);
+        color: var(--primary-7);
+        font-weight: 600;
+        box-shadow: 0 1px 2px rgba(29, 33, 41, 0.08);
+      }
+
+      .search-control {
+        position: relative;
+        width: 238px;
+        min-width: 180px;
+      }
+
+      .search-control iconify-icon {
+        position: absolute;
+        top: 9px;
+        left: 10px;
+        color: var(--text-3);
+        font-size: 16px;
+      }
+
+      .input,
+      .select {
+        height: 34px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-1);
+        color: var(--text-2);
+        font-size: 12px;
+        transition:
+          border-color 160ms ease,
+          box-shadow 160ms ease;
+      }
+
+      .input {
+        width: 100%;
+        padding: 0 10px;
+      }
+
+      .search-control .input {
+        padding-left: 32px;
+      }
+
+      .select {
+        min-width: 112px;
+        padding: 0 28px 0 10px;
+        cursor: pointer;
+      }
+
+      .input:hover,
+      .select:hover {
+        border-color: var(--border-strong);
+      }
+
+      .input:focus,
+      .select:focus {
+        border-color: var(--primary-6);
+        box-shadow: var(--focus);
+      }
+
+      .result-count {
+        flex: 0 0 auto;
+        color: var(--text-3);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .result-count b {
+        color: var(--text-1);
+      }
+
+      .table-wrap {
+        width: 100%;
+        overflow-x: auto;
+      }
+
+      .project-table {
+        width: 100%;
+        min-width: 1120px;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 12px;
+      }
+
+      .project-table th {
+        height: 40px;
+        padding: 0 12px;
+        background: var(--fill-1);
+        color: var(--text-3);
+        font-weight: 600;
+        text-align: left;
+        white-space: nowrap;
+      }
+
+      .project-table td {
+        height: 66px;
+        padding: 0 12px;
+        border-top: 1px solid var(--border);
+        color: var(--text-2);
+        vertical-align: middle;
+      }
+
+      .project-table tbody tr {
+        cursor: pointer;
+        transition: background-color 140ms ease;
+      }
+
+      .project-table tbody tr:hover {
+        background: #fafbfc;
+      }
+
+      .project-cell {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .project-mark {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        border-radius: 8px;
+        background: var(--primary-1);
+        color: var(--primary-7);
+      }
+
+      .project-mark iconify-icon {
+        font-size: 18px;
+      }
+
+      .project-name,
+      .project-sub,
+      .stack-primary,
+      .stack-secondary {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .project-name {
+        color: var(--text-1);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .project-sub,
+      .stack-secondary {
+        margin-top: 3px;
+        color: var(--text-3);
+        font-size: 11px;
+      }
+
+      .tag {
+        height: 22px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 0 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 500;
+        white-space: nowrap;
+      }
+
+      .tag::before {
+        content: "";
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .tag.blue {
+        background: var(--primary-1);
+        color: var(--primary-7);
+      }
+
+      .tag.green {
+        background: var(--success-1);
+        color: var(--success-6);
+      }
+
+      .tag.orange {
+        background: var(--warning-1);
+        color: var(--warning-6);
+      }
+
+      .tag.purple {
+        background: var(--purple-1);
+        color: var(--purple-6);
+      }
+
+      .tag.cyan {
+        background: var(--cyan-1);
+        color: #08979c;
+      }
+
+      .tag.gray {
+        background: var(--fill-2);
+        color: var(--text-3);
+      }
+
+      .owner {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .owner-avatar {
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: var(--fill-2);
+        color: var(--text-2);
+        font-size: 10px;
+        font-weight: 600;
+      }
+
+      .num {
+        font-variant-numeric: tabular-nums;
+      }
+
+      .risk {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+
+      .risk i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--success-6);
+      }
+
+      .risk.medium i {
+        background: var(--warning-6);
+      }
+
+      .risk.high i {
+        background: var(--danger-6);
+      }
+
+      .row-action {
+        width: 28px;
+        height: 28px;
+        display: grid;
+        place-items: center;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--text-3);
+        cursor: pointer;
+      }
+
+      .row-action:hover {
+        background: var(--fill-2);
+        color: var(--text-1);
+      }
+
+      .cards-view {
+        display: none;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 12px;
+        padding: 14px;
+      }
+
+      .project-card {
+        min-width: 0;
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-1);
+        cursor: pointer;
+        transition:
+          border-color 160ms ease,
+          box-shadow 160ms ease;
+      }
+
+      .project-card:hover {
+        border-color: var(--border-strong);
+        box-shadow: 0 4px 12px rgba(29, 33, 41, 0.06);
+      }
+
+      .card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .card-meta {
+        display: flex;
+        gap: 6px;
+        margin-top: 10px;
+      }
+
+      .card-stats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border);
+      }
+
+      .card-stats span {
+        display: block;
+        color: var(--text-3);
+        font-size: 11px;
+      }
+
+      .card-stats b {
+        display: block;
+        margin-top: 3px;
+        color: var(--text-1);
+        font-size: 13px;
+      }
+
+      .empty-state {
+        display: none;
+        min-height: 260px;
+        place-items: center;
+        padding: 24px;
+        color: var(--text-3);
+        text-align: center;
+        font-size: 13px;
+      }
+
+      .empty-state iconify-icon {
+        display: block;
+        margin: 0 auto 10px;
+        font-size: 34px;
+        color: var(--border-strong);
+      }
+
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        display: none;
+        place-items: center;
+        padding: 20px;
+        background: rgba(29, 33, 41, 0.48);
+      }
+
+      .modal-backdrop.open {
+        display: grid;
+      }
+
+      .modal {
+        width: min(560px, 100%);
+        max-height: calc(100dvh - 40px);
+        overflow-y: auto;
+        border-radius: 8px;
+        background: var(--bg-1);
+        box-shadow: 0 16px 48px rgba(29, 33, 41, 0.2);
+      }
+
+      .modal-head,
+      .modal-foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 18px;
+      }
+
+      .modal-head {
+        border-bottom: 1px solid var(--border);
+      }
+
+      .modal-head h2 {
+        margin: 0;
+        font-size: 16px;
+        line-height: 24px;
+      }
+
+      .modal-body {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        padding: 18px;
+      }
+
+      .modal-field.full {
+        grid-column: 1 / -1;
+      }
+
+      .modal-field label {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--text-2);
+        font-size: 12px;
+        font-weight: 500;
+      }
+
+      .modal-field .input,
+      .modal-field .select {
+        width: 100%;
+        height: 38px;
+        font-size: 13px;
+      }
+
+      .modal-foot {
+        justify-content: flex-end;
+        border-top: 1px solid var(--border);
+      }
+
+      .toast {
+        position: fixed;
+        z-index: 70;
+        top: 84px;
+        left: 50%;
+        min-width: 220px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border: 1px solid #aff0b5;
+        border-radius: var(--radius);
+        background: var(--success-1);
+        color: #078c22;
+        font-size: 13px;
+        box-shadow: 0 8px 24px rgba(29, 33, 41, 0.1);
+        opacity: 0;
+        pointer-events: none;
+        transform: translate(-50%, -8px);
+        transition:
+          opacity 180ms ease,
+          transform 180ms ease;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translate(-50%, 0);
+      }
+
+      .nav-item:focus-visible,
+      .icon-button:focus-visible,
+      .button:focus-visible,
+      .status-tab:focus-visible,
+      .segment:focus-visible,
+      .row-action:focus-visible {
+        box-shadow: var(--focus);
+      }
+
+      @media (max-width: 1280px) {
+        .summary-strip {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .summary-item:nth-child(3) {
+          border-left: 0;
+          border-top: 1px solid var(--border);
+        }
+
+        .summary-item:nth-child(4) {
+          border-top: 1px solid var(--border);
+        }
+      }
+
+      @media (max-width: 1024px) {
+        .app-shell {
+          grid-template-columns: 220px minmax(0, 1fr);
+        }
+
+        .toolbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .toolbar-group {
+          width: 100%;
+        }
+
+        .toolbar-group:last-child {
+          justify-content: space-between;
+        }
+      }
+
+      @media (max-width: 900px) {
+        .app-shell {
+          display: block;
+        }
+
+        .sidebar {
+          position: static;
+          height: auto;
+          overflow: hidden;
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .brand {
+          height: 60px;
+          border-bottom: 0;
+        }
+
+        .nav-group {
+          display: flex;
+          gap: 6px;
+          overflow-x: auto;
+          padding: 0 12px 10px;
+          scrollbar-width: none;
+        }
+
+        .nav-group::-webkit-scrollbar {
+          display: none;
+        }
+
+        .nav-title,
+        .sidebar-footer {
+          display: none;
+        }
+
+        .nav-item {
+          flex: 0 0 auto;
+          grid-template-columns: 20px auto auto;
+          margin: 0;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .topbar {
+          height: 60px;
+          padding: 0 16px;
+        }
+
+        .breadcrumb span,
+        .page-actions .button:not(.primary) {
+          display: none;
+        }
+
+        .content {
+          padding: 16px;
+        }
+
+        .page-head {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 12px;
+        }
+
+        .page-actions,
+        .page-actions .button.primary {
+          width: 100%;
+        }
+
+        .summary-strip {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .summary-item {
+          padding: 12px;
+        }
+
+        .summary-icon {
+          width: 30px;
+          height: 30px;
+        }
+
+        .summary-copy strong {
+          font-size: 18px;
+          line-height: 24px;
+        }
+
+        .toolbar-group {
+          align-items: stretch;
+        }
+
+        .search-control {
+          width: 100%;
+          flex: 1 0 100%;
+        }
+
+        .select {
+          flex: 1 1 120px;
+          min-width: 0;
+        }
+
+        .table-view,
+        .view-switch {
+          display: none !important;
+        }
+
+        .cards-view {
+          display: grid !important;
+          grid-template-columns: 1fr;
+        }
+
+        .modal-body {
+          grid-template-columns: 1fr;
+        }
+
+        .modal-field.full {
+          grid-column: auto;
+        }
+      }
+
+      @media (max-width: 420px) {
+        .brand-subtitle,
+        .nav-badge {
+          display: none;
+        }
+
+        .content {
+          padding: 12px;
+        }
+
+        .summary-item {
+          align-items: flex-start;
+          gap: 8px;
+        }
+
+        .summary-icon {
+          display: none;
+        }
+
+        .segmented.source-filter {
+          width: 100%;
+        }
+
+        .source-filter .segment {
+          flex: 1;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+    <link rel="stylesheet" href="./sidebar.css" />
+    <link rel="stylesheet" href="./typography.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="../brand/ops-mascot-logo.png" alt="经营舱品牌标识" />
+          <div>
+            <div class="brand-title">经营舱</div>
+            <div class="brand-subtitle">MCN Operations Suite</div>
+          </div>
+        </div>
+
+        <nav class="nav-group" aria-label="主导航">
+          <div class="nav-title">工作台</div>
+          <a class="nav-item" href="./index.html">
+            <iconify-icon
+              icon="lucide:layout-dashboard"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>经营总览</span>
+            <span class="nav-badge">12</span>
+          </a>
+          <a class="nav-item active" href="./projects.html" aria-current="page">
+            <iconify-icon
+              icon="lucide:folder-kanban"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>项目管理</span>
+            <span class="nav-badge">19</span>
+          </a>
+          <a class="nav-item" href="./streamers.html">
+            <iconify-icon icon="lucide:users" aria-hidden="true"></iconify-icon>
+            <span>主播资源池</span>
+            <span class="nav-badge">86</span>
+          </a>
+          <a class="nav-item" href="./admissions.html">
+            <iconify-icon
+              icon="lucide:circle-play"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>选播准入</span>
+            <span class="nav-badge">27</span>
+          </a>
+          <a class="nav-item" href="./schedules.html">
+            <iconify-icon
+              icon="lucide:calendar-days"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>排班直播</span>
+            <span class="nav-badge">8</span>
+          </a>
+          <a class="nav-item" href="./reports.html">
+            <iconify-icon
+              icon="lucide:clipboard-check"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>报数审核</span><span class="nav-badge">35</span>
+          </a>
+          <a class="nav-item" href="./settlements.html">
+            <iconify-icon
+              icon="lucide:wallet-cards"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>结算中心</span><span class="nav-badge">5</span>
+          </a>
+          <a class="nav-item" href="./audit.html">
+            <iconify-icon
+              icon="lucide:file-search"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>审计与导出</span><span class="nav-badge">4</span>
+          </a>
+          <a class="nav-item" href="./ai-workbench.html">
+            <iconify-icon
+              icon="lucide:sparkles"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>星耀 AI 作战台</span><span class="nav-badge">AI</span>
+          </a>
+          <a class="nav-item" href="./knowledge-base.html">
+            <iconify-icon
+              icon="lucide:library-big"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>知识库</span><span class="nav-badge">48</span>
+          </a>
+          <a class="nav-item" href="./settings.html">
+            <iconify-icon
+              icon="lucide:settings-2"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>组织设置</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="health-card">
+            <strong>项目健康度 88</strong>
+            <span>3 个高风险项目，2 个项目未配置执行周期。</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="breadcrumb">
+            <span>经营舱</span>
+            <span>/</span>
+            <b>项目管理</b>
+          </div>
+          <div class="top-actions">
+            <button
+              class="icon-button"
+              type="button"
+              aria-label="通知，3 条未读"
+              title="通知"
+            >
+              <iconify-icon
+                icon="lucide:bell"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span class="notification-dot" aria-hidden="true"></span>
+            </button>
+            <a
+              class="avatar"
+              href="./settings.html"
+              aria-label="打开组织设置"
+              title="组织设置"
+              >星</a
+            >
+          </div>
+        </header>
+
+        <section class="content">
+          <div class="page-head">
+            <div>
+              <h1>项目管理</h1>
+              <p>最近数据更新于 14:32。</p>
+            </div>
+            <div class="page-actions">
+              <button class="button" id="export-button" type="button">
+                <iconify-icon
+                  icon="lucide:download"
+                  aria-hidden="true"
+                ></iconify-icon>
+                导出项目表
+              </button>
+              <button class="button" id="join-button" type="button">
+                加入协作
+              </button>
+              <button
+                class="button primary"
+                id="new-project-button"
+                type="button"
+              >
+                <iconify-icon
+                  icon="lucide:plus"
+                  aria-hidden="true"
+                ></iconify-icon>
+                新建项目
+              </button>
+            </div>
+          </div>
+
+          <section class="summary-strip" aria-label="项目概览">
+            <div class="summary-item">
+              <span class="summary-icon"
+                ><iconify-icon
+                  icon="lucide:folder-kanban"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>全部项目</span
+                ><strong class="num" id="summary-total">19</strong>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span
+                class="summary-icon"
+                style="background: var(--success-1); color: var(--success-6)"
+                ><iconify-icon
+                  icon="lucide:radio"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>正在执行</span
+                ><strong class="num" id="summary-active">7</strong>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span
+                class="summary-icon"
+                style="background: var(--warning-1); color: var(--warning-6)"
+                ><iconify-icon
+                  icon="lucide:user-round-search"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>招募与待开始</span
+                ><strong class="num" id="summary-pending">6</strong>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span
+                class="summary-icon"
+                style="background: var(--danger-1); color: var(--danger-6)"
+                ><iconify-icon
+                  icon="lucide:triangle-alert"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>高风险项目</span
+                ><strong class="num" id="summary-risk">3</strong>
+              </div>
+            </div>
+          </section>
+
+          <section class="card projects-surface">
+            <div
+              class="status-tabs"
+              id="status-tabs"
+              role="tablist"
+              aria-label="项目状态"
+            >
+              <button
+                class="status-tab active"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                data-status="all"
+              >
+                全部 <small>19</small>
+              </button>
+              <button
+                class="status-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                data-status="draft"
+              >
+                草稿 <small>2</small>
+              </button>
+              <button
+                class="status-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                data-status="recruiting"
+              >
+                招募中 <small>3</small>
+              </button>
+              <button
+                class="status-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                data-status="pending"
+              >
+                待开始 <small>3</small>
+              </button>
+              <button
+                class="status-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                data-status="active"
+              >
+                进行中 <small>7</small>
+              </button>
+              <button
+                class="status-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                data-status="settling"
+              >
+                结算中 <small>2</small>
+              </button>
+              <button
+                class="status-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                data-status="archived"
+              >
+                已归档 <small>2</small>
+              </button>
+            </div>
+
+            <div class="toolbar">
+              <div class="toolbar-group">
+                <div
+                  class="segmented source-filter"
+                  id="source-filter"
+                  aria-label="项目来源"
+                >
+                  <button
+                    class="segment active"
+                    type="button"
+                    data-source="all"
+                  >
+                    全部
+                  </button>
+                  <button class="segment" type="button" data-source="owned">
+                    自有
+                  </button>
+                  <button class="segment" type="button" data-source="collab">
+                    协作
+                  </button>
+                </div>
+                <label class="search-control">
+                  <iconify-icon
+                    icon="lucide:search"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  <input
+                    class="input"
+                    id="project-search"
+                    type="search"
+                    aria-label="搜索项目"
+                    placeholder="项目名 / 编号 / 厂商"
+                  />
+                </label>
+                <select class="select" id="vendor-filter" aria-label="厂商筛选">
+                  <option value="all">全部厂商</option>
+                </select>
+                <select
+                  class="select"
+                  id="owner-filter"
+                  aria-label="负责人筛选"
+                >
+                  <option value="all">全部负责人</option>
+                </select>
+                <select
+                  class="select"
+                  id="schedule-filter"
+                  aria-label="时间范围筛选"
+                >
+                  <option value="all">全部周期</option>
+                  <option value="scheduled">已配置周期</option>
+                  <option value="unscheduled">未配置周期</option>
+                </select>
+              </div>
+              <div class="toolbar-group">
+                <span class="result-count"
+                  >共 <b id="result-count">8</b> 个项目</span
+                >
+                <div
+                  class="segmented view-switch"
+                  id="view-switch"
+                  aria-label="视图模式"
+                >
+                  <button
+                    class="segment active"
+                    type="button"
+                    data-view="table"
+                    title="表格视图"
+                  >
+                    <iconify-icon
+                      icon="lucide:table-2"
+                      aria-hidden="true"
+                    ></iconify-icon>
+                  </button>
+                  <button
+                    class="segment"
+                    type="button"
+                    data-view="cards"
+                    title="卡片视图"
+                  >
+                    <iconify-icon
+                      icon="lucide:layout-grid"
+                      aria-hidden="true"
+                    ></iconify-icon>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="table-wrap table-view" id="table-view">
+              <table class="project-table">
+                <thead>
+                  <tr>
+                    <th style="width: 240px">项目</th>
+                    <th style="width: 150px">厂商 / 产品</th>
+                    <th style="width: 92px">状态</th>
+                    <th style="width: 105px">结算方式</th>
+                    <th style="width: 100px">负责人</th>
+                    <th style="width: 90px">主播</th>
+                    <th style="width: 115px">直播时长</th>
+                    <th style="width: 110px">预估毛利</th>
+                    <th style="width: 90px">风险</th>
+                    <th style="width: 48px"></th>
+                  </tr>
+                </thead>
+                <tbody id="project-rows"></tbody>
+              </table>
+            </div>
+
+            <div class="cards-view" id="cards-view"></div>
+
+            <div class="empty-state" id="empty-state">
+              <div>
+                <iconify-icon
+                  icon="lucide:folder-search"
+                  aria-hidden="true"
+                ></iconify-icon>
+                当前筛选条件下没有项目
+              </div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="project-modal" role="presentation">
+      <form
+        class="modal"
+        id="project-form"
+        aria-labelledby="project-modal-title"
+        novalidate
+      >
+        <div class="modal-head">
+          <h2 id="project-modal-title">新建项目</h2>
+          <button
+            class="row-action"
+            id="close-modal"
+            type="button"
+            aria-label="关闭"
+          >
+            <iconify-icon icon="lucide:x" aria-hidden="true"></iconify-icon>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-field full">
+            <label for="project-name">项目名称</label>
+            <input
+              class="input"
+              id="project-name"
+              name="projectName"
+              placeholder="例如：品牌直播专项"
+              required
+            />
+          </div>
+          <div class="modal-field">
+            <label for="project-code">项目编号</label>
+            <input
+              class="input"
+              id="project-code"
+              name="projectCode"
+              placeholder="例如：PRJ-2026-020"
+              required
+            />
+          </div>
+          <div class="modal-field">
+            <label for="project-vendor">合作厂商</label>
+            <input
+              class="input"
+              id="project-vendor"
+              name="projectVendor"
+              placeholder="请输入厂商名称"
+              required
+            />
+          </div>
+          <div class="modal-field">
+            <label for="project-product">产品名称</label>
+            <input
+              class="input"
+              id="project-product"
+              name="projectProduct"
+              placeholder="请输入产品名称"
+            />
+          </div>
+          <div class="modal-field">
+            <label for="project-owner">项目负责人</label>
+            <select class="select" id="project-owner" name="projectOwner">
+              <option>星河</option>
+              <option>林墨</option>
+              <option>周然</option>
+              <option>叶青</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="button" id="cancel-modal" type="button">取消</button>
+          <button class="button primary" type="submit">
+            <iconify-icon icon="lucide:plus" aria-hidden="true"></iconify-icon>
+            创建草稿
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite">
+      <iconify-icon
+        icon="lucide:circle-check"
+        aria-hidden="true"
+      ></iconify-icon>
+      <span id="toast-message">操作成功</span>
+    </div>
+
+    <script>
+      const statusMeta = {
+        draft: { label: "草稿", tone: "gray" },
+        recruiting: { label: "招募中", tone: "blue" },
+        pending: { label: "待开始", tone: "purple" },
+        active: { label: "进行中", tone: "green" },
+        settling: { label: "结算中", tone: "cyan" },
+        archived: { label: "已归档", tone: "gray" },
+      };
+
+      const projects = [
+        {
+          name: "王者荣耀暑期代播",
+          code: "PRJ-2026-018",
+          vendor: "星竞互娱",
+          product: "王者荣耀",
+          status: "active",
+          pricing: "时薪 + CPS",
+          owner: "星河",
+          active: 24,
+          total: 30,
+          done: 820,
+          planned: 1200,
+          gross: 168400,
+          margin: 34.2,
+          risk: "low",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "新品服饰矩阵直播",
+          code: "PRJ-2026-017",
+          vendor: "澜衣科技",
+          product: "夏季女装",
+          status: "recruiting",
+          pricing: "场次阶梯",
+          owner: "林墨",
+          active: 18,
+          total: 42,
+          done: 180,
+          planned: 960,
+          gross: 97600,
+          margin: 27.6,
+          risk: "medium",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "达人陪玩转化测试",
+          code: "PRJ-2026-016",
+          vendor: "幻境网络",
+          product: "陪玩服务",
+          status: "settling",
+          pricing: "CPS",
+          owner: "周然",
+          active: 16,
+          total: 16,
+          done: 640,
+          planned: 640,
+          gross: 128900,
+          margin: 39.8,
+          risk: "low",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "食品快消冲榜项目",
+          code: "PRJ-2026-015",
+          vendor: "麦禾食品",
+          product: "轻食礼包",
+          status: "active",
+          pricing: "时薪 + GMV",
+          owner: "叶青",
+          active: 12,
+          total: 20,
+          done: 460,
+          planned: 880,
+          gross: 53400,
+          margin: 18.9,
+          risk: "high",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "云端办公新品发布",
+          code: "PRJ-2026-014",
+          vendor: "云舟科技",
+          product: "协作套件",
+          status: "pending",
+          pricing: "固定包期",
+          owner: "星河",
+          active: 8,
+          total: 12,
+          done: 0,
+          planned: 320,
+          gross: 72000,
+          margin: 31.4,
+          risk: "low",
+          source: "collab",
+          scheduled: true,
+        },
+        {
+          name: "国潮美妆种草计划",
+          code: "PRJ-2026-013",
+          vendor: "初见美妆",
+          product: "彩妆礼盒",
+          status: "recruiting",
+          pricing: "场次 + CPS",
+          owner: "林墨",
+          active: 9,
+          total: 28,
+          done: 96,
+          planned: 720,
+          gross: 68800,
+          margin: 25.1,
+          risk: "medium",
+          source: "collab",
+          scheduled: false,
+        },
+        {
+          name: "电竞外设周末专场",
+          code: "PRJ-2026-012",
+          vendor: "极光装备",
+          product: "机械键盘",
+          status: "draft",
+          pricing: "待配置",
+          owner: "周然",
+          active: 0,
+          total: 10,
+          done: 0,
+          planned: 0,
+          gross: 0,
+          margin: 0,
+          risk: "low",
+          source: "owned",
+          scheduled: false,
+        },
+        {
+          name: "城市咖啡品牌联播",
+          code: "PRJ-2026-011",
+          vendor: "循味咖啡",
+          product: "冷萃系列",
+          status: "archived",
+          pricing: "固定包期",
+          owner: "叶青",
+          active: 14,
+          total: 14,
+          done: 540,
+          planned: 540,
+          gross: 83200,
+          margin: 32.7,
+          risk: "low",
+          source: "collab",
+          scheduled: true,
+        },
+        {
+          name: "夏日数码节联播",
+          code: "PRJ-2026-010",
+          vendor: "极客工场",
+          product: "数码配件",
+          status: "active",
+          pricing: "时薪 + GMV",
+          owner: "星河",
+          active: 20,
+          total: 24,
+          done: 690,
+          planned: 980,
+          gross: 88600,
+          margin: 19.6,
+          risk: "high",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "宠物用品新品共创",
+          code: "PRJ-2026-009",
+          vendor: "茸爪生活",
+          product: "宠物清洁",
+          status: "active",
+          pricing: "CPS",
+          owner: "林墨",
+          active: 11,
+          total: 16,
+          done: 310,
+          planned: 560,
+          gross: 64200,
+          margin: 28.4,
+          risk: "medium",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "二次元手游预约",
+          code: "PRJ-2026-008",
+          vendor: "镜界互动",
+          product: "手游预约",
+          status: "active",
+          pricing: "CPA",
+          owner: "周然",
+          active: 15,
+          total: 20,
+          done: 420,
+          planned: 700,
+          gross: 103800,
+          margin: 35.7,
+          risk: "low",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "教培口播素材测试",
+          code: "PRJ-2026-007",
+          vendor: "新知课堂",
+          product: "职业课程",
+          status: "active",
+          pricing: "素材计件",
+          owner: "叶青",
+          active: 7,
+          total: 9,
+          done: 160,
+          planned: 260,
+          gross: 38600,
+          margin: 30.2,
+          risk: "low",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "运动服饰清仓专场",
+          code: "PRJ-2026-006",
+          vendor: "动线服饰",
+          product: "运动套装",
+          status: "active",
+          pricing: "时薪 + GMV",
+          owner: "星河",
+          active: 13,
+          total: 18,
+          done: 370,
+          planned: 620,
+          gross: 49700,
+          margin: 17.8,
+          risk: "high",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "智能家居体验周",
+          code: "PRJ-2026-005",
+          vendor: "智筑科技",
+          product: "智能门锁",
+          status: "pending",
+          pricing: "固定包期",
+          owner: "林墨",
+          active: 10,
+          total: 12,
+          done: 0,
+          planned: 360,
+          gross: 75800,
+          margin: 33.1,
+          risk: "medium",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "乳品渠道直播",
+          code: "PRJ-2026-004",
+          vendor: "原野乳业",
+          product: "低温乳品",
+          status: "pending",
+          pricing: "场次阶梯",
+          owner: "周然",
+          active: 6,
+          total: 10,
+          done: 0,
+          planned: 280,
+          gross: 42600,
+          margin: 29.6,
+          risk: "low",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "母婴品牌达人招募",
+          code: "PRJ-2026-003",
+          vendor: "芽芽母婴",
+          product: "婴童洗护",
+          status: "recruiting",
+          pricing: "场次 + CPS",
+          owner: "叶青",
+          active: 5,
+          total: 22,
+          done: 42,
+          planned: 480,
+          gross: 59200,
+          margin: 24.8,
+          risk: "medium",
+          source: "owned",
+          scheduled: false,
+        },
+        {
+          name: "跨境电商预热",
+          code: "PRJ-2026-002",
+          vendor: "海桥贸易",
+          product: "家居百货",
+          status: "draft",
+          pricing: "待配置",
+          owner: "星河",
+          active: 0,
+          total: 0,
+          done: 0,
+          planned: 0,
+          gross: 0,
+          margin: 0,
+          risk: "low",
+          source: "owned",
+          scheduled: false,
+        },
+        {
+          name: "本地生活探店联播",
+          code: "PRJ-2026-001",
+          vendor: "城食指南",
+          product: "到店套餐",
+          status: "settling",
+          pricing: "CPA",
+          owner: "林墨",
+          active: 18,
+          total: 18,
+          done: 610,
+          planned: 610,
+          gross: 109500,
+          margin: 37.2,
+          risk: "low",
+          source: "owned",
+          scheduled: true,
+        },
+        {
+          name: "新能源车主社群",
+          code: "PRJ-2025-036",
+          vendor: "远行汽车",
+          product: "车主权益",
+          status: "archived",
+          pricing: "固定包期",
+          owner: "周然",
+          active: 12,
+          total: 12,
+          done: 480,
+          planned: 480,
+          gross: 91400,
+          margin: 34.9,
+          risk: "low",
+          source: "owned",
+          scheduled: true,
+        },
+      ];
+
+      let activeStatus = "all";
+      let activeSource = "all";
+      let activeView = "table";
+      let toastTimer;
+
+      const rows = document.querySelector("#project-rows");
+      const cards = document.querySelector("#cards-view");
+      const tableView = document.querySelector("#table-view");
+      const emptyState = document.querySelector("#empty-state");
+      const resultCount = document.querySelector("#result-count");
+      const searchInput = document.querySelector("#project-search");
+      const vendorFilter = document.querySelector("#vendor-filter");
+      const ownerFilter = document.querySelector("#owner-filter");
+      const scheduleFilter = document.querySelector("#schedule-filter");
+      const modal = document.querySelector("#project-modal");
+      const projectForm = document.querySelector("#project-form");
+      const projectName = document.querySelector("#project-name");
+      const toast = document.querySelector("#toast");
+      const toastMessage = document.querySelector("#toast-message");
+
+      function money(value) {
+        return `¥${value.toLocaleString("zh-CN")}`;
+      }
+
+      function escapeHtml(value) {
+        const entities = {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#039;",
+        };
+        return String(value).replace(
+          /[&<>"']/g,
+          (character) => entities[character],
+        );
+      }
+
+      function riskLabel(risk) {
+        return risk === "high"
+          ? "高风险"
+          : risk === "medium"
+            ? "需关注"
+            : "正常";
+      }
+
+      function ownerMark(owner) {
+        return owner.slice(0, 1);
+      }
+
+      function populateOptions(select, values) {
+        [...new Set(values)].forEach((value) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = value;
+          select.append(option);
+        });
+      }
+
+      populateOptions(
+        vendorFilter,
+        projects.map((project) => project.vendor),
+      );
+      populateOptions(
+        ownerFilter,
+        projects.map((project) => project.owner),
+      );
+
+      function getFilteredProjects() {
+        const query = searchInput.value.trim().toLowerCase();
+        return projects.filter((project) => {
+          const matchesStatus =
+            activeStatus === "all" || project.status === activeStatus;
+          const matchesSource =
+            activeSource === "all" || project.source === activeSource;
+          const matchesSearch =
+            !query ||
+            [project.name, project.code, project.vendor, project.product]
+              .join(" ")
+              .toLowerCase()
+              .includes(query);
+          const matchesVendor =
+            vendorFilter.value === "all" ||
+            project.vendor === vendorFilter.value;
+          const matchesOwner =
+            ownerFilter.value === "all" || project.owner === ownerFilter.value;
+          const matchesSchedule =
+            scheduleFilter.value === "all" ||
+            (scheduleFilter.value === "scheduled"
+              ? project.scheduled
+              : !project.scheduled);
+          return (
+            matchesStatus &&
+            matchesSource &&
+            matchesSearch &&
+            matchesVendor &&
+            matchesOwner &&
+            matchesSchedule
+          );
+        });
+      }
+
+      function projectRow(project) {
+        const status = statusMeta[project.status];
+        return `
+          <tr data-project="${project.code}">
+            <td><div class="project-cell"><span class="project-mark"><iconify-icon icon="lucide:gamepad-2" aria-hidden="true"></iconify-icon></span><div style="min-width:0"><div class="project-name">${escapeHtml(project.name)}</div><div class="project-sub">${escapeHtml(project.code)}${project.source === "collab" ? " · 外部合作" : ""}</div></div></div></td>
+            <td><div class="stack-primary">${escapeHtml(project.vendor)}</div><div class="stack-secondary">${escapeHtml(project.product)}</div></td>
+            <td><span class="tag ${status.tone}">${status.label}</span></td>
+            <td>${project.pricing}</td>
+            <td><span class="owner"><i class="owner-avatar">${escapeHtml(ownerMark(project.owner))}</i>${escapeHtml(project.owner)}</span></td>
+            <td class="num"><b>${project.active}</b> / ${project.total}</td>
+            <td class="num"><div>${project.done.toLocaleString()} h</div><div class="stack-secondary">计划 ${project.planned.toLocaleString()} h</div></td>
+            <td class="num"><div>${money(project.gross)}</div><div class="stack-secondary">${project.margin.toFixed(1)}%</div></td>
+            <td><span class="risk ${project.risk}"><i></i>${riskLabel(project.risk)}</span></td>
+            <td><button class="row-action" type="button" aria-label="打开 ${escapeHtml(project.name)} 操作菜单"><iconify-icon icon="lucide:ellipsis" aria-hidden="true"></iconify-icon></button></td>
+          </tr>`;
+      }
+
+      function projectCard(project) {
+        const status = statusMeta[project.status];
+        return `
+          <article class="project-card" tabindex="0" data-project="${project.code}">
+            <div class="card-head"><div style="min-width:0"><div class="project-name">${escapeHtml(project.name)}</div><div class="project-sub">${escapeHtml(project.code)} · ${escapeHtml(project.vendor)}</div></div><span class="risk ${project.risk}"><i></i>${riskLabel(project.risk)}</span></div>
+            <div class="card-meta"><span class="tag ${status.tone}">${status.label}</span><span class="tag gray">${project.pricing}</span></div>
+            <div class="card-stats"><div><span>在播主播</span><b class="num">${project.active} / ${project.total}</b></div><div><span>直播时长</span><b class="num">${project.done} / ${project.planned} h</b></div><div><span>预估毛利</span><b class="num">${money(project.gross)}</b></div><div><span>负责人</span><b>${escapeHtml(project.owner)}</b></div></div>
+          </article>`;
+      }
+
+      function render() {
+        const filtered = getFilteredProjects();
+        const countStatus = (status) =>
+          projects.filter((project) => project.status === status).length;
+        document
+          .querySelectorAll("#status-tabs [data-status]")
+          .forEach((tab) => {
+            const count =
+              tab.dataset.status === "all"
+                ? projects.length
+                : countStatus(tab.dataset.status);
+            tab.querySelector("small").textContent = String(count);
+          });
+        document.querySelector("#summary-total").textContent = String(
+          projects.length,
+        );
+        document.querySelector("#summary-active").textContent = String(
+          countStatus("active"),
+        );
+        document.querySelector("#summary-pending").textContent = String(
+          countStatus("recruiting") + countStatus("pending"),
+        );
+        document.querySelector("#summary-risk").textContent = String(
+          projects.filter((project) => project.risk === "high").length,
+        );
+        rows.innerHTML = filtered.map(projectRow).join("");
+        cards.innerHTML = filtered.map(projectCard).join("");
+        resultCount.textContent = String(filtered.length);
+        const isEmpty = filtered.length === 0;
+        emptyState.style.display = isEmpty ? "grid" : "none";
+        tableView.style.display =
+          !isEmpty && activeView === "table" ? "block" : "none";
+        cards.style.display =
+          !isEmpty && activeView === "cards" ? "grid" : "none";
+      }
+
+      function setActiveButton(containerSelector, button) {
+        document
+          .querySelectorAll(`${containerSelector} button`)
+          .forEach((item) => {
+            item.classList.toggle("active", item === button);
+            if (item.getAttribute("role") === "tab")
+              item.setAttribute("aria-selected", String(item === button));
+          });
+      }
+
+      document
+        .querySelector("#status-tabs")
+        .addEventListener("click", (event) => {
+          const button = event.target.closest("button[data-status]");
+          if (!button) return;
+          activeStatus = button.dataset.status;
+          setActiveButton("#status-tabs", button);
+          render();
+        });
+
+      document
+        .querySelector("#source-filter")
+        .addEventListener("click", (event) => {
+          const button = event.target.closest("button[data-source]");
+          if (!button) return;
+          activeSource = button.dataset.source;
+          setActiveButton("#source-filter", button);
+          render();
+        });
+
+      document
+        .querySelector("#view-switch")
+        .addEventListener("click", (event) => {
+          const button = event.target.closest("button[data-view]");
+          if (!button) return;
+          activeView = button.dataset.view;
+          setActiveButton("#view-switch", button);
+          render();
+        });
+
+      [searchInput, vendorFilter, ownerFilter, scheduleFilter].forEach(
+        (control) => control.addEventListener("input", render),
+      );
+
+      function showToast(message) {
+        clearTimeout(toastTimer);
+        toastMessage.textContent = message;
+        toast.classList.add("show");
+        toastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+      }
+
+      function openModal() {
+        projectForm.reset();
+        document.querySelector("#project-code").value =
+          `PRJ-2026-${String(projects.length + 12).padStart(3, "0")}`;
+        modal.classList.add("open");
+        document.body.style.overflow = "hidden";
+        requestAnimationFrame(() => projectName.focus());
+      }
+
+      function closeModal() {
+        modal.classList.remove("open");
+        document.body.style.overflow = "";
+      }
+
+      document
+        .querySelector("#new-project-button")
+        .addEventListener("click", openModal);
+      document
+        .querySelector("#close-modal")
+        .addEventListener("click", closeModal);
+      document
+        .querySelector("#cancel-modal")
+        .addEventListener("click", closeModal);
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal) closeModal();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && modal.classList.contains("open"))
+          closeModal();
+      });
+
+      projectForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const name = projectName.value.trim();
+        const code = document.querySelector("#project-code").value.trim();
+        const vendor = document.querySelector("#project-vendor").value.trim();
+        if (!name || !code || !vendor) {
+          showToast("请补全项目名称、编号和厂商");
+          return;
+        }
+        projects.unshift({
+          name,
+          code,
+          vendor,
+          product:
+            document.querySelector("#project-product").value.trim() || "待补充",
+          status: "draft",
+          pricing: "待配置",
+          owner: document.querySelector("#project-owner").value,
+          active: 0,
+          total: 0,
+          done: 0,
+          planned: 0,
+          gross: 0,
+          margin: 0,
+          risk: "low",
+          source: "owned",
+          scheduled: false,
+        });
+        activeStatus = "all";
+        activeSource = "all";
+        searchInput.value = "";
+        setActiveButton(
+          "#status-tabs",
+          document.querySelector('[data-status="all"]'),
+        );
+        setActiveButton(
+          "#source-filter",
+          document.querySelector('[data-source="all"]'),
+        );
+        document.querySelector("#summary-total").textContent = String(
+          projects.length,
+        );
+        closeModal();
+        render();
+        showToast("项目草稿已创建");
+      });
+
+      document
+        .querySelector("#join-button")
+        .addEventListener("click", () => showToast("协作邀请入口已就绪"));
+      document.querySelector("#export-button").addEventListener("click", () => {
+        const header = [
+          "项目名称",
+          "项目编号",
+          "厂商",
+          "状态",
+          "负责人",
+          "主播",
+          "预估毛利",
+        ];
+        const csvRows = projects.map((project) => [
+          project.name,
+          project.code,
+          project.vendor,
+          statusMeta[project.status].label,
+          project.owner,
+          `${project.active}/${project.total}`,
+          project.gross,
+        ]);
+        const csv = [header, ...csvRows]
+          .map((row) =>
+            row
+              .map((cell) => `"${String(cell).replaceAll('"', '""')}"`)
+              .join(","),
+          )
+          .join("\n");
+        const url = URL.createObjectURL(
+          new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }),
+        );
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "经营舱-项目表.csv";
+        link.click();
+        URL.revokeObjectURL(url);
+        showToast("项目表已导出");
+      });
+      function openProjectDetail(code) {
+        const project = projects.find((item) => item.code === code);
+        if (!project) return;
+        const detailParams = new URLSearchParams({
+          name: project.name,
+          code: project.code,
+          vendor: project.vendor,
+          product: project.product,
+          status: project.status,
+          owner: project.owner,
+          active: String(project.active),
+          total: String(project.total),
+          done: String(project.done),
+          planned: String(project.planned),
+          gross: String(project.gross),
+          margin: String(project.margin),
+          risk: project.risk,
+          pricing: project.pricing,
+        });
+        window.location.href = `./project-detail.html?${detailParams}`;
+      }
+
+      document
+        .querySelector(".projects-surface")
+        .addEventListener("click", (event) => {
+          const target = event.target.closest("[data-project]");
+          if (target) openProjectDetail(target.dataset.project);
+        });
+      document
+        .querySelector(".projects-surface")
+        .addEventListener("keydown", (event) => {
+          const target = event.target.closest(".project-card[data-project]");
+          if (target && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            openProjectDetail(target.dataset.project);
+          }
+        });
+
+      render();
+    </script>
+  </body>
+</html>
