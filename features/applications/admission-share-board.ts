@@ -9,6 +9,7 @@ import type {
   RecordingReviewStatus,
 } from "./application-state";
 import type { VendorAdmissionDecision } from "./admission-board";
+import { canShareAdmissionRecordingsForProject } from "./admission-share-policy";
 
 export type AdmissionShareBoardActor = {
   userId: string;
@@ -49,6 +50,7 @@ export type AdmissionShareBoardRecord = {
 };
 
 export type AdmissionShareBoardRepository = {
+  getProjectStatus(projectId: string): Promise<string | null>;
   listShareableApplications(
     projectId: string,
     applicationIds?: string[],
@@ -168,6 +170,19 @@ export type VendorReviewUpsertInput = {
 
 export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoardRepository {
   constructor(private readonly client: SupabaseClient) {}
+
+  async getProjectStatus(projectId: string): Promise<string | null> {
+    const { data, error } = await this.client
+      .from("projects")
+      .select("status")
+      .eq("id", projectId)
+      .maybeSingle<{ status: string }>();
+
+    if (error) {
+      throw error;
+    }
+    return data?.status ?? null;
+  }
 
   async listShareableApplications(
     projectId: string,
@@ -637,6 +652,16 @@ export async function createAdmissionShareBoard({
   now?: string;
   tokenFactory?: () => string;
 }) {
+  const projectStatus = await repo.getProjectStatus(projectId);
+  if (!projectStatus) {
+    throw new Error("Project does not exist");
+  }
+  if (!canShareAdmissionRecordingsForProject(projectStatus)) {
+    throw new Error(
+      "Recording shares are only available before project settlement",
+    );
+  }
+
   const applicationIds = input.applicationIds
     ?.map((id) => id.trim())
     .filter(Boolean);
@@ -673,23 +698,9 @@ export async function createAdmissionShareBoard({
   ) {
     throw new Error("Every shared application must have a recording");
   }
-  const approvedApplications = applications.filter((application) =>
-    isMcnApprovedShareCandidate(
-      application,
-      recordingsByApplication.get(application.id),
-    ),
-  );
-  if (
-    isExplicitSelection &&
-    approvedApplications.length !== applications.length
-  ) {
-    throw new Error("Every shared recording must be approved by MCN");
-  }
-  const applicationsToShare = isExplicitSelection
-    ? applications
-    : approvedApplications;
+  const applicationsToShare = applicationsWithRecordings;
   if (applicationsToShare.length === 0) {
-    throw new Error("Share board requires at least one MCN-approved recording");
+    throw new Error("Share board requires at least one recording");
   }
 
   const token = tokenFactory();
@@ -1077,16 +1088,6 @@ export function mapVendorDecisionToSyncPatch(
   };
 }
 
-function isMcnApprovedShareCandidate(
-  application: ShareableApplication,
-  recording: ShareableRecording | undefined,
-) {
-  return (
-    application.status === "recording_approved" &&
-    recording?.status === "approved"
-  );
-}
-
 function daysFrom(now: string, days: number) {
   return new Date(Date.parse(now) + days * 24 * 60 * 60 * 1000).toISOString();
 }
@@ -1140,15 +1141,14 @@ function toPublicShareDto(
       recordingStatus: item.recordingStatus,
       recordingUrl: item.recordingUrl,
       playbackUrl:
-        item.recordingUrl ??
         (item.storagePath
           ? publicAdmissionRecordingPlaybackUrl({
               token: input.token,
               accessCode: input.accessCode,
               recordingSubmissionId: item.recordingSubmissionId,
             })
-          : null),
-      hasPrivateStorage: Boolean(item.storagePath && !item.recordingUrl),
+          : null) ?? item.recordingUrl,
+      hasPrivateStorage: Boolean(item.storagePath),
       streamer: item.streamer,
       vendorReview: item.vendorReview,
     })),

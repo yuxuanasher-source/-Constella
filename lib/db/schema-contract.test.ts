@@ -784,13 +784,9 @@ describe("P0 database contract", () => {
       );
     }
 
-    expect(allMigrations).toContain(
-      "ai_chat_messages_conversation_sequence_key",
-    );
+    expect(allMigrations).toContain("ai_chat_messages_conversation_sequence_key");
     expect(allMigrations).toContain("ai_chat_turns_owner_idempotency_key");
-    expect(allMigrations).toContain(
-      "ai_chat_turns_one_active_per_conversation",
-    );
+    expect(allMigrations).toContain("ai_chat_turns_one_active_per_conversation");
     expect(allMigrations).toContain("lease_expires_at timestamptz");
     expect(allMigrations).toContain("turn_lease_expired");
     expect(allMigrations).toContain("ai_chat_turns_one_retry_successor");

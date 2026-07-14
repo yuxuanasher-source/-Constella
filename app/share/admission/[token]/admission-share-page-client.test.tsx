@@ -55,7 +55,7 @@ const shareBoard = {
       recordingSubmissionId: "rec-3",
       recordingVersion: 1,
       recordingStatus: "approved",
-      recordingUrl: null,
+      recordingUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
       playbackUrl:
         "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
       hasPrivateStorage: true,
@@ -126,12 +126,15 @@ describe("AdmissionSharePageClient", () => {
 
     expect(await screen.findByText("Alpha Project")).toBeInTheDocument();
     expect(screen.getByText("Vendor A / Game A")).toBeInTheDocument();
-    expect(screen.getByText("Streamer One")).toBeInTheDocument();
-    expect(screen.getByText("Douyin / one-live")).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: "打开 Streamer One 原始链接" }),
-    ).toHaveAttribute("href", "https://video.example/rec-1.mp4");
-    expect(screen.getByText("Can be backup.")).toBeInTheDocument();
+      screen.getByRole("button", { name: /1\. Streamer One/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /2\. Streamer Two/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /3\. Streamer Three/ }),
+    ).toBeInTheDocument();
     expect(screen.queryByLabelText("访问码")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("复核人姓名")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("联系方式")).not.toBeInTheDocument();
@@ -140,27 +143,90 @@ describe("AdmissionSharePageClient", () => {
     expect(container.textContent).not.toContain("private/path");
   });
 
-  it("renders professional delivery copy and switches recording players by source type", async () => {
-    render(
+  it("renders a two-column workbench with one player and switches it by source type", async () => {
+    const { container } = render(
       <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
     );
 
     expect(await screen.findByText("Alpha Project")).toBeInTheDocument();
-    expect(screen.getByText("录屏交付复核包")).toBeInTheDocument();
-    expect(screen.getByText("甲方验收视图")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "待审录屏明细" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "录屏播放器" }),
+    ).toBeInTheDocument();
 
     expect(
       screen.getByLabelText("Streamer One 原始录屏播放器"),
     ).toHaveAttribute("src", "https://video.example/rec-1.mp4");
+    expect(container.querySelectorAll("video, iframe")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /2\. Streamer Two/ }));
     expect(screen.getByTitle("Streamer Two 平台录屏播放器")).toHaveAttribute(
       "src",
       expect.stringContaining("player.bilibili.com/player.html"),
     );
+    expect(container.querySelectorAll("video, iframe")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: /3\. Streamer Three/ }));
     expect(
       screen.getByLabelText("Streamer Three 原始录屏播放器"),
     ).toHaveAttribute(
       "src",
       "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
+    );
+    expect(container.querySelectorAll("video, iframe")).toHaveLength(1);
+  });
+
+  it("switches between private upload and platform link for a dual-source recording", async () => {
+    const { container } = render(
+      <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
+    );
+
+    await screen.findByText("Alpha Project");
+    fireEvent.click(screen.getByRole("button", { name: /3\. Streamer Three/ }));
+
+    expect(
+      screen.getByRole("button", { name: "原始录屏" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "平台链接" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Streamer Three 原始录屏播放器"),
+    ).toHaveAttribute(
+      "src",
+      "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "平台链接" }));
+    expect(screen.getByTitle("Streamer Three 平台录屏播放器")).toHaveAttribute(
+      "src",
+      expect.stringContaining("player.bilibili.com/player.html"),
+    );
+    expect(container.querySelectorAll("video, iframe")).toHaveLength(1);
+  });
+
+  it("preserves each recording review draft while switching rows", async () => {
+    render(
+      <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
+    );
+
+    await screen.findByText("Alpha Project");
+    fireEvent.change(screen.getByLabelText("Streamer One 决策"), {
+      target: { value: "selected" },
+    });
+    fireEvent.change(screen.getByLabelText("Streamer One 备注"), {
+      target: { value: "Strong opening and clear product explanation." },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /2\. Streamer Two/ }));
+    expect(screen.getByLabelText("Streamer Two 决策")).toHaveValue("pending");
+
+    fireEvent.click(screen.getByRole("button", { name: /1\. Streamer One/ }));
+    expect(screen.getByLabelText("Streamer One 决策")).toHaveValue("selected");
+    expect(screen.getByLabelText("Streamer One 备注")).toHaveValue(
+      "Strong opening and clear product explanation.",
     );
   });
 

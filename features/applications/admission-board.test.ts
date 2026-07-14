@@ -283,6 +283,27 @@ describe("admission project board DTO", () => {
     );
   });
 
+  it("keeps private upload availability when the latest recording also has an external link", () => {
+    const dualSourceRecording = {
+      ...recordings[1],
+      asset_id: "asset-rec-1",
+      storage_path: "private/org/project/rec-1.mp4",
+    };
+    const details = toAdmissionRecordingDetails(
+      applications,
+      [recordings[0], dualSourceRecording, ...recordings.slice(2)],
+      vendorReviews,
+    );
+
+    expect(details[0].latestRecording).toEqual(
+      expect.objectContaining({
+        assetId: "asset-rec-1",
+        url: "https://video.example/latest",
+        hasPrivateStorage: true,
+      }),
+    );
+  });
+
   it("exposes vendor rejection and change request reasons in detail rows", () => {
     const details = toAdmissionRecordingDetails(
       [

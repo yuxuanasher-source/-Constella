@@ -1,13 +1,20 @@
 "use client";
 
 import {
+  ChevronRight,
   ExternalLink,
   FileVideo,
   PlayCircle,
   Send,
   ShieldCheck,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 type VendorDecision =
   | "pending"
@@ -88,6 +95,9 @@ const decisionOptions: Array<{ value: VendorDecision; label: string }> = [
 
 const statusLabels: Record<string, string> = {
   active: "可复核",
+  pending: "待判断",
+  selected: "选入",
+  backup: "备选",
   expired: "已过期",
   revoked: "已撤销",
   submitted: "已提交",
@@ -113,6 +123,8 @@ export default function AdmissionSharePageClient({
     VendorCheckpointOption[]
   >([]);
   const [drafts, setDrafts] = useState<Record<string, ReviewDraft>>({});
+  const [selectedRecordingSubmissionId, setSelectedRecordingSubmissionId] =
+    useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -135,6 +147,13 @@ export default function AdmissionSharePageClient({
       setShareBoard(nextShareBoard);
       setVendorCheckpoints(nextCheckpoints);
       setDrafts(toDrafts(nextShareBoard.items));
+      setSelectedRecordingSubmissionId((current) =>
+        nextShareBoard.items.some(
+          (item) => item.recordingSubmissionId === current,
+        )
+          ? current
+          : (nextShareBoard.items[0]?.recordingSubmissionId ?? ""),
+      );
     },
     [],
   );
@@ -148,6 +167,7 @@ export default function AdmissionSharePageClient({
     } catch (error) {
       setShareBoard(null);
       setDrafts({});
+      setSelectedRecordingSubmissionId("");
       setErrorMessage(
         error instanceof Error ? error.message : "无法读取复核链接",
       );
@@ -175,6 +195,7 @@ export default function AdmissionSharePageClient({
         }
         setShareBoard(null);
         setDrafts({});
+        setSelectedRecordingSubmissionId("");
         setErrorMessage(
           error instanceof Error ? error.message : "无法读取复核链接",
         );
@@ -211,6 +232,24 @@ export default function AdmissionSharePageClient({
       };
     });
   };
+
+  const selectedItem = useMemo(
+    () =>
+      shareBoard?.items.find(
+        (item) => item.recordingSubmissionId === selectedRecordingSubmissionId,
+      ) ??
+      shareBoard?.items[0] ??
+      null,
+    [selectedRecordingSubmissionId, shareBoard],
+  );
+
+  const selectedDraft = selectedItem
+    ? (drafts[selectedItem.recordingSubmissionId] ?? {
+        decision: "pending" as VendorDecision,
+        remark: "",
+        reasonCodes: [],
+      })
+    : null;
 
   const toggleReasonCode = (recordingSubmissionId: string, code: string) => {
     setDrafts((current) => {
@@ -284,65 +323,65 @@ export default function AdmissionSharePageClient({
 
   return (
     <main className="min-h-screen bg-[var(--bg)] text-[var(--ink-900)]">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-        <section className="rounded-md border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-card)]">
-          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-            <div className="max-w-3xl">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-2 rounded-full bg-[var(--blue-50)] px-3 py-1 text-xs font-semibold text-[var(--blue-600)]">
-                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                  录屏交付复核包
-                </span>
-                <span className="rounded-full border border-[var(--line)] px-3 py-1 text-xs font-medium text-[var(--ink-500)]">
-                  甲方验收视图
-                </span>
-              </div>
-              <h1 className="mt-3 text-2xl font-semibold tracking-normal text-[var(--ink-900)]">
+      <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-4 px-4 py-4 sm:px-6 lg:px-8">
+        <header className="flex flex-col gap-4 rounded-md border border-[var(--line)] bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-[var(--blue-50)] text-[var(--blue-600)]">
+              <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-[var(--blue-600)]">
+                录屏交付复核
+              </p>
+              <h1 className="truncate text-lg font-semibold tracking-normal text-[var(--ink-900)]">
                 {shareBoard?.project.name ?? "录屏复核"}
               </h1>
               {vendorLine ? (
-                <p className="mt-2 text-sm text-[var(--ink-500)]">
+                <p className="truncate text-xs text-[var(--ink-500)]">
                   {vendorLine}
                 </p>
               ) : null}
-              <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--ink-600)]">
-                本页面用于甲方集中查看乙方提交的主播选播录屏，并对候选结果给出复核意见。录屏、版本与提交动作均按当前分享链接受控校验。
-              </p>
             </div>
-
-            {shareBoard ? (
-              <dl className="grid min-w-[260px] grid-cols-3 gap-2 rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-3 text-center">
-                <div>
-                  <dt className="text-[11px] text-[var(--ink-400)]">录屏数</dt>
-                  <dd className="mt-1 text-lg font-semibold text-[var(--ink-900)]">
-                    {shareBoard.items.length}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-[11px] text-[var(--ink-400)]">状态</dt>
-                  <dd className="mt-1 text-sm font-semibold text-[var(--blue-600)]">
-                    {labelOf(shareBoard.status)}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-[11px] text-[var(--ink-400)]">截止</dt>
-                  <dd className="mt-1 text-xs font-medium text-[var(--ink-700)]">
-                    {formatDateTime(shareBoard.expiresAt)}
-                  </dd>
-                </div>
-              </dl>
-            ) : null}
           </div>
-        </section>
+
+          {shareBoard ? (
+            <dl className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs sm:justify-end">
+              <div className="flex items-baseline gap-2">
+                <dt className="text-[var(--ink-400)]">录屏</dt>
+                <dd className="font-semibold text-[var(--ink-900)]">
+                  {shareBoard.items.length} 条
+                </dd>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <dt className="text-[var(--ink-400)]">状态</dt>
+                <dd className="font-semibold text-[var(--blue-600)]">
+                  {labelOf(shareBoard.status)}
+                </dd>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <dt className="text-[var(--ink-400)]">截止</dt>
+                <dd className="font-medium text-[var(--ink-700)]">
+                  {formatDateTime(shareBoard.expiresAt)}
+                </dd>
+              </div>
+            </dl>
+          ) : null}
+        </header>
 
         {errorMessage ? (
-          <div className="rounded-md border border-[var(--danger-600)] bg-[var(--danger-50)] px-4 py-3 text-sm text-[var(--danger-600)]">
+          <div
+            className="rounded-md border border-[var(--danger-600)] bg-[var(--danger-50)] px-4 py-3 text-sm text-[var(--danger-600)]"
+            role="alert"
+          >
             {errorMessage}
           </div>
         ) : null}
 
         {successMessage ? (
-          <div className="rounded-md border border-[var(--ok-600)] bg-[var(--ok-50)] px-4 py-3 text-sm text-[var(--ok-600)]">
+          <div
+            className="rounded-md border border-[var(--ok-600)] bg-[var(--ok-50)] px-4 py-3 text-sm text-[var(--ok-600)]"
+            aria-live="polite"
+          >
             {successMessage}
           </div>
         ) : null}
@@ -354,63 +393,187 @@ export default function AdmissionSharePageClient({
         ) : null}
 
         {shareBoard ? (
-          <>
-            <section className="grid gap-3">
-              {shareBoard.items.map((item, index) => (
-                <article
-                  className="grid gap-5 rounded-md border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-card)] lg:grid-cols-[minmax(360px,1fr)_minmax(300px,0.72fr)]"
-                  key={item.recordingSubmissionId}
+          <section className="grid items-start gap-4 lg:grid-cols-[minmax(380px,0.9fr)_minmax(520px,1.1fr)]">
+            <section
+              aria-labelledby="recording-queue-heading"
+              className="overflow-hidden rounded-md border border-[var(--line)] bg-white lg:sticky lg:top-4"
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-[var(--line)] px-4 py-3">
+                <div>
+                  <h2
+                    id="recording-queue-heading"
+                    className="text-sm font-semibold tracking-normal text-[var(--ink-900)]"
+                  >
+                    待审录屏明细
+                  </h2>
+                  <p className="mt-0.5 text-xs text-[var(--ink-400)]">
+                    共 {shareBoard.items.length} 条录屏
+                  </p>
+                </div>
+                <span className="rounded-sm bg-[var(--bg-soft)] px-2 py-1 text-xs font-medium text-[var(--ink-600)]">
+                  {
+                    shareBoard.items.filter(
+                      (item) =>
+                        (drafts[item.recordingSubmissionId]?.decision ??
+                          "pending") !== "pending",
+                    ).length
+                  }
+                  /{shareBoard.items.length} 已判断
+                </span>
+              </div>
+
+              {shareBoard.items.length > 0 ? (
+                <div
+                  className="lg:max-h-[calc(100vh-178px)] lg:overflow-y-auto"
+                  role="list"
                 >
-                  <div className="grid gap-4">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="grid h-7 w-7 place-items-center rounded-md bg-[var(--blue-50)] text-xs font-semibold text-[var(--blue-600)]">
-                        {index + 1}
-                      </span>
-                      <h2 className="text-lg font-semibold tracking-normal">
-                        {item.streamer.displayName || "主播"}
-                      </h2>
-                      <span className="rounded-sm border border-[var(--line)] px-2 py-1 text-xs text-[var(--ink-500)]">
-                        {labelOf(item.applicationStatus)}
-                      </span>
-                    </div>
-                    <p className="mt-2 text-sm text-[var(--ink-500)]">
-                      {item.streamer.accountLabel || "未填写账号"}
-                    </p>
-                    <RecordingPlayer item={item} />
-                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-[var(--ink-500)]">
-                      <span className="rounded-sm bg-[var(--ink-50)] px-2 py-1">
-                        版本 {item.recordingVersion}
-                      </span>
-                      <span className="rounded-sm bg-[var(--ink-50)] px-2 py-1">
-                        {labelOf(item.recordingStatus)}
-                      </span>
-                      <span className="rounded-sm bg-[var(--ink-50)] px-2 py-1">
-                        {item.hasPrivateStorage ? "原始上传" : "外部链接"}
-                      </span>
-                    </div>
-                    {item.vendorReview ? (
-                      <div className="mt-4 rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-3 text-sm">
-                        <div className="text-xs font-medium text-[var(--ink-500)]">
-                          最近一次厂家反馈
-                        </div>
-                        <div className="mt-1 font-medium">
-                          {labelOf(item.vendorReview.decision)}
-                        </div>
+                  {shareBoard.items.map((item, index) => {
+                    const isSelected =
+                      item.recordingSubmissionId ===
+                      selectedItem?.recordingSubmissionId;
+                    const streamerName = item.streamer.displayName || "主播";
+                    const accountLabel =
+                      item.streamer.accountLabel || "未填写账号";
+                    const sourceLabel = recordingSourceLabel(item);
+                    const decision =
+                      drafts[item.recordingSubmissionId]?.decision ?? "pending";
+
+                    return (
+                      <div
+                        className="border-b border-[var(--line)] last:border-b-0"
+                        key={item.recordingSubmissionId}
+                        role="listitem"
+                      >
+                        <button
+                          type="button"
+                          aria-label={`${index + 1}. ${streamerName}，${accountLabel}，版本 ${item.recordingVersion}，${labelOf(item.recordingStatus)}，${sourceLabel}，当前决定 ${labelOf(decision)}`}
+                          aria-pressed={isSelected}
+                          onClick={() =>
+                            setSelectedRecordingSubmissionId(
+                              item.recordingSubmissionId,
+                            )
+                          }
+                          className={`flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors duration-150 motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--blue-500)] ${
+                            isSelected
+                              ? "bg-[var(--blue-50)] ring-1 ring-inset ring-[var(--blue-400)]"
+                              : "bg-white hover:bg-[var(--bg-soft)]"
+                          }`}
+                        >
+                          <span
+                            className={`grid h-7 w-7 shrink-0 place-items-center rounded-md text-xs font-semibold ${
+                              isSelected
+                                ? "bg-[var(--blue-600)] text-white"
+                                : "bg-[var(--bg-soft)] text-[var(--ink-500)]"
+                            }`}
+                          >
+                            {index + 1}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-semibold text-[var(--ink-900)]">
+                              {streamerName}
+                            </span>
+                            <span className="mt-0.5 block truncate text-xs text-[var(--ink-400)]">
+                              {accountLabel}
+                            </span>
+                            <span className="mt-1 flex items-center gap-2 text-[11px] text-[var(--ink-500)] sm:hidden">
+                              <span>v{item.recordingVersion}</span>
+                              <span>{sourceLabel}</span>
+                            </span>
+                          </span>
+                          <span className="hidden shrink-0 items-center gap-2 sm:flex">
+                            <span className="text-xs font-medium text-[var(--ink-500)]">
+                              v{item.recordingVersion}
+                            </span>
+                            <span className="rounded-sm bg-[var(--bg-soft)] px-2 py-1 text-[11px] text-[var(--ink-500)]">
+                              {sourceLabel}
+                            </span>
+                          </span>
+                          <span
+                            className={`shrink-0 rounded-sm px-2 py-1 text-[11px] font-medium ${decisionBadgeClass(decision)}`}
+                          >
+                            {labelOf(decision)}
+                          </span>
+                          <ChevronRight
+                            className={`h-4 w-4 shrink-0 ${
+                              isSelected
+                                ? "text-[var(--blue-600)]"
+                                : "text-[var(--ink-300)]"
+                            }`}
+                            aria-hidden="true"
+                          />
+                        </button>
                       </div>
-                    ) : null}
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="px-4 py-10 text-center text-sm text-[var(--ink-500)]">
+                  暂无可复核录屏
+                </div>
+              )}
+            </section>
+
+            <aside
+              aria-labelledby="recording-player-heading"
+              className="overflow-hidden rounded-md border border-[var(--line)] bg-white lg:sticky lg:top-4 lg:max-h-[calc(100vh-32px)] lg:overflow-y-auto"
+            >
+              <div className="flex flex-col gap-3 border-b border-[var(--line)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <h2
+                    id="recording-player-heading"
+                    className="text-sm font-semibold tracking-normal text-[var(--ink-900)]"
+                  >
+                    录屏播放器
+                  </h2>
+                  {selectedItem ? (
+                    <p className="mt-0.5 truncate text-xs text-[var(--ink-400)]">
+                      {selectedItem.streamer.displayName || "主播"} ·{" "}
+                      {selectedItem.streamer.accountLabel || "未填写账号"}
+                    </p>
+                  ) : null}
+                </div>
+                {selectedItem ? (
+                  <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">
+                    <span className="rounded-sm bg-[var(--bg-soft)] px-2 py-1 text-[var(--ink-600)]">
+                      v{selectedItem.recordingVersion}
+                    </span>
+                    <span className="rounded-sm bg-[var(--blue-50)] px-2 py-1 font-medium text-[var(--blue-600)]">
+                      {labelOf(selectedItem.recordingStatus)}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+
+              {selectedItem && selectedDraft ? (
+                <>
+                  <div className="bg-[#0b1220] p-3 sm:p-4">
+                    <RecordingPlayer
+                      key={selectedItem.recordingSubmissionId}
+                      item={selectedItem}
+                    />
                   </div>
 
-                  <div className="grid gap-3">
-                    <label className="grid gap-1 text-xs font-medium text-[var(--ink-700)]">
-                      {item.streamer.displayName || "主播"} 决策
+                  <div className="grid gap-4 border-t border-[var(--line)] p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-sm font-semibold text-[var(--ink-900)]">
+                        复核结论
+                      </h3>
+                      {selectedItem.vendorReview ? (
+                        <span className="text-xs text-[var(--ink-500)]">
+                          上次反馈：
+                          {labelOf(selectedItem.vendorReview.decision)}
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <label className="grid gap-1.5 text-xs font-medium text-[var(--ink-700)]">
+                      复核决定
                       <select
-                        className="h-10 rounded-md border border-[var(--line)] bg-white px-3 text-sm outline-none focus:border-[var(--blue-500)]"
-                        value={
-                          drafts[item.recordingSubmissionId]?.decision ??
-                          "pending"
-                        }
+                        aria-label={`${selectedItem.streamer.displayName || "主播"} 决策`}
+                        className="h-10 rounded-md border border-[var(--line)] bg-white px-3 text-sm outline-none focus:border-[var(--blue-500)] focus:ring-1 focus:ring-[var(--blue-500)]"
+                        value={selectedDraft.decision}
                         onChange={(event) =>
-                          updateDraft(item.recordingSubmissionId, {
+                          updateDraft(selectedItem.recordingSubmissionId, {
                             decision: event.target.value as VendorDecision,
                           })
                         }
@@ -422,33 +585,35 @@ export default function AdmissionSharePageClient({
                         ))}
                       </select>
                     </label>
+
                     {vendorCheckpoints.length > 0 &&
                     ["rejected", "needs_changes"].includes(
-                      drafts[item.recordingSubmissionId]?.decision ?? "",
+                      selectedDraft.decision,
                     ) ? (
-                      <div className="grid gap-1 text-xs font-medium text-[var(--ink-700)]">
-                        问题标签（可多选，帮助主播针对性修改）
+                      <div className="grid gap-2 text-xs font-medium text-[var(--ink-700)]">
+                        问题标签
                         <div className="flex flex-wrap gap-2">
                           {vendorCheckpoints.map((checkpoint) => {
-                            const selected = (
-                              drafts[item.recordingSubmissionId]?.reasonCodes ??
-                              []
-                            ).includes(checkpoint.key);
+                            const isChecked =
+                              selectedDraft.reasonCodes.includes(
+                                checkpoint.key,
+                              );
                             return (
                               <button
                                 key={checkpoint.key}
                                 type="button"
+                                aria-pressed={isChecked}
                                 title={checkpoint.description}
                                 onClick={() =>
                                   toggleReasonCode(
-                                    item.recordingSubmissionId,
+                                    selectedItem.recordingSubmissionId,
                                     checkpoint.key,
                                   )
                                 }
                                 className={
-                                  selected
-                                    ? "rounded-full border border-[var(--blue-500)] bg-[var(--blue-50)] px-3 py-1 text-xs font-medium text-[var(--blue-600)]"
-                                    : "rounded-full border border-[var(--line)] bg-white px-3 py-1 text-xs text-[var(--ink-500)] hover:border-[var(--blue-300)]"
+                                  isChecked
+                                    ? "rounded-full border border-[var(--blue-500)] bg-[var(--blue-50)] px-3 py-1.5 text-xs font-medium text-[var(--blue-600)]"
+                                    : "rounded-full border border-[var(--line)] bg-white px-3 py-1.5 text-xs text-[var(--ink-600)] hover:border-[var(--blue-300)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--blue-500)]"
                                 }
                               >
                                 {checkpoint.label}
@@ -458,55 +623,105 @@ export default function AdmissionSharePageClient({
                         </div>
                       </div>
                     ) : null}
-                    <label className="grid gap-1 text-xs font-medium text-[var(--ink-700)]">
-                      {item.streamer.displayName || "主播"} 备注
+
+                    <label className="grid gap-1.5 text-xs font-medium text-[var(--ink-700)]">
+                      复核备注
                       <textarea
-                        className="min-h-28 resize-y rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--blue-500)]"
-                        value={drafts[item.recordingSubmissionId]?.remark ?? ""}
+                        aria-label={`${selectedItem.streamer.displayName || "主播"} 备注`}
+                        className="min-h-24 resize-y rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm leading-6 outline-none placeholder:text-[var(--ink-400)] focus:border-[var(--blue-500)] focus:ring-1 focus:ring-[var(--blue-500)]"
+                        value={selectedDraft.remark}
                         onChange={(event) =>
-                          updateDraft(item.recordingSubmissionId, {
+                          updateDraft(selectedItem.recordingSubmissionId, {
                             remark: event.target.value,
                           })
                         }
-                        placeholder="填写选入原因、拒绝原因或修改要求"
+                        placeholder="填写选入依据、拒绝原因或修改要求"
                       />
                     </label>
                   </div>
-                </article>
-              ))}
-            </section>
 
-            <div className="sticky bottom-0 -mx-4 border-t border-[var(--line)] bg-white/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
-              <div className="mx-auto flex max-w-6xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-xs text-[var(--ink-500)]">
-                  提交会携带当前录屏版本；若期间录屏更新，系统会拒绝旧版本反馈。
-                </p>
-                <button
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-[var(--blue-600)] px-5 text-sm font-semibold text-white shadow-[var(--shadow-fab)] hover:bg-[var(--blue-700)] disabled:cursor-not-allowed disabled:opacity-60"
-                  type="button"
-                  onClick={() => void submitReviews()}
-                  disabled={
-                    isSubmitting ||
-                    !shareBoard.allowVendorSubmit ||
-                    shareBoard.status !== "active"
-                  }
-                >
-                  <Send className="h-4 w-4" aria-hidden="true" />
-                  提交复核
-                </button>
-              </div>
-            </div>
-          </>
+                  <div className="flex flex-col gap-3 border-t border-[var(--line)] bg-[var(--bg-soft)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="max-w-xl text-xs leading-5 text-[var(--ink-500)]">
+                      提交包含清单内全部录屏的当前决定，并锁定对应录屏版本。
+                    </p>
+                    <button
+                      className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-md bg-[var(--blue-600)] px-4 text-sm font-semibold text-white hover:bg-[var(--blue-700)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                      type="button"
+                      onClick={() => void submitReviews()}
+                      disabled={
+                        isSubmitting ||
+                        !shareBoard.allowVendorSubmit ||
+                        shareBoard.status !== "active"
+                      }
+                    >
+                      <Send className="h-4 w-4" aria-hidden="true" />
+                      {isSubmitting ? "提交中..." : "提交复核"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="grid min-h-72 place-items-center px-4 py-10 text-center text-sm text-[var(--ink-500)]">
+                  从左侧选择一条录屏
+                </div>
+              )}
+            </aside>
+          </section>
         ) : null}
       </div>
     </main>
   );
 }
 
-function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
+function recordingSourceLabel(item: PublicAdmissionShareItem) {
+  if (item.hasPrivateStorage && item.recordingUrl) {
+    return "双来源";
+  }
+  if (item.hasPrivateStorage) {
+    return "原始上传";
+  }
   const sourceUrl = item.playbackUrl ?? item.recordingUrl;
+  if (!sourceUrl) {
+    return "无录屏";
+  }
+  if (platformEmbedSource(sourceUrl)) {
+    return "平台链接";
+  }
+  if (isDirectVideoSource(sourceUrl)) {
+    return "视频链接";
+  }
+  return "外部链接";
+}
+
+function decisionBadgeClass(decision: VendorDecision) {
+  if (decision === "selected") {
+    return "bg-[var(--ok-50)] text-[var(--ok-600)]";
+  }
+  if (decision === "backup") {
+    return "bg-[var(--violet-50)] text-[var(--violet-600)]";
+  }
+  if (decision === "rejected") {
+    return "bg-[var(--danger-50)] text-[var(--danger-600)]";
+  }
+  if (decision === "needs_changes") {
+    return "bg-[var(--warn-50)] text-[var(--warn-600)]";
+  }
+  return "bg-[var(--ink-50)] text-[var(--ink-500)]";
+}
+
+function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
   const streamerName = item.streamer.displayName || "主播";
-  const externalUrl = item.recordingUrl ?? sourceUrl;
+  const privatePlaybackUrl = item.hasPrivateStorage ? item.playbackUrl : null;
+  const externalUrl =
+    item.recordingUrl ?? (item.hasPrivateStorage ? null : item.playbackUrl);
+  const [activeSource, setActiveSource] = useState<"private" | "external">(
+    privatePlaybackUrl ? "private" : "external",
+  );
+
+  const hasBothSources = Boolean(privatePlaybackUrl && externalUrl);
+  const isPrivateSource = Boolean(
+    privatePlaybackUrl && (!externalUrl || activeSource === "private"),
+  );
+  const sourceUrl = isPrivateSource ? privatePlaybackUrl : externalUrl;
 
   if (!sourceUrl) {
     return (
@@ -522,10 +737,14 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
     );
   }
 
-  const platformEmbedUrl = platformEmbedSource(sourceUrl);
+  const platformEmbedUrl = isPrivateSource
+    ? null
+    : platformEmbedSource(sourceUrl);
+  let player: ReactNode;
+
   if (platformEmbedUrl) {
-    return (
-      <div className="grid gap-2">
+    player = (
+      <>
         <iframe
           className="aspect-video w-full rounded-md border border-[var(--line)] bg-black"
           title={`${streamerName} 平台录屏播放器`}
@@ -533,16 +752,12 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
           allow="autoplay; fullscreen; picture-in-picture"
           allowFullScreen
         />
-        {externalUrl ? (
-          <RecordingSourceLink href={externalUrl} name={streamerName} />
-        ) : null}
-      </div>
+        <RecordingSourceLink href={externalUrl!} name={streamerName} />
+      </>
     );
-  }
-
-  if (item.hasPrivateStorage || isDirectVideoSource(sourceUrl)) {
-    return (
-      <div className="grid gap-2">
+  } else if (isPrivateSource || isDirectVideoSource(sourceUrl)) {
+    player = (
+      <>
         <video
           aria-label={`${streamerName} 原始录屏播放器`}
           className="aspect-video w-full rounded-md border border-[var(--line)] bg-black"
@@ -550,34 +765,67 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
           controls
           preload="metadata"
         />
-        {externalUrl ? (
+        {!isPrivateSource && externalUrl ? (
           <RecordingSourceLink href={externalUrl} name={streamerName} />
         ) : null}
+      </>
+    );
+  } else {
+    player = (
+      <div className="rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-4">
+        <div className="flex items-start gap-3">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-white text-[var(--blue-600)]">
+            <PlayCircle className="h-5 w-5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-[var(--ink-900)]">
+              平台录屏链接
+            </div>
+            <p className="mt-1 truncate text-xs text-[var(--ink-500)]">
+              {sourceUrl}
+            </p>
+            <div className="mt-3">
+              <RecordingSourceLink href={sourceUrl} name={streamerName} />
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-4">
-      <div className="flex items-start gap-3">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-white text-[var(--blue-600)]">
-          <PlayCircle className="h-5 w-5" aria-hidden="true" />
-        </span>
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-[var(--ink-900)]">
-            平台录屏链接
-          </div>
-          <p className="mt-1 truncate text-xs text-[var(--ink-500)]">
-            {sourceUrl}
-          </p>
-          <div className="mt-3">
-            <RecordingSourceLink
-              href={externalUrl ?? sourceUrl}
-              name={streamerName}
-            />
-          </div>
+    <div className="grid gap-2">
+      {hasBothSources ? (
+        <div
+          aria-label="录屏来源"
+          className="inline-flex w-fit rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-0.5"
+          role="group"
+        >
+          <button
+            className={`h-8 rounded px-3 text-xs font-medium transition-colors ${
+              isPrivateSource
+                ? "bg-white text-[var(--blue-700)] shadow-sm"
+                : "text-[var(--ink-500)] hover:text-[var(--ink-700)]"
+            }`}
+            onClick={() => setActiveSource("private")}
+            type="button"
+          >
+            原始录屏
+          </button>
+          <button
+            className={`h-8 rounded px-3 text-xs font-medium transition-colors ${
+              !isPrivateSource
+                ? "bg-white text-[var(--blue-700)] shadow-sm"
+                : "text-[var(--ink-500)] hover:text-[var(--ink-700)]"
+            }`}
+            onClick={() => setActiveSource("external")}
+            type="button"
+          >
+            {platformEmbedSource(externalUrl!) ? "平台链接" : "URL 链接"}
+          </button>
         </div>
-      </div>
+      ) : null}
+      {player}
     </div>
   );
 }

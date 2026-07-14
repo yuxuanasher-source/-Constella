@@ -1198,7 +1198,17 @@ describe("OpsReferenceApp project smoke", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens organization feature settings from the sidebar and syncs the switcher display", async () => {
+  it("hides the duplicated organization feature shortcut from the sidebar", () => {
+    render(<OpsReferenceApp initialRoute="warroom" />);
+
+    expect(
+      screen.queryByRole("button", { name: /未配置组织/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("当前组织 · 设置与权限")).not.toBeInTheDocument();
+    expect(screen.queryByText(/已启用 \d+ 项功能/)).not.toBeInTheDocument();
+  });
+
+  it("opens organization feature settings from the account menu and syncs brand display", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({ organization: { id: "org-1" } }),
@@ -1207,7 +1217,8 @@ describe("OpsReferenceApp project smoke", () => {
 
     render(<OpsReferenceApp initialRoute="warroom" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
 
     expect(
       screen.getByRole("dialog", { name: "组织功能设置" }),
@@ -1222,17 +1233,22 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByLabelText("厂家门户"));
     fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
 
-    const orgSwitcher = (
-      await screen.findByText("未来经营组")
-    ).closest("button");
-    expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
-    expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
-
     // 品牌设置持久化到组织设置接口。
-    const settingsCall = fetchMock.mock.calls.find(
-      ([url]) => String(url) === "/api/organization/settings",
-    );
-    expect(settingsCall).toBeTruthy();
+    let settingsCall;
+    await waitFor(() => {
+      settingsCall = fetchMock.mock.calls.find(
+        ([url]) => String(url) === "/api/organization/settings",
+      );
+      expect(settingsCall).toBeTruthy();
+    });
+    expect(screen.queryByText("当前组织 · 配额 48")).not.toBeInTheDocument();
+    expect(screen.queryByText("已启用 4 项功能")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /未来经营组/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("dialog", { name: "组织功能设置" }),
+    ).not.toBeInTheDocument();
     expect(settingsCall[1].method).toBe("PATCH");
     expect(JSON.parse(settingsCall[1].body).name).toBe("未来经营组");
   }, 15000);
@@ -1268,7 +1284,8 @@ describe("OpsReferenceApp project smoke", () => {
 
     render(<OpsReferenceApp initialRoute="warroom" />);
 
-    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
     fireEvent.change(screen.getByLabelText("LOGO 字标"), {
       target: { value: "未" },
     });
@@ -1292,7 +1309,8 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.getByText("经营舱")).toBeInTheDocument();
     expect(screen.getByText("MCN OPERATIONS · v1.2")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
     fireEvent.change(screen.getByLabelText("品牌名称"), {
       target: { value: "星耀经营舱" },
     });
@@ -1385,7 +1403,7 @@ describe("OpsReferenceApp project smoke", () => {
     );
   });
 
-  it("keeps the organization switcher readable with a long organization name", () => {
+  it("does not render the duplicated organization shortcut for a long organization name", () => {
     render(
       <OpsReferenceApp
         initialRoute="warroom"
@@ -1394,28 +1412,10 @@ describe("OpsReferenceApp project smoke", () => {
       />,
     );
 
-    const orgSwitcher = screen.getByText("星耀传媒测试机构").closest("button");
-    expect(orgSwitcher).toHaveStyle({
-      alignItems: "center",
-      minWidth: "0",
-    });
-
-    const mark = orgSwitcher.querySelector("[data-org-switcher-mark='true']");
-    const content = orgSwitcher.querySelector(
-      "[data-org-switcher-content='true']",
-    );
-    const chevron = orgSwitcher.querySelector(
-      "[data-org-switcher-chevron='true']",
-    );
-
-    expect(mark).toHaveStyle({ flexShrink: "0" });
-    expect(content).toHaveStyle({ minWidth: "0", rowGap: "2px" });
-    expect(screen.getByText("星耀传媒测试机构")).toHaveStyle({
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
-    });
-    expect(chevron).toHaveStyle({ flexShrink: "0" });
+    expect(screen.queryByText("星耀传媒测试机构")).not.toBeInTheDocument();
+    expect(screen.queryByText("当前组织 · 0 名成员")).not.toBeInTheDocument();
+    expect(screen.queryByText(/已启用 \d+ 项功能/)).not.toBeInTheDocument();
+    expect(screen.getAllByText("智能作战台").length).toBeGreaterThan(0);
   });
 
   it("renders the authenticated staff user in the sidebar", () => {
@@ -5511,7 +5511,7 @@ describe("OpsReferenceApp admission smoke", () => {
     );
     expect(JSON.parse(shareCall[1].body)).toEqual({
       title: "Alpha Project 录屏复核",
-      applicationIds: ["app-ui-2"],
+      applicationIds: ["app-ui-1", "app-ui-2"],
       allowVendorSubmit: true,
     });
     expect(
@@ -5827,14 +5827,19 @@ describe("OpsReferenceApp admission smoke", () => {
     ).toBeInTheDocument();
   });
 
-  it("blocks creating a vendor share link when no recordings are MCN approved", async () => {
+  it("shares existing recordings during promotion without requiring MCN approval", async () => {
     const unapprovedApplications = [
       {
         id: "app-reviewing",
         status: "recording_reviewing",
         source: "signup",
         submittedAt: "2026-06-07T01:00:00.000Z",
-        project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+        project: {
+          id: "project-1",
+          code: "P-001",
+          name: "Alpha Project",
+          status: "active",
+        },
         streamer: { id: "streamer-1", displayName: "Streamer One" },
         latestRecording: {
           id: "rec-reviewing",
@@ -5845,7 +5850,7 @@ describe("OpsReferenceApp admission smoke", () => {
         vendorReview: null,
       },
     ];
-    const fetchMock = vi.fn(async (url) => {
+    const fetchMock = vi.fn(async (url, init) => {
       if (String(url) === "/api/applications/admission-board") {
         return {
           ok: true,
@@ -5856,6 +5861,7 @@ describe("OpsReferenceApp admission smoke", () => {
                   id: "project-1",
                   code: "P-001",
                   name: "Alpha Project",
+                  status: "active",
                   vendor: "Vendor A",
                   product: "Game A",
                 },
@@ -5885,6 +5891,17 @@ describe("OpsReferenceApp admission smoke", () => {
           }),
         };
       }
+      if (
+        String(url) === "/api/projects/project-1/admission-share-boards" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareUrl: "https://share.example/admission/promotion-token",
+          }),
+        };
+      }
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -5905,14 +5922,26 @@ describe("OpsReferenceApp admission smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "创建分享链接" }));
 
-    expect(
-      await screen.findByText("当前项目暂无 MCN 已通过的可分享录屏"),
-    ).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([url]) =>
-        String(url).includes("/admission-share-boards"),
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-1/admission-share-boards",
+        expect.objectContaining({ method: "POST" }),
       ),
-    ).toBe(false);
+    );
+    const shareCall = fetchMock.mock.calls.find(
+      ([url]) =>
+        String(url) === "/api/projects/project-1/admission-share-boards",
+    );
+    expect(JSON.parse(shareCall[1].body)).toEqual({
+      title: "Alpha Project 录屏复核",
+      applicationIds: ["app-reviewing"],
+      allowVendorSubmit: true,
+    });
+    expect(
+      await screen.findByText(
+        /https:\/\/share.example\/admission\/promotion-token/,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows vendor decisions with the correct MCN next actions", async () => {
@@ -6302,7 +6331,7 @@ describe("OpsReferenceApp admission smoke", () => {
         version: 2,
         status: "reviewing",
         durationSeconds: 1800,
-        url: null,
+        url: "https://www.bilibili.com/video/BV1xx411c7mD",
         hasPrivateStorage: true,
         aiAnalysis: {
           id: "analysis-ws-priv",
@@ -6604,6 +6633,38 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(externalLink).toHaveAttribute("target", "_blank");
     expect(screen.queryByTitle("B 站录屏播放")).not.toBeInTheDocument();
     expect(await screen.findByText("暂无 AI 预审结果")).toBeInTheDocument();
+  });
+
+  it("switches a dual-source workspace recording between private upload and platform link", async () => {
+    const admissionApplications = buildWorkspaceAdmissionApplications();
+    vi.stubGlobal("fetch", buildWorkspaceFetchMock(admissionApplications));
+
+    const { container } = render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={admissionApplications}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "进入录屏审核" }));
+
+    expect(
+      screen.getByRole("button", { name: "原始录屏" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "平台链接" }),
+    ).toBeInTheDocument();
+    expect(container.querySelector("video")).toHaveAttribute(
+      "src",
+      "/api/recording-assets/asset-ws-priv/download",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "平台链接" }));
+    expect(screen.getByTitle("B 站录屏播放")).toHaveAttribute(
+      "src",
+      "https://player.bilibili.com/player.html?bvid=BV1xx411c7mD&page=1&high_quality=1&danmaku=0",
+    );
+    expect(container.querySelector("video")).toBeNull();
   });
 
   it("renders workspace AI pre-review checkpoints with fast-lane badge and failure fallback", async () => {

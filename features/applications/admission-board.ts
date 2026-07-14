@@ -508,9 +508,7 @@ function toRecordingDto(recording: AdmissionRecordingRow) {
     status: recording.status,
     durationSeconds: recording.duration_seconds,
     url: recording.external_url?.trim() || null,
-    hasPrivateStorage: Boolean(
-      recording.storage_path && !recording.external_url,
-    ),
+    hasPrivateStorage: Boolean(recording.storage_path?.trim()),
     submittedAt: recording.submitted_at ?? recording.created_at,
     aiAnalysis: recording.aiAnalysis ?? null,
   };

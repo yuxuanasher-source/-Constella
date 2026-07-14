@@ -9,6 +9,7 @@ import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
 import { MarketplaceBoard } from "@/components/marketplace/marketplace-board";
 import { USAGE_TUTORIAL_MD } from "./usage-tutorial-md";
 import { rankReportQueue } from "@/features/ai/bounded-actions";
+import { canShareAdmissionRecordingsForProject } from "@/features/applications/admission-share-policy";
 import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
 import {
   toCollaborationApplicationProjectCardDtos,
@@ -2381,7 +2382,6 @@ export function Sidebar({
   navCounts = {},
   currentUser,
   organizationSettings,
-  organizationMembers,
   onOpenOrganizationSettings,
   onUpdateAvatar,
   mobileNavigationOpen = false,
@@ -2393,19 +2393,7 @@ export function Sidebar({
 }) {
   const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
-  const enabledFeatureCount = countEnabledOrganizationFeatures(orgSettings);
-  const memberCount = Array.isArray(organizationMembers)
-    ? organizationMembers.length
-    : null;
   const [accountPanel, setAccountPanel] = React.useState(null);
-  const accountSummaryRef = React.useRef(null);
-  const accountPanelWasOpenRef = React.useRef(false);
-  const switcherMemberText =
-    memberCount != null
-      ? `当前组织 · ${memberCount} 名成员`
-      : orgSettings.memberLimit != null
-        ? `当前组织 · 配额 ${orgSettings.memberLimit}`
-        : "当前组织 · 设置与权限";
 
   React.useLayoutEffect(() => {
     if (accountPanel) {
@@ -2546,105 +2534,6 @@ export function Sidebar({
           <XIcon size={20} aria-hidden="true" />
         </button>
       </div>
-
-      {/* Org switcher */}
-      <button
-        type="button"
-        onClick={onOpenOrganizationSettings}
-        style={{
-          margin: "12px 12px 8px",
-          padding: "10px 12px",
-          minWidth: 0,
-          background: "var(--bg-soft)",
-          border: "1px solid var(--line)",
-          borderRadius: 8,
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          cursor: "pointer",
-        }}
-      >
-        <span
-          data-org-switcher-mark="true"
-          style={{
-            width: 28,
-            height: 28,
-            flexShrink: 0,
-            borderRadius: 7,
-            background: "var(--blue-50)",
-            color: "var(--blue-700)",
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontWeight: 700,
-            fontSize: 12,
-          }}
-        >
-          星
-        </span>
-        <div
-          data-org-switcher-content="true"
-          style={{
-            flex: "1 1 auto",
-            minWidth: 0,
-            display: "flex",
-            flexDirection: "column",
-            rowGap: 2,
-            textAlign: "left",
-          }}
-        >
-          <div
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: "var(--ink-900)",
-              lineHeight: 1.2,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {orgSettings.name}
-          </div>
-          <div
-            style={{
-              fontSize: 10.5,
-              color: "var(--ink-400)",
-              lineHeight: 1.25,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {switcherMemberText}
-          </div>
-          <div
-            style={{
-              fontSize: 10.5,
-              color: "var(--blue-600)",
-              lineHeight: 1.25,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            已启用 {enabledFeatureCount} 项功能
-          </div>
-        </div>
-        <span
-          data-org-switcher-chevron="true"
-          style={{
-            width: 18,
-            height: 18,
-            flexShrink: 0,
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Icon.ChevDown size={14} stroke="var(--ink-400)" />
-        </span>
-      </button>
 
       {/* Nav */}
       <nav style={{ padding: "4px 8px", flex: 1, overflowY: "auto" }}>
@@ -16159,25 +16048,32 @@ function ScreenAdmission() {
       setAdmissionMessage("分享链接后台暂未接入。");
       return;
     }
+    if (
+      board.project.status &&
+      !canShareAdmissionRecordingsForProject(board.project.status)
+    ) {
+      setAdmissionMessage("项目已进入结算或归档阶段，不能再创建录屏分享");
+      return;
+    }
     const projectApplications = applications.filter(
       (application) => admissionProjectId(application) === board.project.id,
     );
-    const shareableApplications = projectApplications.filter((application) =>
-      isMcnApprovedAdmissionRecording(application),
+    const shareableApplications = projectApplications.filter(
+      (application) => application.latestRecording,
     );
     const applicationIds = shareableApplications
       .map((application) => application.id)
       .filter(Boolean);
-    if (applicationIds.length === 0 && board.counts.mcnApproved === 0) {
-      setAdmissionMessage("当前项目暂无 MCN 已通过的可分享录屏");
+    if (applicationIds.length === 0 && board.counts.recordingCount === 0) {
+      setAdmissionMessage("当前项目暂无可分享录屏");
       return;
     }
-    const skippedNotApproved = applicationIds.length
+    const skippedUnavailable = applicationIds.length
       ? projectApplications.length - shareableApplications.length
       : 0;
     const skippedMessage =
-      skippedNotApproved > 0
-        ? `（已跳过 ${skippedNotApproved} 条未通过 MCN 初审或暂无录屏）`
+      skippedUnavailable > 0
+        ? `（已跳过 ${skippedUnavailable} 条暂无录屏的报名记录）`
         : "";
     setBusyAction(`share:${board.project.id}`);
     setAdmissionMessage("");
@@ -16192,7 +16088,7 @@ function ScreenAdmission() {
         setShareResult({
           projectName: board.project.name || board.project.code || "项目",
           shareUrl: result.shareUrl,
-          skippedNotApproved,
+          skippedUnavailable,
         });
       } else {
         setAdmissionMessage(`分享链接已生成${skippedMessage}`);
@@ -16665,7 +16561,13 @@ function ScreenAdmission() {
                       onClick={() => createShareBoard(board)}
                       disabled={
                         busyAction === `share:${board.project.id}` ||
-                        board.counts.recordingCount === 0
+                        board.counts.recordingCount === 0 ||
+                        Boolean(
+                          board.project.status &&
+                            !canShareAdmissionRecordingsForProject(
+                              board.project.status,
+                            ),
+                        )
                       }
                     >
                       创建分享链接
@@ -16762,7 +16664,7 @@ function AdmissionShareLinkDialog({ share, onClose }) {
         >
           <div style={{ fontSize: 16, fontWeight: 700 }}>分享链接已生成</div>
           <div style={{ marginTop: 4, fontSize: 12, color: "var(--ink-500)" }}>
-            {share.projectName} · 厂家可通过该链接复核已通过的录屏并提交反馈
+            {share.projectName} · 厂家可通过该链接复核项目录屏并提交反馈
           </div>
         </div>
         <div style={{ padding: 20, display: "grid", gap: 12 }}>
@@ -16781,10 +16683,9 @@ function AdmissionShareLinkDialog({ share, onClose }) {
           >
             {share.shareUrl}
           </div>
-          {share.skippedNotApproved > 0 ? (
+          {share.skippedUnavailable > 0 ? (
             <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
-              已跳过 {share.skippedNotApproved} 条未通过 MCN
-              初审或暂无录屏的记录。
+              已跳过 {share.skippedUnavailable} 条暂无录屏的报名记录。
             </div>
           ) : null}
           <div
@@ -18313,6 +18214,9 @@ function admissionRecordingExternalUrl(recording) {
 
 function admissionRecordingSourceMeta(recording) {
   if (!recording) return { label: "无录屏", tone: "amber" };
+  if (recording.hasPrivateStorage && admissionRecordingExternalUrl(recording)) {
+    return { label: "双来源", tone: "violet" };
+  }
   if (recording.hasPrivateStorage) return { label: "私有上传", tone: "teal" };
   if (admissionRecordingExternalUrl(recording)) {
     return { label: "外链", tone: "blue" };
@@ -18664,6 +18568,7 @@ function AdmissionReviewWorkspace({
       </div>
       <div className="admission-workspace-col">
       <AdmissionWorkspaceDetail
+        key={active?.latestRecording?.id || active?.id || "empty"}
         application={active}
         projectName={projectName}
         pendingLeft={pendingLeft}
@@ -18691,7 +18596,16 @@ function AdmissionWorkspaceDetail({
   fetchPreReview,
 }) {
   const submissionId = application?.latestRecording?.id ?? null;
+  const recording = application?.latestRecording ?? null;
+  const externalUrl = admissionRecordingExternalUrl(recording);
+  const embedSrc = admissionBilibiliEmbedSrc(externalUrl);
+  const canPlayPrivate = Boolean(
+    recording?.hasPrivateStorage && recording?.assetId,
+  );
   const [videoError, setVideoError] = React.useState(false);
+  const [playbackSource, setPlaybackSource] = React.useState(
+    canPlayPrivate ? "private" : "external",
+  );
   // 逐字稿面板的时间戳跳转/高亮跟随需要直接操作本屏的 video 元素。
   const videoRef = React.useRef(null);
   // AI 预审：选中条目变化时拉取一次；失败降级为灰字，不阻塞审核操作。
@@ -18757,11 +18671,9 @@ function AdmissionWorkspaceDetail({
     );
   }
 
-  const recording = application.latestRecording ?? null;
-  const externalUrl = admissionRecordingExternalUrl(recording);
-  const embedSrc = admissionBilibiliEmbedSrc(externalUrl);
-  const canPlayPrivate = Boolean(
-    recording?.hasPrivateStorage && recording?.assetId,
+  const hasBothSources = Boolean(canPlayPrivate && externalUrl);
+  const showPrivateSource = Boolean(
+    canPlayPrivate && (!externalUrl || playbackSource === "private"),
   );
   const statusMeta = admissionWorkspaceStatusMeta(application);
   const reviewable = isAdmissionRecordingReviewable(application);
@@ -18870,7 +18782,55 @@ function AdmissionWorkspaceDetail({
               overflow: "hidden",
             }}
           >
-            {canPlayPrivate ? (
+            {hasBothSources ? (
+              <div
+                aria-label="录屏来源"
+                role="group"
+                style={{
+                  alignSelf: "flex-start",
+                  display: "inline-flex",
+                  padding: 2,
+                  borderRadius: 6,
+                  background: "#17233A",
+                  border: "1px solid #334155",
+                }}
+              >
+                {[
+                  { key: "private", label: "原始录屏" },
+                  {
+                    key: "external",
+                    label: embedSrc ? "平台链接" : "URL 链接",
+                  },
+                ].map((source) => {
+                  const selected =
+                    source.key === "private"
+                      ? showPrivateSource
+                      : !showPrivateSource;
+                  return (
+                    <button
+                      key={source.key}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setPlaybackSource(source.key)}
+                      style={{
+                        height: 28,
+                        padding: "0 10px",
+                        border: "none",
+                        borderRadius: 4,
+                        background: selected ? "#FFFFFF" : "transparent",
+                        color: selected ? "var(--blue-700)" : "#A8B5CC",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {source.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+            {showPrivateSource ? (
               <>
                 <video
                   ref={videoRef}
@@ -18950,7 +18910,7 @@ function AdmissionWorkspaceDetail({
               </div>
             )}
           </div>
-          {canPlayPrivate ? (
+          {showPrivateSource ? (
             <RecordingTranscriptPanel
               assetId={recording.assetId}
               assetName={`${application.streamer?.displayName || "主播"}-${projectName}`}
@@ -19243,13 +19203,6 @@ function recordingReviewDecisionLabel(decision) {
   if (decision === "approved") return "通过";
   if (decision === "rejected") return "驳回";
   return "需补充";
-}
-
-function isMcnApprovedAdmissionRecording(application) {
-  return (
-    application.status === "recording_approved" &&
-    application.latestRecording?.status === "approved"
-  );
 }
 
 function admissionNextActionLabel(application) {
@@ -35550,8 +35503,7 @@ function OpsReferenceInner({
           navCounts={navCounts}
           currentUser={currentUserState}
           organizationSettings={organizationSettingsState}
-          organizationMembers={organizationMembersState}
-          onOpenOrganizationSettings={openOrganizationSettingsFromNavigation}
+          onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
           onUpdateAvatar={updateProfileAvatar}
           mobileNavigationOpen={mobileNavigationOpen}
           onCloseMobileNavigation={closeMobileNavigation}
