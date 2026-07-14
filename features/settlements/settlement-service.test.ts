@@ -10,6 +10,7 @@ import {
   sendSettlementBatchStatements,
   type SettlementBatchAtomicItemInput,
   type SettlementBatchRecord,
+  type CustomSettlementExecutionPort,
   type SettlementRepository,
 } from "./settlement-service";
 
@@ -130,6 +131,43 @@ function createRepo(): SettlementRepository {
         ...item,
         createdAt: "2026-06-02T12:11:00.000Z",
       })),
+      links: [],
+      exceptions: [],
+    })),
+    resolveSettlementRuleException: vi.fn(async () => ({
+      batch: createBatch(),
+      item: {
+        id: "item-1",
+        organizationId: "org-1",
+        settlementBatchId: "batch-1",
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        liveReportId: "report-1",
+        itemType: "live_report_payable",
+        computedAmount: 0.01,
+        manualAmount: 0,
+        adjustmentAmount: 0,
+        evidenceSnapshot: {},
+      },
+      exception: {
+        id: "exception-1",
+        organizationId: "org-1",
+        projectId: "project-1",
+        settlementBatchId: "batch-1",
+        settlementBatchItemId: "item-1",
+        liveReportId: "report-1",
+        ruleVersionId: null,
+        layerSnapshot: {},
+        variableName: "salesAmountCents",
+        policy: "route_item_to_review" as const,
+        status: "resolved" as const,
+        resolutionValue: { moneyCents: 1 },
+        resolutionReason: "Finance checked",
+        createdBy: "user-owner",
+        resolvedBy: "user-finance",
+        createdAt: "2026-06-02T12:11:00.000Z",
+        resolvedAt: "2026-06-02T12:12:00.000Z",
+      },
     })),
     markReportSettled: vi.fn(async () => undefined),
     getSettlementBatchById: vi.fn(async () => createBatch()),
@@ -147,7 +185,7 @@ function createRepo(): SettlementRepository {
 
 describe("settlement service", () => {
   let repo: SettlementRepository;
-  const audit = vi.fn(async () => undefined);
+  const audit = vi.fn(async (_input: unknown) => undefined);
   const notify = vi.fn(async () => undefined);
 
   beforeEach(() => {
@@ -222,6 +260,7 @@ describe("settlement service", () => {
         items: [
           expect.objectContaining({
             liveReportId: "report-1",
+            liveReportIds: ["report-1"],
             itemType: "live_report_payable",
             computedAmount: 160,
             manualAmount: 0,
@@ -239,6 +278,206 @@ describe("settlement service", () => {
         objectType: "settlement_batch",
       }),
     );
+  });
+
+  it("uses the legacy calculation branch when no custom layers are active", async () => {
+    const customExecutionPort: CustomSettlementExecutionPort = {
+      resolveAndExecute: vi.fn(
+        async (): Promise<"no_custom_layers"> => "no_custom_layers",
+      ),
+    };
+
+    await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "payable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      },
+      customExecutionPort,
+    });
+
+    expect(customExecutionPort.resolveAndExecute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org-1",
+        projectId: "project-1",
+        batchType: "payable",
+        reports: [report],
+      }),
+    );
+    expect(repo.getSettlementRules).toHaveBeenCalled();
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        computedAmount: 160,
+        items: [
+          expect.objectContaining({
+            computedAmount: 160,
+            evidenceSnapshot: expect.not.objectContaining({
+              ruleEngine: expect.anything(),
+            }),
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("persists custom cents snapshots and sums batch totals as integer cents", async () => {
+    const customExecutionPort: CustomSettlementExecutionPort = {
+      resolveAndExecute: vi.fn(async () => ({
+        items: [
+          customProductionItem({
+            sourceReportIds: ["report-1"],
+            computedAmountCents: 10,
+          }),
+          customProductionItem({
+            streamerId: "streamer-2",
+            sourceReportIds: ["report-2"],
+            computedAmountCents: 20,
+          }),
+        ],
+      })),
+    };
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      report,
+      { ...report, id: "report-2", streamerId: "streamer-2" },
+    ]);
+
+    await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "payable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      },
+      customExecutionPort,
+    });
+
+    expect(repo.getSettlementRules).toHaveBeenCalled();
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        computedAmount: 0.3,
+        items: [
+          expect.objectContaining({
+            computedAmount: 0.1,
+            liveReportIds: ["report-1"],
+            evidenceSnapshot: expect.objectContaining({
+              ruleEngine: expect.objectContaining({
+                namedOutputsCents: { final: 10 },
+                sourceReportIds: ["report-1"],
+              }),
+            }),
+          }),
+          expect.objectContaining({
+            computedAmount: 0.2,
+            liveReportIds: ["report-2"],
+            evidenceSnapshot: expect.objectContaining({
+              ruleEngine: expect.objectContaining({
+                namedOutputsCents: { final: 20 },
+                sourceReportIds: ["report-2"],
+              }),
+            }),
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("excludes review-routed custom placeholders from batch totals", async () => {
+    const customExecutionPort: CustomSettlementExecutionPort = {
+      resolveAndExecute: vi.fn(async () => ({
+        items: [
+          customProductionItem({
+            sourceReportIds: ["report-1"],
+            computedAmountCents: 10_000,
+          }),
+          customProductionItem({
+            sourceReportIds: ["report-review"],
+            computedAmountCents: 0,
+            reviewRouted: true,
+            exceptions: [
+              {
+                liveReportId: "report-review",
+                ruleVersionId: "rule-version-1",
+                layerSnapshot: { layer: "project_base" },
+                variableName: "gift_amount",
+                policy: "route_item_to_review",
+                createdBy: "user-owner",
+              },
+            ],
+          }),
+        ],
+      })),
+    };
+    vi.mocked(repo.listSettlementPoolReports).mockResolvedValueOnce([
+      report,
+      { ...report, id: "report-review" },
+    ]);
+
+    await generateSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor,
+      input: {
+        projectId: "project-1",
+        batchType: "payable",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      },
+      customExecutionPort,
+    });
+
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        computedAmount: 100,
+        items: [
+          expect.objectContaining({ computedAmount: 100 }),
+          expect.objectContaining({
+            computedAmount: 0,
+            exceptions: [
+              expect.objectContaining({
+                variableName: "gift_amount",
+                policy: "route_item_to_review",
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("propagates custom execution errors without falling back to fixed rules", async () => {
+    const customExecutionPort: CustomSettlementExecutionPort = {
+      resolveAndExecute: vi.fn(async () => {
+        throw new Error("CUSTOM_RULE_EXECUTION_BLOCKED");
+      }),
+    };
+
+    await expect(
+      generateSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor,
+        input: {
+          projectId: "project-1",
+          batchType: "payable",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+        },
+        customExecutionPort,
+      }),
+    ).rejects.toThrow("CUSTOM_RULE_EXECUTION_BLOCKED");
+
+    expect(repo.createSettlementBatchAtomic).not.toHaveBeenCalled();
   });
 
   it("uses the project default rule for receivable batches", async () => {
@@ -524,6 +763,319 @@ describe("settlement service", () => {
     );
   });
 
+  it("checks the rule exception gate before confirming a batch", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => {
+        throw new Error("Settlement batch has unresolved rule exceptions");
+      }),
+    };
+
+    await expect(
+      confirmSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor: financeActor,
+        batchId: "batch-1",
+        reason: "Finance verified the amounts",
+        gate,
+      }),
+    ).rejects.toThrow("Settlement batch has unresolved rule exceptions");
+
+    expect(gate.assertNoOpenRuleExceptions).toHaveBeenCalledWith("batch-1");
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+  });
+
+  it("does not run reconciliation when unresolved exceptions block confirmation first", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => {
+        throw new Error("Settlement batch has unresolved rule exceptions");
+      }),
+      evaluateReconciliation: vi.fn(async () => reconciliationResult()),
+    };
+
+    await expect(
+      confirmSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor: financeActor,
+        batchId: "batch-1",
+        reason: "Finance verified the amounts",
+        gate,
+      }),
+    ).rejects.toThrow("Settlement batch has unresolved rule exceptions");
+
+    expect(gate.evaluateReconciliation).not.toHaveBeenCalled();
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+  });
+
+  it("blocks confirmation on custom reconciliation blocks and audits only safe metadata", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => undefined),
+      evaluateReconciliation: vi.fn(async () =>
+        reconciliationResult({
+          run: { id: "run-block", inputHash: "hash-block" },
+          checks: [
+            {
+              severity: "block" as const,
+              code: "custom_rule:rule-1:0",
+              message: "Custom formula says no",
+              source: "custom_rule" as const,
+              ruleVersionId: "rule-1",
+              formulaHash: "formula-hash",
+            },
+          ],
+          hasBlocking: true,
+          canConfirm: false,
+          canLock: false,
+        }),
+      ),
+    };
+
+    await expect(
+      confirmSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor: financeActor,
+        batchId: "batch-1",
+        reason: "Finance verified the amounts",
+        gate,
+      }),
+    ).rejects.toThrow("Settlement batch reconciliation blocked");
+
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "approve",
+        result: "failure",
+        isHighRisk: true,
+        after: {
+          reconciliationRunId: "run-block",
+          blockedCheckCodes: ["custom_rule:rule-1:0"],
+          warningCheckCodes: [],
+          trigger: "confirm",
+        },
+      }),
+    );
+    expect(JSON.stringify(audit.mock.calls[0][0])).not.toContain("formula-hash");
+    expect(JSON.stringify(audit.mock.calls[0][0])).not.toContain(
+      "Custom formula says no",
+    );
+  });
+
+  it("allows confirmation with custom warnings and returns/audits reconciliation metadata", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => undefined),
+      evaluateReconciliation: vi.fn(async () =>
+        reconciliationResult({
+          run: { id: "run-warn", inputHash: "hash-warn" },
+          checks: [
+            {
+              severity: "warn" as const,
+              code: "custom_rule:rule-1:0",
+              message: "Custom warning",
+              source: "custom_rule" as const,
+              ruleVersionId: "rule-1",
+              formulaHash: "formula-hash",
+            },
+          ],
+          hasWarning: true,
+        }),
+      ),
+    };
+
+    const batch = await confirmSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor: financeActor,
+      batchId: "batch-1",
+      reason: "Finance verified the amounts",
+      gate,
+    });
+
+    expect(batch.reconciliation).toEqual({
+      reconciliationRunId: "run-warn",
+      blockedCheckCodes: [],
+      warningCheckCodes: ["custom_rule:rule-1:0"],
+      trigger: "confirm",
+    });
+    expect(repo.updateSettlementBatch).toHaveBeenCalledWith(
+      "batch-1",
+      expect.objectContaining({ status: "confirmed" }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "approve",
+        after: expect.objectContaining({
+          reconciliation: batch.reconciliation,
+        }),
+      }),
+    );
+  });
+
+  it("keeps core reconciliation blocks blocking", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => undefined),
+      evaluateReconciliation: vi.fn(async () =>
+        reconciliationResult({
+          run: { id: "run-core-block", inputHash: "hash-core" },
+          checks: [
+            {
+              severity: "block" as const,
+              code: "income_configured",
+              message: "Core block",
+              source: "core" as const,
+            },
+          ],
+          hasBlocking: true,
+          canConfirm: false,
+          canLock: false,
+        }),
+      ),
+    };
+
+    await expect(
+      confirmSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor: financeActor,
+        batchId: "batch-1",
+        reason: "Finance verified the amounts",
+        gate,
+      }),
+    ).rejects.toThrow("Settlement batch reconciliation blocked");
+
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+  });
+
+  it("cannot force-approve past a custom reconciliation block", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => undefined),
+      evaluateReconciliation: vi.fn(async () =>
+        reconciliationResult({
+          run: { id: "run-force-custom-block", inputHash: "hash-force" },
+          checks: [
+            {
+              severity: "warn" as const,
+              code: "margin_floor",
+              message: "Force approved core margin",
+              source: "core" as const,
+            },
+            {
+              severity: "block" as const,
+              code: "custom_rule:rule-1:0",
+              message: "Custom block",
+              source: "custom_rule" as const,
+              ruleVersionId: "rule-1",
+              formulaHash: "formula-hash",
+            },
+          ],
+          hasBlocking: true,
+          hasWarning: true,
+          canConfirm: false,
+          canLock: false,
+        }),
+      ),
+    };
+
+    await expect(
+      confirmSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor: financeActor,
+        batchId: "batch-1",
+        reason: "Owner force-approved the core margin",
+        gate,
+      }),
+    ).rejects.toThrow("Settlement batch reconciliation blocked");
+
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+  });
+
+  it("blocks rather than confirming when reconciliation persistence fails", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => undefined),
+      evaluateReconciliation: vi.fn(async () => {
+        throw new Error("create_reconciliation_run failed");
+      }),
+    };
+
+    await expect(
+      confirmSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor: financeActor,
+        batchId: "batch-1",
+        reason: "Finance verified the amounts",
+        gate,
+      }),
+    ).rejects.toThrow("create_reconciliation_run failed");
+
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+  });
+
+  it("blocks safely when active custom reconciliation cannot read finalized inputs", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => undefined),
+      evaluateReconciliation: vi.fn(async () => {
+        throw new Error("Settlement reconciliation requires finalized inputs");
+      }),
+    };
+
+    await expect(
+      confirmSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor: financeActor,
+        batchId: "batch-1",
+        reason: "Finance verified the amounts",
+        gate,
+      }),
+    ).rejects.toThrow("Settlement reconciliation requires finalized inputs");
+
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+  });
+
+  it("persists the reconciliation run before mutating status", async () => {
+    const events: string[] = [];
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => undefined),
+      evaluateReconciliation: vi.fn(async () => {
+        events.push("persisted-reconciliation-run");
+        return reconciliationResult({
+          run: { id: "run-before-update", inputHash: "hash-before-update" },
+        });
+      }),
+    };
+    vi.mocked(repo.updateSettlementBatch).mockImplementationOnce(async (_id, patch) => {
+      events.push("status-updated");
+      return createBatch({
+        ...patch,
+        lockedAt: patch.lockedAt ?? null,
+        reopenReason: patch.reopenReason ?? null,
+      });
+    });
+
+    await confirmSettlementBatch({
+      repo,
+      audit,
+      notify,
+      actor: financeActor,
+      batchId: "batch-1",
+      reason: "Finance verified the amounts",
+      gate,
+    });
+
+    expect(events).toEqual(["persisted-reconciliation-run", "status-updated"]);
+  });
+
   it("lets owners confirm reopened batches", async () => {
     vi.mocked(repo.getSettlementBatchById).mockResolvedValueOnce(
       createBatch({ status: "reopened", reopenReason: "Need correction" }),
@@ -541,6 +1093,77 @@ describe("settlement service", () => {
     expect(repo.updateSettlementBatch).toHaveBeenCalledWith(
       "batch-1",
       expect.objectContaining({ status: "confirmed" }),
+    );
+  });
+
+  it("checks the rule exception gate before locking a batch", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => {
+        throw new Error("Settlement batch has unresolved rule exceptions");
+      }),
+    };
+
+    await expect(
+      lockSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor,
+        batchId: "batch-1",
+        reason: "Finance checked",
+        gate,
+      }),
+    ).rejects.toThrow("Settlement batch has unresolved rule exceptions");
+
+    expect(gate.assertNoOpenRuleExceptions).toHaveBeenCalledWith("batch-1");
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+  });
+
+  it("blocks locking on reconciliation blocks", async () => {
+    const gate = {
+      assertNoOpenRuleExceptions: vi.fn(async () => undefined),
+      evaluateReconciliation: vi.fn(async () =>
+        reconciliationResult({
+          run: { id: "run-lock-block", inputHash: "hash-lock" },
+          checks: [
+            {
+              severity: "block" as const,
+              code: "custom_rule:rule-1:0",
+              message: "Custom lock block",
+              source: "custom_rule" as const,
+              ruleVersionId: "rule-1",
+              formulaHash: "formula-hash",
+            },
+          ],
+          hasBlocking: true,
+          canConfirm: false,
+          canLock: false,
+        }),
+      ),
+    };
+
+    await expect(
+      lockSettlementBatch({
+        repo,
+        audit,
+        notify,
+        actor,
+        batchId: "batch-1",
+        reason: "Finance checked",
+        gate,
+      }),
+    ).rejects.toThrow("Settlement batch reconciliation blocked");
+
+    expect(repo.updateSettlementBatch).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "lock",
+        result: "failure",
+        after: expect.objectContaining({
+          reconciliationRunId: "run-lock-block",
+          trigger: "lock",
+        }),
+      }),
     );
   });
 
@@ -698,6 +1321,7 @@ describe("settlement service", () => {
           expect.objectContaining({
             streamerId: "streamer-1",
             liveReportId: "report-1",
+            liveReportIds: ["report-1"],
           }),
         ],
       }),
@@ -840,3 +1464,88 @@ describe("settlement service", () => {
     ).rejects.toThrow("Only payable batches can be sent to streamers");
   });
 });
+
+function customProductionItem(input: {
+  streamerId?: string;
+  sourceReportIds: string[];
+  computedAmountCents: number;
+  reviewRouted?: boolean;
+  exceptions?: SettlementBatchAtomicItemInput["exceptions"];
+}) {
+  return {
+    streamerId: input.streamerId ?? "streamer-1",
+    sourceReportIds: input.sourceReportIds,
+    computedAmountCents: input.computedAmountCents,
+    reviewRouted: input.reviewRouted ?? false,
+    evidenceLevel: "green" as const,
+    evidenceSnapshot: {
+      ruleEngine: {
+        mode: "custom",
+        contractHash: "contract-hash",
+        grain: "report",
+        parameters: {},
+        appliedLayers: [],
+        membershipAssignmentIds: [],
+        membershipSnapshotHash: "membership-hash",
+        typedInputs: {},
+        namedOutputsCents: { final: input.computedAmountCents },
+        missingDataDecisions: [],
+        sourceReportIds: input.sourceReportIds,
+        explanationZh: "自定义结算规则计算完成。",
+      },
+    },
+    exceptions: input.exceptions,
+  };
+}
+
+function reconciliationResult(
+  patch: Partial<{
+    run: { id: string; inputHash: string; createdAt?: string | null };
+    checks: Array<{
+      severity: "pass" | "warn" | "block";
+      code: string;
+      message: string;
+      source: "core" | "custom_rule";
+      ruleVersionId?: string;
+      formulaHash?: string;
+    }>;
+    hasBlocking: boolean;
+    hasWarning: boolean;
+    canConfirm: boolean;
+    canLock: boolean;
+  }> = {},
+) {
+  const checks = patch.checks ?? [];
+  const hasBlocking =
+    patch.hasBlocking ?? checks.some((check) => check.severity === "block");
+  const hasWarning =
+    patch.hasWarning ?? checks.some((check) => check.severity === "warn");
+  return {
+    income: { receivableCents: 1_000_000 },
+    cost: {
+      payableCents: 400_000,
+      externalCostCents: 100_000,
+      procurementCents: 0,
+      totalCents: 500_000,
+    },
+    tax: {
+      isInvoiced: false,
+      outputVatCents: 0,
+      surtaxCents: 0,
+      taxTotalCents: 0,
+      invoiceAmountCents: 1_000_000,
+    },
+    profit: {
+      grossMarginCents: 500_000,
+      marginRateBps: 5_000,
+      manualAdjustmentCents: 0,
+    },
+    evidence: { green: 8, yellow: 0, red: 0, unknown: 0 },
+    checks,
+    hasBlocking,
+    hasWarning,
+    canConfirm: patch.canConfirm ?? !hasBlocking,
+    canLock: patch.canLock ?? !hasBlocking,
+    ...(patch.run ? { run: patch.run } : {}),
+  };
+}

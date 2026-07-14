@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import StreamerMobileReferenceApp from "./streamer-mobile-reference";
@@ -1952,6 +1952,90 @@ describe("StreamerMobileReferenceApp profile actions smoke", () => {
 
     fireEvent.click(screen.getByLabelText("打开设置"));
     expect(screen.getByText("设置项")).toBeInTheDocument();
+  });
+
+  it("expands a personal settlement explanation without exposing internal fields", () => {
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="me"
+        liveEarnings={{
+          currentMonth: {
+            month: "2026-06",
+            earned: 1040,
+            pending: 0,
+            finalized: false,
+            hours: 4,
+          },
+          history: [{ month: "2026-06", earned: 1040 }],
+          items: [
+            {
+              id: "item-safe-rule",
+              projectName: "Launch Week",
+              month: "2026-06",
+              amount: 1040,
+              computedAmount: 1040,
+              manualAmount: 0,
+              adjustmentAmount: 0,
+              hours: 4,
+              evidence: "yellow · system",
+              source: "live_report",
+              createdAt: "2026-06-20T12:00:00.000Z",
+              explanation: {
+                finalAmount: 1040,
+                finalAmountCents: 104000,
+                components: [
+                  {
+                    key: "baseSalary",
+                    label: "底薪",
+                    amount: 800,
+                    amountCents: 80000,
+                  },
+                  {
+                    key: "cptPay",
+                    label: "有效时长",
+                    amount: 240,
+                    amountCents: 24000,
+                  },
+                ],
+                evidenceFacts: {
+                  hours: 4,
+                  evidenceLevel: "yellow",
+                  timeSource: "system",
+                  sourceReportCount: 1,
+                },
+                explanationZh:
+                  "本次 Launch Week 结算包含底薪 ¥800、有效时长 ¥240，最终应付 ¥1,040；有效时长 4.0 小时，时间来源 system。",
+              },
+            },
+          ],
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("结算账单"));
+    const button = screen.getByRole("button", {
+      name: "查看 Launch Week 结算说明",
+    });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(button);
+
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    const region = screen.getByRole("region", {
+      name: "Launch Week 结算说明",
+    });
+    expect(within(region).getByText("个人结算说明")).toBeInTheDocument();
+    expect(within(region).getByText("底薪")).toBeInTheDocument();
+    expect(within(region).getByText("¥800")).toBeInTheDocument();
+    expect(within(region).getByText("有效时长")).toBeInTheDocument();
+    expect(within(region).getByText("¥240")).toBeInTheDocument();
+    expect(region).toHaveTextContent("来源报数 1 条");
+    expect(
+      within(region).getByText(/最终应付 ¥1,040/),
+    ).toBeInTheDocument();
+    expect(region).not.toHaveTextContent(
+      /formula|AST|毛利|税|外部成本|其他主播|风险阈值|评审意见/i,
+    );
   });
 
   it("loads streamer application status from the implemented applications API", async () => {

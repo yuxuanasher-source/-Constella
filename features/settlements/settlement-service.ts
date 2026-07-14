@@ -2,6 +2,7 @@ import type { AuditLogInput } from "@/lib/audit/audit";
 import type { NotificationInput } from "@/lib/notify/notify";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 
+import type { ProjectSettlementReconciliationRunResult } from "./project-settlement-reconciliation-service";
 import {
   calculateCpsManualAmount,
   calculateSettlementItem,
@@ -10,6 +11,7 @@ import {
   type SettlementMethod,
   type SettlementRule,
 } from "./settlement-engine";
+import { centsToLegacyYuan, yuanToCentsStrict } from "./custom-rule-types";
 
 export type SettlementBatchType = "receivable" | "payable";
 export type SettlementBatchStatus =
@@ -35,11 +37,28 @@ export type SettlementPoolReport = {
   streamerId: string;
   liveTaskId: string;
   status: "approved";
+  systemDuration?: number | null;
+  screenshotDuration?: number | null;
   settlementDuration: number | null;
   timeSource: "system" | "screenshot" | "claimed" | null;
   evidenceLevel: "green" | "yellow" | "red" | null;
   settledBatchItemId: string | null;
   settledBatchTypes?: SettlementBatchType[];
+  viewers?: number | null;
+  reviewedAt?: string | null;
+  liveTaskSystemStartedAt?: string | null;
+  plannedStartAt?: string | null;
+  projectStreamerId?: string | null;
+  streamerSource?: string | null;
+  collaborationId?: string | null;
+  frozenHourlyRate?: number | null;
+  frozenBaseSalary?: number | null;
+  frozenCpsRateBps?: number | null;
+  settlementGroups?: Array<{
+    id: string;
+    name: string;
+    assignmentId: string;
+  }>;
   createdAt: string;
 };
 
@@ -95,15 +114,99 @@ export type SettlementBatchItemRecord = {
   createdAt?: string;
 };
 
+export type SettlementBatchItemReportLinkRecord = {
+  settlementBatchItemId: string;
+  liveReportId: string;
+};
+
+export type SettlementRuleExceptionPolicy =
+  | "route_item_to_review"
+  | "block_batch"
+  | "use_explicit_default";
+
+export type SettlementRuleExceptionStatus =
+  | "review_required"
+  | "resolved"
+  | "voided";
+
+export type SettlementRuleExceptionInsert = {
+  liveReportId?: string | null;
+  ruleVersionId?: string | null;
+  layerSnapshot: Record<string, unknown>;
+  variableName: string;
+  policy: SettlementRuleExceptionPolicy;
+  resolutionValue?: Record<string, unknown> | null;
+  resolutionReason?: string | null;
+  createdBy?: string | null;
+};
+
+export type SettlementRuleExceptionRecord = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  settlementBatchId: string;
+  settlementBatchItemId: string;
+  liveReportId: string | null;
+  ruleVersionId: string | null;
+  layerSnapshot: Record<string, unknown>;
+  variableName: string;
+  policy: SettlementRuleExceptionPolicy;
+  status: SettlementRuleExceptionStatus;
+  resolutionValue: Record<string, unknown> | null;
+  resolutionReason: string | null;
+  createdBy: string | null;
+  resolvedBy: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+};
+
 export type SettlementBatchAtomicItemInput = {
   streamerId?: string | null;
   liveReportId?: string | null;
+  liveReportIds?: string[];
   itemType: string;
   computedAmount: number;
   manualAmount: number;
   adjustmentAmount: number;
   evidenceLevel?: "green" | "yellow" | "red" | null;
   evidenceSnapshot: Record<string, unknown>;
+  exceptions?: SettlementRuleExceptionInsert[];
+};
+
+export type CustomSettlementProductionInput = {
+  organizationId: string;
+  projectId: string;
+  batchType: SettlementBatchType;
+  periodStart: string;
+  periodEnd: string;
+  title?: string | null;
+  reports: SettlementPoolReport[];
+  selectedStreamerIds?: string[];
+  legacyComputedAmountCentsByReportId?: Record<string, number>;
+};
+
+export type CustomSettlementProductionItem = {
+  streamerId?: string | null;
+  sourceReportIds: string[];
+  itemType?: string;
+  computedAmountCents: number;
+  manualAmount?: number;
+  adjustmentAmount?: number;
+  evidenceLevel?: "green" | "yellow" | "red" | null;
+  evidenceSnapshot: Record<string, unknown>;
+  exceptions?: SettlementRuleExceptionInsert[];
+  reviewRouted?: boolean;
+};
+
+export type CustomSettlementProductionResult = {
+  items: CustomSettlementProductionItem[];
+  evidenceSummary?: Record<string, unknown>;
+};
+
+export type CustomSettlementExecutionPort = {
+  resolveAndExecute(
+    input: CustomSettlementProductionInput,
+  ): Promise<"no_custom_layers" | CustomSettlementProductionResult>;
 };
 
 export type SettlementRepository = {
@@ -149,7 +252,34 @@ export type SettlementRepository = {
     evidenceSummary: Record<string, unknown>;
     createdBy: string;
     items: SettlementBatchAtomicItemInput[];
-  }): Promise<{ batch: SettlementBatchRecord; items: SettlementBatchItemRecord[] }>;
+  }): Promise<{
+    batch: SettlementBatchRecord;
+    items: SettlementBatchItemRecord[];
+    links?: SettlementBatchItemReportLinkRecord[];
+    exceptions?: SettlementRuleExceptionRecord[];
+  }>;
+  resolveSettlementRuleException?(input: {
+    organizationId: string;
+    exceptionId: string;
+    settlementBatchItemId: string;
+    oldComputedAmount: number;
+    newComputedAmount: number;
+    resolutionValue: Record<string, unknown>;
+    resolutionReason: string;
+    resolvedBy: string;
+  }): Promise<{
+    batch: SettlementBatchRecord;
+    item: SettlementBatchItemRecord;
+    exception: SettlementRuleExceptionRecord;
+  }>;
+  listSettlementRuleExceptions?(input: {
+    organizationId: string;
+    batchId: string;
+  }): Promise<SettlementRuleExceptionRecord[]>;
+  hasOpenSettlementRuleExceptions?(input: {
+    organizationId: string;
+    batchId: string;
+  }): Promise<boolean>;
   markReportSettled(input: {
     reportId: string;
     settlementBatchItemId: string;
@@ -174,6 +304,29 @@ export type SettlementRepository = {
 export type SettlementAuditWriter = (input: AuditLogInput) => Promise<void>;
 export type SettlementNotifier = (input: NotificationInput) => Promise<void>;
 export type ManualSettlementItemType = "cpa" | "cps" | "gift" | "manual";
+export type SettlementTransitionTrigger = "confirm" | "lock";
+export type SettlementTransitionReconciliationMetadata = {
+  reconciliationRunId?: string;
+  blockedCheckCodes: string[];
+  warningCheckCodes: string[];
+  trigger: SettlementTransitionTrigger;
+};
+export type SettlementBatchTransitionResult = SettlementBatchRecord & {
+  reconciliation?: SettlementTransitionReconciliationMetadata;
+};
+export type SettlementBatchGate = {
+  assertNoOpenRuleExceptions(batchId: string): Promise<void>;
+  evaluateReconciliation(input: {
+    batchId: string;
+    actor: SettlementActor;
+    trigger: SettlementTransitionTrigger;
+  }): Promise<ProjectSettlementReconciliationRunResult>;
+};
+type SettlementTransitionGate = Pick<
+  SettlementBatchGate,
+  "assertNoOpenRuleExceptions"
+> &
+  Partial<Pick<SettlementBatchGate, "evaluateReconciliation">>;
 
 export async function listSettlementPool({
   repo,
@@ -217,6 +370,7 @@ export async function generateSettlementBatch({
   notify,
   actor,
   input,
+  customExecutionPort,
 }: {
   repo: SettlementRepository;
   audit: SettlementAuditWriter;
@@ -232,6 +386,7 @@ export async function generateSettlementBatch({
     // 缺省（undefined）保持旧行为 = 周期内全量入批。
     streamerIds?: string[];
   };
+  customExecutionPort?: CustomSettlementExecutionPort;
 }): Promise<{
   batch: SettlementBatchRecord;
   items: SettlementBatchItemRecord[];
@@ -264,6 +419,66 @@ export async function generateSettlementBatch({
     );
   }
 
+  const legacyPayload = await buildLegacySettlementBatchPayload({
+    repo,
+    input,
+    actor,
+    eligibleReports,
+  });
+
+  const customExecution = customExecutionPort
+    ? await customExecutionPort.resolveAndExecute({
+        organizationId: actor.organizationId,
+        projectId: input.projectId,
+        batchType: input.batchType,
+        periodStart: input.periodStart,
+        periodEnd: input.periodEnd,
+        title: input.title?.trim() || null,
+        reports: eligibleReports,
+        legacyComputedAmountCentsByReportId:
+          legacyComputedAmountCentsByReportId(legacyPayload.items),
+        ...(selectedStreamerIds
+          ? { selectedStreamerIds: Array.from(selectedStreamerIds).sort() }
+          : {}),
+      })
+    : "no_custom_layers";
+
+  const batchPayload =
+    customExecution === "no_custom_layers"
+      ? legacyPayload
+      : buildCustomSettlementBatchPayload({
+          input,
+          actor,
+          eligibleReports,
+          customExecution,
+        });
+
+  const { batch, items } = await repo.createSettlementBatchAtomic(batchPayload);
+
+  await auditGeneratedSettlementBatch({ audit, actor, batch });
+
+  await notifyGeneratedSettlementBatch({ notify, actor, batch, input });
+
+  return { batch, items };
+}
+
+async function buildLegacySettlementBatchPayload({
+  repo,
+  input,
+  actor,
+  eligibleReports,
+}: {
+  repo: SettlementRepository;
+  input: {
+    projectId: string;
+    batchType: SettlementBatchType;
+    periodStart: string;
+    periodEnd: string;
+    title?: string;
+  };
+  actor: SettlementActor;
+  eligibleReports: SettlementPoolReport[];
+}): Promise<Parameters<SettlementRepository["createSettlementBatchAtomic"]>[0]> {
   const rules = await repo.getSettlementRules({
     projectId: input.projectId,
     streamerIds: unique(eligibleReports.map((report) => report.streamerId)),
@@ -310,7 +525,7 @@ export async function generateSettlementBatch({
   // Persist the batch, its items and the per-report settled pointers in a single
   // database transaction (see the generate_settlement_batch RPC) so a partial
   // failure can never leave an orphaned batch with only some items/reports.
-  const { batch, items } = await repo.createSettlementBatchAtomic({
+  return {
     organizationId: actor.organizationId,
     projectId: input.projectId,
     batchType: input.batchType,
@@ -329,6 +544,7 @@ export async function generateSettlementBatch({
     items: calculations.map(({ report, item }) => ({
       streamerId: report.streamerId,
       liveReportId: report.id,
+      liveReportIds: [report.id],
       itemType: liveReportItemType(input.batchType),
       computedAmount: item.computedAmount,
       manualAmount: item.manualAmount,
@@ -336,8 +552,82 @@ export async function generateSettlementBatch({
       evidenceLevel: report.evidenceLevel,
       evidenceSnapshot: item.evidenceSnapshot,
     })),
-  });
+  };
+}
 
+function buildCustomSettlementBatchPayload({
+  input,
+  actor,
+  eligibleReports,
+  customExecution,
+}: {
+  input: {
+    projectId: string;
+    batchType: SettlementBatchType;
+    periodStart: string;
+    periodEnd: string;
+    title?: string;
+  };
+  actor: SettlementActor;
+  eligibleReports: SettlementPoolReport[];
+  customExecution: CustomSettlementProductionResult;
+}): Parameters<SettlementRepository["createSettlementBatchAtomic"]>[0] {
+  const reportById = new Map(
+    eligibleReports.map((report) => [report.id, report]),
+  );
+  const computedAmountCents = totalCustomComputedCents(customExecution.items);
+  return {
+    organizationId: actor.organizationId,
+    projectId: input.projectId,
+    batchType: input.batchType,
+    title: input.title?.trim() || null,
+    periodStart: input.periodStart,
+    periodEnd: input.periodEnd,
+    computedAmount: centsToLegacyYuanBigInt(computedAmountCents),
+    manualAmount: 0,
+    adjustmentAmount: 0,
+    evidenceSummary:
+      customExecution.evidenceSummary ??
+      summarizeEvidence(
+        eligibleReports.map((report) => ({
+          evidenceLevel: report.evidenceLevel,
+        })),
+      ),
+    createdBy: actor.userId,
+    items: customExecution.items.map((item) => {
+      const sourceReportIds = unique(item.sourceReportIds);
+      const firstReport = sourceReportIds
+        .map((reportId) => reportById.get(reportId))
+        .find((report): report is SettlementPoolReport => Boolean(report));
+      const computedAmount = centsToLegacyYuan(
+        assertSafeCents(item.computedAmountCents),
+      );
+      return {
+        streamerId: item.streamerId ?? firstReport?.streamerId ?? null,
+        liveReportId:
+          sourceReportIds.length === 1 ? sourceReportIds[0] : null,
+        liveReportIds: sourceReportIds,
+        itemType: item.itemType ?? liveReportItemType(input.batchType),
+        computedAmount,
+        manualAmount: item.manualAmount ?? 0,
+        adjustmentAmount: item.adjustmentAmount ?? 0,
+        evidenceLevel: item.evidenceLevel ?? firstReport?.evidenceLevel ?? null,
+        evidenceSnapshot: item.evidenceSnapshot,
+        exceptions: item.exceptions,
+      };
+    }),
+  };
+}
+
+async function auditGeneratedSettlementBatch({
+  audit,
+  actor,
+  batch,
+}: {
+  audit: SettlementAuditWriter;
+  actor: SettlementActor;
+  batch: SettlementBatchRecord;
+}): Promise<void> {
   await audit({
     organizationId: actor.organizationId,
     actorUserId: actor.userId,
@@ -357,7 +647,19 @@ export async function generateSettlementBatch({
       "evidence_summary",
     ],
   });
+}
 
+async function notifyGeneratedSettlementBatch({
+  notify,
+  actor,
+  batch,
+  input,
+}: {
+  notify: SettlementNotifier;
+  actor: SettlementActor;
+  batch: SettlementBatchRecord;
+  input: { batchType: SettlementBatchType };
+}): Promise<void> {
   await notify({
     organizationId: actor.organizationId,
     recipientRole: "finance",
@@ -368,8 +670,6 @@ export async function generateSettlementBatch({
     objectId: batch.id,
     source: "settlement.batch.generate",
   });
-
-  return { batch, items };
 }
 
 export async function confirmSettlementBatch({
@@ -379,6 +679,7 @@ export async function confirmSettlementBatch({
   actor,
   batchId,
   reason,
+  gate,
 }: {
   repo: Pick<
     SettlementRepository,
@@ -389,7 +690,8 @@ export async function confirmSettlementBatch({
   actor: SettlementActor;
   batchId: string;
   reason: string;
-}): Promise<SettlementBatchRecord> {
+  gate?: SettlementTransitionGate;
+}): Promise<SettlementBatchTransitionResult> {
   assertCanConfirmSettlement(actor.role);
   assertReason(reason, "Confirming a settlement batch requires a reason");
   const before = await requireSettlementBatch(repo, batchId);
@@ -398,10 +700,23 @@ export async function confirmSettlementBatch({
       "Only generated or reopened settlement batches can be confirmed",
     );
   }
-
-  const after = await repo.updateSettlementBatch(batchId, {
-    status: "confirmed",
+  await gate?.assertNoOpenRuleExceptions(batchId);
+  const reconciliation = await evaluateSettlementTransitionGate({
+    gate,
+    actor,
+    before,
+    audit,
+    reason,
+    trigger: "confirm",
+    action: "approve",
   });
+
+  const after = withReconciliationMetadata(
+    await repo.updateSettlementBatch(batchId, {
+      status: "confirmed",
+    }),
+    reconciliation,
+  );
 
   await auditSettlementTransition({
     audit,
@@ -431,6 +746,7 @@ export async function lockSettlementBatch({
   batchId,
   reason,
   now = new Date().toISOString(),
+  gate,
 }: {
   repo: Pick<
     SettlementRepository,
@@ -442,19 +758,33 @@ export async function lockSettlementBatch({
   batchId: string;
   reason: string;
   now?: string;
-}): Promise<SettlementBatchRecord> {
+  gate?: SettlementTransitionGate;
+}): Promise<SettlementBatchTransitionResult> {
   assertCanLockSettlement(actor.role);
   assertReason(reason, "Locking a settlement batch requires a reason");
   const before = await requireSettlementBatch(repo, batchId);
   if (before.status === "locked" || before.status === "voided") {
     throw new Error("Only open settlement batches can be locked");
   }
-
-  const after = await repo.updateSettlementBatch(batchId, {
-    status: "locked",
-    lockedAt: now,
-    lockReason: reason,
+  await gate?.assertNoOpenRuleExceptions(batchId);
+  const reconciliation = await evaluateSettlementTransitionGate({
+    gate,
+    actor,
+    before,
+    audit,
+    reason,
+    trigger: "lock",
+    action: "lock",
   });
+
+  const after = withReconciliationMetadata(
+    await repo.updateSettlementBatch(batchId, {
+      status: "locked",
+      lockedAt: now,
+      lockReason: reason,
+    }),
+    reconciliation,
+  );
 
   await auditSettlementTransition({
     audit,
@@ -877,6 +1207,61 @@ function totalItems(items: SettlementCalculatedItem[]) {
   );
 }
 
+function legacyComputedAmountCentsByReportId(
+  items: SettlementBatchAtomicItemInput[],
+): Record<string, number> {
+  const entries: Array<[string, number]> = [];
+  for (const item of items) {
+    for (const reportId of item.liveReportIds ?? []) {
+      entries.push([reportId, yuanToCentsStrict(item.computedAmount)]);
+    }
+  }
+  return Object.fromEntries(entries);
+}
+
+const LEGACY_NUMERIC_12_2_MAX_CENTS = BigInt("999999999999");
+const LEGACY_NUMERIC_12_2_MIN_CENTS = BigInt("-999999999999");
+
+function totalCustomComputedCents(
+  items: CustomSettlementProductionItem[],
+): bigint {
+  return items.reduce((total, item) => {
+    if (item.reviewRouted) {
+      return total;
+    }
+    return total + BigInt(assertSafeCents(item.computedAmountCents));
+  }, BigInt(0));
+}
+
+function centsToLegacyYuanBigInt(cents: bigint): number {
+  if (
+    cents > LEGACY_NUMERIC_12_2_MAX_CENTS ||
+    cents < LEGACY_NUMERIC_12_2_MIN_CENTS
+  ) {
+    throw new RangeError("custom settlement total exceeds numeric(12,2)");
+  }
+  if (
+    cents > BigInt(Number.MAX_SAFE_INTEGER) ||
+    cents < BigInt(Number.MIN_SAFE_INTEGER)
+  ) {
+    throw new RangeError("custom settlement total exceeds safe conversion");
+  }
+  return centsToLegacyYuan(Number(cents));
+}
+
+function assertSafeCents(cents: number): number {
+  if (!Number.isSafeInteger(cents)) {
+    throw new RangeError("custom settlement amount cents must be a safe integer");
+  }
+  if (
+    BigInt(cents) > LEGACY_NUMERIC_12_2_MAX_CENTS ||
+    BigInt(cents) < LEGACY_NUMERIC_12_2_MIN_CENTS
+  ) {
+    throw new RangeError("custom settlement item exceeds numeric(12,2)");
+  }
+  return cents;
+}
+
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
 }
@@ -893,7 +1278,7 @@ async function auditSettlementTransition({
   audit: SettlementAuditWriter;
   actor: SettlementActor;
   before: SettlementBatchRecord;
-  after: SettlementBatchRecord;
+  after: SettlementBatchTransitionResult;
   action: "approve" | "lock" | "reopen";
   reason: string;
   changedFields: string[];
@@ -914,6 +1299,101 @@ async function auditSettlementTransition({
     reason,
     isHighRisk: true,
   });
+}
+
+async function evaluateSettlementTransitionGate({
+  gate,
+  actor,
+  before,
+  audit,
+  reason,
+  trigger,
+  action,
+}: {
+  gate?: SettlementTransitionGate;
+  actor: SettlementActor;
+  before: SettlementBatchRecord;
+  audit: SettlementAuditWriter;
+  reason: string;
+  trigger: SettlementTransitionTrigger;
+  action: "approve" | "lock";
+}): Promise<SettlementTransitionReconciliationMetadata | undefined> {
+  if (!gate?.evaluateReconciliation) {
+    return undefined;
+  }
+
+  const result = await gate.evaluateReconciliation({
+    batchId: before.id,
+    actor,
+    trigger,
+  });
+  const metadata = settlementReconciliationMetadata(result, trigger);
+  const allowed =
+    !result.hasBlocking && (trigger === "confirm" ? result.canConfirm : result.canLock);
+  if (allowed) {
+    return metadata;
+  }
+
+  await audit({
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action,
+    module: "settlement",
+    objectType: "settlement_batch",
+    objectId: before.id,
+    projectId: before.projectId,
+    before: before as unknown as Record<string, unknown>,
+    after: metadata as unknown as Record<string, unknown>,
+    changedFields: [],
+    reason,
+    isHighRisk: true,
+    result: "failure",
+    errorMessage: "Settlement batch reconciliation blocked",
+  });
+  throw new Error("Settlement batch reconciliation blocked");
+}
+
+function withReconciliationMetadata(
+  batch: SettlementBatchRecord,
+  reconciliation: SettlementTransitionReconciliationMetadata | undefined,
+): SettlementBatchTransitionResult {
+  return reconciliation ? { ...batch, reconciliation } : batch;
+}
+
+function settlementReconciliationMetadata(
+  result: ProjectSettlementReconciliationRunResult,
+  trigger: SettlementTransitionTrigger,
+): SettlementTransitionReconciliationMetadata {
+  const blockedCheckCodes = safeCheckCodes(result, "block");
+  const warningCheckCodes = safeCheckCodes(result, "warn");
+  return {
+    ...(result.run?.id ? { reconciliationRunId: result.run.id } : {}),
+    blockedCheckCodes,
+    warningCheckCodes,
+    trigger,
+  };
+}
+
+function safeCheckCodes(
+  result: ProjectSettlementReconciliationRunResult,
+  severity: "warn" | "block",
+): string[] {
+  return result.checks
+    .filter((check) => check.severity === severity)
+    .map(checkCode)
+    .filter((code): code is string => Boolean(code));
+}
+
+function checkCode(check: ProjectSettlementReconciliationRunResult["checks"][number]): string | null {
+  if ("code" in check && typeof check.code === "string") {
+    return check.code;
+  }
+  if ("key" in check && typeof check.key === "string") {
+    return check.key;
+  }
+  return null;
 }
 
 async function notifyHighRiskSettlement({

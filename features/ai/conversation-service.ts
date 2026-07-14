@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { isProxy } from "node:util/types";
 
+import { sanitizeAiAttachments } from "./attachment-validation";
 import type {
   AiConversationDto,
   AiConversationMessageDto,
@@ -26,6 +28,13 @@ import {
   type StoredConversationTurn,
 } from "./conversation-repository";
 import { hasMeaningfulAiContent } from "./response-quality";
+
+const MAX_SNAPSHOT_VERSION = 2_147_483_647;
+const MAX_CONTEXT_DEPTH = 64;
+const MAX_CONTEXT_VISITED_OBJECTS = 100_000;
+const MAX_CONTEXT_EXPANDED_NODES = 100_000;
+// Five max-size canonical attachments serialize below 60 MiB, leaving ample metadata headroom.
+const MAX_CONTEXT_ESTIMATED_JSON_BYTES = 128 * 1024 * 1024;
 
 export type ConversationActor = {
   organizationId: string;
@@ -90,6 +99,7 @@ export class ConversationServiceError extends Error {
       | "turn_not_retryable"
       | "turn_not_regeneratable"
       | "turn_state_conflict"
+      | "invalid_conversation_context"
       | "invalid_assistant_content",
     message: string,
   ) {
@@ -260,16 +270,19 @@ export function createConversationService(
         );
       }
 
-      const frozenSnapshot = turn.contextSnapshot;
+      const frozenSnapshot = normalizeStoredConversationSnapshot(
+        turn.contextSnapshot,
+      );
       if (frozenSnapshot?.gatewayContext) {
-        const contextHash = hashConversationSnapshot(frozenSnapshot);
+        const persistedSnapshot = requireConversationSnapshot(frozenSnapshot);
+        const contextHash = hashConversationSnapshot(persistedSnapshot);
         const transitioned = await persistence.transitionTurn({
           organizationId: actor.organizationId,
           ownerUserId: actor.userId,
           turnId,
           from: "accepted",
           to: "grounding",
-          patch: { contextSnapshot: frozenSnapshot, contextHash },
+          patch: { contextSnapshot: persistedSnapshot, contextHash },
         });
         if (!transitioned) {
           throw new ConversationServiceError(
@@ -279,7 +292,9 @@ export function createConversationService(
         }
         return {
           turn,
-          messages: frozenSnapshot.gatewayContext.messages,
+          messages: frozenSnapshot.gatewayContext.messages.map((message) => ({
+            ...message,
+          })),
           snapshot: frozenSnapshot,
         };
       }
@@ -294,22 +309,20 @@ export function createConversationService(
           message.status === "completed" &&
           (message.role === "user" || message.role === "assistant"),
       );
-      const snapshotIds = turn.contextSnapshot?.messageIds ?? [];
+      const snapshotIds = frozenSnapshot?.messageIds ?? [];
       const eligible = snapshotIds.length
         ? completed.filter((message) => snapshotIds.includes(message.id))
         : completed;
-      const selected = takeLatestWithinBudget(
-        eligible,
-        contextCharacterBudget,
-      );
-      const snapshot = turn.contextSnapshot ?? {
+      const selected = takeLatestWithinBudget(eligible, contextCharacterBudget);
+      const snapshot = frozenSnapshot ?? {
         version: 1,
         summaryVersion: 0,
         messageIds: selected.map((message) => message.id),
         groundingRefs: [...new Set(groundingRefs)],
         assembledAt: now().toISOString(),
       };
-      const contextHash = hashConversationSnapshot(snapshot);
+      const persistedSnapshot = requireConversationSnapshot(snapshot);
+      const contextHash = hashConversationSnapshot(persistedSnapshot);
 
       const transitioned = await persistence.transitionTurn({
         organizationId: actor.organizationId,
@@ -317,7 +330,7 @@ export function createConversationService(
         turnId,
         from: "accepted",
         to: "grounding",
-        patch: { contextSnapshot: snapshot, contextHash },
+        patch: { contextSnapshot: persistedSnapshot, contextHash },
       });
       if (!transitioned) {
         throw new ConversationServiceError(
@@ -342,7 +355,14 @@ export function createConversationService(
       snapshot: ConversationContextSnapshot,
       gatewayContext: ConversationGatewayContext,
     ) {
-      const nextSnapshot = { ...snapshot, gatewayContext };
+      const trustedSnapshot = requireConversationSnapshot(snapshot);
+      const trustedGatewayContext =
+        requireConversationGatewayContext(gatewayContext);
+      const nextSnapshot = {
+        ...trustedSnapshot,
+        gatewayContext: trustedGatewayContext,
+      };
+      const persistedSnapshot = requireConversationSnapshot(nextSnapshot);
       const captured = await persistence.transitionTurn({
         organizationId: actor.organizationId,
         ownerUserId: actor.userId,
@@ -350,8 +370,8 @@ export function createConversationService(
         from: "grounding",
         to: "grounding",
         patch: {
-          contextSnapshot: nextSnapshot,
-          contextHash: hashConversationSnapshot(nextSnapshot),
+          contextSnapshot: persistedSnapshot,
+          contextHash: hashConversationSnapshot(persistedSnapshot),
         },
       });
       if (!captured) {
@@ -521,8 +541,356 @@ function takeLatestWithinBudget(
   return selected.reverse();
 }
 
+function normalizeStoredConversationSnapshot(
+  value: unknown,
+): ConversationContextSnapshot | null {
+  if (value === null || value === undefined) return null;
+
+  const ownedValue = copyPlainJson(value);
+  if (isRecord(ownedValue) && Object.keys(ownedValue).length === 0) return null;
+  return requireOwnedConversationSnapshot(ownedValue);
+}
+
+function requireConversationSnapshot(
+  value: unknown,
+): ConversationContextSnapshot {
+  return requireOwnedConversationSnapshot(copyPlainJson(value));
+}
+
+function requireOwnedConversationSnapshot(
+  value: unknown,
+): ConversationContextSnapshot {
+  if (!isConversationSnapshot(value)) {
+    throw new ConversationServiceError(
+      "invalid_conversation_context",
+      "Conversation context snapshot is structurally invalid",
+    );
+  }
+  return value;
+}
+
+function requireConversationGatewayContext(
+  value: unknown,
+): ConversationGatewayContext {
+  const ownedValue = copyPlainJson(value);
+  if (!isConversationGatewayContext(ownedValue)) {
+    throw new ConversationServiceError(
+      "invalid_conversation_context",
+      "Conversation gateway context is structurally invalid",
+    );
+  }
+  return ownedValue;
+}
+
+function isConversationSnapshot(
+  value: unknown,
+): value is ConversationContextSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value.version === "number" &&
+    Number.isInteger(value.version) &&
+    value.version > 0 &&
+    value.version <= MAX_SNAPSHOT_VERSION &&
+    Number.isInteger(value.summaryVersion) &&
+    Number(value.summaryVersion) >= 0 &&
+    isStringArray(value.messageIds) &&
+    isStringArray(value.groundingRefs) &&
+    typeof value.assembledAt === "string" &&
+    value.assembledAt.trim().length > 0 &&
+    Number.isFinite(Date.parse(value.assembledAt)) &&
+    (value.gatewayContext === undefined ||
+      isConversationGatewayContext(value.gatewayContext))
+  );
+}
+
+function isConversationGatewayContext(
+  value: unknown,
+): value is ConversationGatewayContext {
+  if (!isRecord(value) || !isRecord(value.responseMetadata)) return false;
+
+  return (
+    Array.isArray(value.messages) &&
+    value.messages.every(isAiMessage) &&
+    hasExactSanitizedAttachments(value.attachments) &&
+    (value.mode === "fast" || value.mode === "deep") &&
+    typeof value.primaryProvider === "string" &&
+    ["openai", "hunyuan", "deepseek", "deterministic"].includes(
+      value.primaryProvider,
+    ) &&
+    typeof value.lastUserMessage === "string" &&
+    isRecord(value.responseMetadata.grounding) &&
+    isRecord(value.responseMetadata.knowledge) &&
+    Object.prototype.hasOwnProperty.call(
+      value.responseMetadata,
+      "retrospectiveDraft",
+    ) &&
+    isRecord(value.invocationMetadata)
+  );
+}
+
+function isAiMessage(value: unknown): value is AiMessage {
+  return (
+    isRecord(value) &&
+    typeof value.role === "string" &&
+    ["system", "user", "assistant", "tool"].includes(value.role) &&
+    typeof value.content === "string"
+  );
+}
+
+function hasExactSanitizedAttachments(value: unknown): boolean {
+  const result = sanitizeAiAttachments(value);
+  return result.ok && areJsonValuesEqual(value, result.attachments);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === "string" && item.trim().length > 0)
+  );
+}
+
+function areJsonValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) => areJsonValuesEqual(item, right[index]))
+    );
+  }
+  if (!isRecord(left) || !isRecord(right)) return false;
+
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        Object.prototype.hasOwnProperty.call(right, key) &&
+        areJsonValuesEqual(left[key], right[key]),
+    )
+  );
+}
+
+type PlainJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | PlainJsonValue[]
+  | { [key: string]: PlainJsonValue };
+
+function copyPlainJson(value: unknown): PlainJsonValue {
+  return copyPlainJsonValue(
+    value,
+    {
+      estimatedJsonBytes: 0,
+      expandedNodes: 0,
+      seenObjects: new WeakSet<object>(),
+      visitedObjects: 0,
+    },
+    0,
+  );
+}
+
+type PlainJsonCopyState = {
+  estimatedJsonBytes: number;
+  expandedNodes: number;
+  seenObjects: WeakSet<object>;
+  visitedObjects: number;
+};
+
+function copyPlainJsonValue(
+  value: unknown,
+  state: PlainJsonCopyState,
+  depth: number,
+): PlainJsonValue {
+  if (depth > MAX_CONTEXT_DEPTH) return rejectUnsafeConversationContext();
+  reserveExpandedNode(state);
+
+  if (value === null) {
+    reserveEstimatedJsonBytes(state, 4);
+    return value;
+  }
+  if (typeof value === "boolean") {
+    reserveEstimatedJsonBytes(state, value ? 4 : 5);
+    return value;
+  }
+  if (typeof value === "string") {
+    reserveJsonStringBytes(state, value);
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return rejectUnsafeConversationContext();
+    reserveEstimatedJsonBytes(state, JSON.stringify(value).length);
+    return value;
+  }
+  if (typeof value !== "object") return rejectUnsafeConversationContext();
+  if (isProxy(value)) return rejectUnsafeConversationContext();
+  if (state.seenObjects.has(value)) return rejectUnsafeConversationContext();
+  state.seenObjects.add(value);
+  state.visitedObjects += 1;
+  if (state.visitedObjects > MAX_CONTEXT_VISITED_OBJECTS) {
+    return rejectUnsafeConversationContext();
+  }
+
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype) {
+      return rejectUnsafeConversationContext();
+    }
+    preflightChildCount(state, value.length);
+    reserveEstimatedJsonBytes(state, 2 + Math.max(0, value.length - 1));
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== value.length + 1 || !keys.includes("length")) {
+      return rejectUnsafeConversationContext();
+    }
+    return Array.from({ length: value.length }, (_, index) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        return rejectUnsafeConversationContext();
+      }
+      return copyPlainJsonValue(descriptor.value, state, depth + 1);
+    });
+  }
+
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    return rejectUnsafeConversationContext();
+  }
+  const keys = Reflect.ownKeys(value);
+  preflightChildCount(state, keys.length);
+  reserveEstimatedJsonBytes(
+    state,
+    2 + Math.max(0, keys.length - 1) + keys.length,
+  );
+  const descriptors: Array<[string, PropertyDescriptor]> = [];
+  for (const key of keys) {
+    if (typeof key !== "string") return rejectUnsafeConversationContext();
+    reserveJsonStringBytes(state, key);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+      return rejectUnsafeConversationContext();
+    }
+    descriptors.push([key, descriptor]);
+  }
+  const copy: { [key: string]: PlainJsonValue } = {};
+  for (const [key, descriptor] of descriptors) {
+    Object.defineProperty(copy, key, {
+      configurable: true,
+      enumerable: true,
+      value: copyPlainJsonValue(descriptor.value, state, depth + 1),
+      writable: true,
+    });
+  }
+  return copy;
+}
+
+function reserveExpandedNode(state: PlainJsonCopyState): void {
+  state.expandedNodes += 1;
+  if (state.expandedNodes > MAX_CONTEXT_EXPANDED_NODES) {
+    rejectUnsafeConversationContext();
+  }
+}
+
+function preflightChildCount(
+  state: PlainJsonCopyState,
+  childCount: number,
+): void {
+  if (childCount > MAX_CONTEXT_EXPANDED_NODES - state.expandedNodes) {
+    rejectUnsafeConversationContext();
+  }
+}
+
+function reserveEstimatedJsonBytes(
+  state: PlainJsonCopyState,
+  bytes: number,
+): void {
+  if (bytes > MAX_CONTEXT_ESTIMATED_JSON_BYTES - state.estimatedJsonBytes) {
+    rejectUnsafeConversationContext();
+  }
+  state.estimatedJsonBytes += bytes;
+}
+
+function reserveJsonStringBytes(
+  state: PlainJsonCopyState,
+  value: string,
+): void {
+  const remaining = MAX_CONTEXT_ESTIMATED_JSON_BYTES - state.estimatedJsonBytes;
+  let bytes = 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0) return rejectUnsafeConversationContext();
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (
+        !Number.isInteger(nextCodeUnit) ||
+        nextCodeUnit < 0xdc00 ||
+        nextCodeUnit > 0xdfff
+      ) {
+        return rejectUnsafeConversationContext();
+      }
+      bytes += 4;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return rejectUnsafeConversationContext();
+    } else if (
+      codeUnit === 0x22 ||
+      codeUnit === 0x5c ||
+      codeUnit === 0x08 ||
+      codeUnit === 0x09 ||
+      codeUnit === 0x0a ||
+      codeUnit === 0x0c ||
+      codeUnit === 0x0d
+    ) {
+      bytes += 2;
+    } else if (codeUnit <= 0x1f) {
+      bytes += 6;
+    } else if (codeUnit <= 0x7f) {
+      bytes += 1;
+    } else if (codeUnit <= 0x7ff) {
+      bytes += 2;
+    } else {
+      bytes += 3;
+    }
+    if (bytes > remaining) return rejectUnsafeConversationContext();
+  }
+  reserveEstimatedJsonBytes(state, bytes);
+}
+
+function rejectUnsafeConversationContext(): never {
+  throw new ConversationServiceError(
+    "invalid_conversation_context",
+    "Conversation context must be owned plain JSON data",
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function hashConversationSnapshot(
   snapshot: ConversationContextSnapshot,
 ): string {
-  return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+  const canonicalSnapshot = canonicalizePlainJson(
+    snapshot as unknown as PlainJsonValue,
+  );
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalSnapshot))
+    .digest("hex");
+}
+
+function canonicalizePlainJson(value: PlainJsonValue): PlainJsonValue {
+  if (Array.isArray(value)) return value.map(canonicalizePlainJson);
+  if (value === null || typeof value !== "object") return value;
+
+  const canonical: { [key: string]: PlainJsonValue } = {};
+  for (const key of Object.keys(value).sort()) {
+    Object.defineProperty(canonical, key, {
+      configurable: true,
+      enumerable: true,
+      value: canonicalizePlainJson(value[key]!),
+      writable: true,
+    });
+  }
+  return canonical;
 }

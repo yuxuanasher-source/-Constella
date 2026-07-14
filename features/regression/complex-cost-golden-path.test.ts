@@ -13,6 +13,7 @@ import {
   type CreateProjectCostItemRepoInput,
   type CreateRuleVersionRepoInput,
 } from "@/features/complex-cost/complex-cost-service";
+import type { ConfirmCostImportWithRuleItemsInput } from "@/features/complex-cost/complex-cost-repository";
 import { toComplexCostDashboardDto } from "@/features/complex-cost/complex-cost-ui-dto";
 import type {
   ComplexCostRuleVersionRecord,
@@ -286,6 +287,26 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
     return batch;
   }
 
+  async listImportBatches(input: {
+    organizationId: string;
+    projectId: string;
+    importType?: ProjectCostImportBatchRecord["importType"];
+    limit?: number;
+  }) {
+    return this.importBatches
+      .filter(
+        (batch) =>
+          batch.organizationId === input.organizationId &&
+          batch.projectId === input.projectId &&
+          (!input.importType || batch.importType === input.importType),
+      )
+      .slice(0, input.limit ?? this.importBatches.length);
+  }
+
+  async listExternalCostRuleExceptionBatchSummaries() {
+    return [];
+  }
+
   async getImportBatchById(batchId: string) {
     return this.importBatches.find((batch) => batch.id === batchId) ?? null;
   }
@@ -302,6 +323,49 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
     return batch;
   }
 
+  async confirmCostImportWithRuleItems(input: ConfirmCostImportWithRuleItemsInput) {
+    const batch = await this.getImportBatchById(input.importBatchId);
+    if (!batch) {
+      throw new Error("Project cost import batch not found");
+    }
+    const sourceItems =
+      input.mode === "custom" ? input.customItems ?? [] : input.legacyItems ?? [];
+    const items = sourceItems.map((source) => {
+      const item: ProjectCostItemRecord = {
+        id: `cost-${this.costItems.length + 1}`,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        streamerId: source.streamerId,
+        supplierOrganizationId: source.supplierOrganizationId,
+        liveReportId: source.liveReportId,
+        settlementBatchId: null,
+        itemType: source.itemType,
+        amountCents: source.amountCents,
+        direction: source.direction,
+        evidenceLevel: source.evidenceLevel,
+        source: input.mode === "custom" ? "system" : "import",
+        sourcePayload: source.sourcePayload,
+        sourceRuleVersionId: source.ruleVersionId,
+        sourceImportBatchId: input.importBatchId,
+        sourceExecutionKey: source.sourceExecutionKey,
+        sourceInputHash: source.sourceInputHash,
+        sourceExplanation: source.sourceExplanation,
+        reason: input.reason,
+        status: source.status,
+        createdBy: input.createdBy,
+      };
+      this.costItems.push(item);
+      return item;
+    });
+    batch.status = "confirmed";
+    return {
+      importBatch: batch,
+      items,
+      exceptions: [],
+      idempotencyStatus: "created" as const,
+    };
+  }
+
   async attachCostItemsToSettlementBatch(input: {
     organizationId: string;
     projectId: string;
@@ -316,5 +380,29 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
         : item,
     );
     return this.costItems.filter((item) => input.costItemIds.includes(item.id));
+  }
+
+  async listSettlementReconciliationRuns() {
+    return [];
+  }
+
+  async getExternalCostRuleExceptionById() {
+    return null;
+  }
+
+  resolveExternalCostRuleException(): never {
+    throw new Error("External cost rule exception replay is not used here");
+  }
+
+  async listExternalCostRuleExceptionsForImportRow() {
+    return [];
+  }
+
+  async listExternalCostRuleExceptionsForImportBatch() {
+    return [];
+  }
+
+  async replayExternalCostRuleExceptionItems() {
+    return { items: [], idempotencyStatus: "existing" as const };
   }
 }

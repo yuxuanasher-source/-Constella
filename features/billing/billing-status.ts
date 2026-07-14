@@ -126,7 +126,7 @@ export async function getBillingStatus({
   const { data: subscription } = await client
     .from("organization_subscriptions")
     .select(
-      "status, auto_renew, grace_until, trial_ends_at, pending_plan_id, billing_plans(tier, code, name)",
+      "status, auto_renew, grace_until, trial_ends_at, pending_plan_id, billing_plans!organization_subscriptions_plan_id_fkey(tier, code, name)",
     )
     .eq("organization_id", organizationId)
     .maybeSingle<SubscriptionRow>();

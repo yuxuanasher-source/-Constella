@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { listOpsSettlementBatches } from "@/features/settlements/settlement-queries";
+import { createProductionCustomSettlementExecutionPort } from "@/features/settlements/custom-rule-service";
 import {
   getSettlementRouteContext,
   isUuid,
@@ -80,6 +81,9 @@ export async function POST(request: Request) {
       audit: (input) => context.audit(context.supabase, input),
       notify: (input) => context.notify(context.supabase, input),
       actor: settlementActorFromContext(context),
+      customExecutionPort: createProductionCustomSettlementExecutionPort({
+        supabase: context.supabase,
+      }),
       input: {
         projectId: requiredUuid(body, "projectId"),
         batchType: batchType as SettlementBatchType,

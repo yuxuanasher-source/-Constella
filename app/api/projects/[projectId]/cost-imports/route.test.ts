@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { POST } from "./route";
+import { GET, POST } from "./route";
 
 import { assertBillingWriteAllowed } from "@/features/billing/route-guard";
 import { getComplexCostRouteContext } from "@/features/complex-cost/complex-cost-route-utils";
@@ -37,7 +37,25 @@ describe("project cost imports route", () => {
     vi.mocked(getComplexCostRouteContext).mockResolvedValue({
       supabase: {},
       auth: { userId: "user-1", role: "ops_manager", organizationId: "org-1" },
-      repo: {},
+      repo: {
+        listImportBatches: vi.fn().mockResolvedValue([
+          {
+            id: "batch-exception-only",
+            organizationId: "org-1",
+            projectId: "project-1",
+            importType: "traffic",
+            rowCount: 1,
+            parsedPayload: [],
+            status: "parsed",
+          },
+        ]),
+        listExternalCostRuleExceptionBatchSummaries: vi.fn().mockResolvedValue([
+          {
+            importBatchId: "batch-exception-only",
+            unresolvedExceptionCount: 2,
+          },
+        ]),
+      },
       audit: vi.fn(),
     } as never);
     vi.mocked(createProjectCostImportBatch).mockResolvedValue({
@@ -66,6 +84,37 @@ describe("project cost imports route", () => {
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toMatchObject({
       importBatch: { id: "batch-1", status: "parsed" },
+    });
+  });
+
+  it("lists redacted exception batch summaries for discovery", async () => {
+    const response = await GET(new Request("http://localhost"), {
+      params: Promise.resolve({ projectId: "project-1" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      exceptionBatches: [
+        {
+          importBatchId: "batch-exception-only",
+          unresolvedExceptionCount: 2,
+        },
+      ],
+    });
+    expect(JSON.stringify(body)).not.toContain("parsedPayload");
+    expect(JSON.stringify(body)).not.toContain("rawRow");
+    expect(JSON.stringify(body)).not.toContain("formula");
+    expect(JSON.stringify(body)).not.toContain("ast");
+    const context = await vi.mocked(getComplexCostRouteContext).mock.results[0]
+      .value;
+    expect(context.repo.listImportBatches).not.toHaveBeenCalled();
+    expect(
+      context.repo.listExternalCostRuleExceptionBatchSummaries,
+    ).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      projectId: "project-1",
+      status: "review_required",
     });
   });
 });

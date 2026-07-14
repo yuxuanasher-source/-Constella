@@ -55,7 +55,8 @@ export function conversationRouteErrorResponse(error: unknown): Response {
             error.code === "turn_not_regeneratable" ||
             error.code === "turn_state_conflict"
           ? 409
-          : error.code === "invalid_assistant_content"
+          : error.code === "invalid_conversation_context" ||
+              error.code === "invalid_assistant_content"
             ? 422
             : 500;
     return NextResponse.json(

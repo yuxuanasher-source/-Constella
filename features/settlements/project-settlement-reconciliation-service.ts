@@ -4,15 +4,31 @@ import {
   normalizeProjectFinancialSettings,
   type ProjectFinancialSettings,
 } from "@/features/complex-cost/project-financials";
+import type { SettlementReconciliationRunTriggerType } from "@/features/complex-cost/complex-cost-types";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
+import type { CustomSettlementRuleVersion } from "./custom-rule-repository";
+import { SupabaseCustomRuleReadRepository } from "./custom-rule-repository";
+import {
+  assertActiveReconciliationRuleAstFresh,
+  calculateCustomReconciliationInputHash,
+  deepFreeze,
+  executeCustomRuleReconciliationChecks,
+  finalChecksWithCoreSource,
+  type ReconciliationCheckWithSource,
+} from "./custom-rule-reconciliation";
 import {
   reconcileProjectSettlement,
   type ProjectSettlementReconciliationResult,
+  type ReconciliationCheck,
   type ReconciliationConfig,
   type ReconciliationEvidence,
 } from "./project-settlement-reconciliation";
-import type { SettlementActor } from "./settlement-service";
+import type {
+  SettlementActor,
+  SettlementBatchStatus,
+  SettlementBatchType,
+} from "./settlement-service";
 
 // Wires the pure §3.4 reconciliation core to real project data: it gathers the
 // period's receivable/payable batch totals, the project's confirmed external
@@ -24,11 +40,61 @@ export type BatchTotals = {
   manualCents: number;
   adjustmentCents: number;
 };
+export type ReconciliationRunMetadata = {
+  id: string;
+  inputHash: string;
+  createdAt?: string | null;
+};
 
 export type ConfirmedCostSummary = {
   costCents: number;
   revenueOffsetCents: number;
   adjustmentCents: number;
+};
+
+export type PersistedSettlementReconciliationRun = {
+  id: string;
+  inputHash: string;
+  result: ProjectSettlementReconciliationRunResult;
+  createdAt?: string | null;
+};
+
+export type ProjectSettlementReconciliationRunResult = Omit<
+  ProjectSettlementReconciliationResult,
+  "checks"
+> & {
+    checks: ReconciliationCheck[] | ReconciliationCheckWithSource[];
+    run?: ReconciliationRunMetadata;
+    customRule?: {
+      ruleVersionId: string;
+      contractLabel: string;
+      formulaHash: string;
+    };
+  };
+
+export type PersistReconciliationRunInput = {
+  organizationId: string;
+  projectId: string;
+  periodStart: string;
+  periodEnd: string;
+  triggerType: SettlementReconciliationRunTriggerType;
+  triggerBatchId?: string | null;
+  inputHash: string;
+  coreResult: ProjectSettlementReconciliationResult;
+  result: ProjectSettlementReconciliationRunResult;
+  ruleVersionId?: string | null;
+  formulaHash?: string | null;
+  customChecks: ReconciliationCheckWithSource[];
+  finalChecks: ReconciliationCheckWithSource[];
+  blocked: boolean;
+  warnings: ReconciliationCheckWithSource[];
+  createdBy: string;
+};
+
+export type ReconciliationTransitionBatch = {
+  id: string;
+  batchType: SettlementBatchType;
+  status: Extract<SettlementBatchStatus, "confirmed" | "locked">;
 };
 
 export type ReconciliationDataSource = {
@@ -38,15 +104,36 @@ export type ReconciliationDataSource = {
     batchType: "receivable" | "payable";
     periodStart: string;
     periodEnd: string;
-  }): Promise<{ totals: BatchTotals; evidence: ReconciliationEvidence }>;
+    transitionBatch?: ReconciliationTransitionBatch | null;
+  }): Promise<{
+    totals: BatchTotals;
+    evidence: ReconciliationEvidence;
+    finalized?: boolean;
+    present?: boolean;
+  }>;
   getConfirmedCostSummary(input: {
     organizationId: string;
     projectId: string;
-  }): Promise<ConfirmedCostSummary>;
+  }): Promise<ConfirmedCostSummary & { finalized?: boolean }>;
   getFinancialSettings(input: {
     organizationId: string;
     projectId: string;
-  }): Promise<ProjectFinancialSettings>;
+  }): Promise<ProjectFinancialSettings & { finalized?: boolean }>;
+  resolveActiveReconciliationRule?(input: {
+    organizationId: string;
+    projectId: string;
+    executionTimestamp: string;
+  }): Promise<CustomSettlementRuleVersion | null>;
+  getCachedReconciliationRun?(input: {
+    organizationId: string;
+    projectId: string;
+    periodStart: string;
+    periodEnd: string;
+    inputHash: string;
+  }): Promise<PersistedSettlementReconciliationRun | null>;
+  persistReconciliationRun?(
+    input: PersistReconciliationRunInput,
+  ): Promise<PersistedSettlementReconciliationRun | ReconciliationRunMetadata>;
 };
 
 export async function runProjectSettlementReconciliation({
@@ -57,6 +144,11 @@ export async function runProjectSettlementReconciliation({
   periodEnd,
   forceApproved = false,
   config,
+  expectedInputHash,
+  triggerType = "manual",
+  triggerBatchId = null,
+  transitionBatch = null,
+  onStep,
 }: {
   source: ReconciliationDataSource;
   actor: SettlementActor;
@@ -65,7 +157,12 @@ export async function runProjectSettlementReconciliation({
   periodEnd: string;
   forceApproved?: boolean;
   config?: Partial<ReconciliationConfig>;
-}): Promise<ProjectSettlementReconciliationResult> {
+  expectedInputHash?: string;
+  triggerType?: SettlementReconciliationRunTriggerType;
+  triggerBatchId?: string | null;
+  transitionBatch?: ReconciliationTransitionBatch | null;
+  onStep?: (step: string) => void;
+}): Promise<ProjectSettlementReconciliationRunResult> {
   if (!isMcnStaff(actor.role)) {
     throw new Error("Only MCN staff can view settlement reconciliation");
   }
@@ -78,6 +175,7 @@ export async function runProjectSettlementReconciliation({
       batchType: "receivable",
       periodStart,
       periodEnd,
+      transitionBatch,
     }),
     source.getBatchTotals({
       organizationId: actor.organizationId,
@@ -85,6 +183,7 @@ export async function runProjectSettlementReconciliation({
       batchType: "payable",
       periodStart,
       periodEnd,
+      transitionBatch,
     }),
     source.getConfirmedCostSummary({
       organizationId: actor.organizationId,
@@ -95,6 +194,18 @@ export async function runProjectSettlementReconciliation({
       projectId,
     }),
   ]);
+  const activeRule = source.resolveActiveReconciliationRule
+    ? await source.resolveActiveReconciliationRule({
+        organizationId: actor.organizationId,
+        projectId,
+        executionTimestamp: new Date().toISOString(),
+      })
+    : null;
+
+  assertFinalizedInputs(receivable, payable, cost, settings);
+  if (activeRule) {
+    assertPresentInputs(receivable, payable);
+  }
 
   // Both batch types are priced from the same approved reports, so use the
   // receivable evidence as the income-side signal and fall back to payable when
@@ -103,7 +214,7 @@ export async function runProjectSettlementReconciliation({
     ? receivable.evidence
     : payable.evidence;
 
-  return reconcileProjectSettlement({
+  const coreInput = {
     receivableComputedCents: receivable.totals.computedCents,
     receivableManualCents:
       receivable.totals.manualCents + receivable.totals.adjustmentCents,
@@ -117,7 +228,78 @@ export async function runProjectSettlementReconciliation({
     evidence,
     forceApproved,
     config,
+  };
+  onStep?.("compute:core");
+  const coreResult = reconcileProjectSettlement(coreInput);
+  if (activeRule) {
+    assertActiveReconciliationRuleAstFresh(activeRule);
+  }
+  const inputHash = calculateCustomReconciliationInputHash({
+    coreInput,
+    activeRule,
   });
+  if (expectedInputHash !== undefined && expectedInputHash !== inputHash) {
+    throw new Error("Settlement reconciliation input hash changed");
+  }
+
+  if (source.getCachedReconciliationRun) {
+    const cached = await source.getCachedReconciliationRun({
+      organizationId: actor.organizationId,
+      projectId,
+      periodStart,
+      periodEnd,
+      inputHash,
+    });
+    if (cached?.inputHash === inputHash) {
+      return deepFreeze(cached.result);
+    }
+  }
+
+  let result: ProjectSettlementReconciliationRunResult = coreResult;
+  let finalChecks = finalChecksWithCoreSource(coreResult);
+  let customChecks: ReconciliationCheckWithSource[] = [];
+  if (activeRule) {
+    onStep?.("build:variables");
+    onStep?.("execute:custom_rule");
+    result = executeCustomRuleReconciliationChecks({
+      coreResult,
+      ruleVersion: activeRule,
+    });
+    onStep?.("append:custom_checks");
+    finalChecks = result.checks as ReconciliationCheckWithSource[];
+    customChecks = finalChecks.filter((check) => check.source === "custom_rule");
+  }
+
+  if (source.persistReconciliationRun) {
+    const persisted = await source.persistReconciliationRun({
+      organizationId: actor.organizationId,
+      projectId,
+      periodStart,
+      periodEnd,
+      triggerType,
+      triggerBatchId,
+      inputHash,
+      coreResult,
+      result,
+      ruleVersionId: activeRule?.id ?? null,
+      formulaHash: activeRule?.formulaHash ?? null,
+      customChecks,
+      finalChecks,
+      blocked: result.hasBlocking,
+      warnings: finalChecks.filter((check) => check.severity === "warn"),
+      createdBy: actor.userId,
+    });
+    result = {
+      ...result,
+      run: {
+        id: persisted.id,
+        inputHash: persisted.inputHash,
+        createdAt: persisted.createdAt,
+      },
+    };
+  }
+
+  return deepFreeze(result);
 }
 
 function hasEvidence(evidence: ReconciliationEvidence): boolean {
@@ -138,14 +320,33 @@ function assertPeriod(periodStart: string, periodEnd: string): void {
   }
 }
 
+function assertFinalizedInputs(
+  ...inputs: Array<{ finalized?: boolean }>
+): void {
+  if (inputs.some((input) => input.finalized === false)) {
+    throw new Error("Settlement reconciliation requires finalized inputs");
+  }
+}
+
+function assertPresentInputs(...inputs: Array<{ present?: boolean }>): void {
+  if (inputs.some((input) => input.present === false)) {
+    throw new Error("Settlement reconciliation requires finalized inputs");
+  }
+}
+
 // --- Supabase implementation ------------------------------------------------
 
 type SettlementBatchTotalsRow = {
+  id: string | null;
   computed_amount: number | null;
   manual_amount: number | null;
   adjustment_amount: number | null;
   evidence_summary: Record<string, unknown> | null;
+  status: string | null;
 };
+
+const FINALIZED_SETTLEMENT_BATCH_STATUSES = new Set(["confirmed", "locked"]);
+const EXCLUDED_SETTLEMENT_BATCH_STATUSES = new Set(["voided"]);
 
 type CostSummaryRow = {
   amount_cents: number | null;
@@ -163,16 +364,21 @@ export class SupabaseReconciliationDataSource
     batchType: "receivable" | "payable";
     periodStart: string;
     periodEnd: string;
-  }): Promise<{ totals: BatchTotals; evidence: ReconciliationEvidence }> {
+    transitionBatch?: ReconciliationTransitionBatch | null;
+  }): Promise<{
+    totals: BatchTotals;
+    evidence: ReconciliationEvidence;
+    finalized?: boolean;
+    present?: boolean;
+  }> {
     const { data, error } = await this.client
       .from("settlement_batches")
       .select(
-        "computed_amount, manual_amount, adjustment_amount, evidence_summary",
+        "id, computed_amount, manual_amount, adjustment_amount, evidence_summary, status",
       )
       .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
       .eq("batch_type", input.batchType)
-      .neq("status", "voided")
       // Any batch whose period overlaps the requested window.
       .lte("period_start", input.periodEnd)
       .gte("period_end", input.periodStart)
@@ -193,8 +399,23 @@ export class SupabaseReconciliationDataSource
       red: 0,
       unknown: 0,
     };
+    let finalized = true;
+    let present = false;
 
     for (const row of data ?? []) {
+      const status = transitionAwareStatus(
+        row,
+        input.transitionBatch,
+        input.batchType,
+      );
+      if (EXCLUDED_SETTLEMENT_BATCH_STATUSES.has(status)) {
+        continue;
+      }
+      present = true;
+      if (!FINALIZED_SETTLEMENT_BATCH_STATUSES.has(status)) {
+        finalized = false;
+        continue;
+      }
       // settlement_batches amounts are numeric(12,2) yuan, while the cost and
       // tax lines are stored in cents. Normalize batch amounts to cents here so
       // the reconciliation sums one consistent unit (mixing the two would skew
@@ -209,7 +430,7 @@ export class SupabaseReconciliationDataSource
       evidence.unknown = (evidence.unknown ?? 0) + countOf(summary, "unknown");
     }
 
-    return { totals, evidence };
+    return { totals, evidence, finalized, present };
   }
 
   async getConfirmedCostSummary(input: {
@@ -276,6 +497,78 @@ export class SupabaseReconciliationDataSource
       procurementCostCents: data?.procurement_cost_cents ?? 0,
     });
   }
+
+  resolveActiveReconciliationRule(input: {
+    organizationId: string;
+    projectId: string;
+    executionTimestamp: string;
+  }): Promise<CustomSettlementRuleVersion | null> {
+    return new SupabaseCustomRuleReadRepository(
+      this.client,
+    ).getActiveProjectReconciliationRule(input);
+  }
+
+  async getCachedReconciliationRun(input: {
+    organizationId: string;
+    projectId: string;
+    periodStart: string;
+    periodEnd: string;
+    inputHash: string;
+  }): Promise<PersistedSettlementReconciliationRun | null> {
+    const run = await new SupabaseCustomRuleReadRepository(
+      this.client,
+    ).getCachedSettlementReconciliationRun(input);
+    if (!run) return null;
+    return {
+      id: run.id,
+      inputHash: run.inputHash,
+      createdAt: run.createdAt,
+      result: {
+        ...(run.result as ProjectSettlementReconciliationRunResult),
+        run: {
+          id: run.id,
+          inputHash: run.inputHash,
+          createdAt: run.createdAt,
+        },
+      },
+    };
+  }
+
+  async persistReconciliationRun(
+    input: PersistReconciliationRunInput,
+  ): Promise<PersistedSettlementReconciliationRun> {
+    const run = await new SupabaseCustomRuleReadRepository(
+      this.client,
+    ).createSettlementReconciliationRun(input);
+    return {
+      id: run.id,
+      inputHash: run.inputHash,
+      createdAt: run.createdAt,
+      result: {
+        ...input.result,
+        run: {
+          id: run.id,
+          inputHash: run.inputHash,
+          createdAt: run.createdAt,
+        },
+      },
+    };
+  }
+}
+
+function transitionAwareStatus(
+  row: Pick<SettlementBatchTotalsRow, "id" | "status">,
+  transitionBatch: ReconciliationTransitionBatch | null | undefined,
+  batchType: SettlementBatchType,
+): string {
+  if (
+    transitionBatch &&
+    transitionBatch.batchType === batchType &&
+    row.id === transitionBatch.id
+  ) {
+    return transitionBatch.status;
+  }
+  return row.status ?? "";
 }
 
 function yuanToCents(value: number | null | undefined): number {

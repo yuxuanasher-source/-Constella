@@ -122,6 +122,10 @@ describe("api route contracts", () => {
       repo: {},
       audit: vi.fn(),
       notify: vi.fn(),
+      gate: {
+        assertNoOpenRuleExceptions: vi.fn(),
+        evaluateReconciliation: vi.fn(),
+      },
     } as never);
     vi.mocked(assertBillingWriteAllowed).mockResolvedValue(undefined);
   });

@@ -35,7 +35,7 @@ export const COST_EVIDENCE_OPTIONS = [
 
 const STATUS_META = {
   draft: { tone: "neutral", label: "草稿" },
-  pending_review: { tone: "amber", label: "待确认" },
+  pending_review: { tone: "amber", label: "待审核" },
   confirmed: { tone: "green", label: "已确认" },
   voided: { tone: "red", label: "已作废" },
 };

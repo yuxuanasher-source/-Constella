@@ -190,6 +190,125 @@ describe("settlement DTO mappers", () => {
     });
   });
 
+  it("exposes staff-only custom rule explanations with components and open exceptions", () => {
+    const item = toOpsSettlementBatchDetailItem({
+      id: "item-rule-1",
+      settlement_batch_id: "batch-1",
+      item_type: "live_report_payable",
+      computed_amount: 1040,
+      manual_amount: 0,
+      adjustment_amount: 0,
+      evidence_level: "yellow",
+      evidence_snapshot: {
+        settlementDuration: 240,
+        timeSource: "system",
+        ruleEngine: {
+          mode: "custom",
+          grain: "project_streamer_period",
+          appliedLayers: [
+            {
+              versionId: "550e8400-e29b-41d4-a716-446655440000",
+              targetType: "project",
+            },
+            {
+              versionId: "streamer-rule-version-fedcba654321",
+              targetType: "project_streamer",
+            },
+          ],
+          namedOutputsCents: {
+            "550e8400-e29b-41d4-a716-446655440000:baseSalary": 80000,
+            "streamer-rule-version-fedcba654321:cptPay": 24000,
+            "streamer-rule-version-fedcba654321:final": 104000,
+          },
+          missingDataDecisions: [
+            {
+              variableName: "salesAmountCents",
+              policy: "route_item_to_review",
+              action: "review_required",
+            },
+          ],
+          sourceReportIds: ["report-1", "report-2"],
+          explanationZh: "底薪 800 元 + 有效时长 240 元。",
+        },
+      },
+      settlement_rule_exceptions: [
+        {
+          id: "exception-open",
+          live_report_id: "report-2",
+          variable_name: "salesAmountCents",
+          policy: "route_item_to_review",
+          status: "review_required",
+          resolution_reason: null,
+        },
+        {
+          id: "exception-voided",
+          live_report_id: "report-3",
+          variable_name: "platformFeeCents",
+          policy: "route_item_to_review",
+          status: "voided",
+          resolution_reason: "作废",
+        },
+        {
+          id: "exception-resolved",
+          live_report_id: "report-1",
+          variable_name: "giftAmountCents",
+          policy: "use_default",
+          status: "resolved",
+          resolution_reason: "已补充",
+        },
+      ],
+      streamers: { display_name: "Streamer One" },
+    });
+
+    expect(item.ruleBreakdown).toEqual({
+      mode: "custom",
+      executionGrain: "project_streamer_period",
+      appliedVersionLabels: [
+        "规则版本 550e8400",
+        "规则版本 fedcba65",
+      ],
+      components: [
+        {
+          key: "550e8400-e29b-41d4-a716-446655440000:baseSalary",
+          label: "底薪",
+          amountCents: 80000,
+        },
+        {
+          key: "streamer-rule-version-fedcba654321:cptPay",
+          label: "有效时长",
+          amountCents: 24000,
+        },
+        {
+          key: "streamer-rule-version-fedcba654321:final",
+          label: "最终金额",
+          amountCents: 104000,
+        },
+      ],
+      sourceReportCount: 2,
+      missingDataDecisions: [
+        {
+          variableName: "salesAmountCents",
+          policy: "route_item_to_review",
+          decision: "review_required",
+        },
+      ],
+      explanationZh: "底薪 800 元 + 有效时长 240 元。",
+    });
+    expect(item.openExceptions).toEqual([
+      {
+        id: "exception-open",
+        liveReportId: "report-2",
+        variableName: "salesAmountCents",
+        policy: "route_item_to_review",
+        status: "review_required",
+      },
+    ]);
+    expect(toOpsReferenceBatchDetailItem(item)).toMatchObject({
+      ruleBreakdown: item.ruleBreakdown,
+      openExceptions: item.openExceptions,
+    });
+  });
+
   it("maps project cost items for staff and hides them from streamer-safe details", () => {
     const costItem = toOpsSettlementBatchCostDetailItem({
       id: "cost-1",
@@ -207,8 +326,12 @@ describe("settlement DTO mappers", () => {
       batchId: "batch-1",
       itemType: "supplier_fee",
       internalOnly: true,
-      manualAmount: 12000,
-      totalAmount: 12000,
+      manualAmount: 120,
+      totalAmount: 120,
+    });
+    expect(toOpsReferenceBatchDetailItem(costItem)).toMatchObject({
+      variable: 120,
+      total: 120,
     });
     expect(toStreamerSafeSettlementBatchDetailItems([costItem])).toEqual([]);
   });

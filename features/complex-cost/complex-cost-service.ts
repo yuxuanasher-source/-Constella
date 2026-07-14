@@ -1,17 +1,39 @@
+import { createHash } from "node:crypto";
+
 import type { AuditLogInput } from "@/lib/audit/audit";
 
+import type {
+  ConfirmCostImportItemInput,
+  ConfirmCostImportWithRuleItemsInput,
+  ConfirmCostImportWithRuleItemsResult,
+  ResolveExternalCostRuleExceptionInput,
+  ResolveExternalCostRuleExceptionResult,
+} from "./complex-cost-repository";
 import type {
   ComplexCostActor,
   ComplexCostRuleStatus,
   ComplexCostRuleVersionRecord,
   CreateProjectCostItemInput,
+  ExternalCostRuleExceptionRecord,
   ProjectComplexCostEntitlementRecord,
   ProjectCostImportBatchRecord,
   ProjectCostImportType,
   ProjectCostItemRecord,
   ProjectCostItemStatus,
+  ReplayExternalCostRuleExceptionItemsInput,
+  ReplayExternalCostRuleExceptionItemsResult,
+  SettlementReconciliationRunRecord,
 } from "./complex-cost-types";
 import { calculateImportedCostAmountCents } from "./complex-cost-calculator";
+import {
+  buildExternalCostRuleExceptionReplay,
+  executeExternalCostRuleForImport,
+} from "@/features/settlements/custom-rule-external-cost";
+import type {
+  CustomSettlementRuleVersion,
+  ResolvedExecutableCustomRuleLayers,
+} from "@/features/settlements/custom-rule-repository";
+import type { CustomRuleExecutionUnit } from "@/features/settlements/custom-rule-types";
 
 export type ComplexCostAuditWriter = (input: AuditLogInput) => Promise<void>;
 
@@ -53,6 +75,11 @@ export type CreateImportBatchRepoInput = {
   createdBy: string;
 };
 
+export type ExternalCostRuleExceptionBatchSummary = {
+  importBatchId: string;
+  unresolvedExceptionCount: number;
+};
+
 export type ComplexCostRepository = {
   getProjectEntitlement(input: {
     organizationId: string;
@@ -91,6 +118,12 @@ export type ComplexCostRepository = {
   createImportBatch(
     input: CreateImportBatchRepoInput,
   ): Promise<ProjectCostImportBatchRecord>;
+  listImportBatches(input: {
+    organizationId: string;
+    projectId: string;
+    importType?: ProjectCostImportType;
+    limit?: number;
+  }): Promise<ProjectCostImportBatchRecord[]>;
   getImportBatchById(
     batchId: string,
   ): Promise<ProjectCostImportBatchRecord | null>;
@@ -104,6 +137,50 @@ export type ComplexCostRepository = {
     costItemIds: string[];
     settlementBatchId: string;
   }): Promise<ProjectCostItemRecord[]>;
+  listSettlementReconciliationRuns(input: {
+    organizationId: string;
+    projectId: string;
+  }): Promise<SettlementReconciliationRunRecord[]>;
+  getExternalCostRuleExceptionById(input: {
+    organizationId: string;
+    exceptionId: string;
+  }): Promise<ExternalCostRuleExceptionRecord | null>;
+  resolveExternalCostRuleException(
+    input: ResolveExternalCostRuleExceptionInput,
+  ): Promise<ResolveExternalCostRuleExceptionResult>;
+  listExternalCostRuleExceptionsForImportRow(input: {
+    organizationId: string;
+    projectId: string;
+    importBatchId: string;
+    importRowIndex: number;
+  }): Promise<ExternalCostRuleExceptionRecord[]>;
+  listExternalCostRuleExceptionsForImportBatch(input: {
+    organizationId: string;
+    projectId: string;
+    importBatchId: string;
+    status?: ExternalCostRuleExceptionRecord["status"];
+  }): Promise<ExternalCostRuleExceptionRecord[]>;
+  listExternalCostRuleExceptionBatchSummaries(input: {
+    organizationId: string;
+    projectId: string;
+    status?: ExternalCostRuleExceptionRecord["status"];
+  }): Promise<ExternalCostRuleExceptionBatchSummary[]>;
+  replayExternalCostRuleExceptionItems(
+    input: ReplayExternalCostRuleExceptionItemsInput,
+  ): Promise<ReplayExternalCostRuleExceptionItemsResult>;
+  confirmCostImportWithRuleItems(
+    input: ConfirmCostImportWithRuleItemsInput,
+  ): Promise<ConfirmCostImportWithRuleItemsResult>;
+};
+
+export type ExternalCostRuleReadRepository = {
+  resolveExecutableCustomRuleLayers(input: {
+    organizationId: string;
+    projectId: string;
+    scope: "external_cost";
+    executionTimestamp: string;
+    executionUnits: CustomRuleExecutionUnit[];
+  }): Promise<ResolvedExecutableCustomRuleLayers>;
 };
 
 export async function saveComplexCostRuleDraft(args: {
@@ -286,10 +363,10 @@ export async function confirmProjectCostImportBatch(args: {
   repo: Pick<
     ComplexCostRepository,
     | "getImportBatchById"
-    | "createProjectCostItem"
-    | "updateImportBatch"
     | "getProjectEntitlement"
+    | "confirmCostImportWithRuleItems"
   >;
+  customRuleRepo?: ExternalCostRuleReadRepository;
   audit: ComplexCostAuditWriter;
   actor: ComplexCostActor;
   batchId: string;
@@ -314,40 +391,43 @@ export async function confirmProjectCostImportBatch(args: {
     throw new Error("Project cost import batch is already confirmed");
   }
 
-  const items: ProjectCostItemRecord[] = [];
-  for (const row of batch.parsedPayload) {
-    const itemType = importRowItemType(row, batch.importType);
-    const amountCents = calculateImportedCostAmountCents({
-      itemType,
-      unitCount: numberFromRow(row, "unitCount"),
-      unitPriceCents: numberFromRow(row, "unitPriceCents"),
-      salesAmountCents: numberFromRow(row, "salesAmountCents"),
-      rateBps: numberFromRow(row, "rateBps"),
-      directAmountCents: numberFromRow(row, "directAmountCents"),
-    });
-    const item = await args.repo.createProjectCostItem({
-      organizationId: args.actor.organizationId,
-      projectId: batch.projectId,
-      streamerId: stringFromRow(row, "streamerId"),
-      supplierOrganizationId: stringFromRow(row, "supplierOrganizationId"),
-      liveReportId: stringFromRow(row, "liveReportId"),
-      settlementBatchId: null,
-      itemType,
-      amountCents,
-      direction: "cost",
-      evidenceLevel: "yellow",
-      source: "import",
-      sourcePayload: row,
-      reason: args.reason.trim(),
-      status: "confirmed",
-      createdBy: args.actor.userId,
-    });
-    items.push(item);
-  }
-
-  const updatedBatch = await args.repo.updateImportBatch(batch.id, {
-    status: "confirmed",
+  const activeExternalRule = await resolveEffectiveExternalCostRule({
+    customRuleRepo: args.customRuleRepo,
+    actor: args.actor,
+    batch,
   });
+  const prepared = activeExternalRule
+    ? executeExternalCostRuleForImport({
+        organizationId: args.actor.organizationId,
+        projectId: batch.projectId,
+        importBatch: batch,
+        ruleVersion: activeExternalRule,
+        reason: args.reason.trim(),
+        createdBy: args.actor.userId,
+      })
+    : legacyImportConfirmationPayload({
+        actor: args.actor,
+        batch,
+        reason: args.reason.trim(),
+      });
+
+  const confirmed = await args.repo.confirmCostImportWithRuleItems({
+    organizationId: args.actor.organizationId,
+    projectId: batch.projectId,
+    importBatchId: batch.id,
+    idempotencyKey: prepared.idempotencyKey,
+    inputHash: prepared.inputHash,
+    mode: prepared.kind === "custom" ? "custom" : "legacy",
+    reason: args.reason.trim(),
+    createdBy: args.actor.userId,
+    ...(prepared.kind === "custom"
+      ? {
+          customItems: prepared.items,
+          exceptions: prepared.exceptions,
+        }
+      : { legacyItems: prepared.items }),
+  });
+  const updatedBatch = confirmed.importBatch;
 
   await args.audit({
     organizationId: args.actor.organizationId,
@@ -360,13 +440,317 @@ export async function confirmProjectCostImportBatch(args: {
     objectId: batch.id,
     projectId: batch.projectId,
     before: batch as unknown as Record<string, unknown>,
-    after: updatedBatch as unknown as Record<string, unknown>,
+    after: {
+      ...(updatedBatch as unknown as Record<string, unknown>),
+      mode: prepared.kind,
+      ruleVersionId:
+        prepared.kind === "custom" ? prepared.ruleVersionId : null,
+      itemCount: confirmed.items.length,
+      exceptionCount: confirmed.exceptions.length,
+      inputHash: prepared.inputHash,
+    },
     changedFields: ["status"],
     reason: args.reason,
     isHighRisk: true,
   });
 
-  return { importBatch: updatedBatch, items };
+  return { importBatch: updatedBatch, items: confirmed.items };
+}
+
+export async function resolveExternalCostRuleExceptionWithReplay(args: {
+  repo: Pick<
+    ComplexCostRepository,
+    | "getProjectEntitlement"
+    | "getExternalCostRuleExceptionById"
+    | "resolveExternalCostRuleException"
+    | "listExternalCostRuleExceptionsForImportRow"
+    | "replayExternalCostRuleExceptionItems"
+  >;
+  audit: ComplexCostAuditWriter;
+  actor: ComplexCostActor;
+  exceptionId: string;
+  resolutionValue: Record<string, unknown>;
+  resolutionReason: string;
+}): Promise<
+  ResolveExternalCostRuleExceptionResult & {
+    replay: ReplayExternalCostRuleExceptionItemsResult | null;
+  }
+> {
+  assertCanResolveExternalCostRuleExceptions(args.actor);
+  assertReason(
+    args.resolutionReason,
+    "Resolving an external cost rule exception requires a reason",
+  );
+
+  const before = await args.repo.getExternalCostRuleExceptionById({
+    organizationId: args.actor.organizationId,
+    exceptionId: args.exceptionId,
+  });
+  if (!before) {
+    throw new Error("External cost rule exception not found");
+  }
+  assertSameOrganization(args.actor, before.organizationId);
+  await requireProjectEntitlement(args.repo, args.actor, before.projectId);
+
+  const resolved = await args.repo.resolveExternalCostRuleException({
+    organizationId: args.actor.organizationId,
+    exceptionId: args.exceptionId,
+    resolutionValue: args.resolutionValue,
+    resolutionReason: args.resolutionReason.trim(),
+    resolvedBy: args.actor.userId,
+  });
+  assertSameOrganization(args.actor, resolved.exception.organizationId);
+
+  if (!resolved.needsReplay || resolved.openSiblingCount !== 0) {
+    await auditExternalCostRuleExceptionResolution({
+      audit: args.audit,
+      actor: args.actor,
+      before,
+      resolved,
+      replayInputHash: null,
+      replayedItemSourceInputHashes: [],
+      replayedItemExecutionKeys: [],
+      replayedItemCount: 0,
+      reason: args.resolutionReason.trim(),
+    });
+    return { ...resolved, replay: null };
+  }
+
+  const siblings = await args.repo.listExternalCostRuleExceptionsForImportRow({
+    organizationId: args.actor.organizationId,
+    projectId: resolved.exception.projectId,
+    importBatchId: resolved.exception.importBatchId,
+    importRowIndex: resolved.exception.importRowIndex,
+  });
+  const replayInput = buildExternalCostRuleExceptionReplay({
+    organizationId: args.actor.organizationId,
+    projectId: resolved.exception.projectId,
+    importBatchId: resolved.exception.importBatchId,
+    importRowIndex: resolved.exception.importRowIndex,
+    createdBy: args.actor.userId,
+    exceptions: siblings,
+  });
+  if (!replayInput) {
+    await auditExternalCostRuleExceptionResolution({
+      audit: args.audit,
+      actor: args.actor,
+      before,
+      resolved,
+      replayInputHash: null,
+      replayedItemSourceInputHashes: [],
+      replayedItemExecutionKeys: [],
+      replayedItemCount: 0,
+      reason: args.resolutionReason.trim(),
+    });
+    return { ...resolved, replay: null };
+  }
+
+  const replay = await args.repo.replayExternalCostRuleExceptionItems(
+    replayInput,
+  );
+  await auditExternalCostRuleExceptionResolution({
+    audit: args.audit,
+    actor: args.actor,
+    before,
+    resolved,
+    replayInputHash: replayInput.inputHash,
+    replayedItemSourceInputHashes: replayInput.items.map(
+      (item) => item.sourceInputHash,
+    ),
+    replayedItemExecutionKeys: replayInput.items.map(
+      (item) => item.sourceExecutionKey,
+    ),
+    replayedItemCount: replay.items.length,
+    reason: args.resolutionReason.trim(),
+  });
+
+  return {
+    ...resolved,
+    items: [...resolved.items, ...replay.items],
+    replayed: true,
+    replay,
+  };
+}
+
+async function auditExternalCostRuleExceptionResolution(input: {
+  audit: ComplexCostAuditWriter;
+  actor: ComplexCostActor;
+  before: ExternalCostRuleExceptionRecord;
+  resolved: ResolveExternalCostRuleExceptionResult;
+  replayInputHash: string | null;
+  replayedItemSourceInputHashes: string[];
+  replayedItemExecutionKeys: string[];
+  replayedItemCount: number;
+  reason: string;
+}): Promise<void> {
+  await input.audit({
+    organizationId: input.actor.organizationId,
+    actorUserId: input.actor.userId,
+    actorName: input.actor.name,
+    actorRole: input.actor.role,
+    action: "approve",
+    module: "complex_cost",
+    objectType: "external_cost_rule_exception",
+    objectId: input.resolved.exception.id,
+    projectId: input.resolved.exception.projectId,
+    before: {
+      status: input.before.status,
+      importBatchId: input.before.importBatchId,
+      importRowIndex: input.before.importRowIndex,
+      ruleVersionId: input.before.ruleVersionId ?? null,
+      sourceContextHash: sourceContextHashFromException(input.before),
+    },
+    after: {
+      status: input.resolved.exception.status,
+      importBatchId: input.resolved.exception.importBatchId,
+      importRowIndex: input.resolved.exception.importRowIndex,
+      ruleVersionId: input.resolved.exception.ruleVersionId ?? null,
+      needsReplay: input.resolved.needsReplay,
+      openSiblingCount: input.resolved.openSiblingCount,
+      replayed: input.resolved.replayed || input.replayedItemCount > 0,
+      replayedItemCount: input.replayedItemCount,
+      sourceContextHash: sourceContextHashFromException(input.resolved.exception),
+      replayInputHash: input.replayInputHash,
+      replayedItemSourceInputHashes: input.replayedItemSourceInputHashes,
+      replayedItemExecutionKeys: input.replayedItemExecutionKeys,
+    },
+    changedFields: ["status", "resolution_value", "resolution_reason", "replay"],
+    reason: input.reason,
+    isHighRisk: true,
+  });
+}
+
+function sourceContextHashFromException(
+  exception: ExternalCostRuleExceptionRecord,
+): string | null {
+  const value = exception.sourceContextSnapshot.__source_context_hash;
+  return typeof value === "string" ? value : null;
+}
+
+type PreparedImportConfirmation =
+  | {
+      kind: "legacy";
+      inputHash: string;
+      idempotencyKey: string;
+      items: ConfirmCostImportItemInput[];
+    }
+  | ReturnType<typeof executeExternalCostRuleForImport>;
+
+function legacyImportConfirmationPayload(input: {
+  actor: ComplexCostActor;
+  batch: ProjectCostImportBatchRecord;
+  reason: string;
+}): PreparedImportConfirmation {
+  const items = input.batch.parsedPayload.map((row, rowIndex) => {
+    const itemType = importRowItemType(row, input.batch.importType);
+    const amountCents = calculateImportedCostAmountCents({
+      itemType,
+      unitCount: numberFromRow(row, "unitCount"),
+      unitPriceCents: numberFromRow(row, "unitPriceCents"),
+      salesAmountCents: numberFromRow(row, "salesAmountCents"),
+      rateBps: numberFromRow(row, "rateBps"),
+      directAmountCents: numberFromRow(row, "directAmountCents"),
+    });
+    const sourceInputHash = serviceHash({
+      mode: "legacy",
+      rowIndex,
+      row,
+      itemType,
+      amountCents,
+    });
+    return {
+      importRowIndex: rowIndex,
+      ruleVersionId: null,
+      streamerId: stringFromRow(row, "streamerId"),
+      supplierOrganizationId: stringFromRow(row, "supplierOrganizationId"),
+      liveReportId: stringFromRow(row, "liveReportId"),
+      itemType,
+      amountCents,
+      direction: "cost" as const,
+      evidenceLevel: "yellow" as const,
+      sourcePayload: row,
+      sourceExecutionKey: serviceHash([
+        input.actor.organizationId,
+        input.batch.projectId,
+        input.batch.id,
+        rowIndex,
+        "legacy",
+        0,
+        sourceInputHash,
+      ]),
+      sourceInputHash,
+      sourceExplanation: "Legacy complex-cost import calculation.",
+      status: "confirmed" as const,
+    };
+  });
+  const inputHash = serviceHash({
+    mode: "legacy",
+    importBatchId: input.batch.id,
+    items: items.map((item) => ({
+      row: item.importRowIndex,
+      type: item.itemType,
+      amount: item.amountCents,
+      sourceInputHash: item.sourceInputHash,
+    })),
+  });
+  return {
+    kind: "legacy",
+    inputHash,
+    idempotencyKey: serviceHash([
+      input.actor.organizationId,
+      input.batch.projectId,
+      input.batch.id,
+      "legacy",
+      "legacy",
+      inputHash,
+    ]),
+    items,
+  };
+}
+
+async function resolveEffectiveExternalCostRule(input: {
+  customRuleRepo?: ExternalCostRuleReadRepository;
+  actor: ComplexCostActor;
+  batch: ProjectCostImportBatchRecord;
+}): Promise<CustomSettlementRuleVersion | null> {
+  if (!input.customRuleRepo) {
+    return null;
+  }
+  const executionTimestamp =
+    input.batch.createdAt ?? new Date().toISOString();
+  const lookup = await input.customRuleRepo.resolveExecutableCustomRuleLayers({
+    organizationId: input.actor.organizationId,
+    projectId: input.batch.projectId,
+    scope: "external_cost",
+    executionTimestamp,
+    executionUnits: [
+      {
+        key: `cost_import:${input.batch.id}`,
+        grain: "report",
+        projectId: input.batch.projectId,
+        projectStreamerId: "import",
+        streamerId: undefined,
+        periodStart: executionTimestamp,
+        periodEnd: executionTimestamp,
+        sourceReportIds: [],
+        membershipSnapshot: {
+          projectStreamerId: "import",
+          effectiveAt: executionTimestamp,
+          groups: [],
+          snapshotHash: serviceHash({
+            importBatchId: input.batch.id,
+            executionTimestamp,
+          }),
+        },
+        variables: {},
+      },
+    ],
+  });
+  const version = lookup.projectBaseVersion;
+  if (!version || version.scope !== "external_cost") {
+    return null;
+  }
+  return version;
 }
 
 // Transition a manual project cost item's review status (pending_review/draft
@@ -527,6 +911,20 @@ function assertCanReviewCostItems(actor: ComplexCostActor): void {
   }
 }
 
+function assertCanResolveExternalCostRuleExceptions(
+  actor: ComplexCostActor,
+): void {
+  if (
+    actor.role !== "owner" &&
+    actor.role !== "ops_manager" &&
+    actor.role !== "finance"
+  ) {
+    throw new Error(
+      "Current role cannot resolve external cost rule exceptions",
+    );
+  }
+}
+
 // Allowed status transitions: open items (draft/pending_review) may be
 // confirmed; open or confirmed items may be voided. Re-confirming or
 // re-voiding a terminal state is rejected.
@@ -604,6 +1002,25 @@ async function auditCostItemCreate({
     reason: item.reason,
     isHighRisk,
   });
+}
+
+function serviceHash(value: unknown): string {
+  const text = Array.isArray(value) ? value.join("\u001f") : stableServiceJson(value);
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function stableServiceJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableServiceJson).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableServiceJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function importRowItemType(

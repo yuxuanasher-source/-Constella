@@ -97,6 +97,11 @@ export type ProjectCostItemRecord = {
   evidenceLevel: ComplexCostEvidenceLevel;
   source: ProjectCostItemSource;
   sourcePayload: Record<string, unknown>;
+  sourceRuleVersionId?: string | null;
+  sourceImportBatchId?: string | null;
+  sourceExecutionKey?: string | null;
+  sourceInputHash?: string | null;
+  sourceExplanation?: string | null;
   reason: string;
   status: ProjectCostItemStatus;
   createdBy?: string | null;
@@ -128,8 +133,101 @@ export type CreateProjectCostItemInput = {
   evidenceLevel: ComplexCostEvidenceLevel;
   source?: ProjectCostItemSource;
   sourcePayload?: Record<string, unknown>;
+  sourceRuleVersionId?: string | null;
+  sourceImportBatchId?: string | null;
+  sourceExecutionKey?: string | null;
+  sourceInputHash?: string | null;
+  sourceExplanation?: string | null;
   reason: string;
   status?: ProjectCostItemStatus;
+};
+
+export type ExternalCostRuleExceptionStatus =
+  | "review_required"
+  | "resolved"
+  | "voided";
+
+export type ExternalCostRuleExceptionPolicy =
+  | "route_item_to_review"
+  | "block_batch"
+  | "use_explicit_default";
+
+export type ExternalCostRuleExceptionRecord = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  importBatchId: string;
+  importRowIndex: number;
+  ruleVersionId?: string | null;
+  variableName: string;
+  policy: ExternalCostRuleExceptionPolicy;
+  sourceContextSnapshot: Record<string, unknown>;
+  status: ExternalCostRuleExceptionStatus;
+  resolutionValue?: Record<string, unknown> | null;
+  resolutionReason?: string | null;
+  createdBy?: string | null;
+  resolvedBy?: string | null;
+  createdAt?: string;
+  resolvedAt?: string | null;
+};
+
+export type SettlementReconciliationRunTriggerType =
+  | "manual"
+  | "import_batch"
+  | "settlement_batch"
+  | "scheduled";
+
+export type SettlementReconciliationRunRecord = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  periodStart: string;
+  periodEnd: string;
+  triggerType: SettlementReconciliationRunTriggerType;
+  triggerBatchId?: string | null;
+  coreInputHash: string;
+  coreResult: Record<string, unknown>;
+  ruleVersionId?: string | null;
+  formulaHash?: string | null;
+  customChecks: Record<string, unknown>;
+  finalChecks: Record<string, unknown>;
+  blocked: boolean;
+  warnings: unknown[];
+  createdBy?: string | null;
+  createdAt?: string;
+};
+
+export type ExternalCostRuleReplayItemInput = {
+  importRowIndex?: number;
+  ruleVersionId?: string | null;
+  streamerId?: string | null;
+  supplierOrganizationId?: string | null;
+  liveReportId?: string | null;
+  itemType: ProjectCostItemType;
+  amountCents: number;
+  direction: ProjectCostItemDirection;
+  evidenceLevel: ComplexCostEvidenceLevel;
+  sourcePayload: Record<string, unknown>;
+  sourceExecutionKey: string;
+  sourceInputHash: string;
+  sourceExplanation?: string | null;
+  status: Extract<ProjectCostItemStatus, "pending_review">;
+};
+
+export type ReplayExternalCostRuleExceptionItemsInput = {
+  organizationId: string;
+  projectId: string;
+  importBatchId: string;
+  importRowIndex: number;
+  idempotencyKey: string;
+  inputHash: string;
+  createdBy: string;
+  items: ExternalCostRuleReplayItemInput[];
+};
+
+export type ReplayExternalCostRuleExceptionItemsResult = {
+  items: ProjectCostItemRecord[];
+  idempotencyStatus: "created" | "existing";
 };
 
 export type ComplexCostDashboardRecord = {

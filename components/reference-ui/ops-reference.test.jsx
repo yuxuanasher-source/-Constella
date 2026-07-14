@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import {
   act,
   fireEvent,
@@ -160,6 +162,424 @@ const projectManagementCards = [
     risk: "medium",
   },
 ];
+
+describe("OpsReferenceApp responsive navigation shell", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const renderShell = () =>
+    render(
+      <OpsReferenceApp
+        initialRoute="export"
+        projectCards={[]}
+        collaborationProjectCards={[]}
+        streamerCards={[]}
+        applicationQueue={[]}
+        auditEntries={[]}
+      />,
+    );
+
+  const stubMobileViewport = () => {
+    const mediaQueryList = {
+      matches: true,
+      media: "(max-width: 720px)",
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mediaQueryList),
+    );
+    return mediaQueryList;
+  };
+
+  const stubResponsiveViewport = (initialMatches) => {
+    const listeners = new Set();
+    const mediaQueryList = {
+      matches: initialMatches,
+      media: "(max-width: 720px)",
+      addEventListener: vi.fn((type, listener) => {
+        if (type === "change") listeners.add(listener);
+      }),
+      removeEventListener: vi.fn((type, listener) => {
+        if (type === "change") listeners.delete(listener);
+      }),
+    };
+    vi.stubGlobal("matchMedia", vi.fn(() => mediaQueryList));
+    return {
+      setMatches(matches) {
+        mediaQueryList.matches = matches;
+        listeners.forEach((listener) =>
+          listener({ matches, media: mediaQueryList.media }),
+        );
+      },
+    };
+  };
+
+  it("exposes drawer state and closes from the close button", () => {
+    renderShell();
+
+    const menuButton = screen.getByLabelText("打开主导航");
+    const drawer = screen.getByRole("complementary", { name: "主导航" });
+
+    expect(menuButton).toHaveAttribute("title", "打开主导航");
+    expect(menuButton).toHaveAttribute("aria-controls", "ops-sidebar-drawer");
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(drawer).toHaveAttribute("id", "ops-sidebar-drawer");
+    expect(drawer).toHaveAttribute("data-open", "false");
+
+    fireEvent.click(menuButton);
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "true");
+    expect(drawer).toHaveAttribute("data-open", "true");
+    expect(screen.getByLabelText("关闭主导航")).toHaveFocus();
+
+    fireEvent.click(screen.getByLabelText("关闭主导航"));
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(drawer).toHaveAttribute("data-open", "false");
+    expect(menuButton).toHaveFocus();
+  });
+
+  it("makes the background inert and hidden from assistive tech while open", () => {
+    const { container } = renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const main = container.querySelector(".ops-reference-main");
+
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+
+    fireEvent.click(menuButton);
+
+    expect(main).toHaveAttribute("inert");
+    expect(main).toHaveAttribute("aria-hidden", "true");
+
+    fireEvent.click(screen.getByLabelText("关闭主导航"));
+
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("loops focus through only the visibly tabbable drawer controls", () => {
+    renderShell();
+    fireEvent.click(screen.getByLabelText("打开主导航"));
+
+    const closeButton = screen.getByLabelText("关闭主导航");
+    const accountSummary = screen.getByRole("button", { name: /账号菜单/ });
+
+    expect(closeButton).toHaveFocus();
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(accountSummary).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.click(accountSummary);
+    const logout = screen.getByRole("menuitem", { name: "退出登录" });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(logout).toHaveFocus();
+  });
+
+  it("clears modal isolation when the viewport leaves the mobile breakpoint", () => {
+    let changeListener;
+    const mediaQueryList = {
+      matches: true,
+      media: "(max-width: 720px)",
+      addEventListener: vi.fn((type, listener) => {
+        if (type === "change") changeListener = listener;
+      }),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mediaQueryList),
+    );
+
+    const { container, unmount } = renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const main = container.querySelector(".ops-reference-main");
+
+    fireEvent.click(menuButton);
+    expect(main).toHaveAttribute("inert");
+    expect(main).toHaveAttribute("aria-hidden", "true");
+    expect(mediaQueryList.addEventListener).toHaveBeenCalledWith(
+      "change",
+      expect.any(Function),
+    );
+    expect(changeListener).toEqual(expect.any(Function));
+
+    act(() => {
+      mediaQueryList.matches = false;
+      changeListener({ matches: false, media: mediaQueryList.media });
+    });
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+    expect(main).toHaveFocus();
+    expect(menuButton).not.toHaveFocus();
+
+    unmount();
+    expect(mediaQueryList.addEventListener).toHaveBeenCalledWith(
+      "change",
+      changeListener,
+    );
+    expect(mediaQueryList.removeEventListener).toHaveBeenCalledWith(
+      "change",
+      changeListener,
+    );
+  });
+
+  it("hands mobile drawer focus to the profile dialog and lets it own Escape", () => {
+    stubMobileViewport();
+    const { container } = renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const main = container.querySelector(".ops-reference-main");
+
+    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "个人资料" }));
+
+    const dialog = screen.getByRole("dialog", { name: "个人资料" });
+    const dialogClose = within(dialog).getByRole("button", { name: "关闭" });
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+    expect(dialogClose).toHaveFocus();
+    expect(dialog).toContainElement(document.activeElement);
+
+    fireEvent.keyDown(dialogClose, { key: "Escape" });
+
+    expect(
+      screen.queryByRole("dialog", { name: "个人资料" }),
+    ).not.toBeInTheDocument();
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(menuButton).toHaveFocus();
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("contains profile dialog Tab navigation within visible controls", () => {
+    const { container } = renderShell();
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "个人资料" }));
+
+    const dialog = screen.getByRole("dialog", { name: "个人资料" });
+    const closeButton = within(dialog).getByRole("button", { name: "关闭" });
+    const saveButton = within(dialog).getByRole("button", {
+      name: "保存头像",
+    });
+    const hiddenFileInput = within(dialog).getByLabelText("上传头像图片");
+
+    expect(hiddenFileInput).toHaveStyle({ display: "none" });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.keyDown(closeButton, { key: "Tab", shiftKey: true });
+    expect(saveButton).toHaveFocus();
+
+    fireEvent.keyDown(saveButton, { key: "Tab" });
+    expect(closeButton).toHaveFocus();
+    expect(dialog).toContainElement(container.ownerDocument.activeElement);
+  });
+
+  it("deactivates the mobile drawer before opening organization settings", () => {
+    stubMobileViewport();
+    const { container } = renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const main = container.querySelector(".ops-reference-main");
+
+    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+    const organizationName = within(dialog).getByLabelText("组织名称");
+    const closeButton = within(dialog).getByRole("button", { name: "关闭" });
+    const saveButton = within(dialog).getByRole("button", {
+      name: "保存功能设置",
+    });
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+    expect(organizationName).toHaveFocus();
+
+    closeButton.focus();
+    fireEvent.keyDown(closeButton, { key: "Tab", shiftKey: true });
+    expect(saveButton).toHaveFocus();
+
+    fireEvent.keyDown(saveButton, { key: "Tab" });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.keyDown(organizationName, { key: "Escape" });
+
+    expect(
+      screen.queryByRole("dialog", { name: "组织功能设置" }),
+    ).not.toBeInTheDocument();
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(menuButton).toHaveFocus();
+    expect(main).not.toHaveAttribute("inert");
+    expect(main).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("exposes organization settings as a named modal drawer", () => {
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(
+      within(dialog).getByRole("button", { name: "关闭" }),
+    ).toHaveAttribute("type", "button");
+  });
+
+  it("portals shared drawers and restores exact body isolation from the backdrop", () => {
+    const preservedSibling = document.createElement("div");
+    preservedSibling.setAttribute("inert", "");
+    preservedSibling.setAttribute("aria-hidden", "false");
+    document.body.appendChild(preservedSibling);
+
+    try {
+      const { container } = renderShell();
+      const opener = screen.getByRole("button", { name: /未配置组织/ });
+      opener.focus();
+      fireEvent.click(opener);
+
+      const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+      const layer = dialog.closest(".ops-drawer-layer");
+      expect(layer?.parentElement).toBe(document.body);
+      expect(layer).not.toHaveAttribute("inert");
+      expect(layer).not.toHaveAttribute("aria-hidden");
+      expect(container).toHaveAttribute("inert");
+      expect(container).toHaveAttribute("aria-hidden", "true");
+      expect(preservedSibling).toHaveAttribute("inert");
+      expect(preservedSibling).toHaveAttribute("aria-hidden", "true");
+
+      const backdrop = within(layer).getByRole("button", {
+        name: "关闭抽屉遮罩",
+      });
+      expect(backdrop).toHaveAttribute("tabindex", "-1");
+      fireEvent.click(backdrop);
+
+      expect(
+        screen.queryByRole("dialog", { name: "组织功能设置" }),
+      ).not.toBeInTheDocument();
+      expect(container).not.toHaveAttribute("inert");
+      expect(container).not.toHaveAttribute("aria-hidden");
+      expect(preservedSibling).toHaveAttribute("inert");
+      expect(preservedSibling).toHaveAttribute("aria-hidden", "false");
+      expect(opener).toHaveFocus();
+    } finally {
+      preservedSibling.remove();
+    }
+  });
+
+  it("keeps the organization settings drawer within the viewport width", () => {
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+
+    expect(
+      screen.getByRole("dialog", { name: "组织功能设置" }),
+    ).toHaveStyle({
+      width: "460px",
+      maxWidth: "100vw",
+      boxSizing: "border-box",
+    });
+  });
+
+  it("restores focus to the organization page trigger after closing settings", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="org"
+        organizationMembers={[]}
+        projectCards={[]}
+        streamerCards={[]}
+        billingStatus={{ plan: "free" }}
+      />,
+    );
+    const settingsButton = screen.getByRole("button", { name: "组织设置" });
+
+    fireEvent.click(settingsButton);
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
+
+    expect(
+      screen.queryByRole("dialog", { name: "组织功能设置" }),
+    ).not.toBeInTheDocument();
+    expect(settingsButton).toHaveFocus();
+  });
+
+  it("falls back to main when organization settings crosses mobile to desktop", () => {
+    const viewport = stubResponsiveViewport(true);
+    const { container } = renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const main = container.querySelector(".ops-reference-main");
+
+    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+
+    act(() => viewport.setMatches(false));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+
+    expect(main).toHaveFocus();
+    expect(menuButton).not.toHaveFocus();
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it("falls back to mobile navigation when a desktop sidebar opener becomes hidden", () => {
+    const viewport = stubResponsiveViewport(false);
+    renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+    const sidebarOpener = screen.getByRole("button", { name: /未配置组织/ });
+    sidebarOpener.focus();
+    fireEvent.click(sidebarOpener);
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+
+    act(() => viewport.setMatches(true));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+
+    expect(menuButton).toHaveFocus();
+    expect(sidebarOpener).not.toHaveFocus();
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it("closes the drawer with Escape", () => {
+    renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+
+    fireEvent.click(menuButton);
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(menuButton).toHaveFocus();
+  });
+
+  it("closes the drawer from its accessible backdrop", () => {
+    renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+
+    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByLabelText("关闭主导航遮罩"));
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("关闭主导航遮罩")).not.toBeInTheDocument();
+    expect(menuButton).toHaveFocus();
+  });
+
+  it("closes the drawer after internal route navigation", () => {
+    renderShell();
+    const menuButton = screen.getByLabelText("打开主导航");
+
+    fireEvent.click(menuButton);
+    fireEvent.click(screen.getByRole("button", { name: "项目管理" }));
+
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("全部项目")).toBeInTheDocument();
+    expect(menuButton).toHaveFocus();
+  });
+});
 
 describe("OpsReferenceApp role dashboard contract", () => {
   afterEach(() => {
@@ -6356,6 +6776,197 @@ describe("OpsReferenceApp live task smoke", () => {
     vi.unstubAllGlobals();
   });
 
+  const openNestedLiveReview = () => {
+    const view = render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[
+          {
+            id: "task-nested-review",
+            name: "Nested Review Task",
+            status: "pending_live",
+            project: "project-live",
+            projectId: "project-live",
+            projectName: "Fixture Project",
+            streamerId: "streamer-one",
+            streamerName: "Streamer One",
+            dayIdx: 1,
+            startHour: 20,
+            endHour: 22,
+            type: "project",
+          },
+        ]}
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+        applicationQueue={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByTitle("Nested Review Task"));
+    const taskDrawer = screen.getByRole("dialog");
+    const reviewTrigger = within(taskDrawer).getByRole("button", {
+      name: "直播复盘",
+    });
+    fireEvent.click(reviewTrigger);
+
+    return {
+      reviewDialog: screen.getByRole("dialog", { name: "直播复盘" }),
+      reviewTrigger,
+      taskDrawer,
+      ...view,
+    };
+  };
+
+  it("opens live review as a modal and focuses its accessible close button", () => {
+    const { reviewDialog } = openNestedLiveReview();
+
+    expect(reviewDialog).toHaveAttribute("aria-modal", "true");
+    const closeButton = within(reviewDialog).getByRole("button", {
+      name: "关闭直播复盘",
+    });
+    expect(closeButton).toHaveAttribute("type", "button");
+    expect(closeButton).toHaveFocus();
+  });
+
+  it("loops live review focus without entering the underlying task drawer", () => {
+    const { reviewDialog, taskDrawer } = openNestedLiveReview();
+    const firstControl = within(reviewDialog).getByRole("button", {
+      name: "编辑",
+    });
+    const lastControl = within(reviewDialog).getByRole("button", {
+      name: "保存到组织知识库",
+    });
+
+    firstControl.focus();
+    fireEvent.keyDown(firstControl, { key: "Tab", shiftKey: true });
+    expect(lastControl).toHaveFocus();
+    expect(reviewDialog).toContainElement(document.activeElement);
+
+    fireEvent.keyDown(lastControl, { key: "Tab" });
+    expect(firstControl).toHaveFocus();
+    expect(reviewDialog).toContainElement(document.activeElement);
+    expect(taskDrawer).toBeInTheDocument();
+  });
+
+  it("closes only live review with Escape and restores its task trigger", () => {
+    const { reviewDialog, reviewTrigger, taskDrawer } = openNestedLiveReview();
+
+    fireEvent.keyDown(reviewDialog, { key: "Escape" });
+
+    expect(
+      screen.queryByRole("dialog", { name: "直播复盘" }),
+    ).not.toBeInTheDocument();
+    expect(taskDrawer).toBeInTheDocument();
+    expect(reviewTrigger).toHaveFocus();
+  });
+
+  it("portals nested live review and preserves the outer modal isolation stack", () => {
+    const { reviewDialog, reviewTrigger, taskDrawer } = openNestedLiveReview();
+    const outerLayer = taskDrawer.closest(".ops-drawer-layer");
+    const appContainer = document.querySelector(".ops-reference-shell")?.parentElement;
+
+    expect(reviewDialog.parentElement).toBe(document.body);
+    expect(reviewDialog).not.toHaveAttribute("inert");
+    expect(reviewDialog).not.toHaveAttribute("aria-hidden");
+    expect(outerLayer).toHaveAttribute("inert");
+    expect(outerLayer).toHaveAttribute("aria-hidden", "true");
+    expect(taskDrawer).not.toHaveAttribute("aria-modal");
+    expect(appContainer).toHaveAttribute("inert");
+    expect(appContainer).toHaveAttribute("aria-hidden", "true");
+
+    fireEvent.keyDown(reviewDialog, { key: "Escape" });
+
+    expect(reviewTrigger).toHaveFocus();
+    expect(taskDrawer).toHaveAttribute("aria-modal", "true");
+    expect(outerLayer).not.toHaveAttribute("inert");
+    expect(outerLayer).not.toHaveAttribute("aria-hidden");
+    expect(appContainer).toHaveAttribute("inert");
+    expect(appContainer).toHaveAttribute("aria-hidden", "true");
+
+    fireEvent.click(within(taskDrawer).getByRole("button", { name: "关闭" }));
+    expect(appContainer).not.toHaveAttribute("inert");
+    expect(appContainer).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("restores original body isolation when the nested modal tree unmounts together", () => {
+    const preservedSibling = document.createElement("div");
+    preservedSibling.setAttribute("inert", "");
+    preservedSibling.setAttribute("aria-hidden", "false");
+    document.body.appendChild(preservedSibling);
+
+    try {
+      const { container, reviewDialog, unmount } = openNestedLiveReview();
+
+      expect(reviewDialog).toBeInTheDocument();
+      expect(container).toHaveAttribute("inert");
+      expect(container).toHaveAttribute("aria-hidden", "true");
+      expect(preservedSibling).toHaveAttribute("inert", "");
+      expect(preservedSibling).toHaveAttribute("aria-hidden", "true");
+
+      unmount();
+
+      expect(container).not.toHaveAttribute("inert");
+      expect(container).not.toHaveAttribute("aria-hidden");
+      expect(preservedSibling).toHaveAttribute("inert", "");
+      expect(preservedSibling).toHaveAttribute("aria-hidden", "false");
+    } finally {
+      preservedSibling.remove();
+    }
+  });
+
+  it("publishes a single-column mobile layout contract for live review", () => {
+    const { reviewDialog } = openNestedLiveReview();
+
+    expect(reviewDialog).toHaveClass("ops-live-review-overlay");
+    expect(
+      reviewDialog.querySelector(".ops-live-review-panel"),
+    ).not.toBeNull();
+    expect(
+      reviewDialog.querySelector(".ops-live-review-header"),
+    ).not.toBeNull();
+    expect(reviewDialog.querySelector(".ops-live-review-body")).not.toBeNull();
+    expect(
+      reviewDialog.querySelector(".ops-live-review-editor"),
+    ).not.toBeNull();
+    expect(
+      reviewDialog.querySelector(".ops-live-review-sidebar"),
+    ).not.toBeNull();
+
+    const css = reviewDialog.querySelector("style")?.textContent;
+    expect(css).toMatch(/@media\s*\(max-width:\s*720px\)/);
+    expect(css).toMatch(
+      /\.ops-live-review-body\s*\{[^}]*flex-direction:\s*column;/s,
+    );
+    expect(css).toMatch(
+      /\.ops-live-review-editor\s*\{[^}]*width:\s*100%;[^}]*min-height:\s*280px;/s,
+    );
+    expect(css).toMatch(
+      /\.ops-live-review-sidebar\s*\{[^}]*width:\s*100%\s*!important;[^}]*max-height:/s,
+    );
+  });
+
+  it("focuses a shared drawer fallback and restores its visible opener", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="tasks"
+        liveTasks={[]}
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+        applicationQueue={[]}
+      />,
+    );
+    const opener = screen.getByRole("button", { name: "新建任务" });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const dialog = screen.getByRole("dialog", { name: "新建任务" });
+    const closeButton = within(dialog).getByRole("button", { name: "关闭" });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.click(closeButton);
+    expect(opener).toHaveFocus();
+  });
+
   it("creates an ops live task without pulling historical tasks into the queue", async () => {
     const todayKey = new Date().toISOString().slice(0, 10);
     const createdTask = {
@@ -7622,6 +8233,372 @@ describe("OpsReferenceApp settlement smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  const renderMobileSettlementLayout = () =>
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[
+          {
+            id: "batch-mobile-layout",
+            projectId: "project-alpha",
+            type: "streamer_payable",
+            name: "六月主播应付批次",
+            project: "Alpha Launch",
+            vendor: "Vendor A",
+            period: "2026-06-01 -> 2026-06-30",
+            items: 1,
+            amount: 1000,
+            status: "draft",
+            updated: "2026-06-30 12:00",
+            creator: "Finance Owner",
+          },
+        ]}
+        liveBatchDetails={{
+          "batch-mobile-layout": [
+            {
+              id: "item-mobile-layout",
+              streamer: "主播甲",
+              rule: "CPT",
+              hours: 10,
+              qty: "10 小时",
+              base: 0,
+              variable: 1000,
+              adjust: 0,
+              total: 1000,
+            },
+          ],
+        }}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-06-01",
+          periodEnd: "2026-06-30",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+  it("exposes semantic hooks for the mobile settlement layout", () => {
+    const { container } = renderMobileSettlementLayout();
+
+    expect(
+      screen
+        .getByRole("heading", { name: "结算中心" })
+        .closest(".ops-page-header"),
+    ).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "结算中心" })).toHaveClass(
+      "ops-page-header-title",
+    );
+    expect(
+      screen
+        .getByRole("button", { name: "新建结算批次" })
+        .closest(".ops-page-header-actions"),
+    ).not.toBeNull();
+    expect(container.querySelector(".ops-settlement-content")).not.toBeNull();
+    expect(
+      screen
+        .getByLabelText("结算周期开始")
+        .closest(".ops-settlement-period-controls"),
+    ).not.toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "结算详情" })
+        .closest(".ops-settlement-tabs-scroll"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".ops-settlement-summary-grid"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".ops-settlement-reconciliation-header"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".ops-settlement-batch-layout"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".ops-settlement-batch-detail"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        ".ops-settlement-batch-detail .ops-data-table-scroll",
+      ),
+    ).toHaveStyle({ overflow: "auto" });
+
+    fireEvent.click(screen.getByRole("button", { name: "新建结算批次" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "导入 CPA / CPS 数据" }),
+    );
+
+    expect(
+      container.querySelector(".ops-settlement-new-batch-grid"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".ops-settlement-manual-form"),
+    ).not.toBeNull();
+  });
+
+  it("shows internal custom-rule breakdowns and open exception queue in settlement detail", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[
+          {
+            id: "batch-rule-explain",
+            projectId: "project-alpha",
+            type: "streamer_payable",
+            name: "七月自定义规则应付",
+            project: "Alpha Launch",
+            vendor: "—",
+            period: "2026-07-01 -> 2026-07-31",
+            periodStart: "2026-07-01",
+            periodEnd: "2026-07-31",
+            items: 1,
+            amount: 1040,
+            status: "generated",
+            updated: "2026-07-31 12:00",
+            creator: "Finance Owner",
+          },
+        ]}
+        liveBatchDetails={{
+          "batch-rule-explain": [
+            {
+              id: "item-rule-explain",
+              streamer: "主播甲",
+              rule: "系统核验 CPT/底薪",
+              hours: 4,
+              qty: "yellow · system",
+              base: 0,
+              variable: 1040,
+              adjust: 0,
+              total: 1040,
+              ruleBreakdown: {
+                mode: "custom",
+                executionGrain: "project_streamer_period",
+                appliedVersionLabels: ["项目规则 v3", "主播专属 v2"],
+                sourceReportCount: 2,
+                components: [
+                  { key: "baseSalary", label: "底薪", amountCents: 80000 },
+                  { key: "cptPay", label: "有效时长", amountCents: 24000 },
+                ],
+                missingDataDecisions: [
+                  {
+                    variableName: "salesAmountCents",
+                    policy: "route_item_to_review",
+                    decision: "review_required",
+                  },
+                ],
+                explanationZh: "底薪 800 元 + 有效时长 240 元。",
+              },
+              openExceptions: [
+                {
+                  id: "exception-open",
+                  liveReportId: "report-2",
+                  variableName: "salesAmountCents",
+                  policy: "route_item_to_review",
+                  status: "review_required",
+                },
+              ],
+            },
+            {
+              id: "item-rule-explain-2",
+              streamer: "主播乙",
+              rule: "系统核验 CPS",
+              hours: 1,
+              qty: "green · system",
+              base: 0,
+              variable: 90,
+              adjust: 0,
+              total: 90,
+              ruleBreakdown: {
+                mode: "custom",
+                executionGrain: "report",
+                appliedVersionLabels: ["达人规则 v9"],
+                sourceReportCount: 1,
+                components: [
+                  { key: "bonus", label: "奖励", amountCents: 5000 },
+                  { key: "cpa", label: "CPA", amountCents: 4000 },
+                ],
+                missingDataDecisions: [],
+                explanationZh:
+                  "主播乙按达人规则 v9 计算奖励 50 元与 CPA 40 元。",
+              },
+              openExceptions: [],
+            },
+          ],
+        }}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    const ruleBreakdown = screen.getByText("规则拆解").closest("div")
+      ?.parentElement?.parentElement;
+    expect(ruleBreakdown).toBeTruthy();
+    expect(ruleBreakdown).toHaveTextContent("规则拆解");
+    expect(screen.getByText("项目规则 v3")).toBeInTheDocument();
+    expect(screen.getByText("主播专属 v2")).toBeInTheDocument();
+    expect(screen.getByText("project_streamer_period")).toBeInTheDocument();
+    expect(screen.getByText("来源报数 2 条")).toBeInTheDocument();
+    expect(ruleBreakdown).toHaveTextContent("底薪");
+    expect(ruleBreakdown).toHaveTextContent("800");
+    expect(ruleBreakdown).toHaveTextContent("有效时长");
+    expect(ruleBreakdown).toHaveTextContent("240");
+    expect(screen.getByText("达人规则 v9")).toBeInTheDocument();
+    expect(
+      screen.getByText("主播乙按达人规则 v9 计算奖励 50 元与 CPA 40 元。"),
+    ).toBeInTheDocument();
+    expect(ruleBreakdown).toHaveTextContent("奖励");
+    expect(ruleBreakdown).toHaveTextContent("50");
+    expect(ruleBreakdown).toHaveTextContent("CPA");
+    expect(ruleBreakdown).toHaveTextContent("40");
+    expect(screen.getByText("缺失数据决策")).toBeInTheDocument();
+    expect(screen.getByText("salesAmountCents")).toBeInTheDocument();
+    expect(screen.getByText("异常队列")).toBeInTheDocument();
+    expect(screen.getByText("exception-open")).toBeInTheDocument();
+  });
+
+  it("publishes a 720px settlement breakpoint without page-level scrolling", () => {
+    const { container } = renderMobileSettlementLayout();
+    const css = container.querySelector(
+      'style[data-ops-responsive-shell="true"]',
+    )?.textContent;
+
+    expect(css).toMatch(
+      /\.ops-page-header-inner\s*\{[^}]*flex-direction:\s*column;/s,
+    );
+    expect(css).toMatch(
+      /\.ops-page-header-actions\s*\{[^}]*flex-wrap:\s*wrap;/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-summary-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-reconciliation-metrics\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-new-batch-grid,\s*\.ops-settlement-manual-form\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-batch-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-batch-detail\s*\{[^}]*position:\s*static/s,
+    );
+    expect(css).toMatch(
+      /\.ops-settlement-tabs-scroll\s*\{[^}]*overflow-x:\s*auto;/s,
+    );
+    expect(css).toMatch(
+      /\.ops-reference-content\s*\{[^}]*overflow-x:\s*visible;/s,
+    );
+  });
+
+  it("publishes an independent tablet settlement breakpoint above mobile navigation", () => {
+    const { container } = renderMobileSettlementLayout();
+    const css = container.querySelector(
+      'style[data-ops-responsive-shell="true"]',
+    )?.textContent;
+
+    expect(css).toMatch(
+      /@media\s*\(min-width:\s*721px\)\s*and\s*\(max-width:\s*1100px\)/,
+    );
+    expect(css).toMatch(
+      /@media\s*\(min-width:\s*721px\)[\s\S]*?\.ops-settlement-new-batch-grid,\s*\.ops-settlement-manual-form\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /@media\s*\(min-width:\s*721px\)[\s\S]*?\.ops-settlement-batch-layout\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(css).toMatch(
+      /@media\s*\(min-width:\s*721px\)[\s\S]*?\.ops-settlement-batch-detail\s*\{[^}]*position:\s*static/s,
+    );
+  });
+
+  it("gates the AI custom settlement tab with the public feature flag", async () => {
+    vi.stubEnv("NEXT_PUBLIC_AI_CUSTOM_SETTLEMENT_RULES_ENABLED", "true");
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes("/settlement-rules/variable-catalog?")) {
+        return new Response(
+          JSON.stringify({
+            catalog: {
+              scope: "receivable",
+              executionGrain: "project_period",
+              businessTimezone: "Asia/Shanghai",
+              businessTimezoneConfirmed: true,
+              businessTimezoneSource: "contract_default",
+              hasHistory: false,
+              version: "a".repeat(64),
+              variables: [],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[]}
+        liveBatchDetails={{}}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "AI 自定义规则" }));
+
+    const workspace = await screen.findByTestId("custom-rule-workspace");
+    expect(within(workspace).getByText("Alpha Launch")).toBeInTheDocument();
+    expect(within(workspace).getByText("2026-07-01 至 2026-07-31")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-alpha/settlement-rules/variable-catalog?scope=receivable&executionGrain=project_period",
+      expect.objectContaining({ method: "GET", signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("keeps the existing settlement tabs unchanged when the public flag is off", () => {
+    vi.stubEnv("NEXT_PUBLIC_AI_CUSTOM_SETTLEMENT_RULES_ENABLED", "false");
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[]}
+        liveBatchDetails={{}}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "AI 自定义规则" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "结算详情" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "项目财务设置" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "主播应付规则" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "项目开支" })).toBeInTheDocument();
   });
 
   it("renders report badges for newer backend report statuses", () => {
@@ -7832,6 +8809,8 @@ describe("OpsReferenceApp settlement smoke", () => {
       project: "Real Project",
       vendor: "-",
       period: "2026-06-01 -> 2026-06-30",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
       items: 1,
       amount: 5200,
       status: "generated",
@@ -7854,21 +8833,68 @@ describe("OpsReferenceApp settlement smoke", () => {
       createdBy: "Finance",
       updatedAt: "2026-06-03T10:00:00.000Z",
     };
+    const generatedApiBatch = {
+      ...confirmedApiBatch,
+      status: "generated",
+    };
+    let confirmSucceeded = false;
     const fetchMock = vi.fn(async (url) => {
       const target = String(url);
       if (target === "/api/settlement-batches/batch-confirmable/confirm") {
+        confirmSucceeded = true;
         return { ok: true, json: async () => ({ batch: confirmedApiBatch }) };
+      }
+      if (
+        target ===
+        "/api/projects/project-real/settlement-reconciliation?periodStart=2026-06-01&periodEnd=2026-06-30"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            reconciliation: {
+              runAt: "2026-06-03T09:00:00.000Z",
+              inputFreshness: { stale: false },
+              income: { receivableCents: 800_000 },
+              cost: {
+                payableCents: 520_000,
+                externalCostCents: 0,
+                procurementCents: 0,
+                totalCents: 520_000,
+              },
+              tax: {
+                outputVatCents: 0,
+                surtaxCents: 0,
+                taxTotalCents: 0,
+                invoiceAmountCents: 800_000,
+              },
+              profit: { grossMarginCents: 280_000, marginRateBps: 3500 },
+              checks: [
+                {
+                  key: "core_margin",
+                  source: "core",
+                  severity: "pass",
+                  message: "毛利通过",
+                },
+              ],
+            },
+          }),
+        };
       }
       if (target === "/api/settlement-batches/batch-confirmable") {
         return {
           ok: true,
-          json: async () => ({ batch: confirmedApiBatch, items: [] }),
+          json: async () => ({
+            batch: confirmSucceeded ? confirmedApiBatch : generatedApiBatch,
+            items: [],
+          }),
         };
       }
       if (target === "/api/settlement-batches") {
         return {
           ok: true,
-          json: async () => ({ batches: [confirmedApiBatch] }),
+          json: async () => ({
+            batches: [confirmSucceeded ? confirmedApiBatch : generatedApiBatch],
+          }),
         };
       }
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
@@ -7885,6 +8911,13 @@ describe("OpsReferenceApp settlement smoke", () => {
       />,
     );
 
+    const confirmButton = screen.getByRole("button", { name: "财务确认" });
+    expect(confirmButton).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "运行校验" }));
+    await screen.findByRole("region", { name: "单项目结算校验结果" });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "财务确认" })).not.toBeDisabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "财务确认" }));
 
     expect(promptMock).toHaveBeenCalledWith("财务确认原因");
@@ -8043,6 +9076,181 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.queryByText("¥286,400")).not.toBeInTheDocument();
     expect(screen.queryByText("¥92,400")).not.toBeInTheDocument();
     expect(screen.queryByText("¥73,200")).not.toBeInTheDocument();
+  });
+
+  it("shows reconciliation provenance, actionable blockers, warnings, freshness, and keeps the lock reason", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (
+        String(url) ===
+        "/api/projects/project-alpha/settlement-reconciliation?periodStart=2026-07-01&periodEnd=2026-07-31"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            reconciliation: {
+              runAt: "2026-07-12T01:02:00.000Z",
+              inputFreshness: { stale: false },
+              income: { receivableCents: 120_000 },
+              cost: {
+                payableCents: 90_000,
+                externalCostCents: 10_000,
+                procurementCents: 0,
+                totalCents: 100_000,
+              },
+              tax: {
+                outputVatCents: 7_200,
+                surtaxCents: 864,
+                taxTotalCents: 8_064,
+                invoiceAmountCents: 127_200,
+              },
+              profit: { grossMarginCents: 11_936, marginRateBps: 995 },
+              checks: [
+                {
+                  key: "core_margin",
+                  source: "core",
+                  severity: "pass",
+                  message: "毛利率 10.0% 达标",
+                },
+                {
+                  key: "custom_missing_cap",
+                  source: { kind: "custom_rule", label: "结算风险校验" },
+                  severity: "block",
+                  blockCategory: "missing_data",
+                  message: "缺少投流成本确认值",
+                  ruleVersion: {
+                    id: "rule-risk-v3",
+                    versionNumber: 3,
+                    contractTitle: "投流成本完整性",
+                    contractHash: "abcdef1234567890",
+                    formula: "traffic_cost == null",
+                    ast: { type: "identifier" },
+                  },
+                },
+                {
+                  key: "custom_exception",
+                  source: { kind: "custom_rule", label: "结算风险校验" },
+                  severity: "warn",
+                  blockCategory: "unresolved_exception",
+                  message: "一条成本异常已复核但仍建议财务复看",
+                },
+              ],
+            },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        currentUser={{ id: "user-finance", name: "Finance A", role: "finance" }}
+        projectCards={projectManagementCards}
+        liveBatches={[
+          {
+            id: "batch-risk-check",
+            projectId: "project-alpha",
+            type: "streamer_payable",
+            name: "Alpha Launch · 七月主播应付",
+            project: "Alpha Launch",
+            vendor: "—",
+            period: "2026-07-01 → 2026-07-31",
+            periodStart: "2026-07-01",
+            periodEnd: "2026-07-31",
+            items: 1,
+            amount: 900,
+            status: "generated",
+            updated: "2026-07-31 12:00",
+            creator: "Finance Owner",
+          },
+        ]}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    const lockReason = screen.getByLabelText("锁定原因");
+    fireEvent.change(lockReason, {
+      target: { value: "已核对流水，等待补投流成本" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "运行校验" }));
+
+    const blockingHeading = await screen.findByRole("heading", {
+      name: "阻断项",
+    });
+    expect(blockingHeading).toHaveFocus();
+    const reconciliation = screen.getByRole("region", {
+      name: "单项目结算校验结果",
+    });
+    expect(reconciliation).toHaveTextContent("运行时间 2026-07-12 01:02");
+    expect(reconciliation).toHaveTextContent("输入新鲜");
+    expect(reconciliation).toHaveTextContent("系统校验");
+    expect(reconciliation).toHaveTextContent("结算风险校验");
+    expect(reconciliation).toHaveTextContent("阻断");
+    expect(reconciliation).toHaveTextContent("告警");
+    expect(reconciliation).toHaveTextContent("通过");
+    expect(reconciliation).toHaveTextContent("缺少数据");
+    expect(reconciliation).toHaveTextContent("未解决异常");
+    expect(reconciliation).toHaveTextContent("投流成本完整性 v3 · 合同 abcdef12");
+    expect(
+      within(reconciliation).getByRole("link", {
+        name: "投流成本完整性 v3 · 合同 abcdef12",
+      }),
+    ).toHaveAttribute("href", "/ops/internal/settlement-rules/rule-risk-v3");
+    expect(reconciliation).toHaveTextContent("¥1,200.00");
+    expect(reconciliation).toHaveTextContent("10.0%");
+    expect(reconciliation).not.toHaveTextContent("traffic_cost");
+    expect(reconciliation).not.toHaveTextContent("identifier");
+    expect(screen.getByLabelText("锁定原因")).toHaveValue(
+      "已核对流水，等待补投流成本",
+    );
+    const confirmButton = screen.getByRole("button", {
+      name: "校验未通过 · 不可确认",
+    });
+    expect(confirmButton).toBeDisabled();
+    expect(confirmButton).toHaveAttribute(
+      "title",
+      "结算校验未通过，无法确认：缺少数据：缺少投流成本确认值",
+    );
+    const lockButton = screen.getByRole("button", {
+      name: "校验未通过 · 不可锁定",
+    });
+    expect(lockButton).toBeDisabled();
+    expect(lockButton).toHaveAttribute(
+      "title",
+      "结算校验未通过，无法锁定：缺少数据：缺少投流成本确认值",
+    );
+    expect(screen.getByText("缺少数据：缺少投流成本确认值")).toBeInTheDocument();
+  });
+
+  it("keeps streamer-facing reference screens free of reconciliation rule surfaces", () => {
+    const files = [
+      "./streamer-mobile-reference.jsx",
+      "./streamer-desktop-reference.jsx",
+      "../streamer-lifecycle/streamer-lifecycle-shell.tsx",
+      "../streamer-lifecycle/streamer-lifecycle-panel.tsx",
+    ];
+    const forbidden = [
+      "settlement-reconciliation-view",
+      "buildReconciliationCheckGroups",
+      "reconciliationGate",
+      "CustomSettlementRuleWorkspace",
+      "结算风险校验",
+      "单项目结算校验",
+    ];
+
+    files.forEach((file) => {
+      const source = readFileSync(new URL(file, import.meta.url), "utf8");
+      forbidden.forEach((token) => {
+        expect(source, `${file} should not expose ${token}`).not.toContain(token);
+      });
+    });
   });
 
   it("exports report settlement details from the export settings panel", async () => {
@@ -9742,6 +10950,239 @@ describe("OpsReferenceApp complex cost smoke", () => {
 
     await screen.findByText("毛利率 58.0%");
   });
+
+  it("labels rule-generated project costs as pending review with deterministic provenance", async () => {
+    let exceptionResolved = false;
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/projects/project-live/cost-items") {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: "cost-rule-1",
+                itemType: "traffic",
+                amountCents: 12300,
+                direction: "cost",
+                evidenceLevel: "yellow",
+                status: "pending_review",
+                reason: "公式生成",
+                sourceRuleVersionId: "rule-v4",
+                sourceImportBatchId: "batch-1",
+                sourceExecutionKey: "exec-123",
+                sourceInputHash: "hash-123",
+                sourceExplanation:
+                  "Custom external-cost rule emitted traffic for 12300 cents",
+              },
+            ],
+          }),
+        };
+      }
+      if (
+        String(url) ===
+        "/api/projects/project-live/cost-imports/batch-1/rule-exceptions"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            exceptions: exceptionResolved
+              ? []
+              : [
+                  {
+                    id: "exception-cost-1",
+                    importBatchId: "batch-1",
+                    rowIndex: 2,
+                    variableName: "supplier_fee",
+                    policy: "route_item_to_review",
+                    status: "review_required",
+                    sourceRefs: {
+                      ruleVersionId: "rule-v4",
+                      sourceContextHash: "ctx-123",
+                    },
+                  },
+                ],
+          }),
+        };
+      }
+      if (
+        String(url) ===
+        "/api/projects/project-live/cost-imports/batch-1/rule-exceptions/exception-cost-1/resolve"
+      ) {
+        exceptionResolved = true;
+        return {
+          ok: true,
+          json: async () => ({
+            exception: {
+              id: "exception-cost-1",
+              importBatchId: "batch-1",
+              status: "resolved",
+            },
+            replay: { replayed: true },
+            items: [],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={taskProjectCards}
+        settlementScope={{
+          projectId: "project-live",
+          projectName: "Fixture Project",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+        }}
+        complexCost={{ enabled: true, includedProjects: 5, usedProjects: 2 }}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "项目开支" }));
+    fireEvent.change(screen.getByLabelText("结算项目"), {
+      target: { value: "project-live" },
+    });
+    let loadButton;
+    await waitFor(() => {
+      loadButton = screen
+        .getAllByRole("button", { name: "加载/刷新" })
+        .find((button) => !button.disabled);
+      expect(loadButton).toBeTruthy();
+    });
+    fireEvent.click(loadButton);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(await screen.findByText("待审核")).toBeInTheDocument();
+    expect(screen.getByText("规则版本 rule-v4")).toBeInTheDocument();
+    expect(screen.getByText(/exec-123/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Custom external-cost rule emitted traffic/),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("导入行异常待审核")).toBeInTheDocument();
+    expect(screen.getByText("exception-cost-1 · batch batch-1")).toBeInTheDocument();
+    expect(screen.getByText(/supplier_fee/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("复核值 exception-cost-1"), {
+      target: { value: "188.88" },
+    });
+    fireEvent.change(screen.getByLabelText("复核原因 exception-cost-1"), {
+      target: { value: "供应商发票金额复核" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交复核" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-live/cost-imports/batch-1/rule-exceptions/exception-cost-1/resolve",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            resolutionValue: { type: "money_cents", amountCents: 18888 },
+            resolutionReason: "供应商发票金额复核",
+          }),
+        }),
+      ),
+    );
+  });
+  it("loads unresolved import-row exceptions even when no cost items were emitted", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/projects/project-live/cost-items") {
+        return {
+          ok: true,
+          json: async () => ({ items: [] }),
+        };
+      }
+      if (String(url) === "/api/projects/project-live/cost-imports") {
+        return {
+          ok: true,
+          json: async () => ({
+            exceptionBatches: [
+              {
+                importBatchId: "batch-exception-only",
+                unresolvedExceptionCount: 1,
+              },
+            ],
+            batches: [
+              ...Array.from({ length: 25 }, (_, index) => ({
+                id: `batch-newer-${index + 1}`,
+                projectId: "project-live",
+                importType: "traffic",
+                status: "parsed",
+              })),
+            ],
+          }),
+        };
+      }
+      if (/\/cost-imports\/batch-newer-\d+\/rule-exceptions$/u.test(String(url))) {
+        return {
+          ok: true,
+          json: async () => ({ exceptions: [] }),
+        };
+      }
+      if (
+        String(url) ===
+        "/api/projects/project-live/cost-imports/batch-exception-only/rule-exceptions"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            exceptions: [
+              {
+                id: "exception-only-1",
+                importBatchId: "batch-exception-only",
+                rowIndex: 0,
+                variableName: "supplier_fee",
+                policy: "route_item_to_review",
+                status: "review_required",
+                sourceRefs: {
+                  ruleVersionId: "rule-v5",
+                  sourceContextHash: "ctx-exception-only",
+                },
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={taskProjectCards}
+        settlementScope={{
+          projectId: "project-live",
+          projectName: "Fixture Project",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+        }}
+        complexCost={{ enabled: true, includedProjects: 5, usedProjects: 2 }}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "项目开支" }));
+    fireEvent.click(screen.getByRole("button", { name: "加载/刷新" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-live/cost-imports",
+        undefined,
+      ),
+    );
+    expect(await screen.findByLabelText("导入行异常待审核")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-live/cost-imports/batch-exception-only/rule-exceptions",
+      undefined,
+    );
+    expect(
+      screen.getByText("exception-only-1 · batch batch-exception-only"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/supplier_fee/)).toBeInTheDocument();
+    expect(screen.queryByText("本项目暂无外部成本记录")).not.toBeInTheDocument();
+  });
+
 });
 
 describe("OpsReferenceApp war room smoke", () => {

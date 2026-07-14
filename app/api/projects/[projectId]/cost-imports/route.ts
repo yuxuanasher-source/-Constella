@@ -13,6 +13,31 @@ import {
 import { createProjectCostImportBatch } from "@/features/complex-cost/complex-cost-service";
 import type { ProjectCostImportType } from "@/features/complex-cost/complex-cost-types";
 
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ projectId: string }> },
+) {
+  try {
+    const { projectId } = await params;
+    const context = await getComplexCostRouteContext();
+    const exceptionBatches =
+      await context.repo.listExternalCostRuleExceptionBatchSummaries({
+      organizationId: context.auth.organizationId,
+      projectId,
+      status: "review_required",
+    });
+
+    return NextResponse.json({
+      exceptionBatches: exceptionBatches.map((batch) => ({
+        importBatchId: batch.importBatchId,
+        unresolvedExceptionCount: batch.unresolvedExceptionCount,
+      })),
+    });
+  } catch (error) {
+    return jsonError(error);
+  }
+}
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ projectId: string }> },

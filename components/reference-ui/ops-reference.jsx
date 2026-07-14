@@ -2,6 +2,7 @@
 /* eslint-disable */
 import React from "react";
 import { createPortal } from "react-dom";
+import { Menu as MenuIcon, X as XIcon } from "lucide-react";
 
 import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
@@ -16,6 +17,7 @@ import {
 } from "@/features/projects/project-ui-dto";
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
 import { resolvePaywall } from "@/features/funnel/paywall";
+import { isCustomSettlementRulesEnabled } from "@/features/settlements/custom-rule-feature-flag";
 import {
   toPricingResultDto,
   toProjectReviewDto,
@@ -33,6 +35,7 @@ import {
 } from "@/lib/markdown/render-markdown";
 
 import AiUsageDashboard from "./ai-usage-dashboard";
+import CustomSettlementRuleWorkspace from "./custom-settlement-rule-workspace";
 import SettlementRuleBuilder, {
   builderRuleFromStored,
   serializeBuilderRule,
@@ -42,9 +45,11 @@ import ProjectFinancialSettings, {
   serializeFinancialDraft,
 } from "./project-financial-settings";
 import {
+  buildReconciliationCheckGroups,
   buildReconciliationRows,
   reconciliationBlockMessage,
   reconciliationGate,
+  reconciliationRunMeta,
   reconciliationSeverityTone,
 } from "./settlement-reconciliation-view";
 import {
@@ -58,6 +63,7 @@ import {
   COST_ITEM_TYPE_OPTIONS,
   defaultCostDraft,
   formatYuanFromCents,
+  yuanInputToCents,
 } from "./external-cost-view";
 
 // ===== src\ui.jsx =====
@@ -155,6 +161,7 @@ function Button({
   disabled,
   style,
   type = "button",
+  ...buttonProps
 }) {
   const sizes = {
     sm: { h: 26, px: 10, fs: 12, gap: 4 },
@@ -201,6 +208,7 @@ function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
+      {...buttonProps}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -484,7 +492,10 @@ function DataTable({
   rowId,
 }) {
   return (
-    <div style={{ width: "100%", overflow: "auto" }}>
+    <div
+      className="ops-data-table-scroll"
+      style={{ width: "100%", overflow: "auto" }}
+    >
       <table
         style={{
           width: "100%",
@@ -1914,6 +1925,457 @@ const NAV = [
   },
 ];
 
+const OPS_MOBILE_NAVIGATION_QUERY = "(max-width: 720px)";
+
+const OPS_SHELL_RESPONSIVE_CSS = `
+  @media (min-width: 721px) and (max-width: 1100px) {
+    .ops-reference-main,
+    .ops-reference-content {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-reference-content {
+      overflow-x: hidden;
+    }
+
+    .ops-settlement-content {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      padding: 16px !important;
+      gap: 14px !important;
+    }
+
+    .ops-settlement-content > * {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-settlement-project-header,
+    .ops-settlement-period-controls,
+    .ops-settlement-batch-header,
+    .ops-settlement-batch-items-header {
+      flex-wrap: wrap;
+    }
+
+    .ops-settlement-period-controls {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-settlement-period-controls input,
+    .ops-settlement-period-controls select {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-settlement-summary-grid,
+    .ops-settlement-reconciliation-metrics {
+      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
+
+    .ops-settlement-new-batch-grid,
+    .ops-settlement-manual-form {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .ops-settlement-new-batch-form,
+    .ops-settlement-manual-form {
+      min-width: 0;
+      max-width: 100%;
+      padding: 14px !important;
+    }
+
+    .ops-settlement-batch-layout {
+      grid-template-columns: minmax(0, 1fr) !important;
+      gap: 14px !important;
+    }
+
+    .ops-settlement-batch-detail {
+      position: static !important;
+      top: auto !important;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .ops-settlement-batch-meta {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .ops-settlement-content .ops-data-table-scroll {
+      max-width: 100%;
+      overflow-x: auto;
+    }
+  }
+
+  @media ${OPS_MOBILE_NAVIGATION_QUERY} {
+    .ops-reference-shell {
+      width: 100%;
+      max-width: 100vw;
+      overflow-x: hidden;
+    }
+
+    .ops-reference-sidebar {
+      position: fixed !important;
+      inset: 0 auto 0 0;
+      z-index: 40;
+      width: min(82vw, 300px) !important;
+      max-width: calc(100vw - 48px);
+      height: 100vh !important;
+      height: 100dvh !important;
+      transform: translateX(-100%);
+      visibility: hidden;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+      transition:
+        transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        visibility 0s linear 180ms;
+    }
+
+    .ops-reference-sidebar[data-open="true"] {
+      transform: translateX(0);
+      visibility: visible;
+      transition:
+        transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+        visibility 0s;
+    }
+
+    .ops-sidebar-backdrop {
+      display: block !important;
+    }
+
+    .ops-mobile-nav-trigger,
+    .ops-sidebar-close {
+      display: inline-flex !important;
+    }
+
+    .ops-reference-main {
+      width: 100%;
+      max-width: 100vw;
+      max-height: 100dvh !important;
+    }
+
+    .ops-reference-topbar {
+      padding: 0 8px !important;
+    }
+
+    .ops-reference-breadcrumbs {
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .ops-reference-breadcrumbs span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ops-global-search {
+      display: none;
+    }
+
+    .ops-reference-content {
+      width: 100%;
+      max-width: 100vw;
+      min-width: 0;
+      overflow-x: visible;
+    }
+
+    .ops-page-header {
+      padding: 16px 12px 12px !important;
+    }
+
+    .ops-page-header-inner {
+      flex-direction: column;
+      align-items: stretch !important;
+      gap: 12px !important;
+    }
+
+    .ops-page-header-heading,
+    .ops-page-header-title-row {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .ops-page-header-title-row {
+      flex-wrap: wrap;
+    }
+
+    .ops-page-header-title {
+      width: auto;
+      min-width: max-content;
+      white-space: nowrap;
+    }
+
+    .ops-page-header-actions {
+      width: 100%;
+      min-width: 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+    }
+
+    .ops-page-header-actions > * {
+      max-width: 100%;
+    }
+
+    .ops-settlement-content {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      padding: 12px !important;
+      gap: 12px !important;
+    }
+
+    .ops-settlement-content > * {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-settlement-project-header {
+      flex-direction: column;
+      align-items: stretch !important;
+      padding: 12px !important;
+    }
+
+    .ops-settlement-period-controls {
+      width: 100%;
+      min-width: 0;
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      justify-content: stretch !important;
+    }
+
+    .ops-settlement-period-controls input,
+    .ops-settlement-period-controls select {
+      width: 100% !important;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .ops-settlement-period-controls select,
+    .ops-settlement-period-error {
+      grid-column: 1 / -1;
+    }
+
+    .ops-settlement-tabs-scroll {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+    }
+
+    .ops-settlement-tabs-scroll > div {
+      width: max-content;
+      min-width: 100%;
+    }
+
+    .ops-settlement-tabs-scroll button {
+      white-space: nowrap;
+    }
+
+    .ops-settlement-summary-grid {
+      grid-template-columns: minmax(0, 1fr) !important;
+      padding: 12px !important;
+    }
+
+    .ops-settlement-reconciliation-header {
+      flex-direction: column;
+      align-items: flex-start !important;
+    }
+
+    .ops-settlement-reconciliation-metrics {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .ops-settlement-new-batch-grid,
+    .ops-settlement-manual-form {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .ops-settlement-new-batch-form,
+    .ops-settlement-manual-form {
+      min-width: 0;
+      padding: 12px !important;
+    }
+
+    .ops-settlement-batch-layout {
+      grid-template-columns: minmax(0, 1fr) !important;
+      gap: 12px !important;
+    }
+
+    .ops-settlement-batch-detail {
+      position: static !important;
+      top: auto !important;
+      min-width: 0;
+      width: 100%;
+    }
+
+    .ops-settlement-batch-header {
+      flex-direction: column;
+      align-items: stretch !important;
+    }
+
+    .ops-settlement-batch-total {
+      width: 100%;
+      text-align: left !important;
+    }
+
+    .ops-settlement-batch-meta {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .ops-settlement-batch-items-header {
+      flex-direction: column;
+      align-items: flex-start !important;
+      gap: 8px;
+    }
+
+    .ops-settlement-batch-items-summary {
+      flex-wrap: wrap;
+      row-gap: 4px;
+    }
+
+    .ops-settlement-batch-actions {
+      justify-content: flex-start !important;
+    }
+  }
+
+  @media ${OPS_MOBILE_NAVIGATION_QUERY} and (prefers-reduced-motion: reduce) {
+    .ops-reference-sidebar,
+    .ops-reference-sidebar[data-open="true"] {
+      transition: none;
+    }
+  }
+`;
+
+const OPS_FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "summary",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
+
+function isVisiblyTabbableWithin(element, boundary) {
+  if (!element || element.tabIndex < 0) return false;
+
+  for (
+    let current = element;
+    current && boundary?.contains(current);
+    current = current.parentElement
+  ) {
+    if (
+      current.hidden ||
+      current.getAttribute?.("aria-hidden") === "true" ||
+      current.hasAttribute?.("inert")
+    ) {
+      return false;
+    }
+
+    if (current.tagName === "DETAILS" && !current.open) {
+      const summary = Array.from(current.children).find(
+        (child) => child.tagName === "SUMMARY",
+      );
+      if (!summary?.contains(element)) return false;
+    }
+
+    const style = globalThis.getComputedStyle?.(current);
+    const isOpenDrawerCloseButton =
+      current === element &&
+      element.classList?.contains("ops-sidebar-close") &&
+      boundary?.dataset.open === "true";
+    if (
+      !isOpenDrawerCloseButton &&
+      (style?.display === "none" ||
+        style?.visibility === "hidden" ||
+        style?.visibility === "collapse")
+    ) {
+      return false;
+    }
+
+    if (current === boundary) break;
+  }
+
+  return true;
+}
+
+function isRestorableFocusTarget(element) {
+  const body = globalThis.document?.body;
+  const isMobile = Boolean(
+    globalThis.matchMedia?.(OPS_MOBILE_NAVIGATION_QUERY).matches,
+  );
+  if (element?.classList?.contains("ops-mobile-nav-trigger")) {
+    return Boolean(element.isConnected && isMobile);
+  }
+  const sidebar = element?.closest?.(".ops-reference-sidebar");
+  if (sidebar && isMobile && sidebar.dataset.open !== "true") return false;
+
+  return Boolean(
+    element?.isConnected &&
+      body?.contains(element) &&
+      isVisiblyTabbableWithin(element, body),
+  );
+}
+
+const bodySiblingIsolationRegistry = new WeakMap();
+
+function acquireBodySiblingIsolation(element) {
+  const existingState = bodySiblingIsolationRegistry.get(element);
+  if (existingState) {
+    existingState.ownerCount += 1;
+    return;
+  }
+
+  bodySiblingIsolationRegistry.set(element, {
+    ownerCount: 1,
+    inert: element.getAttribute("inert"),
+    ariaHidden: element.getAttribute("aria-hidden"),
+  });
+  element.setAttribute("inert", "");
+  element.setAttribute("aria-hidden", "true");
+}
+
+function releaseBodySiblingIsolation(element) {
+  const state = bodySiblingIsolationRegistry.get(element);
+  if (!state) return;
+
+  state.ownerCount -= 1;
+  if (state.ownerCount > 0) return;
+
+  bodySiblingIsolationRegistry.delete(element);
+  if (state.inert == null) element.removeAttribute("inert");
+  else element.setAttribute("inert", state.inert);
+  if (state.ariaHidden == null) element.removeAttribute("aria-hidden");
+  else element.setAttribute("aria-hidden", state.ariaHidden);
+}
+
+function useModalLayerIsolation(layerRef, onActivate, onRestore) {
+  React.useLayoutEffect(() => {
+    const body = globalThis.document?.body;
+    const layer = layerRef.current;
+    if (!body || !layer) return undefined;
+
+    const siblings = Array.from(body.children).filter(
+      (element) => element !== layer,
+    );
+
+    siblings.forEach(acquireBodySiblingIsolation);
+    onActivate?.();
+
+    return () => {
+      siblings.forEach(releaseBodySiblingIsolation);
+      onRestore?.();
+    };
+  }, [layerRef, onActivate, onRestore]);
+}
+
 export function Sidebar({
   route,
   onNav,
@@ -1922,13 +2384,46 @@ export function Sidebar({
   organizationSettings,
   onOpenOrganizationSettings,
   onUpdateAvatar,
+  mobileNavigationOpen = false,
+  onCloseMobileNavigation,
+  onPrepareOverlay,
+  mobileCloseButtonRef,
+  mobileDrawerRef,
+  mobileNavigationTriggerRef,
 }) {
   const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
   const [accountPanel, setAccountPanel] = React.useState(null);
 
+  React.useLayoutEffect(() => {
+    if (accountPanel) {
+      accountPanelWasOpenRef.current = true;
+      return;
+    }
+    if (!accountPanelWasOpenRef.current) return;
+
+    accountPanelWasOpenRef.current = false;
+    const isMobile = Boolean(
+      globalThis.matchMedia?.(OPS_MOBILE_NAVIGATION_QUERY).matches,
+    );
+    const focusTarget = isMobile
+      ? mobileNavigationTriggerRef?.current
+      : accountSummaryRef.current;
+    focusTarget?.focus();
+  }, [accountPanel, mobileNavigationTriggerRef]);
+
+  const openAccountPanel = (mode) => {
+    onPrepareOverlay?.();
+    setAccountPanel(mode);
+  };
+
   return (
     <aside
+      ref={mobileDrawerRef}
+      id="ops-sidebar-drawer"
+      className="ops-reference-sidebar"
+      aria-label="主导航"
+      data-open={mobileNavigationOpen ? "true" : "false"}
       style={{
         width: 232,
         flexShrink: 0,
@@ -1987,7 +2482,12 @@ export function Sidebar({
           )}
         </div>
         <div
-          style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 0,
+            lineHeight: 1.15,
+          }}
         >
           <span
             style={{
@@ -2009,6 +2509,30 @@ export function Sidebar({
             {orgSettings.brandTagline}
           </span>
         </div>
+        <button
+          ref={mobileCloseButtonRef}
+          type="button"
+          className="ops-sidebar-close"
+          aria-label="关闭主导航"
+          title="关闭主导航"
+          onClick={onCloseMobileNavigation}
+          style={{
+            display: "none",
+            width: 44,
+            height: 44,
+            flex: "0 0 44px",
+            marginLeft: "auto",
+            alignItems: "center",
+            justifyContent: "center",
+            border: "none",
+            borderRadius: 8,
+            background: "transparent",
+            color: "var(--ink-500)",
+            cursor: "pointer",
+          }}
+        >
+          <XIcon size={20} aria-hidden="true" />
+        </button>
       </div>
 
       {/* Nav */}
@@ -2140,6 +2664,7 @@ export function Sidebar({
           }}
         >
           <summary
+            ref={accountSummaryRef}
             role="button"
             aria-haspopup="menu"
             aria-label={`${displayUser.name} ${formatCurrentUserMeta(displayUser)} 账号菜单`}
@@ -2218,7 +2743,7 @@ export function Sidebar({
               label="个人资料"
               closeMenu
               onClick={() => {
-                setAccountPanel("profile");
+                openAccountPanel("profile");
               }}
             />
             <AccountMenuItem
@@ -2226,7 +2751,7 @@ export function Sidebar({
               label="账号安全"
               closeMenu
               onClick={() => {
-                setAccountPanel("security");
+                openAccountPanel("security");
               }}
             />
             <AccountMenuItem
@@ -2234,7 +2759,7 @@ export function Sidebar({
               label="组织设置"
               closeMenu
               onClick={() => {
-                onOpenOrganizationSettings?.();
+                onOpenOrganizationSettings?.(accountSummaryRef.current);
               }}
             />
             <div
@@ -2333,6 +2858,47 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
   const [avatarBusy, setAvatarBusy] = React.useState(false);
   const [avatarMessage, setAvatarMessage] = React.useState("");
   const fileInputRef = React.useRef(null);
+  const closeButtonRef = React.useRef(null);
+  const dialogRef = React.useRef(null);
+
+  React.useLayoutEffect(() => {
+    closeButtonRef.current?.focus();
+  }, []);
+
+  const handleDialogKeyDown = (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose?.();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const dialogElement = dialogRef.current;
+    if (!dialogElement) return;
+    const focusable = Array.from(
+      dialogElement.querySelectorAll(OPS_FOCUSABLE_SELECTOR),
+    ).filter((element) => isVisiblyTabbableWithin(element, dialogElement));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+
+    const activeElement = globalThis.document?.activeElement;
+    if (event.shiftKey && activeElement === first) {
+      event.preventDefault();
+      event.stopPropagation();
+      last.focus();
+      return;
+    }
+    if (!event.shiftKey && activeElement === last) {
+      event.preventDefault();
+      event.stopPropagation();
+      first.focus();
+    }
+  };
 
   const pickImage = async (event) => {
     const file = event.target.files?.[0];
@@ -2369,6 +2935,7 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
 
   const dialog = (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -2382,6 +2949,7 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
         padding: 20,
       }}
       onClick={onClose}
+      onKeyDown={handleDialogKeyDown}
     >
       <div
         style={{
@@ -2430,6 +2998,7 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
             </div>
           </div>
           <button
+            ref={closeButtonRef}
             type="button"
             aria-label="关闭"
             onClick={onClose}
@@ -2595,10 +3164,18 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
   return createPortal(dialog, document.body);
 }
 
-export function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
+export function TopBar({
+  breadcrumbs = [],
+  notificationCount = 0,
+  extra,
+  navigationOpen = false,
+  onOpenNavigation,
+  navigationButtonRef,
+}) {
   const hasUnreadNotifications = notificationCount > 0;
   return (
     <div
+      className="ops-reference-topbar"
       style={{
         height: 56,
         flexShrink: 0,
@@ -2612,8 +3189,36 @@ export function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
         zIndex: 10,
       }}
     >
+      <button
+        ref={navigationButtonRef}
+        type="button"
+        className="ops-mobile-nav-trigger"
+        aria-label="打开主导航"
+        aria-expanded={navigationOpen}
+        aria-controls="ops-sidebar-drawer"
+        title="打开主导航"
+        onClick={onOpenNavigation}
+        style={{
+          display: "none",
+          width: 44,
+          height: 44,
+          flex: "0 0 44px",
+          marginRight: 4,
+          alignItems: "center",
+          justifyContent: "center",
+          border: "none",
+          borderRadius: 8,
+          background: "transparent",
+          color: "var(--ink-600)",
+          cursor: "pointer",
+        }}
+      >
+        <MenuIcon size={20} aria-hidden="true" />
+      </button>
+
       {/* Breadcrumbs */}
       <div
+        className="ops-reference-breadcrumbs"
         style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}
       >
         {breadcrumbs.map((b, i) => (
@@ -2637,7 +3242,7 @@ export function TopBar({ breadcrumbs = [], notificationCount = 0, extra }) {
       <div style={{ flex: 1 }} />
 
       {/* Global search */}
-      <div style={{ marginRight: 12 }}>
+      <div className="ops-global-search" style={{ marginRight: 12 }}>
         <SearchInput placeholder="搜索项目 / 主播 / 任务编号…" width={280} />
       </div>
 
@@ -2782,6 +3387,7 @@ function countUnreadNotifications(notificationItems) {
 function PageHeader({ title, subtitle, status, actions }) {
   return (
     <div
+      className="ops-page-header"
       style={{
         padding: "20px 24px 16px",
         background: "#fff",
@@ -2789,6 +3395,7 @@ function PageHeader({ title, subtitle, status, actions }) {
       }}
     >
       <div
+        className="ops-page-header-inner"
         style={{
           display: "flex",
           alignItems: "flex-start",
@@ -2796,9 +3403,13 @@ function PageHeader({ title, subtitle, status, actions }) {
           gap: 24,
         }}
       >
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div className="ops-page-header-heading">
+          <div
+            className="ops-page-header-title-row"
+            style={{ display: "flex", alignItems: "center", gap: 10 }}
+          >
             <h1
+              className="ops-page-header-title"
               style={{
                 margin: 0,
                 fontSize: 20,
@@ -2819,7 +3430,14 @@ function PageHeader({ title, subtitle, status, actions }) {
             </div>
           )}
         </div>
-        {actions && <div style={{ display: "flex", gap: 8 }}>{actions}</div>}
+        {actions && (
+          <div
+            className="ops-page-header-actions"
+            style={{ display: "flex", gap: 8 }}
+          >
+            {actions}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -18787,6 +19405,8 @@ function toReferenceBatchFromApi(batch, items, context = {}) {
     project: projectName,
     vendor: isPayable ? "—" : projectName,
     period: `${batch.periodStart} → ${batch.periodEnd}`,
+    periodStart: batch.periodStart,
+    periodEnd: batch.periodEnd,
     items:
       typeof batch.itemCount === "number"
         ? batch.itemCount
@@ -19030,6 +19650,42 @@ function cleanSettlementText(value) {
 // ===== src\screen-settlement.jsx =====
 // ——— Screen: 结算中心 ————————————————————————————
 
+const CUSTOM_RULE_PROJECT_TARGET = Object.freeze({
+  targetType: "project",
+  targetId: null,
+});
+
+function buildExternalCostResolutionValue(draft) {
+  const raw = draft?.reviewedValue;
+  const valueType = draft?.valueType || "money_cents";
+  if (valueType === "money_cents") {
+    const amountCents = yuanInputToCents(raw);
+    return amountCents === null ? null : { type: "money_cents", amountCents };
+  }
+  if (valueType === "rate_bps") {
+    const percent = Number(raw);
+    if (!Number.isFinite(percent) || percent < 0) return null;
+    return { type: "rate_bps", rateBps: Math.round(percent * 100) };
+  }
+  if (valueType === "integer") {
+    const value = Number(raw);
+    return Number.isSafeInteger(value) ? { type: "integer", value } : null;
+  }
+  if (valueType === "number") {
+    const value = Number(raw);
+    return Number.isFinite(value) ? { type: "number", value } : null;
+  }
+  if (valueType === "boolean") {
+    if (raw === "true") return { type: "boolean", value: true };
+    if (raw === "false") return { type: "boolean", value: false };
+    return null;
+  }
+  if (valueType === "timestamp") {
+    return raw ? { type: "timestamp", value: String(raw) } : null;
+  }
+  return raw ? { type: "string", value: String(raw) } : null;
+}
+
 function ScreenSettlement({ go }) {
   const projects = useOpsProjects();
   const batches = useOpsSettlementBatches();
@@ -19039,6 +19695,7 @@ function ScreenSettlement({ go }) {
   const complexCost = useOpsComplexCost();
   const actions = useOpsLiveActions();
   const streamers = useOpsStreamers();
+  const customRulesEnabled = isCustomSettlementRulesEnabled();
   const projectOptions = React.useMemo(
     () =>
       settlementProjectOptions({
@@ -19088,6 +19745,7 @@ function ScreenSettlement({ go }) {
     evidenceLevel: "red",
     reason: "人工录入 CPA/CPS/礼物金额",
   });
+  const [lockReason, setLockReason] = React.useState("财务核对无误");
   const [ruleDraft, setRuleDraft] = React.useState(() =>
     settlementRuleDraft(projectOptions[0]),
   );
@@ -19101,7 +19759,10 @@ function ScreenSettlement({ go }) {
   const [reconciliationKey, setReconciliationKey] = React.useState(null);
   const [costItems, setCostItems] = React.useState([]);
   const [costItemsLoadedFor, setCostItemsLoadedFor] = React.useState(null);
+  const [costRuleExceptions, setCostRuleExceptions] = React.useState([]);
+  const [costExceptionDrafts, setCostExceptionDrafts] = React.useState({});
   const [costDraft, setCostDraft] = React.useState(() => defaultCostDraft());
+  const reconciliationBlockingHeadingRef = React.useRef(null);
 
   React.useEffect(() => {
     if (!projectOptions.length) return;
@@ -19319,19 +19980,87 @@ function ScreenSettlement({ go }) {
   const updateCostDraft = (field) => (event) =>
     setCostDraft((draft) => ({ ...draft, [field]: event.target.value }));
 
+  const updateCostExceptionDraft = (exceptionId, field) => (event) =>
+    setCostExceptionDrafts((drafts) => ({
+      ...drafts,
+      [exceptionId]: {
+        valueType: "money_cents",
+        reviewedValue: "",
+        reason: "",
+        ...(drafts[exceptionId] ?? {}),
+        [field]: event.target.value,
+      },
+    }));
+
   const reloadCostItems = async (projectId) => {
     const items = await actions.fetchProjectCostItems?.(projectId);
-    setCostItems(Array.isArray(items) ? items : []);
+    const nextItems = Array.isArray(items) ? items : [];
+    setCostItems(nextItems);
     setCostItemsLoadedFor(projectId);
+    const itemBatchIds = [
+      ...new Set(
+        nextItems
+          .map((item) => item.sourceImportBatchId)
+          .filter((batchId) => typeof batchId === "string" && batchId),
+      ),
+    ];
+    let exceptionBatchSummaries = [];
+    try {
+      exceptionBatchSummaries =
+        (await actions.fetchExternalCostRuleExceptionBatches?.(projectId)) ??
+        [];
+    } catch {
+      exceptionBatchSummaries = [];
+    }
+    const exceptionBatchIds = Array.isArray(exceptionBatchSummaries)
+      ? exceptionBatchSummaries
+          .map((batch) => batch?.importBatchId || batch?.id)
+          .filter((batchId) => typeof batchId === "string" && batchId)
+      : [];
+    const batchIds = [...new Set([...itemBatchIds, ...exceptionBatchIds])];
+    if (!actions.fetchExternalCostRuleExceptions || batchIds.length === 0) {
+      setCostRuleExceptions([]);
+      return;
+    }
+    const groups = await Promise.all(
+      batchIds.map(async (batchId) => {
+        const exceptions = await actions.fetchExternalCostRuleExceptions(
+          projectId,
+          batchId,
+        );
+        return Array.isArray(exceptions)
+          ? exceptions.map((exception) => ({
+              ...exception,
+              importBatchId: exception.importBatchId || batchId,
+            }))
+          : [];
+      }),
+    );
+    const nextExceptions = groups.flat();
+    setCostRuleExceptions(nextExceptions);
+    setCostExceptionDrafts((drafts) => {
+      const nextDrafts = { ...drafts };
+      nextExceptions.forEach((exception) => {
+        if (!nextDrafts[exception.id]) {
+          nextDrafts[exception.id] = {
+            valueType: "money_cents",
+            reviewedValue: "",
+            reason: "",
+          };
+        }
+      });
+      return nextDrafts;
+    });
   };
 
   const loadCostItems = () =>
     runSettlementAction("cost-load", async () => {
-      if (!selectedProjectId) {
+      const costProjectId = selectedProjectId || selectedProject?.id || "";
+      if (!costProjectId) {
         setSettlementMessage("请先选择结算项目");
         return false;
       }
-      await reloadCostItems(selectedProjectId);
+      await reloadCostItems(costProjectId);
       setSettlementMessage("");
       return false;
     });
@@ -19372,6 +20101,45 @@ function ScreenSettlement({ go }) {
       });
       await reloadCostItems(selectedProjectId);
       setSettlementMessage("");
+      return false;
+    });
+
+  const resolveCostRuleException = (exception) =>
+    runSettlementAction(`cost-exception-${exception.id}`, async () => {
+      const costProjectId = selectedProjectId || selectedProject?.id || "";
+      if (!costProjectId || !exception.importBatchId) {
+        setSettlementMessage("缺少项目或导入批次，无法复核异常");
+        return false;
+      }
+      const draft = costExceptionDrafts[exception.id] ?? {
+        valueType: "money_cents",
+        reviewedValue: "",
+        reason: "",
+      };
+      const resolutionValue = buildExternalCostResolutionValue(draft);
+      if (!resolutionValue) {
+        setSettlementMessage("请填写有效的复核值");
+        return false;
+      }
+      if (!draft.reason?.trim()) {
+        setSettlementMessage("请填写复核原因");
+        return false;
+      }
+      const result = await actions.resolveExternalCostRuleException?.(
+        costProjectId,
+        exception.importBatchId,
+        exception.id,
+        {
+          resolutionValue,
+          resolutionReason: draft.reason.trim(),
+        },
+      );
+      await reloadCostItems(costProjectId);
+      setSettlementMessage(
+        result?.replay?.replayed
+          ? "异常已复核，公式成本已重新生成并等待审核"
+          : "异常已复核，等待同批次其他异常处理",
+      );
       return false;
     });
 
@@ -19418,6 +20186,18 @@ function ScreenSettlement({ go }) {
       ? reconciliation
       : null;
   const activeGate = reconciliationGate(activeReconciliation);
+  const reconciliationMeta = reconciliation
+    ? reconciliationRunMeta(reconciliation)
+    : null;
+  const reconciliationGroups = reconciliation
+    ? buildReconciliationCheckGroups(reconciliation)
+    : [];
+
+  React.useEffect(() => {
+    if (reconciliationGate(reconciliation).hasBlocking) {
+      reconciliationBlockingHeadingRef.current?.focus();
+    }
+  }, [reconciliation]);
 
   const updateBatchDraft = (field) => (event) => {
     setBatchDraft((draft) => ({ ...draft, [field]: event.target.value }));
@@ -19502,8 +20282,13 @@ function ScreenSettlement({ go }) {
         setSettlementMessage(reconciliationBlockMessage(activeReconciliation));
         return false;
       }
+      const reason = lockReason.trim();
+      if (!reason) {
+        setSettlementMessage("锁定前请填写锁定原因");
+        return false;
+      }
       await actions.lockSettlementBatch?.(activeBatch.id, {
-        reason: "财务核对无误",
+        reason,
       });
       return false;
     });
@@ -19520,6 +20305,16 @@ function ScreenSettlement({ go }) {
   const confirmBatch = () =>
     runSettlementAction("confirm", async () => {
       if (!activeBatch) return false;
+      if (!activeGate.evaluated) {
+        setSettlementMessage(
+          "确认前请先为本批次周期运行「单项目结算校验」",
+        );
+        return false;
+      }
+      if (!activeGate.canLock) {
+        setSettlementMessage(reconciliationBlockMessage(activeReconciliation));
+        return false;
+      }
       const reason = globalThis.prompt?.("财务确认原因");
       if (!reason || !reason.trim()) {
         setSettlementMessage("操作已取消：财务确认需填写原因");
@@ -19724,6 +20519,7 @@ function ScreenSettlement({ go }) {
       />
 
       <div
+        className="ops-settlement-content"
         style={{
           padding: 20,
           display: "flex",
@@ -19839,6 +20635,7 @@ function ScreenSettlement({ go }) {
             style={{ display: "flex", flexDirection: "column", gap: 12 }}
           >
             <div
+              className="ops-settlement-reconciliation-header"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -19859,8 +20656,29 @@ function ScreenSettlement({ go }) {
             </div>
 
             {reconciliation ? (
-              <>
+              <section
+                role="region"
+                aria-label="单项目结算校验结果"
+                style={{ display: "flex", flexDirection: "column", gap: 12 }}
+              >
                 <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    flexWrap: "wrap",
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                  }}
+                >
+                  <span>{reconciliationMeta?.runAtLabel}</span>
+                  <Badge tone={reconciliationMeta?.stale ? "amber" : "green"}>
+                    {reconciliationMeta?.freshnessLabel}
+                  </Badge>
+                </div>
+                <div
+                  className="ops-settlement-reconciliation-metrics"
                   style={{
                     display: "grid",
                     gridTemplateColumns: "repeat(3, 1fr)",
@@ -19900,30 +20718,110 @@ function ScreenSettlement({ go }) {
                   ))}
                 </div>
 
-                {reconciliation.checks?.length ? (
+                {reconciliationGroups.length ? (
                   <div
                     style={{
                       display: "flex",
                       flexDirection: "column",
-                      gap: 6,
+                      gap: 10,
                     }}
                   >
-                    {reconciliation.checks.map((check) => (
+                    {activeGate.hasBlocking ? (
                       <div
-                        key={check.key}
+                        role="alert"
                         style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          fontSize: 12,
+                          padding: "8px 10px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(217,45,32,0.24)",
+                          background: "rgba(217,45,32,0.06)",
+                          color: "var(--danger-700)",
                         }}
                       >
-                        <Badge tone={reconciliationSeverityTone(check.severity)}>
-                          {check.severity === "block" ? "阻断" : "告警"}
-                        </Badge>
-                        <span style={{ color: "var(--ink-700)" }}>
-                          {check.message}
-                        </span>
+                        <h3
+                          ref={reconciliationBlockingHeadingRef}
+                          tabIndex={-1}
+                          style={{
+                            margin: 0,
+                            fontSize: 13,
+                            fontWeight: 700,
+                          }}
+                        >
+                          阻断项
+                        </h3>
+                        <div style={{ marginTop: 4, fontSize: 12 }}>
+                          {activeGate.disabledReasons.join("；")}
+                        </div>
+                      </div>
+                    ) : null}
+                    {reconciliationGroups.map((group) => (
+                      <div
+                        key={group.key}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "120px minmax(0, 1fr)",
+                          gap: 8,
+                          alignItems: "start",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: "var(--ink-700)",
+                          }}
+                        >
+                          {group.label}
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                            minWidth: 0,
+                          }}
+                        >
+                          {group.checks.map((check) => (
+                            <div
+                              key={check.key}
+                              aria-label={check.accessibleText}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                flexWrap: "wrap",
+                                fontSize: 12,
+                              }}
+                            >
+                              <Badge
+                                tone={reconciliationSeverityTone(check.severity)}
+                              >
+                                {check.severityLabel}
+                              </Badge>
+                              {check.categoryLabel ? (
+                                <Badge tone="neutral">{check.categoryLabel}</Badge>
+                              ) : null}
+                              <span style={{ color: "var(--ink-700)" }}>
+                                {check.message}
+                              </span>
+                              {check.ruleVersionLabel && check.ruleVersion?.id ? (
+                                <a
+                                  href={`/ops/internal/settlement-rules/${check.ruleVersion.id}`}
+                                  style={{
+                                    color: "var(--blue-600)",
+                                    textDecoration: "none",
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  {check.ruleVersionLabel}
+                                </a>
+                              ) : check.ruleVersionLabel ? (
+                                <span style={{ color: "var(--ink-500)" }}>
+                                  {check.ruleVersionLabel}
+                                </span>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -19932,7 +20830,7 @@ function ScreenSettlement({ go }) {
                     无阻断或告警项
                   </div>
                 )}
-              </>
+              </section>
             ) : (
               <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
                 点击「运行校验」生成本期对账单与可结判定
@@ -19984,6 +20882,7 @@ function ScreenSettlement({ go }) {
 
         <Card padded={false}>
           <div
+            className="ops-settlement-project-header"
             style={{
               padding: "12px 16px",
               borderBottom: "1px solid var(--line)",
@@ -20011,6 +20910,7 @@ function ScreenSettlement({ go }) {
               </div>
             </div>
             <div
+              className="ops-settlement-period-controls"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -20022,7 +20922,10 @@ function ScreenSettlement({ go }) {
               {settlementPeriod.start &&
               settlementPeriod.end &&
               settlementPeriod.start > settlementPeriod.end ? (
-                <span style={{ fontSize: 12, color: "var(--danger-600)" }}>
+                <span
+                  className="ops-settlement-period-error"
+                  style={{ fontSize: 12, color: "var(--danger-600)" }}
+                >
                   周期开始需早于结束
                 </span>
               ) : null}
@@ -20056,6 +20959,7 @@ function ScreenSettlement({ go }) {
             </div>
           </div>
           <div
+            className="ops-settlement-tabs-scroll"
             style={{
               padding: "0 16px",
               borderBottom: "1px solid var(--line)",
@@ -20069,11 +20973,15 @@ function ScreenSettlement({ go }) {
                 { key: "finance", label: "项目财务设置" },
                 { key: "payable", label: "主播应付规则" },
                 { key: "cost", label: "项目开支" },
+                ...(customRulesEnabled
+                  ? [{ key: "custom_rules", label: "AI 自定义规则" }]
+                  : []),
               ]}
             />
           </div>
           {detailTab === "summary" && (
           <div
+            className="ops-settlement-summary-grid"
             style={{
               display: "grid",
               gridTemplateColumns: "minmax(0, 0.85fr) minmax(0, 1.35fr)",
@@ -20408,7 +21316,7 @@ function ScreenSettlement({ go }) {
               <Button
                 kind="default"
                 onClick={loadCostItems}
-                disabled={!!busyAction || !selectedProjectId}
+                disabled={!!busyAction || !(selectedProjectId || selectedProject?.id)}
               >
                 {busyAction === "cost-load" ? "加载中…" : "加载/刷新"}
               </Button>
@@ -20463,6 +21371,21 @@ function ScreenSettlement({ go }) {
                       <span style={{ color: "var(--ink-400)" }}>
                         {item.reason}
                       </span>
+                      {item.sourceRuleVersionId ? (
+                        <span style={{ color: "var(--ink-500)" }}>
+                          规则版本 {item.sourceRuleVersionId}
+                        </span>
+                      ) : null}
+                      {item.sourceExecutionKey ? (
+                        <span className="mono" style={{ color: "var(--ink-400)" }}>
+                          {item.sourceExecutionKey}
+                        </span>
+                      ) : null}
+                      {item.sourceExplanation ? (
+                        <span style={{ color: "var(--ink-500)" }}>
+                          {item.sourceExplanation}
+                        </span>
+                      ) : null}
                     </div>
                     <div style={{ display: "flex", gap: 6 }}>
                       {canConfirmCostItem(item.status) ? (
@@ -20487,6 +21410,16 @@ function ScreenSettlement({ go }) {
                   </div>
                 ))}
               </div>
+            ) : costRuleExceptions.length > 0 ? (
+              <div
+                style={{
+                  marginTop: 12,
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                }}
+              >
+                尚未生成项目成本项，请先处理下方导入行异常
+              </div>
             ) : (
               <div
                 style={{
@@ -20505,8 +21438,166 @@ function ScreenSettlement({ go }) {
               点击「加载/刷新」查看本项目已录入的外部成本
             </div>
           )}
+
+          {costItemsLoadedFor === selectedProjectId &&
+          costRuleExceptions.length > 0 ? (
+            <div
+              aria-label="导入行异常待审核"
+              style={{
+                marginTop: 12,
+                padding: 12,
+                borderRadius: 8,
+                border: "1px solid var(--line)",
+                background: "var(--bg-soft)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  marginBottom: 10,
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700 }}>
+                  导入行异常复核
+                </div>
+                <Badge tone="amber">{costRuleExceptions.length} 个待审核</Badge>
+              </div>
+              <div style={{ display: "grid", gap: 10 }}>
+                {costRuleExceptions.map((exception) => {
+                  const draft = costExceptionDrafts[exception.id] ?? {
+                    valueType: "money_cents",
+                    reviewedValue: "",
+                    reason: "",
+                  };
+                  return (
+                    <div
+                      key={exception.id}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1fr) minmax(360px, 1fr)",
+                        gap: 10,
+                        alignItems: "end",
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          className="mono"
+                          style={{
+                            fontSize: 11,
+                            color: "var(--ink-500)",
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {exception.id} · batch {exception.importBatchId}
+                        </div>
+                        <div
+                          style={{
+                            marginTop: 4,
+                            fontSize: 12,
+                            color: "var(--ink-700)",
+                          }}
+                        >
+                          第 {Number(exception.rowIndex) + 1} 行 ·{" "}
+                          {exception.variableName} · {exception.policy}
+                        </div>
+                        {exception.sourceRefs?.ruleVersionId ||
+                        exception.sourceRefs?.sourceContextHash ? (
+                          <div
+                            className="mono"
+                            style={{
+                              marginTop: 4,
+                              fontSize: 10.5,
+                              color: "var(--ink-400)",
+                              wordBreak: "break-all",
+                            }}
+                          >
+                            {exception.sourceRefs?.ruleVersionId
+                              ? `rule ${exception.sourceRefs.ruleVersionId}`
+                              : ""}
+                            {exception.sourceRefs?.sourceContextHash
+                              ? ` · ${exception.sourceRefs.sourceContextHash}`
+                              : ""}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "110px 1fr 1fr auto",
+                          gap: 8,
+                          alignItems: "end",
+                        }}
+                      >
+                        <TaskFormLabel label="复核类型">
+                          <select
+                            aria-label={`复核类型 ${exception.id}`}
+                            value={draft.valueType}
+                            onChange={updateCostExceptionDraft(
+                              exception.id,
+                              "valueType",
+                            )}
+                            style={taskInputStyle}
+                          >
+                            <option value="money_cents">金额(元)</option>
+                            <option value="rate_bps">比例(%)</option>
+                            <option value="integer">整数</option>
+                            <option value="number">数字</option>
+                            <option value="string">文本</option>
+                            <option value="boolean">布尔</option>
+                            <option value="timestamp">时间</option>
+                          </select>
+                        </TaskFormLabel>
+                        <TaskFormLabel label="复核值">
+                          <input
+                            aria-label={`复核值 ${exception.id}`}
+                            value={draft.reviewedValue}
+                            onChange={updateCostExceptionDraft(
+                              exception.id,
+                              "reviewedValue",
+                            )}
+                            style={taskInputStyle}
+                          />
+                        </TaskFormLabel>
+                        <TaskFormLabel label="复核原因">
+                          <input
+                            aria-label={`复核原因 ${exception.id}`}
+                            value={draft.reason}
+                            onChange={updateCostExceptionDraft(
+                              exception.id,
+                              "reason",
+                            )}
+                            style={taskInputStyle}
+                          />
+                        </TaskFormLabel>
+                        <Button
+                          kind="default"
+                          onClick={() => resolveCostRuleException(exception)}
+                          disabled={!!busyAction}
+                        >
+                          提交复核
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
           </div>
           )}
+
+          {customRulesEnabled && detailTab === "custom_rules" ? (
+            <div style={{ padding: "0 16px 16px", minWidth: 0 }}>
+              <CustomSettlementRuleWorkspace
+                project={selectedProject}
+                period={settlementPeriod}
+                target={CUSTOM_RULE_PROJECT_TARGET}
+              />
+            </div>
+          ) : null}
         </Card>
 
         {settlementMessage ? (
@@ -20529,6 +21620,7 @@ function ScreenSettlement({ go }) {
 
         {batchFormOpen ? (
           <form
+            className="ops-settlement-new-batch-form"
             onSubmit={createBatch}
             style={{
               display: "flex",
@@ -20541,6 +21633,7 @@ function ScreenSettlement({ go }) {
             }}
           >
             <div
+              className="ops-settlement-new-batch-grid"
               style={{
                 display: "grid",
                 gridTemplateColumns:
@@ -20680,6 +21773,7 @@ function ScreenSettlement({ go }) {
 
         {manualFormOpen ? (
           <form
+            className="ops-settlement-manual-form"
             onSubmit={addManualItem}
             style={{
               display: "grid",
@@ -20768,6 +21862,7 @@ function ScreenSettlement({ go }) {
         ) : null}
 
         <div
+          className="ops-settlement-batch-layout"
           style={{
             display: "grid",
             // minmax(0,…)：批次详情里的明细表格/UUID 等宽内容不允许把列的
@@ -20779,6 +21874,7 @@ function ScreenSettlement({ go }) {
         >
           <Card padded={false}>
             <div
+              className="ops-settlement-tabs-scroll"
               style={{
                 padding: "0 12px",
                 borderBottom: "1px solid var(--line)",
@@ -20932,6 +22028,8 @@ function ScreenSettlement({ go }) {
             onNotifyStreamers={notifyBatchStreamers}
             lockGate={activeGate}
             lockBlockMessage={reconciliationBlockMessage(activeReconciliation)}
+            lockReason={lockReason}
+            onLockReasonChange={setLockReason}
             busyAction={busyAction}
           />
         </div>
@@ -21120,6 +22218,8 @@ function BatchDetail({
   onNotifyStreamers,
   lockGate = { evaluated: false, hasBlocking: false },
   lockBlockMessage = "",
+  lockReason = "",
+  onLockReasonChange,
   busyAction,
 }) {
   const [detailMessage, setDetailMessage] = React.useState("");
@@ -21131,6 +22231,7 @@ function BatchDetail({
   if (!b) {
     return (
       <div
+        className="ops-settlement-batch-detail"
         style={{
           position: "sticky",
           top: 76,
@@ -21148,6 +22249,15 @@ function BatchDetail({
 
   const isPayable = b.type === "streamer_payable";
   const isLocked = b.status === "locked";
+  const confirmBlockMessage = !lockGate?.evaluated
+    ? "确认前请先运行「单项目结算校验」"
+    : lockBlockMessage.replace("无法锁定", "无法确认");
+  const lockTitle = !lockGate?.canLock
+    ? lockBlockMessage
+    : lockGate?.evaluated
+      ? undefined
+      : "锁定前请先运行「单项目结算校验」";
+  const confirmTitle = !lockGate?.canLock ? confirmBlockMessage : undefined;
   const batchStatus = BATCH_STATUS[b.status] || BATCH_STATUS.pending_confirm;
   const isReferenceBatch = BATCHES.some((x) => x.id === b.id);
   const apiDetailRows = Array.isArray(batchDetails[b.id])
@@ -21175,6 +22285,16 @@ function BatchDetail({
   const baseSum = detailRows.reduce((s, x) => s + x.base, 0);
   const varSum = detailRows.reduce((s, x) => s + x.variable, 0);
   const adjSum = detailRows.reduce((s, x) => s + x.adjust, 0);
+  const ruleBreakdownRows = detailRows.filter((row) => row.ruleBreakdown);
+  const openRuleExceptions = detailRows.flatMap((row) =>
+    Array.isArray(row.openExceptions)
+      ? row.openExceptions.map((exception) => ({
+          ...exception,
+          itemId: row.id,
+          streamer: row.streamer,
+        }))
+      : [],
+  );
   const showPendingDetail = (message) => {
     setDetailMessage(message);
   };
@@ -21203,6 +22323,7 @@ function BatchDetail({
 
   return (
     <div
+      className="ops-settlement-batch-detail"
       style={{
         position: "sticky",
         top: 76,
@@ -21219,7 +22340,10 @@ function BatchDetail({
             borderBottom: "1px solid var(--line)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+          <div
+            className="ops-settlement-batch-header"
+            style={{ display: "flex", alignItems: "flex-start", gap: 12 }}
+          >
             <div style={{ flex: 1, minWidth: 0 }}>
               <div
                 className="mono"
@@ -21258,7 +22382,10 @@ function BatchDetail({
                 )}
               </div>
             </div>
-            <div style={{ textAlign: "right" }}>
+            <div
+              className="ops-settlement-batch-total"
+              style={{ textAlign: "right" }}
+            >
               <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
                 合计金额
               </div>
@@ -21277,6 +22404,7 @@ function BatchDetail({
           </div>
 
           <div
+            className="ops-settlement-batch-meta"
             style={{
               marginTop: 12,
               display: "grid",
@@ -21307,6 +22435,7 @@ function BatchDetail({
 
         {/* Items */}
         <div
+          className="ops-settlement-batch-items-header"
           style={{
             padding: "12px 16px 0",
             display: "flex",
@@ -21320,6 +22449,7 @@ function BatchDetail({
             结算明细
           </div>
           <div
+            className="ops-settlement-batch-items-summary"
             style={{
               display: "flex",
               gap: 6,
@@ -21461,6 +22591,289 @@ function BatchDetail({
           ]}
           rows={detailRows}
         />
+
+        {ruleBreakdownRows.length > 0 || openRuleExceptions.length > 0 ? (
+          <div
+            style={{
+              padding: "12px 16px",
+              borderTop: "1px solid var(--line)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            {ruleBreakdownRows.length > 0 ? (
+              <div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--ink-700)",
+                    }}
+                  >
+                    规则拆解
+                  </div>
+                  <Badge tone="neutral">{ruleBreakdownRows.length} 项</Badge>
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 10,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
+                  }}
+                >
+                  {ruleBreakdownRows.map((row) => (
+                    <div
+                      key={row.id}
+                      style={{
+                        paddingTop: 10,
+                        borderTop: "1px dashed var(--line)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: "var(--ink-800)",
+                          }}
+                        >
+                          {row.streamer}
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 6,
+                            flexWrap: "wrap",
+                            justifyContent: "flex-end",
+                          }}
+                        >
+                          {row.ruleBreakdown.appliedVersionLabels.map(
+                            (label) => (
+                              <Badge key={`${row.id}-${label}`} tone="blue">
+                                {label}
+                              </Badge>
+                            ),
+                          )}
+                          {row.ruleBreakdown.executionGrain ? (
+                            <Badge tone="neutral">
+                              {row.ruleBreakdown.executionGrain}
+                            </Badge>
+                          ) : null}
+                          <Badge tone="neutral">
+                            来源报数 {row.ruleBreakdown.sourceReportCount} 条
+                          </Badge>
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 8,
+                          display: "grid",
+                          gridTemplateColumns:
+                            "repeat(auto-fit, minmax(120px, 1fr))",
+                          gap: 8,
+                        }}
+                      >
+                        {row.ruleBreakdown.components.map((component) => (
+                          <div
+                            key={`${row.id}-${component.key}`}
+                            style={{
+                              padding: "8px 10px",
+                              border: "1px solid var(--line)",
+                              borderRadius: 8,
+                              background: "var(--bg-soft)",
+                            }}
+                          >
+                            <div
+                              style={{ fontSize: 11, color: "var(--ink-400)" }}
+                            >
+                              {component.label}
+                            </div>
+                            <div
+                              className="num"
+                              style={{
+                                marginTop: 2,
+                                fontSize: 13,
+                                fontWeight: 700,
+                                color: "var(--ink-900)",
+                              }}
+                            >
+                              {formatYuanFromCents(component.amountCents)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {row.ruleBreakdown.explanationZh ? (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            fontSize: 12,
+                            color: "var(--ink-600)",
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          {row.ruleBreakdown.explanationZh}
+                        </div>
+                      ) : null}
+
+                      {row.ruleBreakdown.missingDataDecisions.length > 0 ? (
+                        <div style={{ marginTop: 10 }}>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: "var(--ink-700)",
+                            }}
+                          >
+                            缺失数据决策
+                          </div>
+                          <div
+                            style={{
+                              marginTop: 6,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 6,
+                            }}
+                          >
+                            {row.ruleBreakdown.missingDataDecisions.map(
+                              (decision) => (
+                                <div
+                                  key={`${row.id}-${decision.variableName}-${decision.policy}-${decision.decision}`}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 8,
+                                    flexWrap: "wrap",
+                                    fontSize: 12,
+                                    color: "var(--ink-500)",
+                                  }}
+                                >
+                                  <span className="mono">
+                                    {decision.variableName}
+                                  </span>
+                                  <Badge tone="amber">{decision.policy}</Badge>
+                                  <span>{decision.decision}</span>
+                                </div>
+                              ),
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: "var(--ink-700)",
+                  }}
+                >
+                  异常队列
+                </div>
+                <Badge tone={openRuleExceptions.length ? "amber" : "green"}>
+                  {openRuleExceptions.length
+                    ? `${openRuleExceptions.length} 个待处理`
+                    : "无待处理异常"}
+                </Badge>
+              </div>
+              {openRuleExceptions.length > 0 ? (
+                <div
+                  style={{
+                    marginTop: 8,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
+                >
+                  {openRuleExceptions.map((exception) => (
+                    <div
+                      key={exception.id}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1fr) auto",
+                        gap: 8,
+                        alignItems: "center",
+                        padding: "7px 0",
+                        borderTop: "1px dashed var(--line)",
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          className="mono"
+                          style={{
+                            fontSize: 11,
+                            color: "var(--ink-700)",
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {exception.id}
+                        </div>
+                        <div
+                          style={{
+                            marginTop: 2,
+                            fontSize: 12,
+                            color: "var(--ink-500)",
+                            wordBreak: "break-word",
+                          }}
+                        >
+                          {exception.streamer} · {exception.variableName}
+                          {exception.liveReportId
+                            ? ` · ${exception.liveReportId}`
+                            : ""}
+                        </div>
+                      </div>
+                      <Badge tone="amber">{exception.status}</Badge>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontSize: 12,
+                    color: "var(--ink-400)",
+                  }}
+                >
+                  当前批次没有待处理的规则异常。
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
         {detailMessage ? (
           <div
             aria-live="polite"
@@ -21476,6 +22889,7 @@ function BatchDetail({
 
         {/* Footer: actions（窄容器下按钮换行而不是把卡片顶出右缘） */}
         <div
+          className="ops-settlement-batch-actions"
           style={{
             padding: 12,
             borderTop: "1px solid var(--line)",
@@ -21541,6 +22955,35 @@ function BatchDetail({
             </>
           ) : (
             <>
+              <label
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                  minWidth: 220,
+                  flex: "1 1 260px",
+                  fontSize: 11,
+                  color: "var(--ink-500)",
+                }}
+              >
+                锁定原因
+                <input
+                  value={lockReason}
+                  onChange={(event) =>
+                    onLockReasonChange?.(event.target.value)
+                  }
+                  disabled={!!busyAction}
+                  style={{
+                    height: 32,
+                    border: "1px solid var(--line)",
+                    borderRadius: 6,
+                    padding: "0 10px",
+                    fontSize: 12,
+                    color: "var(--ink-800)",
+                    background: "#fff",
+                  }}
+                />
+              </label>
               <Button
                 kind="ghost"
                 onClick={() =>
@@ -21578,9 +23021,14 @@ function BatchDetail({
                   kind="default"
                   icon={<Icon.Check size={14} />}
                   onClick={onConfirmBatch}
-                  disabled={!!busyAction}
+                  disabled={!!busyAction || !lockGate?.canLock}
+                  title={confirmTitle}
                 >
-                  {busyAction === "confirm" ? "处理中…" : "财务确认"}
+                  {busyAction === "confirm"
+                    ? "处理中…"
+                    : !lockGate?.canLock && lockGate?.evaluated
+                      ? "校验未通过 · 不可确认"
+                      : "财务确认"}
                 </Button>
               ) : null}
               {isPayable && b.status === "confirmed" && onNotifyStreamers ? (
@@ -21597,18 +23045,12 @@ function BatchDetail({
                 kind="primary"
                 icon={<Icon.Lock size={14} stroke="#fff" />}
                 onClick={onLockBatch}
-                disabled={!!busyAction || lockGate?.hasBlocking}
-                title={
-                  lockGate?.hasBlocking
-                    ? lockBlockMessage
-                    : lockGate?.evaluated
-                      ? undefined
-                      : "锁定前请先运行「单项目结算校验」"
-                }
+                disabled={!!busyAction || !lockGate?.canLock}
+                title={lockTitle}
               >
                 {busyAction === "lock"
                   ? "处理中…"
-                  : lockGate?.hasBlocking
+                  : !lockGate?.canLock && lockGate?.evaluated
                     ? "校验未通过 · 不可锁定"
                     : "确认并锁定"}
               </Button>
@@ -23953,6 +25395,7 @@ function TaskDrawer({
 }) {
   const [drawerMessage, setDrawerMessage] = React.useState("");
   const [reviewOpen, setReviewOpen] = React.useState(false);
+  const reviewTriggerRef = React.useRef(null);
   const actions = useOpsLiveActions();
   const currentUser = useOpsCurrentUser();
   const [operateBusy, setOperateBusy] = React.useState(false);
@@ -23967,6 +25410,18 @@ function TaskDrawer({
   });
   const [editBusy, setEditBusy] = React.useState(false);
   const [editError, setEditError] = React.useState("");
+
+  React.useLayoutEffect(() => {
+    if (reviewOpen || !reviewTriggerRef.current) return;
+    reviewTriggerRef.current.focus();
+    reviewTriggerRef.current = null;
+  }, [reviewOpen]);
+
+  const openReview = (event) => {
+    reviewTriggerRef.current = event.currentTarget;
+    setReviewOpen(true);
+  };
+
   const openEdit = () => {
     setEditForm({
       title: task.name || "",
@@ -24060,6 +25515,7 @@ function TaskDrawer({
   return (
     <Drawer
       onClose={onClose}
+      suspended={reviewOpen}
       title={
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span
@@ -24449,7 +25905,7 @@ function TaskDrawer({
         <Button
           kind="primary"
           icon={<Icon.Sparkles size={14} />}
-          onClick={() => setReviewOpen(true)}
+          onClick={openReview}
         >
           直播复盘
         </Button>
@@ -26812,6 +28268,8 @@ function LiveReviewDrawer({
   projectName,
   onClose,
 }) {
+  const dialogRef = React.useRef(null);
+  const closeButtonRef = React.useRef(null);
   const reviewContext = React.useMemo(() => {
     const day = SCHEDULE_WEEK?.days?.[task.dayIdx];
     return {
@@ -26853,6 +28311,49 @@ function LiveReviewDrawer({
   const [saveBusy, setSaveBusy] = React.useState(false);
   const [message, setMessage] = React.useState("");
   const [error, setError] = React.useState("");
+
+  useModalLayerIsolation(dialogRef);
+
+  React.useLayoutEffect(() => {
+    closeButtonRef.current?.focus();
+  }, []);
+
+  const handleReviewKeyDown = (event) => {
+    if (event.key === "Tab" || event.key === "Escape") {
+      event.stopPropagation();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose?.();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const dialogElement = dialogRef.current;
+    if (!dialogElement) return;
+    const focusable = Array.from(
+      dialogElement.querySelectorAll(OPS_FOCUSABLE_SELECTOR),
+    ).filter((element) => isVisiblyTabbableWithin(element, dialogElement));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+
+    const activeElement = globalThis.document?.activeElement;
+    if (event.shiftKey) {
+      if (activeElement === first || !dialogElement.contains(activeElement)) {
+        event.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+    if (activeElement === last || !dialogElement.contains(activeElement)) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   const assistInput = {
     product: reviewContext.product,
@@ -26964,9 +28465,12 @@ function LiveReviewDrawer({
   const knowledge = assist?.knowledge;
   const built = assist?.assist;
 
-  return (
+  const dialog = (
     <div
+      ref={dialogRef}
+      className="ops-live-review-overlay"
       role="dialog"
+      aria-modal="true"
       aria-label="直播复盘"
       style={{
         position: "fixed",
@@ -26977,8 +28481,11 @@ function LiveReviewDrawer({
         justifyContent: "center",
         alignItems: "stretch",
         padding: "32px 24px",
+        boxSizing: "border-box",
+        overflow: "hidden",
       }}
       onClick={onClose}
+      onKeyDown={handleReviewKeyDown}
     >
       <style>{`
         .md-preview { font-size: 13px; color: var(--ink-700); line-height: 1.7; }
@@ -26992,11 +28499,63 @@ function LiveReviewDrawer({
         .md-preview th, .md-preview td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
         .md-preview th { background: var(--bg-soft); font-weight: 600; color: var(--ink-900); }
         .md-preview strong { color: var(--ink-900); }
+        @media (max-width: 720px) {
+          .ops-live-review-overlay { padding: 8px !important; }
+          .ops-live-review-panel {
+            width: 100% !important;
+            max-width: 100%;
+            height: 100%;
+            max-height: 100%;
+            border-radius: 8px !important;
+          }
+          .ops-live-review-header {
+            height: auto !important;
+            min-height: 56px;
+            padding: 8px 10px !important;
+            flex-wrap: wrap;
+          }
+          .ops-live-review-meta {
+            flex: 1 1 150px;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+          .ops-live-review-header-spacer { display: none; }
+          .ops-live-review-modes { margin-left: auto; max-width: calc(100% - 42px); }
+          .ops-live-review-body {
+            width: 100%;
+            min-width: 0;
+            min-height: 0;
+            flex-direction: column;
+            overflow-y: auto;
+          }
+          .ops-live-review-editor {
+            width: 100%;
+            min-height: 280px;
+            height: min(46dvh, 380px);
+            flex: 0 0 auto !important;
+            box-sizing: border-box;
+            border-right: none !important;
+            border-bottom: 1px solid var(--line);
+          }
+          .ops-live-review-editor > * { max-width: 100%; }
+          .ops-live-review-sidebar {
+            width: 100% !important;
+            max-height: min(32dvh, 260px);
+            flex: 0 0 auto !important;
+            box-sizing: border-box;
+          }
+          .ops-live-review-footer { flex-wrap: wrap; }
+          .ops-live-review-footer-message { flex-basis: 100%; }
+        }
       `}</style>
       <div
+        className="ops-live-review-panel"
         onClick={(e) => e.stopPropagation()}
         style={{
           width: "min(1040px, 100%)",
+          maxWidth: "100%",
           maxHeight: "100%",
           background: "#fff",
           borderRadius: 12,
@@ -27008,6 +28567,7 @@ function LiveReviewDrawer({
       >
         {/* Header */}
         <div
+          className="ops-live-review-header"
           style={{
             height: 56,
             padding: "0 16px",
@@ -27021,11 +28581,15 @@ function LiveReviewDrawer({
           <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
             直播复盘
           </div>
-          <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+          <span
+            className="ops-live-review-meta"
+            style={{ fontSize: 12, color: "var(--ink-400)" }}
+          >
             {projectName} · {streamerName}
           </span>
-          <div style={{ flex: 1 }} />
+          <div className="ops-live-review-header-spacer" style={{ flex: 1 }} />
           <div
+            className="ops-live-review-modes"
             style={{
               display: "inline-flex",
               border: "1px solid var(--line)",
@@ -27055,6 +28619,10 @@ function LiveReviewDrawer({
             ))}
           </div>
           <button
+            ref={closeButtonRef}
+            type="button"
+            aria-label="关闭直播复盘"
+            title="关闭直播复盘"
             onClick={onClose}
             style={{
               width: 30,
@@ -27071,8 +28639,12 @@ function LiveReviewDrawer({
         </div>
 
         {/* Body: editor/preview + AI sidebar */}
-        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+        <div
+          className="ops-live-review-body"
+          style={{ flex: 1, display: "flex", minHeight: 0 }}
+        >
           <div
+            className="ops-live-review-editor"
             style={{
               flex: 1,
               minWidth: 0,
@@ -27109,6 +28681,7 @@ function LiveReviewDrawer({
 
           {/* AI assistant sidebar */}
           <div
+            className="ops-live-review-sidebar"
             style={{
               width: 320,
               flexShrink: 0,
@@ -27196,6 +28769,7 @@ function LiveReviewDrawer({
 
         {/* Footer */}
         <div
+          className="ops-live-review-footer"
           style={{
             padding: 12,
             borderTop: "1px solid var(--line)",
@@ -27204,7 +28778,10 @@ function LiveReviewDrawer({
             gap: 12,
           }}
         >
-          <div style={{ flex: 1, fontSize: 12 }}>
+          <div
+            className="ops-live-review-footer-message"
+            style={{ flex: 1, fontSize: 12 }}
+          >
             {error ? (
               <span style={{ color: "var(--danger-600)" }}>{error}</span>
             ) : message ? (
@@ -27230,6 +28807,9 @@ function LiveReviewDrawer({
       </div>
     </div>
   );
+
+  if (typeof document === "undefined") return dialog;
+  return createPortal(dialog, document.body);
 }
 
 function ReviewAssistList({ title, items, tone }) {
@@ -27675,57 +29255,176 @@ function Timeline({ events }) {
   );
 }
 
-function Drawer({ children, onClose, title }) {
-  return (
+function Drawer({ children, onClose, onKeyDown, suspended = false, title }) {
+  const layerRef = React.useRef(null);
+  const drawerRef = React.useRef(null);
+  const closeButtonRef = React.useRef(null);
+  const openerRef = React.useRef(null);
+  const titleId = React.useId();
+
+  const setLayerRef = React.useCallback((element) => {
+    if (element && !layerRef.current) {
+      const activeElement = globalThis.document?.activeElement;
+      if (
+        activeElement &&
+        activeElement !== globalThis.document?.body &&
+        !element.contains(activeElement)
+      ) {
+        openerRef.current = activeElement;
+      }
+    }
+    layerRef.current = element;
+  }, []);
+
+  const focusDrawer = React.useCallback(() => {
+    const drawerElement = drawerRef.current;
+    if (!drawerElement?.contains(globalThis.document?.activeElement)) {
+      closeButtonRef.current?.focus();
+    }
+  }, []);
+
+  const restoreDrawerFocus = React.useCallback(() => {
+    const opener = openerRef.current;
+    openerRef.current = null;
+    if (isRestorableFocusTarget(opener)) opener.focus();
+  }, []);
+
+  useModalLayerIsolation(layerRef, focusDrawer, restoreDrawerFocus);
+
+  const handleDrawerKeyDown = (event) => {
+    const sourceDialog = event.target?.closest?.('[role="dialog"]');
+    if (sourceDialog && sourceDialog !== event.currentTarget) return;
+
+    if (event.key === "Tab" || event.key === "Escape") {
+      event.stopPropagation();
+    }
+    onKeyDown?.(event);
+    if (event.defaultPrevented) return;
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose?.();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const drawerElement = drawerRef.current;
+    if (!drawerElement) return;
+    const focusable = Array.from(
+      drawerElement.querySelectorAll(OPS_FOCUSABLE_SELECTOR),
+    ).filter((element) => isVisiblyTabbableWithin(element, drawerElement));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+
+    const activeElement = globalThis.document?.activeElement;
+    if (event.shiftKey) {
+      if (activeElement === first || !drawerElement.contains(activeElement)) {
+        event.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+    if (activeElement === last || !drawerElement.contains(activeElement)) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  const layer = (
     <div
-      role="dialog"
-      aria-label={typeof title === "string" ? title : undefined}
+      ref={setLayerRef}
+      className="ops-drawer-layer"
       style={{
         position: "fixed",
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: 460,
-        background: "#fff",
-        borderLeft: "1px solid var(--line)",
-        boxShadow: "-8px 0 24px rgba(15,23,42,0.08)",
-        display: "flex",
-        flexDirection: "column",
+        inset: 0,
         zIndex: 50,
       }}
     >
-      <div
+      <button
+        type="button"
+        aria-label="关闭抽屉遮罩"
+        tabIndex={-1}
+        onClick={onClose}
         style={{
-          height: 56,
-          padding: "0 16px",
-          borderBottom: "1px solid var(--line)",
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          padding: 0,
+          border: "none",
+          borderRadius: 0,
+          background: "rgba(15,23,42,0.24)",
+          cursor: "pointer",
+        }}
+      />
+      <div
+        ref={drawerRef}
+        role="dialog"
+        aria-modal={suspended ? undefined : "true"}
+        aria-labelledby={titleId}
+        onKeyDown={handleDrawerKeyDown}
+        style={{
+          position: "absolute",
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: 460,
+          maxWidth: "100vw",
+          boxSizing: "border-box",
+          background: "#fff",
+          borderLeft: "1px solid var(--line)",
+          boxShadow: "-8px 0 24px rgba(15,23,42,0.08)",
           display: "flex",
-          alignItems: "center",
-          gap: 10,
+          flexDirection: "column",
+          zIndex: 1,
         }}
       >
-        <div style={{ flex: 1, minWidth: 0 }}>{title}</div>
-        <button
-          onClick={onClose}
+        <div
           style={{
-            width: 30,
-            height: 30,
-            borderRadius: 6,
-            border: "none",
-            background: "transparent",
-            cursor: "pointer",
-            color: "var(--ink-400)",
-            display: "inline-flex",
+            height: 56,
+            padding: "0 16px",
+            borderBottom: "1px solid var(--line)",
+            display: "flex",
             alignItems: "center",
-            justifyContent: "center",
+            gap: 10,
           }}
         >
-          <Icon.X size={16} />
-        </button>
+          <div id={titleId} style={{ flex: 1, minWidth: 0 }}>
+            {title}
+          </div>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            aria-label="关闭"
+            title="关闭"
+            onClick={onClose}
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 6,
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              color: "var(--ink-400)",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Icon.X size={16} />
+          </button>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto" }}>{children}</div>
       </div>
-      <div style={{ flex: 1, overflowY: "auto" }}>{children}</div>
     </div>
   );
+
+  if (typeof document === "undefined") return layer;
+  return createPortal(layer, document.body);
 }
 
 // ===== src\screen-org.jsx =====
@@ -28922,7 +30621,12 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
   const [features, setFeatures] = React.useState(normalized.features);
   const [message, setMessage] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const firstControlRef = React.useRef(null);
   const enabledCount = countEnabledOrganizationFeatures({ features });
+
+  React.useLayoutEffect(() => {
+    firstControlRef.current?.focus();
+  }, []);
 
   const toggleFeature = (key) => {
     setFeatures((current) => ({ ...current, [key]: !current[key] }));
@@ -29027,6 +30731,7 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
 
         <OrgMemberField label="组织名称">
           <input
+            ref={firstControlRef}
             aria-label="组织名称"
             value={name}
             onChange={(event) => setName(event.target.value)}
@@ -32042,6 +33747,15 @@ function OpsReferenceInner({
 }) {
   // route can be: 'home' | 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org'
   const [route, setRoute] = React.useState(initialRoute);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = React.useState(false);
+  const mobileNavigationButtonRef = React.useRef(null);
+  const mobileNavigationCloseButtonRef = React.useRef(null);
+  const mobileNavigationDrawerRef = React.useRef(null);
+  const mobileNavigationMainRef = React.useRef(null);
+  const mobileNavigationWasOpenRef = React.useRef(false);
+  const mobileNavigationFocusReturnRef = React.useRef("trigger");
+  const organizationSettingsReturnFocusRef = React.useRef(null);
+  const organizationSettingsWasOpenRef = React.useRef(false);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
   const [dashboardTarget, setDashboardTarget] = React.useState(null);
@@ -32102,6 +33816,175 @@ function OpsReferenceInner({
   const [applicationsState, setApplicationsState] = React.useState(
     applicationQueue ?? null,
   );
+  const closeMobileNavigation = React.useCallback(() => {
+    mobileNavigationFocusReturnRef.current = "trigger";
+    setMobileNavigationOpen(false);
+  }, []);
+
+  const closeMobileNavigationForDesktop = React.useCallback(() => {
+    mobileNavigationFocusReturnRef.current = "main";
+    mobileNavigationMainRef.current?.removeAttribute("inert");
+    mobileNavigationMainRef.current?.removeAttribute("aria-hidden");
+    setMobileNavigationOpen(false);
+  }, []);
+
+  const prepareMobileNavigationOverlay = React.useCallback(() => {
+    mobileNavigationFocusReturnRef.current = "overlay";
+    mobileNavigationMainRef.current?.removeAttribute("inert");
+    mobileNavigationMainRef.current?.removeAttribute("aria-hidden");
+    setMobileNavigationOpen(false);
+  }, []);
+
+  const openOrganizationSettingsFromNavigation = React.useCallback(
+    (eventOrTarget) => {
+      const navigationTrigger =
+        eventOrTarget?.currentTarget ?? eventOrTarget ?? null;
+      organizationSettingsReturnFocusRef.current = mobileNavigationOpen
+        ? mobileNavigationButtonRef.current
+        : navigationTrigger;
+      prepareMobileNavigationOverlay();
+      setOrganizationSettingsOpen(true);
+    },
+    [mobileNavigationOpen, prepareMobileNavigationOverlay],
+  );
+
+  const openOrganizationSettingsFromScreen = React.useCallback((event) => {
+    organizationSettingsReturnFocusRef.current = event.currentTarget;
+    setOrganizationSettingsOpen(true);
+  }, []);
+
+  const closeOrganizationSettings = React.useCallback(() => {
+    setOrganizationSettingsOpen(false);
+  }, []);
+
+  const openMobileNavigation = React.useCallback(() => {
+    const mediaQuery = globalThis.matchMedia?.(OPS_MOBILE_NAVIGATION_QUERY);
+    if (mediaQuery && !mediaQuery.matches) return;
+    mobileNavigationFocusReturnRef.current = "trigger";
+    setMobileNavigationOpen(true);
+  }, []);
+
+  React.useLayoutEffect(() => {
+    const main = mobileNavigationMainRef.current;
+    if (mobileNavigationOpen) {
+      mobileNavigationWasOpenRef.current = true;
+      main?.setAttribute("inert", "");
+      mobileNavigationCloseButtonRef.current?.focus();
+      return undefined;
+    }
+
+    main?.removeAttribute("inert");
+    if (mobileNavigationWasOpenRef.current) {
+      mobileNavigationWasOpenRef.current = false;
+      const focusReturn = mobileNavigationFocusReturnRef.current;
+      mobileNavigationFocusReturnRef.current = "trigger";
+      if (focusReturn === "main") main?.focus();
+      if (focusReturn === "trigger") {
+        mobileNavigationButtonRef.current?.focus();
+      }
+    }
+
+    return () => {
+      main?.removeAttribute("inert");
+    };
+  }, [mobileNavigationOpen]);
+
+  React.useLayoutEffect(() => {
+    if (organizationSettingsOpen) {
+      organizationSettingsWasOpenRef.current = true;
+      return;
+    }
+    if (!organizationSettingsWasOpenRef.current) return;
+
+    organizationSettingsWasOpenRef.current = false;
+    const preferredTarget = organizationSettingsReturnFocusRef.current;
+    organizationSettingsReturnFocusRef.current = null;
+    const isMobile = Boolean(
+      globalThis.matchMedia?.(OPS_MOBILE_NAVIGATION_QUERY).matches,
+    );
+    const focusTarget = isRestorableFocusTarget(preferredTarget)
+      ? preferredTarget
+      : isMobile
+        ? mobileNavigationButtonRef.current
+        : mobileNavigationMainRef.current;
+    focusTarget?.focus();
+  }, [organizationSettingsOpen]);
+
+  React.useEffect(() => {
+    if (typeof globalThis.matchMedia !== "function") return undefined;
+
+    const mediaQuery = globalThis.matchMedia(OPS_MOBILE_NAVIGATION_QUERY);
+    const closeWhenDesktop = (event) => {
+      if (event.matches) return;
+      closeMobileNavigationForDesktop();
+    };
+
+    if (!mediaQuery.matches) closeMobileNavigationForDesktop();
+
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", closeWhenDesktop);
+      return () => {
+        mediaQuery.removeEventListener?.("change", closeWhenDesktop);
+      };
+    }
+    if (typeof mediaQuery.addListener === "function") {
+      mediaQuery.addListener(closeWhenDesktop);
+      return () => {
+        mediaQuery.removeListener?.(closeWhenDesktop);
+      };
+    }
+    return undefined;
+  }, [closeMobileNavigationForDesktop]);
+
+  React.useEffect(() => {
+    if (!mobileNavigationOpen) return undefined;
+
+    const containMobileNavigationFocus = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMobileNavigation();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const drawer = mobileNavigationDrawerRef.current;
+      if (!drawer) return;
+      const focusable = Array.from(
+        drawer.querySelectorAll(OPS_FOCUSABLE_SELECTOR),
+      ).filter((element) => isVisiblyTabbableWithin(element, drawer));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+        drawer.focus?.();
+        return;
+      }
+
+      const activeElement = globalThis.document?.activeElement;
+      if (event.shiftKey) {
+        if (activeElement === first || !drawer.contains(activeElement)) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+      if (activeElement === last || !drawer.contains(activeElement)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    globalThis.document?.addEventListener(
+      "keydown",
+      containMobileNavigationFocus,
+    );
+    return () => {
+      globalThis.document?.removeEventListener(
+        "keydown",
+        containMobileNavigationFocus,
+      );
+    };
+  }, [closeMobileNavigation, mobileNavigationOpen]);
 
   React.useEffect(() => {
     setTasksState(liveTasks ?? null);
@@ -33118,6 +35001,20 @@ function OpsReferenceInner({
         );
         return body.items ?? [];
       },
+      fetchExternalCostRuleExceptionBatches: async (projectId) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/cost-imports`,
+          "load external cost rule exception batches failed",
+        );
+        return body.exceptionBatches ?? [];
+      },
+      fetchExternalCostRuleExceptions: async (projectId, batchId) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/cost-imports/${batchId}/rule-exceptions`,
+          "load external cost rule exceptions failed",
+        );
+        return body.exceptions ?? [];
+      },
       createProjectCostItem: async (projectId, input) => {
         const body = await fetchJson(
           `/api/projects/${projectId}/cost-items`,
@@ -33142,6 +35039,21 @@ function OpsReferenceInner({
         );
         return body.item ?? null;
       },
+      resolveExternalCostRuleException: async (
+        projectId,
+        batchId,
+        exceptionId,
+        input,
+      ) =>
+        fetchJson(
+          `/api/projects/${projectId}/cost-imports/${batchId}/rule-exceptions/${exceptionId}/resolve`,
+          "resolve external cost rule exception failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        ),
       refreshAuditEntries,
       refreshOcrJobs,
       runNextOcrJob,
@@ -33374,6 +35286,7 @@ function OpsReferenceInner({
   }, [actions, route]);
 
   const go = (r, arg) => {
+    if (mobileNavigationOpen) closeMobileNavigation();
     if (r === "project") {
       setRoute("project");
       setProjectId(arg || null);
@@ -33561,8 +35474,29 @@ function OpsReferenceInner({
       }}
     >
       <div
+        className="ops-reference-shell"
         style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
       >
+        <style data-ops-responsive-shell="true">{OPS_SHELL_RESPONSIVE_CSS}</style>
+        {mobileNavigationOpen ? (
+          <button
+            type="button"
+            className="ops-sidebar-backdrop"
+            aria-label="关闭主导航遮罩"
+            tabIndex={-1}
+            onClick={closeMobileNavigation}
+            style={{
+              display: "none",
+              position: "fixed",
+              inset: 0,
+              zIndex: 30,
+              padding: 0,
+              border: "none",
+              background: "rgba(15, 23, 42, 0.42)",
+              cursor: "pointer",
+            }}
+          />
+        ) : null}
         <Sidebar
           route={navKey}
           onNav={go}
@@ -33571,8 +35505,18 @@ function OpsReferenceInner({
           organizationSettings={organizationSettingsState}
           onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
           onUpdateAvatar={updateProfileAvatar}
+          mobileNavigationOpen={mobileNavigationOpen}
+          onCloseMobileNavigation={closeMobileNavigation}
+          onPrepareOverlay={prepareMobileNavigationOverlay}
+          mobileCloseButtonRef={mobileNavigationCloseButtonRef}
+          mobileDrawerRef={mobileNavigationDrawerRef}
+          mobileNavigationTriggerRef={mobileNavigationButtonRef}
         />
         <main
+          ref={mobileNavigationMainRef}
+          className="ops-reference-main"
+          aria-hidden={mobileNavigationOpen ? "true" : undefined}
+          tabIndex={-1}
           style={{
             flex: 1,
             minWidth: 0,
@@ -33584,8 +35528,15 @@ function OpsReferenceInner({
           <TopBar
             breadcrumbs={crumbs}
             notificationCount={unreadNotificationCount}
+            navigationOpen={mobileNavigationOpen}
+            onOpenNavigation={openMobileNavigation}
+            navigationButtonRef={mobileNavigationButtonRef}
           />
-          <div id="content-scroll" style={{ flex: 1, overflowY: "auto" }}>
+          <div
+            id="content-scroll"
+            className="ops-reference-content"
+            style={{ flex: 1, minWidth: 0, overflowY: "auto" }}
+          >
             {dashboardTarget?.route === route ? (
               <DashboardTargetContextBanner target={dashboardTarget} />
             ) : null}
@@ -33624,9 +35575,7 @@ function OpsReferenceInner({
             {route === "org" && (
               <ScreenOrg
                 go={go}
-                onOpenOrganizationSettings={() =>
-                  setOrganizationSettingsOpen(true)
-                }
+                onOpenOrganizationSettings={openOrganizationSettingsFromScreen}
               />
             )}
             {route === "export" && <ScreenExport go={go} />}
@@ -33635,7 +35584,7 @@ function OpsReferenceInner({
         {organizationSettingsOpen ? (
           <OrganizationSettingsDrawer
             settings={organizationSettingsState}
-            onClose={() => setOrganizationSettingsOpen(false)}
+            onClose={closeOrganizationSettings}
             onSubmit={saveOrganizationSettings}
           />
         ) : null}

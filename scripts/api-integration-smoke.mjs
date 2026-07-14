@@ -193,7 +193,7 @@ await check(
     assertObject(generatedReportItem, "P1 report settlement item");
     assertEqual(
       generatedReportItem.itemType,
-      "live_report",
+      "live_report_payable",
       "P1 report settlement item type",
     );
 

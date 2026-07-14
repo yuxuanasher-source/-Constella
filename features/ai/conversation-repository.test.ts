@@ -119,6 +119,41 @@ describe("Xingyao conversation repository", () => {
     });
   });
 
+  it("preserves a lease-expired duplicate status from the public RPC", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        conversation_id: "conversation-1",
+        turn_id: "turn-expired",
+        user_message_id: "user-message-1",
+        assistant_message_id: "assistant-message-1",
+        status: "failed",
+        attempt_no: 1,
+        duplicate: true,
+      },
+      error: null,
+    });
+
+    const result = await createAiConversationTurn(
+      { rpc } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: "org-1",
+        ownerUserId: "user-1",
+        conversationId: "conversation-1",
+        clientRequestId: "request-expired",
+        mode: "fast",
+        kind: "user",
+        content: "resume the expired turn",
+      },
+    );
+
+    expect(result).toMatchObject({
+      turnId: "turn-expired",
+      status: "failed",
+      attempt: 1,
+      duplicate: true,
+    });
+  });
+
   it("loads the newest message and turn windows, then restores chronological order", async () => {
     const messageRows = [
       {

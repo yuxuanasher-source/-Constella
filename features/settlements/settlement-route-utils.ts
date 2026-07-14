@@ -7,12 +7,24 @@ import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { sendNotification } from "@/lib/notify/notify";
 
+import {
+  runProjectSettlementReconciliation,
+  SupabaseReconciliationDataSource,
+  type ProjectSettlementReconciliationRunResult,
+  type ReconciliationDataSource,
+} from "./project-settlement-reconciliation-service";
 import { SupabaseSettlementRepository } from "./settlement-repository";
+import type {
+  SettlementActor,
+  SettlementBatchGate,
+  SettlementRepository,
+} from "./settlement-service";
 
 export type SettlementRouteContext = {
   supabase: SupabaseClient;
   auth: AuthContext;
   repo: SupabaseSettlementRepository;
+  gate?: SettlementBatchGate;
   audit: typeof writeAuditLog;
   notify: typeof sendNotification;
 };
@@ -25,10 +37,16 @@ export async function getSettlementRouteContext(): Promise<SettlementRouteContex
     throw new RouteError("Unauthorized", 401);
   }
 
+  const repo = new SupabaseSettlementRepository(supabase);
   return {
     supabase,
     auth,
-    repo: new SupabaseSettlementRepository(supabase),
+    repo,
+    gate: createSettlementBatchGate({
+      repo,
+      source: new SupabaseReconciliationDataSource(supabase),
+      organizationId: auth.organizationId,
+    }),
     audit: writeAuditLog,
     notify: sendNotification,
   };
@@ -41,6 +59,121 @@ export function settlementActorFromContext(context: SettlementRouteContext) {
     role: context.auth.role,
     organizationId: context.auth.organizationId,
   };
+}
+
+export function createSettlementBatchGate({
+  repo,
+  source,
+  organizationId,
+}: {
+  repo: Pick<
+    SettlementRepository,
+    "getSettlementBatchById" | "hasOpenSettlementRuleExceptions"
+  >;
+  source: ReconciliationDataSource;
+  organizationId: string;
+}): SettlementBatchGate {
+  return {
+    async assertNoOpenRuleExceptions(batchId: string): Promise<void> {
+      const hasOpen = await repo.hasOpenSettlementRuleExceptions?.({
+        organizationId,
+        batchId,
+      });
+      if (hasOpen) {
+        throw new Error("Settlement batch has unresolved rule exceptions");
+      }
+    },
+    async evaluateReconciliation({
+      batchId,
+      actor,
+      trigger,
+    }: {
+      batchId: string;
+      actor: SettlementActor;
+      trigger: "confirm" | "lock";
+    }): Promise<ProjectSettlementReconciliationRunResult> {
+      const batch = await repo.getSettlementBatchById(batchId);
+      if (!batch || batch.organizationId !== organizationId) {
+        throw new Error("Settlement batch not found");
+      }
+      return runProjectSettlementReconciliation({
+        source,
+        actor,
+        projectId: batch.projectId,
+        periodStart: batch.periodStart,
+        periodEnd: batch.periodEnd,
+        triggerType: "settlement_batch",
+        triggerBatchId: batchId,
+        transitionBatch: {
+          id: batch.id,
+          batchType: batch.batchType,
+          status: trigger === "confirm" ? "confirmed" : "locked",
+        },
+        onStep: undefined,
+      });
+    },
+  };
+}
+
+export function settlementReconciliationRouteMetadata(
+  reconciliation: ProjectSettlementReconciliationRunResult,
+) {
+  const checks = reconciliation.checks.map(normalizeReconciliationCheck);
+  const coreCheckCodes = checks
+    .filter((check) => check.source === "core")
+    .map((check) => check.code);
+  const customCheckCodes = checks
+    .filter((check) => check.source === "custom_rule")
+    .map((check) => check.code);
+  return {
+    checks,
+    provenance: {
+      coreCheckCodes,
+      customCheckCodes,
+    },
+    run: reconciliation.run
+      ? {
+          id: reconciliation.run.id,
+          inputHash: reconciliation.run.inputHash,
+          createdAt: reconciliation.run.createdAt,
+          freshness: "fresh" as const,
+        }
+      : { freshness: "not_persisted" as const },
+    gate: {
+      verdict: reconciliation.hasBlocking
+        ? ("blocked" as const)
+        : reconciliation.hasWarning
+          ? ("warning" as const)
+          : ("pass" as const),
+      hasBlocking: reconciliation.hasBlocking,
+      hasWarning: reconciliation.hasWarning,
+      canConfirm: reconciliation.canConfirm,
+      canLock: reconciliation.canLock,
+    },
+  };
+}
+
+function normalizeReconciliationCheck(
+  check: ProjectSettlementReconciliationRunResult["checks"][number],
+) {
+  const source =
+    "source" in check && check.source === "custom_rule"
+      ? ("custom_rule" as const)
+      : ("core" as const);
+  return removeUndefined({
+    code:
+      "code" in check && typeof check.code === "string"
+        ? check.code
+        : "key" in check
+          ? check.key
+          : "unknown",
+    severity: check.severity,
+    source,
+    ruleVersionId:
+      "ruleVersionId" in check && typeof check.ruleVersionId === "string"
+        ? check.ruleVersionId
+        : undefined,
+  });
 }
 
 export async function readJsonBody(request: Request) {
@@ -153,6 +286,12 @@ function isPostgrestError(error: unknown): error is PostgrestErrorLike {
   const candidate = error as Record<string, unknown>;
   return (
     typeof candidate.code === "string" && typeof candidate.message === "string"
+  );
+}
+
+function removeUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined),
   );
 }
 

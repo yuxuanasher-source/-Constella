@@ -5,6 +5,7 @@ import type {
   CreateImportBatchRepoInput,
   CreateProjectCostItemRepoInput,
   CreateRuleVersionRepoInput,
+  ExternalCostRuleExceptionBatchSummary,
 } from "./complex-cost-service";
 import type {
   ComplexCostRuleStatus,
@@ -18,7 +19,14 @@ import type {
   ProjectCostItemSource,
   ProjectCostItemStatus,
   ProjectCostItemType,
+  ReplayExternalCostRuleExceptionItemsInput,
+  ReplayExternalCostRuleExceptionItemsResult,
   ComplexCostEvidenceLevel,
+  ExternalCostRuleExceptionPolicy,
+  ExternalCostRuleExceptionRecord,
+  ExternalCostRuleExceptionStatus,
+  SettlementReconciliationRunRecord,
+  SettlementReconciliationRunTriggerType,
 } from "./complex-cost-types";
 
 type EntitlementRow = {
@@ -62,6 +70,11 @@ type CostItemRow = {
   evidence_level: ComplexCostEvidenceLevel;
   source: ProjectCostItemSource;
   source_payload: Record<string, unknown>;
+  source_rule_version_id: string | null;
+  source_import_batch_id: string | null;
+  source_execution_key: string | null;
+  source_input_hash: string | null;
+  source_explanation: string | null;
   reason: string;
   status: ProjectCostItemStatus;
   created_by: string | null;
@@ -84,6 +97,132 @@ type ImportBatchRow = {
 type QueryResult<T> = {
   data: T | null;
   error: Error | null;
+};
+
+type ExternalCostRuleExceptionRow = {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  import_batch_id: string;
+  import_row_index: number;
+  rule_version_id: string | null;
+  variable_name: string;
+  policy: ExternalCostRuleExceptionPolicy;
+  source_context_snapshot: Record<string, unknown>;
+  status: ExternalCostRuleExceptionStatus;
+  resolution_value: Record<string, unknown> | null;
+  resolution_reason: string | null;
+  created_by: string | null;
+  resolved_by: string | null;
+  created_at: string;
+  resolved_at: string | null;
+};
+
+type ExternalCostRuleExceptionBatchSummaryRow = {
+  import_batch_id: string;
+};
+
+type SettlementReconciliationRunRow = {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  period_start: string;
+  period_end: string;
+  trigger_type: SettlementReconciliationRunTriggerType;
+  trigger_batch_id: string | null;
+  core_input_hash: string;
+  core_result: Record<string, unknown>;
+  rule_version_id: string | null;
+  formula_hash: string | null;
+  custom_checks: Record<string, unknown>;
+  final_checks: Record<string, unknown>;
+  blocked: boolean;
+  warnings: unknown[];
+  created_by: string | null;
+  created_at: string;
+};
+
+export type ConfirmCostImportItemInput = {
+  importRowIndex?: number;
+  ruleVersionId?: string | null;
+  streamerId?: string | null;
+  supplierOrganizationId?: string | null;
+  liveReportId?: string | null;
+  itemType: ProjectCostItemType;
+  amountCents: number;
+  direction: ProjectCostItemDirection;
+  evidenceLevel: ComplexCostEvidenceLevel;
+  sourcePayload: Record<string, unknown>;
+  sourceExecutionKey: string;
+  sourceInputHash: string;
+  sourceExplanation?: string | null;
+  status: ProjectCostItemStatus;
+};
+
+export type ConfirmCostImportExceptionInput = {
+  importRowIndex: number;
+  ruleVersionId?: string | null;
+  variableName: string;
+  policy: ExternalCostRuleExceptionPolicy;
+  sourceContextSnapshot: Record<string, unknown>;
+};
+
+export type ConfirmCostImportWithRuleItemsInput = {
+  organizationId: string;
+  projectId: string;
+  importBatchId: string;
+  idempotencyKey: string;
+  inputHash: string;
+  mode: "legacy" | "custom";
+  reason: string;
+  createdBy: string;
+  legacyItems?: ConfirmCostImportItemInput[];
+  customItems?: ConfirmCostImportItemInput[];
+  exceptions?: ConfirmCostImportExceptionInput[];
+};
+
+export type ConfirmCostImportWithRuleItemsResult = {
+  importBatch: ProjectCostImportBatchRecord;
+  items: ProjectCostItemRecord[];
+  exceptions: ExternalCostRuleExceptionRecord[];
+  idempotencyStatus: "created" | "existing";
+};
+
+export type ResolveExternalCostRuleExceptionInput = {
+  organizationId: string;
+  exceptionId: string;
+  resolutionValue: Record<string, unknown>;
+  resolutionReason: string;
+  resolvedBy: string;
+};
+
+export type ResolveExternalCostRuleExceptionResult = {
+  exception: ExternalCostRuleExceptionRecord;
+  items: ProjectCostItemRecord[];
+  replayed: boolean;
+  replayDeferred: boolean;
+  openSiblingCount: number;
+  needsReplay: boolean;
+};
+
+export type ListExternalCostRuleExceptionsForImportRowInput = {
+  organizationId: string;
+  projectId: string;
+  importBatchId: string;
+  importRowIndex: number;
+};
+
+export type GetExternalCostRuleExceptionByIdInput = {
+  organizationId: string;
+  exceptionId: string;
+};
+
+type ProjectCostItemProvenanceInput = {
+  sourceRuleVersionId?: string | null;
+  sourceImportBatchId?: string | null;
+  sourceExecutionKey?: string | null;
+  sourceInputHash?: string | null;
+  sourceExplanation?: string | null;
 };
 
 export class SupabaseComplexCostRepository implements ComplexCostRepository {
@@ -188,6 +327,8 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
   async createProjectCostItem(
     input: CreateProjectCostItemRepoInput,
   ): Promise<ProjectCostItemRecord> {
+    const provenance = input as CreateProjectCostItemRepoInput &
+      ProjectCostItemProvenanceInput;
     const { data, error } = await this.client
       .from("project_cost_items")
       .insert({
@@ -203,6 +344,11 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
         evidence_level: input.evidenceLevel,
         source: input.source,
         source_payload: input.sourcePayload,
+        source_rule_version_id: provenance.sourceRuleVersionId,
+        source_import_batch_id: provenance.sourceImportBatchId,
+        source_execution_key: provenance.sourceExecutionKey,
+        source_input_hash: provenance.sourceInputHash,
+        source_explanation: provenance.sourceExplanation,
         reason: input.reason,
         status: input.status,
         created_by: input.createdBy,
@@ -286,6 +432,31 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
     return mapImportBatchRow(requireSingle({ data, error }));
   }
 
+  async listImportBatches(input: {
+    organizationId: string;
+    projectId: string;
+    importType?: ProjectCostImportType;
+    limit?: number;
+  }): Promise<ProjectCostImportBatchRecord[]> {
+    let query = this.client
+      .from("project_cost_import_batches")
+      .select("*")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .order("created_at", { ascending: false })
+      .limit(input.limit ?? 25);
+
+    if (input.importType) {
+      query = query.eq("import_type", input.importType);
+    }
+
+    const { data, error } = await query.returns<ImportBatchRow[]>();
+    if (error) {
+      throw error;
+    }
+    return (data ?? []).map(mapImportBatchRow);
+  }
+
   async getImportBatchById(
     batchId: string,
   ): Promise<ProjectCostImportBatchRecord | null> {
@@ -335,6 +506,238 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
       throw error;
     }
     return (data ?? []).map(mapCostItemRow);
+  }
+
+  async confirmCostImportWithRuleItems(
+    input: ConfirmCostImportWithRuleItemsInput,
+  ): Promise<ConfirmCostImportWithRuleItemsResult> {
+    const hasLegacyItems = (input.legacyItems?.length ?? 0) > 0;
+    const hasCustomItems = (input.customItems?.length ?? 0) > 0;
+    if (
+      (input.mode === "legacy" && hasCustomItems) ||
+      (input.mode === "custom" && hasLegacyItems)
+    ) {
+      throw new Error(
+        "Confirm cost import accepts either legacy or custom mode, not both",
+      );
+    }
+    if (input.mode !== "custom" && (input.exceptions?.length ?? 0) > 0) {
+      throw new Error("Confirm cost import accepts exceptions only in custom mode");
+    }
+
+    const { data, error } = await this.client.rpc(
+      "confirm_cost_import_with_rule_items",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_import_batch_id: input.importBatchId,
+        p_idempotency_key: input.idempotencyKey,
+        p_input_hash: input.inputHash,
+        p_mode: input.mode,
+        p_reason: input.reason,
+        p_created_by: input.createdBy,
+        p_legacy_items: input.legacyItems
+          ? input.legacyItems.map(toRpcCostItem)
+          : null,
+        p_custom_items: input.customItems
+          ? input.customItems.map(toRpcCostItem)
+          : null,
+        p_exceptions: input.exceptions
+          ? input.exceptions.map(toRpcException)
+          : null,
+      },
+    );
+
+    const payload = requireSingle({
+      data: data as ConfirmCostImportRpcResult | null,
+      error,
+    });
+
+    return {
+      importBatch: mapImportBatchRow(payload.import_batch),
+      items: (payload.items ?? []).map(mapCostItemRow),
+      exceptions: (payload.exceptions ?? []).map(mapExternalCostRuleExceptionRow),
+      idempotencyStatus: payload.idempotency_status,
+    };
+  }
+
+  async resolveExternalCostRuleException(
+    input: ResolveExternalCostRuleExceptionInput,
+  ): Promise<ResolveExternalCostRuleExceptionResult> {
+    const { data, error } = await this.client.rpc(
+      "resolve_external_cost_rule_exception",
+      {
+        p_organization_id: input.organizationId,
+        p_exception_id: input.exceptionId,
+        p_resolution_value: input.resolutionValue,
+        p_resolution_reason: input.resolutionReason,
+        p_resolved_by: input.resolvedBy,
+      },
+    );
+
+    const payload = requireSingle({
+      data: data as ResolveExternalCostRuleExceptionRpcResult | null,
+      error,
+    });
+
+    return {
+      exception: mapExternalCostRuleExceptionRow(payload.exception),
+      items: (payload.items ?? []).map(mapCostItemRow),
+      replayed: Boolean(payload.replayed),
+      replayDeferred: Boolean(payload.replay_deferred),
+      openSiblingCount: Number(payload.openSiblingCount ?? 0),
+      needsReplay:
+        Boolean(payload.replay_deferred) &&
+        Number(payload.openSiblingCount ?? 0) === 0,
+    };
+  }
+
+  async getExternalCostRuleExceptionById(
+    input: GetExternalCostRuleExceptionByIdInput,
+  ): Promise<ExternalCostRuleExceptionRecord | null> {
+    const { data, error } = await this.client
+      .from("external_cost_rule_exceptions")
+      .select("*")
+      .eq("organization_id", input.organizationId)
+      .eq("id", input.exceptionId)
+      .maybeSingle<ExternalCostRuleExceptionRow>();
+
+    if (error) {
+      throw error;
+    }
+    return data ? mapExternalCostRuleExceptionRow(data) : null;
+  }
+
+  async listExternalCostRuleExceptionsForImportRow(
+    input: ListExternalCostRuleExceptionsForImportRowInput,
+  ): Promise<ExternalCostRuleExceptionRecord[]> {
+    const { data, error } = await this.client
+      .from("external_cost_rule_exceptions")
+      .select("*")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("import_batch_id", input.importBatchId)
+      .eq("import_row_index", input.importRowIndex)
+      .order("variable_name", { ascending: true })
+      .order("id", { ascending: true })
+      .returns<ExternalCostRuleExceptionRow[]>();
+
+    if (error) {
+      throw error;
+    }
+    return (data ?? []).map(mapExternalCostRuleExceptionRow);
+  }
+
+  async listExternalCostRuleExceptionsForImportBatch(input: {
+    organizationId: string;
+    projectId: string;
+    importBatchId: string;
+    status?: ExternalCostRuleExceptionStatus;
+  }): Promise<ExternalCostRuleExceptionRecord[]> {
+    let query = this.client
+      .from("external_cost_rule_exceptions")
+      .select("*")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("import_batch_id", input.importBatchId)
+      .order("import_row_index", { ascending: true })
+      .order("variable_name", { ascending: true })
+      .order("id", { ascending: true });
+
+    if (input.status) {
+      query = query.eq("status", input.status);
+    }
+
+    const { data, error } = await query.returns<ExternalCostRuleExceptionRow[]>();
+    if (error) {
+      throw error;
+    }
+    return (data ?? []).map(mapExternalCostRuleExceptionRow);
+  }
+
+  async listExternalCostRuleExceptionBatchSummaries(input: {
+    organizationId: string;
+    projectId: string;
+    status?: ExternalCostRuleExceptionStatus;
+  }): Promise<ExternalCostRuleExceptionBatchSummary[]> {
+    let query = this.client
+      .from("external_cost_rule_exceptions")
+      .select("import_batch_id")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId);
+
+    if (input.status) {
+      query = query.eq("status", input.status);
+    }
+
+    const { data, error } =
+      await query.returns<ExternalCostRuleExceptionBatchSummaryRow[]>();
+    if (error) {
+      throw error;
+    }
+
+    const counts = new Map<string, number>();
+    (data ?? []).forEach((row) => {
+      if (row.import_batch_id) {
+        counts.set(
+          row.import_batch_id,
+          (counts.get(row.import_batch_id) ?? 0) + 1,
+        );
+      }
+    });
+
+    return [...counts.entries()].map(
+      ([importBatchId, unresolvedExceptionCount]) => ({
+        importBatchId,
+        unresolvedExceptionCount,
+      }),
+    );
+  }
+
+  async replayExternalCostRuleExceptionItems(
+    input: ReplayExternalCostRuleExceptionItemsInput,
+  ): Promise<ReplayExternalCostRuleExceptionItemsResult> {
+    const { data, error } = await this.client.rpc(
+      "replay_external_cost_rule_exception_items",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_import_batch_id: input.importBatchId,
+        p_import_row_index: input.importRowIndex,
+        p_idempotency_key: input.idempotencyKey,
+        p_input_hash: input.inputHash,
+        p_created_by: input.createdBy,
+        p_items: input.items.map(toRpcCostItem),
+      },
+    );
+
+    const payload = requireSingle({
+      data: data as ReplayExternalCostRuleExceptionItemsRpcResult | null,
+      error,
+    });
+
+    return {
+      items: (payload.items ?? []).map(mapCostItemRow),
+      idempotencyStatus: payload.idempotency_status,
+    };
+  }
+
+  async listSettlementReconciliationRuns(input: {
+    organizationId: string;
+    projectId: string;
+  }): Promise<SettlementReconciliationRunRecord[]> {
+    const { data, error } = await this.client
+      .from("settlement_reconciliation_runs")
+      .select("*")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .order("created_at", { ascending: false })
+      .returns<SettlementReconciliationRunRow[]>();
+
+    if (error) {
+      throw error;
+    }
+    return (data ?? []).map(mapSettlementReconciliationRunRow);
   }
 }
 
@@ -388,6 +791,11 @@ export function mapCostItemRow(row: CostItemRow): ProjectCostItemRecord {
     evidenceLevel: row.evidence_level,
     source: row.source,
     sourcePayload: row.source_payload ?? {},
+    sourceRuleVersionId: row.source_rule_version_id,
+    sourceImportBatchId: row.source_import_batch_id,
+    sourceExecutionKey: row.source_execution_key,
+    sourceInputHash: row.source_input_hash,
+    sourceExplanation: row.source_explanation,
     reason: row.reason,
     status: row.status,
     createdBy: row.created_by,
@@ -410,6 +818,106 @@ export function mapImportBatchRow(
     createdBy: row.created_by,
     createdAt: row.created_at,
   };
+}
+
+type ConfirmCostImportRpcResult = {
+  import_batch: ImportBatchRow;
+  items: CostItemRow[];
+  exceptions: ExternalCostRuleExceptionRow[];
+  idempotency_status: "created" | "existing";
+};
+
+type ResolveExternalCostRuleExceptionRpcResult = {
+  exception: ExternalCostRuleExceptionRow;
+  items: CostItemRow[];
+  replayed: boolean;
+  replay_deferred?: boolean;
+  openSiblingCount?: number;
+};
+
+type ReplayExternalCostRuleExceptionItemsRpcResult = {
+  items: CostItemRow[];
+  idempotency_status: "created" | "existing";
+};
+
+export function mapExternalCostRuleExceptionRow(
+  row: ExternalCostRuleExceptionRow,
+): ExternalCostRuleExceptionRecord {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    importBatchId: row.import_batch_id,
+    importRowIndex: Number(row.import_row_index),
+    ruleVersionId: row.rule_version_id,
+    variableName: row.variable_name,
+    policy: row.policy,
+    sourceContextSnapshot: row.source_context_snapshot ?? {},
+    status: row.status,
+    resolutionValue: row.resolution_value,
+    resolutionReason: row.resolution_reason,
+    createdBy: row.created_by,
+    resolvedBy: row.resolved_by,
+    createdAt: row.created_at,
+    resolvedAt: row.resolved_at,
+  };
+}
+
+export function mapSettlementReconciliationRunRow(
+  row: SettlementReconciliationRunRow,
+): SettlementReconciliationRunRecord {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    triggerType: row.trigger_type,
+    triggerBatchId: row.trigger_batch_id,
+    coreInputHash: row.core_input_hash,
+    coreResult: row.core_result ?? {},
+    ruleVersionId: row.rule_version_id,
+    formulaHash: row.formula_hash,
+    customChecks: row.custom_checks ?? {},
+    finalChecks: row.final_checks ?? {},
+    blocked: Boolean(row.blocked),
+    warnings: Array.isArray(row.warnings) ? row.warnings : [],
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+function toRpcCostItem(
+  input: ConfirmCostImportItemInput,
+): Record<string, unknown> {
+  return removeUndefined({
+    import_row_index: input.importRowIndex,
+    rule_version_id: input.ruleVersionId,
+    streamer_id: input.streamerId,
+    supplier_organization_id: input.supplierOrganizationId,
+    live_report_id: input.liveReportId,
+    item_type: input.itemType,
+    amount_cents: input.amountCents,
+    direction: input.direction,
+    evidence_level: input.evidenceLevel,
+    source_payload: input.sourcePayload,
+    source_execution_key: input.sourceExecutionKey,
+    source_input_hash: input.sourceInputHash,
+    source_explanation: input.sourceExplanation,
+    status: input.status,
+  });
+}
+
+function toRpcException(
+  input: ConfirmCostImportExceptionInput,
+): Record<string, unknown> {
+  return removeUndefined({
+    import_row_index: input.importRowIndex,
+    rule_version_id: input.ruleVersionId,
+    variable_name: input.variableName,
+    policy: input.policy,
+    source_context_snapshot: input.sourceContextSnapshot,
+  });
 }
 
 function requireSingle<T>({ data, error }: QueryResult<T>): T {

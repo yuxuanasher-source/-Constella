@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { CustomSettlementRuleVersion } from "./custom-rule-repository";
+import { validateCustomRuleFormula } from "./custom-rule-validator";
 import {
   runProjectSettlementReconciliation,
   SupabaseReconciliationDataSource,
@@ -13,6 +15,11 @@ const actor: SettlementActor = {
   role: "ops_manager",
   organizationId: "org-1",
 };
+const UUID_ORG = "00000000-0000-4000-8000-000000000001";
+const UUID_PROJECT = "00000000-0000-4000-8000-000000000002";
+const UUID_USER = "00000000-0000-4000-8000-000000000003";
+const UUID_RULE = "00000000-0000-4000-8000-000000000004";
+const UUID_SIMULATION = "00000000-0000-4000-8000-000000000005";
 
 function createSource(
   overrides: Partial<{
@@ -59,6 +66,12 @@ function createSource(
 
 type Totals = { computedCents: number; manualCents: number; adjustmentCents: number };
 type Evidence = { green: number; yellow: number; red: number; unknown?: number };
+type PersistReconciliationRunInput = Parameters<
+  NonNullable<ReconciliationDataSource["persistReconciliationRun"]>
+>[0];
+type CachedReconciliationRunInput = Parameters<
+  NonNullable<ReconciliationDataSource["getCachedReconciliationRun"]>
+>[0];
 
 describe("runProjectSettlementReconciliation", () => {
   it("composes batch, cost and tax inputs into the reconciliation result", async () => {
@@ -123,7 +136,9 @@ describe("runProjectSettlementReconciliation", () => {
     });
 
     expect(result.evidence.red).toBe(2);
-    expect(result.checks.some((c) => c.key === "evidence_red")).toBe(true);
+    expect(
+      result.checks.some((c) => "key" in c && c.key === "evidence_red"),
+    ).toBe(true);
   });
 
   it("rejects non-MCN roles", async () => {
@@ -152,7 +167,386 @@ describe("runProjectSettlementReconciliation", () => {
       }),
     ).rejects.toThrow(/period end cannot be earlier/);
   });
+
+  it("keeps the no-active-rule DTO byte-compatible except immutable run metadata", async () => {
+    const source = createSource() as ReconciliationDataSource &
+      Record<string, ReturnType<typeof vi.fn>>;
+    source.resolveActiveReconciliationRule = vi.fn(async () => null);
+    source.persistReconciliationRun = vi.fn(
+      async (snapshot: PersistReconciliationRunInput) => ({
+      id: "run-1",
+      createdAt: "2026-07-14T00:00:00.000Z",
+      inputHash: snapshot.inputHash,
+      result: snapshot.result,
+      }),
+    );
+
+    const result = await runProjectSettlementReconciliation({
+      source,
+      actor,
+      projectId: "p-1",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+    });
+    const { run, ...withoutRun } = result as typeof result & { run?: unknown };
+    void run;
+
+    const coreOnly = await runProjectSettlementReconciliation({
+      source: createSource(),
+      actor,
+      projectId: "p-1",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+    });
+
+    expect(JSON.stringify(withoutRun)).toBe(JSON.stringify(coreOnly));
+    expect(source.persistReconciliationRun).toHaveBeenCalledOnce();
+  });
+
+  it("loads inputs, computes core, builds variables, executes custom checks, appends, and persists one snapshot in order", async () => {
+    const events: string[] = [];
+    const rule = reconciliationRule(
+      '[warn_if(red_evidence_count > 0, "存在红证据"), block_if(margin_rate < rate_percent(60), "毛利率低于 60%")]',
+    );
+    const source = createSource({
+      receivable: {
+        totals: { computedCents: 1_000_000, manualCents: 0, adjustmentCents: 0 },
+        evidence: { green: 7, yellow: 0, red: 1, unknown: 0 },
+      },
+    }) as ReconciliationDataSource & Record<string, ReturnType<typeof vi.fn>>;
+    vi.mocked(source.getBatchTotals).mockImplementation(async ({ batchType }) => {
+      events.push(`load:${batchType}`);
+      return batchType === "receivable"
+        ? {
+            totals: { computedCents: 1_000_000, manualCents: 0, adjustmentCents: 0 },
+            evidence: { green: 7, yellow: 0, red: 1, unknown: 0 },
+          }
+        : {
+            totals: { computedCents: 400_000, manualCents: 0, adjustmentCents: 0 },
+            evidence: { green: 0, yellow: 0, red: 0, unknown: 0 },
+          };
+    });
+    vi.mocked(source.getConfirmedCostSummary).mockImplementation(async () => {
+      events.push("load:external_cost");
+      return { costCents: 100_000, revenueOffsetCents: 0, adjustmentCents: 0 };
+    });
+    vi.mocked(source.getFinancialSettings).mockImplementation(async () => {
+      events.push("load:financial");
+      return {
+        isInvoiced: false,
+        outputVatRateBps: 0,
+        surtaxRateBps: 0,
+        procurementCostCents: 0,
+      };
+    });
+    source.resolveActiveReconciliationRule = vi.fn(async () => {
+      events.push("load:active_rule");
+      return rule;
+    });
+    source.persistReconciliationRun = vi.fn(
+      async (snapshot: PersistReconciliationRunInput) => {
+      events.push("persist:run");
+      expect(
+        snapshot.finalChecks.map((check: { source: string }) => check.source),
+      ).toEqual(["core", "custom_rule", "custom_rule"]);
+      return {
+        id: "run-1",
+        createdAt: "2026-07-14T00:00:00.000Z",
+        inputHash: snapshot.inputHash,
+        result: snapshot.result,
+      };
+      },
+    );
+
+    const result = await runProjectSettlementReconciliation({
+      source,
+      actor,
+      projectId: "p-1",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+      onStep: (step) => events.push(step),
+    });
+
+    expect(events).toEqual([
+      "load:receivable",
+      "load:payable",
+      "load:external_cost",
+      "load:financial",
+      "load:active_rule",
+      "compute:core",
+      "build:variables",
+      "execute:custom_rule",
+      "append:custom_checks",
+      "persist:run",
+    ]);
+    expect(result.checks.map((check) => check.message)).toEqual([
+      expect.stringContaining("红"),
+      "存在红证据",
+      "毛利率低于 60%",
+    ]);
+    expect(result.canConfirm).toBe(false);
+    expect(source.persistReconciliationRun).toHaveBeenCalledOnce();
+  });
+
+  it("reuses a cached immutable run only when the full input hash matches", async () => {
+    const source = createSource() as ReconciliationDataSource &
+      Record<string, ReturnType<typeof vi.fn>>;
+    source.resolveActiveReconciliationRule = vi.fn(async () => null);
+    source.getCachedReconciliationRun = vi.fn(
+      async ({ inputHash }: CachedReconciliationRunInput) => ({
+      id: "cached-run",
+      inputHash,
+      result: {
+        ...cachedCoreResult(),
+        run: { id: "cached-run", inputHash },
+      },
+      createdAt: "2026-07-14T00:00:00.000Z",
+      }),
+    );
+    source.persistReconciliationRun = vi.fn();
+
+    const result = await runProjectSettlementReconciliation({
+      source,
+      actor,
+      projectId: "p-1",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+    });
+
+    expect(result.run?.id).toBe("cached-run");
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(source.persistReconciliationRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale active rule before returning a matching cached run", async () => {
+    const freshRule = reconciliationRule('pass_if(true, "核对通过")');
+    const staleRule: CustomSettlementRuleVersion = {
+      ...freshRule,
+      compiledAst: reconciliationRule('pass_if(false, "核对通过")').compiledAst,
+    };
+    const source = createSource() as ReconciliationDataSource &
+      Record<string, ReturnType<typeof vi.fn>>;
+    source.resolveActiveReconciliationRule = vi.fn(async () => staleRule);
+    source.getCachedReconciliationRun = vi.fn(
+      async ({ inputHash }: CachedReconciliationRunInput) => ({
+      id: "cached-run",
+      inputHash,
+      result: {
+        ...cachedCoreResult(),
+        run: { id: "cached-run", inputHash },
+      },
+      createdAt: "2026-07-14T00:00:00.000Z",
+      }),
+    );
+    source.persistReconciliationRun = vi.fn();
+
+    await expect(
+      runProjectSettlementReconciliation({
+        source,
+        actor,
+        projectId: "p-1",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      }),
+    ).rejects.toThrow("CUSTOM_RULE_RECONCILIATION_RULE_STALE");
+    expect(source.getCachedReconciliationRun).not.toHaveBeenCalled();
+    expect(source.persistReconciliationRun).not.toHaveBeenCalled();
+  });
+
+  it("requires finalized money, evidence, and financial inputs before persisting", async () => {
+    const source = createSource({
+      receivable: {
+        totals: { computedCents: 1_000_000, manualCents: 0, adjustmentCents: 0 },
+        evidence: { green: 0, yellow: 0, red: 0, unknown: 1 },
+      },
+    }) as ReconciliationDataSource & Record<string, ReturnType<typeof vi.fn>>;
+    vi.mocked(source.getBatchTotals).mockResolvedValueOnce({
+      totals: { computedCents: 1_000_000, manualCents: 0, adjustmentCents: 0 },
+      evidence: { green: 0, yellow: 0, red: 0, unknown: 1 },
+      finalized: false,
+    });
+    source.persistReconciliationRun = vi.fn();
+
+    await expect(
+      runProjectSettlementReconciliation({
+        source,
+        actor,
+        projectId: "p-1",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      }),
+    ).rejects.toThrow(/finalized inputs/);
+    expect(source.persistReconciliationRun).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for missing counterpart batches when an active custom check exists", async () => {
+    const source = createSource() as ReconciliationDataSource &
+      Record<string, ReturnType<typeof vi.fn>>;
+    vi.mocked(source.getBatchTotals).mockImplementation(async ({ batchType }) =>
+      batchType === "receivable"
+        ? {
+            totals: { computedCents: 1_000_000, manualCents: 0, adjustmentCents: 0 },
+            evidence: { green: 2, yellow: 0, red: 0, unknown: 0 },
+            finalized: true,
+            present: true,
+          }
+        : {
+            totals: { computedCents: 0, manualCents: 0, adjustmentCents: 0 },
+            evidence: { green: 0, yellow: 0, red: 0, unknown: 0 },
+            finalized: true,
+            present: false,
+          },
+    );
+    source.resolveActiveReconciliationRule = vi.fn(async () =>
+      reconciliationRule('pass_if(true, "核对通过")'),
+    );
+    source.persistReconciliationRun = vi.fn();
+
+    await expect(
+      runProjectSettlementReconciliation({
+        source,
+        actor,
+        projectId: "p-1",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+      }),
+    ).rejects.toThrow(/finalized inputs/);
+    expect(source.persistReconciliationRun).not.toHaveBeenCalled();
+  });
+
+  it("verifies the caller hash for confirm or lock style rechecks and does not expose formula or AST", async () => {
+    const source = createSource() as ReconciliationDataSource &
+      Record<string, ReturnType<typeof vi.fn>>;
+    source.resolveActiveReconciliationRule = vi.fn(async () =>
+      reconciliationRule('pass_if(true, "核对通过")'),
+    );
+    source.persistReconciliationRun = vi.fn(
+      async (snapshot: PersistReconciliationRunInput) => ({
+      id: "run-1",
+      inputHash: snapshot.inputHash,
+      createdAt: "2026-07-14T00:00:00.000Z",
+      result: snapshot.result,
+      }),
+    );
+
+    await expect(
+      runProjectSettlementReconciliation({
+        source,
+        actor,
+        projectId: "p-1",
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+        expectedInputHash: "0".repeat(64),
+      }),
+    ).rejects.toThrow(/input hash changed/);
+
+    const result = await runProjectSettlementReconciliation({
+      source,
+      actor,
+      projectId: "p-1",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+    });
+
+    expect(JSON.stringify(result)).not.toMatch(/compiledAst|formula":/);
+    expect(JSON.stringify(result)).toContain(UUID_RULE);
+  });
 });
+
+function cachedCoreResult() {
+  return {
+    income: { receivableCents: 1_000_000 },
+    cost: {
+      payableCents: 400_000,
+      externalCostCents: 100_000,
+      procurementCents: 0,
+      totalCents: 500_000,
+    },
+    tax: {
+      isInvoiced: false,
+      outputVatCents: 0,
+      surtaxCents: 0,
+      taxTotalCents: 0,
+      invoiceAmountCents: 1_000_000,
+    },
+    profit: {
+      grossMarginCents: 500_000,
+      marginRateBps: 5_000,
+      manualAdjustmentCents: 0,
+    },
+    evidence: { green: 8, yellow: 0, red: 0, unknown: 0 },
+    checks: [],
+    hasBlocking: false,
+    hasWarning: false,
+    canConfirm: true,
+    canLock: true,
+  };
+}
+
+function reconciliationRule(formula: string): CustomSettlementRuleVersion {
+  const validation = validateCustomRuleFormula(formula, {
+    scope: "reconciliation",
+    executionGrain: "project_period",
+    compositionMode: "check",
+  });
+  if (!validation.ok) {
+    throw new Error(validation.issues[0]?.code ?? "validation failed");
+  }
+  return {
+    id: UUID_RULE,
+    organizationId: UUID_ORG,
+    projectId: UUID_PROJECT,
+    scope: "reconciliation",
+    target: { targetType: "project", targetId: null },
+    executionGrain: "project_period",
+    compositionMode: "check",
+    priority: 0,
+    versionNumber: 1,
+    status: "active",
+    formula,
+    compiledAst:
+      validation.compiledAst as unknown as CustomSettlementRuleVersion["compiledAst"],
+    variables: [],
+    parameters: {},
+    ruleContract: {
+      schemaVersion: 1,
+      scope: "reconciliation",
+      target: { targetType: "project", targetId: null },
+      executionGrain: "project_period",
+      compositionMode: "check",
+      title: "毛利复核",
+      summary: "项目周期毛利复核",
+      calculationComponents: [],
+      requiredInputs: [],
+      parameters: [],
+      effectiveStartAt: "2026-07-01T00:00:00.000Z",
+      effectiveEndAt: null,
+      missingDataPolicy: { action: "block_batch" },
+      compositionDescription: "追加复核检查",
+      businessTimezone: "Asia/Shanghai",
+      examples: [],
+    },
+    systemExplanationTemplate: "",
+    missingDataPolicy: {},
+    testCases: [],
+    simulationSummary: {},
+    formulaHash: validation.formulaHash,
+    contractHash: "a".repeat(64),
+    parameterHash: "b".repeat(64),
+    catalogHash: "c".repeat(64),
+    dataSelectionHash: "d".repeat(64),
+    simulationId: UUID_SIMULATION,
+    effectiveFrom: "2026-07-01T00:00:00.000Z",
+    effectiveUntil: null,
+    createdBy: UUID_USER,
+    approvedBy: UUID_USER,
+    aiDraftId: null,
+    reason: "activate",
+    createdAt: "2026-07-01T00:00:00.000Z",
+    approvedAt: "2026-07-01T00:00:00.000Z",
+    archivedAt: null,
+  };
+}
 
 describe("SupabaseReconciliationDataSource", () => {
   it("normalizes numeric(12,2) yuan batch amounts to cents", async () => {
@@ -176,6 +570,8 @@ describe("SupabaseReconciliationDataSource", () => {
               ? {
                   data: [
                     {
+                      id: "batch-1",
+                      status: "confirmed",
                       computed_amount: 1234.56,
                       manual_amount: 10.0,
                       adjustment_amount: 0,
@@ -203,5 +599,232 @@ describe("SupabaseReconciliationDataSource", () => {
     expect(totals.manualCents).toBe(1_000);
     expect(evidence.green).toBe(3);
     expect(evidence.yellow).toBe(1);
+  });
+
+  it("marks overlapping generated draft pending and reopened batches as not finalized", async () => {
+    const select = vi.fn(() => query);
+    const query = {
+      select,
+      eq: vi.fn(function () {
+        return query;
+      }),
+      neq: vi.fn(function () {
+        return query;
+      }),
+      lte: vi.fn(function () {
+        return query;
+      }),
+      gte: vi.fn(function () {
+        return query;
+      }),
+      returns: vi.fn(async () => ({
+        data: [
+          {
+            id: "confirmed-batch",
+            status: "confirmed",
+            computed_amount: 100,
+            manual_amount: 1,
+            adjustment_amount: 0,
+            evidence_summary: { green: 1 },
+          },
+          {
+            id: "locked-batch",
+            status: "locked",
+            computed_amount: 20,
+            manual_amount: 0,
+            adjustment_amount: 0,
+            evidence_summary: { yellow: 1 },
+          },
+          {
+            id: "generated-batch",
+            status: "generated",
+            computed_amount: 999,
+            manual_amount: 0,
+            adjustment_amount: 0,
+            evidence_summary: { red: 1 },
+          },
+          {
+            id: "draft-batch",
+            status: "draft",
+            computed_amount: 999,
+            manual_amount: 0,
+            adjustment_amount: 0,
+            evidence_summary: { red: 1 },
+          },
+          {
+            id: "pending-batch",
+            status: "pending",
+            computed_amount: 999,
+            manual_amount: 0,
+            adjustment_amount: 0,
+            evidence_summary: { red: 1 },
+          },
+          {
+            id: "reopened-batch",
+            status: "reopened",
+            computed_amount: 999,
+            manual_amount: 0,
+            adjustment_amount: 0,
+            evidence_summary: { red: 1 },
+          },
+        ],
+        error: null,
+      })),
+    };
+    const client = {
+      from: (table: string) => {
+        expect(table).toBe("settlement_batches");
+        return query;
+      },
+    };
+
+    const source = new SupabaseReconciliationDataSource(client as never);
+    const result = await source.getBatchTotals({
+      organizationId: "org-1",
+      projectId: "p-1",
+      batchType: "receivable",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+    });
+
+    expect(select).toHaveBeenCalledWith(
+      "id, computed_amount, manual_amount, adjustment_amount, evidence_summary, status",
+    );
+    expect(result.finalized).toBe(false);
+    expect(result.totals).toEqual({
+      computedCents: 12_000,
+      manualCents: 100,
+      adjustmentCents: 0,
+    });
+    expect(result.evidence).toMatchObject({ green: 1, yellow: 1, red: 0 });
+  });
+
+  it("counts the transition batch as finalized while confirm gate persists before mutation", async () => {
+    const query = {
+      select: vi.fn(function () {
+        return query;
+      }),
+      eq: vi.fn(function () {
+        return query;
+      }),
+      neq: vi.fn(function () {
+        return query;
+      }),
+      lte: vi.fn(function () {
+        return query;
+      }),
+      gte: vi.fn(function () {
+        return query;
+      }),
+      returns: vi.fn(async () => ({
+        data: [
+          {
+            id: "batch-confirming",
+            status: "generated",
+            computed_amount: 100,
+            manual_amount: 1,
+            adjustment_amount: 0,
+            evidence_summary: { green: 1 },
+          },
+        ],
+        error: null,
+      })),
+    };
+    const client = {
+      from: (table: string) => {
+        expect(table).toBe("settlement_batches");
+        return query;
+      },
+    };
+
+    const source = new SupabaseReconciliationDataSource(client as never);
+    const result = await source.getBatchTotals({
+      organizationId: "org-1",
+      projectId: "p-1",
+      batchType: "receivable",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+      transitionBatch: {
+        id: "batch-confirming",
+        batchType: "receivable",
+        status: "confirmed",
+      },
+    });
+
+    expect(result.finalized).toBe(true);
+    expect(result.present).toBe(true);
+    expect(result.totals).toEqual({
+      computedCents: 10_000,
+      manualCents: 100,
+      adjustmentCents: 0,
+    });
+  });
+
+  it("ignores overlapping voided batches while keeping finalized inputs true", async () => {
+    let excludedStatus: string | null = null;
+    const rows = [
+      {
+        id: "confirmed-batch",
+        status: "confirmed",
+        computed_amount: 100,
+        manual_amount: 1,
+        adjustment_amount: 0,
+        evidence_summary: { green: 1 },
+      },
+      {
+        id: "voided-batch",
+        status: "voided",
+        computed_amount: 999,
+        manual_amount: 0,
+        adjustment_amount: 0,
+        evidence_summary: { red: 1 },
+      },
+    ];
+    const query = {
+      select: vi.fn(function () {
+        return query;
+      }),
+      eq: vi.fn(function () {
+        return query;
+      }),
+      neq: vi.fn(function (_column: string, status: string) {
+        excludedStatus = status;
+        return query;
+      }),
+      lte: vi.fn(function () {
+        return query;
+      }),
+      gte: vi.fn(function () {
+        return query;
+      }),
+      returns: vi.fn(async () => ({
+        data: rows.filter((row) => row.status !== excludedStatus),
+        error: null,
+      })),
+    };
+    const client = {
+      from: (table: string) => {
+        expect(table).toBe("settlement_batches");
+        return query;
+      },
+    };
+
+    const source = new SupabaseReconciliationDataSource(client as never);
+    const result = await source.getBatchTotals({
+      organizationId: "org-1",
+      projectId: "p-1",
+      batchType: "receivable",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+    });
+
+    expect(query.neq).not.toHaveBeenCalled();
+    expect(result.finalized).toBe(true);
+    expect(result.totals).toEqual({
+      computedCents: 10_000,
+      manualCents: 100,
+      adjustmentCents: 0,
+    });
+    expect(result.evidence).toMatchObject({ green: 1, yellow: 0, red: 0 });
   });
 });

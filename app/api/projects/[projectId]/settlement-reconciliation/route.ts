@@ -11,6 +11,7 @@ import {
   RouteError,
   settlementActorFromContext,
   isUuid,
+  settlementReconciliationRouteMetadata,
 } from "@/features/settlements/settlement-route-utils";
 
 export async function GET(
@@ -38,7 +39,10 @@ export async function GET(
       forceApproved,
     });
 
-    return NextResponse.json({ reconciliation });
+    return NextResponse.json({
+      reconciliation,
+      metadata: settlementReconciliationRouteMetadata(reconciliation),
+    });
   } catch (error) {
     return jsonError(error);
   }
