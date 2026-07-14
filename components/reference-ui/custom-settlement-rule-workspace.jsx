@@ -80,7 +80,7 @@ const SCOPE_OPTIONS = [
     executionGrain: "report",
   },
   {
-    value: "reconciliation_check",
+    value: "reconciliation",
     label: "结算风险校验",
     icon: ShieldCheck,
     executionGrain: "project_period",
@@ -308,7 +308,7 @@ function createSeedContract({
 }) {
   const payable = scope === "payable";
   const externalCost = scope === "external_cost";
-  const reconciliationCheck = scope === "reconciliation_check";
+  const reconciliationCheck = scope === "reconciliation";
   const inputName = externalCost
     ? "sales_amount"
     : reconciliationCheck
@@ -690,13 +690,13 @@ function recoveryKindForError(code, hasSession) {
 
 function scopeLabel(scope) {
   if (scope === "external_cost") return "项目成本";
-  if (scope === "reconciliation_check") return "结算风险校验";
+  if (scope === "reconciliation") return "结算风险校验";
   return scope === "receivable" ? "客户应收" : "主播应付";
 }
 
 function targetLabel(target, scope) {
   if (scope === "external_cost") return "当前项目成本";
-  if (scope === "reconciliation_check") return "当前项目风险校验";
+  if (scope === "reconciliation") return "当前项目风险校验";
   if (scope === "receivable" || target?.targetType === "project") {
     return scope === "receivable" ? "当前项目客户" : "当前项目主播";
   }
@@ -3000,7 +3000,7 @@ export default function CustomSettlementRuleWorkspace({
         <ExternalCostCatalogPanel catalog={viewState.catalog} />
       ) : null}
 
-      {selectedScope === "reconciliation_check" &&
+      {selectedScope === "reconciliation" &&
       viewState.catalogStatus === "ready" ? (
         <FinalizedVariableCatalogPanel catalog={viewState.catalog} />
       ) : null}

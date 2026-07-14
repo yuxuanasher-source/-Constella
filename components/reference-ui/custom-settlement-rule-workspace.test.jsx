@@ -810,7 +810,7 @@ describe("CustomSettlementRuleWorkspace", () => {
       expect(apiClient.getVariableCatalog).toHaveBeenLastCalledWith(
         expect.objectContaining({
           projectId: PROJECT_ID,
-          scope: "reconciliation_check",
+          scope: "reconciliation",
           executionGrain: "project_period",
         }),
       ),
