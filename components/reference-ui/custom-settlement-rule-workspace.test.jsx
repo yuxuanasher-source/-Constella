@@ -884,7 +884,7 @@ describe("CustomSettlementRuleWorkspace", () => {
           ],
           evidenceRefs: [
             { kind: "linked_report", liveReportId: "report-1" },
-            { kind: "import_reference", reference: "yellow_review" },
+            { kind: "import_reference", level: "yellow_review" },
             "invoice:2026-07-01",
           ],
         },

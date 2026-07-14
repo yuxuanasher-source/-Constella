@@ -1041,6 +1041,8 @@ function formatEvidenceRef(ref) {
       ? ref.liveReportId.trim()
       : typeof ref.reference === "string" && ref.reference.trim()
         ? ref.reference.trim()
+        : typeof ref.level === "string" && ref.level.trim()
+          ? ref.level.trim()
         : typeof ref.id === "string" && ref.id.trim()
           ? ref.id.trim()
           : null;
