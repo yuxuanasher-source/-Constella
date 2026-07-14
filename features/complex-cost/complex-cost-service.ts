@@ -6,12 +6,15 @@ import type {
   ConfirmCostImportItemInput,
   ConfirmCostImportWithRuleItemsInput,
   ConfirmCostImportWithRuleItemsResult,
+  ResolveExternalCostRuleExceptionInput,
+  ResolveExternalCostRuleExceptionResult,
 } from "./complex-cost-repository";
 import type {
   ComplexCostActor,
   ComplexCostRuleStatus,
   ComplexCostRuleVersionRecord,
   CreateProjectCostItemInput,
+  ExternalCostRuleExceptionRecord,
   ProjectComplexCostEntitlementRecord,
   ProjectCostImportBatchRecord,
   ProjectCostImportType,
@@ -23,6 +26,7 @@ import type {
 } from "./complex-cost-types";
 import { calculateImportedCostAmountCents } from "./complex-cost-calculator";
 import {
+  buildExternalCostRuleExceptionReplay,
   executeExternalCostRuleForImport,
 } from "@/features/settlements/custom-rule-external-cost";
 import type {
@@ -126,6 +130,15 @@ export type ComplexCostRepository = {
     organizationId: string;
     projectId: string;
   }): Promise<SettlementReconciliationRunRecord[]>;
+  resolveExternalCostRuleException(
+    input: ResolveExternalCostRuleExceptionInput,
+  ): Promise<ResolveExternalCostRuleExceptionResult>;
+  listExternalCostRuleExceptionsForImportRow(input: {
+    organizationId: string;
+    projectId: string;
+    importBatchId: string;
+    importRowIndex: number;
+  }): Promise<ExternalCostRuleExceptionRecord[]>;
   replayExternalCostRuleExceptionItems(
     input: ReplayExternalCostRuleExceptionItemsInput,
   ): Promise<ReplayExternalCostRuleExceptionItemsResult>;
@@ -418,6 +431,77 @@ export async function confirmProjectCostImportBatch(args: {
   return { importBatch: updatedBatch, items: confirmed.items };
 }
 
+export async function resolveExternalCostRuleExceptionWithReplay(args: {
+  repo: Pick<
+    ComplexCostRepository,
+    | "getProjectEntitlement"
+    | "resolveExternalCostRuleException"
+    | "listExternalCostRuleExceptionsForImportRow"
+    | "replayExternalCostRuleExceptionItems"
+  >;
+  actor: ComplexCostActor;
+  exceptionId: string;
+  resolutionValue: Record<string, unknown>;
+  resolutionReason: string;
+}): Promise<
+  ResolveExternalCostRuleExceptionResult & {
+    replay: ReplayExternalCostRuleExceptionItemsResult | null;
+  }
+> {
+  assertCanReviewCostItems(args.actor);
+  assertReason(
+    args.resolutionReason,
+    "Resolving an external cost rule exception requires a reason",
+  );
+
+  const resolved = await args.repo.resolveExternalCostRuleException({
+    organizationId: args.actor.organizationId,
+    exceptionId: args.exceptionId,
+    resolutionValue: args.resolutionValue,
+    resolutionReason: args.resolutionReason.trim(),
+    resolvedBy: args.actor.userId,
+  });
+  assertSameOrganization(args.actor, resolved.exception.organizationId);
+  await requireProjectEntitlement(
+    args.repo,
+    args.actor,
+    resolved.exception.projectId,
+  );
+
+  if (!resolved.needsReplay || resolved.openSiblingCount !== 0) {
+    return { ...resolved, replay: null };
+  }
+
+  const siblings = await args.repo.listExternalCostRuleExceptionsForImportRow({
+    organizationId: args.actor.organizationId,
+    projectId: resolved.exception.projectId,
+    importBatchId: resolved.exception.importBatchId,
+    importRowIndex: resolved.exception.importRowIndex,
+  });
+  const replayInput = buildExternalCostRuleExceptionReplay({
+    organizationId: args.actor.organizationId,
+    projectId: resolved.exception.projectId,
+    importBatchId: resolved.exception.importBatchId,
+    importRowIndex: resolved.exception.importRowIndex,
+    createdBy: args.actor.userId,
+    exceptions: siblings,
+  });
+  if (!replayInput) {
+    return { ...resolved, replay: null };
+  }
+
+  const replay = await args.repo.replayExternalCostRuleExceptionItems(
+    replayInput,
+  );
+
+  return {
+    ...resolved,
+    items: [...resolved.items, ...replay.items],
+    replayed: true,
+    replay,
+  };
+}
+
 type PreparedImportConfirmation =
   | {
       kind: "legacy";
@@ -508,11 +592,7 @@ async function resolveEffectiveExternalCostRule(input: {
     return null;
   }
   const executionTimestamp =
-    input.batch.parsedPayload
-      .map((row) => stringFromRow(row, "sourceTimestamp"))
-      .find((value): value is string => Boolean(value)) ??
-    input.batch.createdAt ??
-    new Date().toISOString();
+    input.batch.createdAt ?? new Date().toISOString();
   const lookup = await input.customRuleRepo.resolveExecutableCustomRuleLayers({
     organizationId: input.actor.organizationId,
     projectId: input.batch.projectId,

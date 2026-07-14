@@ -328,6 +328,57 @@ describe("buildExternalCostRuleExceptionReplay", () => {
       ]),
     );
   });
+
+  it("uses the stored source context hash for Task 2 replay input and item hashes", () => {
+    const rule = externalRule(
+      'external_cost = cost_items([{ category: "supplier_fee", amount: supplier_fee, memo: "供应商" }])',
+      [{ name: "supplier_fee", required: false, missingDataPolicy: { action: "route_item_to_review" } }],
+    );
+    const initial = executeExternalCostRuleForImport({
+      organizationId: ORG_ID,
+      projectId: PROJECT_ID,
+      importBatch: importBatch([{ supplierOrganizationId: "supplier-1" }]),
+      ruleVersion: rule,
+      reason: "Finance confirmed.",
+      createdBy: "user-1",
+    });
+    const storedSourceContextHash = String(
+      initial.exceptions[0]?.sourceContextSnapshot.__source_context_hash,
+    );
+
+    const replay = buildExternalCostRuleExceptionReplay({
+      organizationId: ORG_ID,
+      projectId: PROJECT_ID,
+      importBatchId: "import-1",
+      importRowIndex: 0,
+      createdBy: "user-1",
+      exceptions: [
+        {
+          ...initial.exceptions[0]!,
+          id: "exception-1",
+          organizationId: ORG_ID,
+          projectId: PROJECT_ID,
+          importBatchId: "import-1",
+          status: "resolved",
+          resolutionValue: { type: "money_cents", amountCents: 3456 },
+        },
+      ],
+    });
+
+    expect(replay).toMatchObject({
+      inputHash: storedSourceContextHash,
+      items: [
+        expect.objectContaining({
+          sourceInputHash: storedSourceContextHash,
+          sourcePayload: expect.objectContaining({
+            provenance: expect.objectContaining({
+              resolutionHash: expect.stringMatching(/^[0-9a-f]{64}$/u),
+            }),
+          }),
+        }),
+      ],
+    });
+  });
 });
 
 function importBatch(

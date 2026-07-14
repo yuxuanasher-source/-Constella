@@ -366,6 +366,14 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
     return [];
   }
 
+  resolveExternalCostRuleException(): never {
+    throw new Error("External cost rule exception replay is not used here");
+  }
+
+  async listExternalCostRuleExceptionsForImportRow() {
+    return [];
+  }
+
   async replayExternalCostRuleExceptionItems() {
     return { items: [], idempotencyStatus: "existing" as const };
   }

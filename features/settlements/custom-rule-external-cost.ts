@@ -206,6 +206,13 @@ export function buildExternalCostRuleExceptionReplay(input: {
   if (!snapshot) {
     throw new Error("CUSTOM_RULE_REPLAY_SNAPSHOT_INVALID");
   }
+  const sourceContextHash =
+    typeof first?.sourceContextSnapshot.__source_context_hash === "string"
+      ? first.sourceContextSnapshot.__source_context_hash
+      : null;
+  if (!sourceContextHash) {
+    throw new Error("CUSTOM_RULE_REPLAY_SOURCE_CONTEXT_HASH_MISSING");
+  }
 
   const variables = { ...snapshot.normalizedInputs };
   const resolutions: Record<string, unknown> = {};
@@ -219,10 +226,7 @@ export function buildExternalCostRuleExceptionReplay(input: {
   }
 
   const resolutionHash = sha256(resolutions);
-  const sourceInputHash = sha256({
-    snapshotHash: first?.sourceContextSnapshot.__source_context_hash,
-    resolutions,
-  });
+  const sourceInputHash = sourceContextHash;
   const result = executeCostItems(
     {
       id: snapshot.ruleVersionId,
@@ -271,12 +275,7 @@ export function buildExternalCostRuleExceptionReplay(input: {
       status: "pending_review",
     }),
   );
-  const inputHash = sha256({
-    exceptionIds,
-    resolutionHash,
-    sourceInputHash,
-    itemCount: items.length,
-  });
+  const inputHash = sourceContextHash;
 
   return {
     organizationId: input.organizationId,

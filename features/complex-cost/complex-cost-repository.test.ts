@@ -409,6 +409,46 @@ describe("SupabaseComplexCostRepository exception resolution", () => {
       }),
     );
   });
+
+  it("lists row sibling exceptions scoped to the import row for replay", async () => {
+    const query = {
+      select: vi.fn(() => query),
+      eq: vi.fn(() => query),
+      order: vi.fn(() => query),
+      returns: vi.fn(async () => ({ data: [exceptionRow], error: null })),
+    };
+    const from = vi.fn(() => query);
+    const repo = new SupabaseComplexCostRepository({ from } as never);
+    const contractRepo: Pick<
+      ComplexCostRepository,
+      "listExternalCostRuleExceptionsForImportRow"
+    > = repo;
+
+    await expect(
+      contractRepo.listExternalCostRuleExceptionsForImportRow({
+        organizationId: "org-1",
+        projectId: "project-1",
+        importBatchId: "import-1",
+        importRowIndex: 0,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: "exception-1",
+        importBatchId: "import-1",
+        importRowIndex: 0,
+      }),
+    ]);
+
+    expect(from).toHaveBeenCalledWith("external_cost_rule_exceptions");
+    expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(query.eq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(query.eq).toHaveBeenCalledWith("import_batch_id", "import-1");
+    expect(query.eq).toHaveBeenCalledWith("import_row_index", 0);
+    expect(query.order).toHaveBeenCalledWith("variable_name", {
+      ascending: true,
+    });
+    expect(query.order).toHaveBeenCalledWith("id", { ascending: true });
+  });
 });
 
 describe("SupabaseComplexCostRepository exception replay", () => {
