@@ -143,6 +143,12 @@ export type ComplexCostRepository = {
     importBatchId: string;
     importRowIndex: number;
   }): Promise<ExternalCostRuleExceptionRecord[]>;
+  listExternalCostRuleExceptionsForImportBatch(input: {
+    organizationId: string;
+    projectId: string;
+    importBatchId: string;
+    status?: ExternalCostRuleExceptionRecord["status"];
+  }): Promise<ExternalCostRuleExceptionRecord[]>;
   replayExternalCostRuleExceptionItems(
     input: ReplayExternalCostRuleExceptionItemsInput,
   ): Promise<ReplayExternalCostRuleExceptionItemsResult>;

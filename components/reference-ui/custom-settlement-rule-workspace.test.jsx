@@ -606,7 +606,7 @@ async function startRule(prompt = "每场按直播时长和单价结算") {
 }
 
 describe("CustomSettlementRuleWorkspace", () => {
-  it("offers only Phase 1 business scopes on a full-width operational surface", async () => {
+  it("offers settlement and project-cost business scopes on a full-width operational surface", async () => {
     const apiClient = api({
       getVariableCatalog: vi.fn(({ scope, executionGrain }) =>
         Promise.resolve(catalog(false, { scope, executionGrain })),
@@ -620,7 +620,9 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(
       screen.getByRole("button", { name: "主播应付" }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("项目成本")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "项目成本" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("风险校验")).not.toBeInTheDocument();
     expect(screen.queryByText("保存并请求审核")).not.toBeInTheDocument();
     expect(screen.getByTestId("custom-rule-workspace")).toHaveAttribute(
@@ -629,6 +631,59 @@ describe("CustomSettlementRuleWorkspace", () => {
     );
     expect(await screen.findByText("无历史数据")).toBeInTheDocument();
     expectOnePrimary("开始澄清");
+  });
+
+  it("loads normalized import fields when authoring project-cost rules", async () => {
+    const apiClient = api({
+      getVariableCatalog: vi.fn(({ scope, executionGrain }) =>
+        Promise.resolve(
+          catalog(true, {
+            scope,
+            executionGrain,
+            variables: [
+              {
+                id: "sales_amount",
+                label: "销售金额",
+                runtimeType: { kind: "scalar", scalarType: "money_cents" },
+                unit: "元",
+                sourceLabel: "成本导入",
+                availability: "available",
+                coverageNumerator: 3,
+                coverageDenominator: 3,
+              },
+              {
+                id: "gift_amount",
+                label: "礼物金额",
+                runtimeType: { kind: "scalar", scalarType: "money_cents" },
+                unit: "元",
+                sourceLabel: "成本导入",
+                availability: "available",
+                coverageNumerator: 3,
+                coverageDenominator: 3,
+              },
+            ],
+          }),
+        ),
+      ),
+    });
+    renderWorkspace(apiClient);
+
+    fireEvent.click(screen.getByRole("button", { name: "项目成本" }));
+
+    await waitFor(() =>
+      expect(apiClient.getVariableCatalog).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          projectId: PROJECT_ID,
+          scope: "external_cost",
+          executionGrain: "report",
+        }),
+      ),
+    );
+    expect(await screen.findByText("可用导入字段")).toBeInTheDocument();
+    expect(screen.getByText("sales_amount")).toBeInTheDocument();
+    expect(screen.getByText("gift_amount")).toBeInTheDocument();
+    expect(screen.getByText("生成待审核项目成本")).toBeInTheDocument();
+    expect(screen.queryByText(/自动确认/)).not.toBeInTheDocument();
   });
 
   it("shows one focused AI question and highlights every unresolved contract field", async () => {

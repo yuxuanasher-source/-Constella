@@ -73,6 +73,12 @@ const SCOPE_OPTIONS = [
     icon: Users,
     executionGrain: "report",
   },
+  {
+    value: "external_cost",
+    label: "项目成本",
+    icon: Calculator,
+    executionGrain: "report",
+  },
 ];
 
 const INITIAL_REQUEST_STATE = {
@@ -295,17 +301,38 @@ function createSeedContract({
   businessTimezone,
 }) {
   const payable = scope === "payable";
-  const inputName = payable ? "system_minutes" : "period_report_count";
-  const inputDescription = payable ? "系统直播时长" : "周期内已审核报告数";
-  const inputSource = payable ? "直播报告系统计时" : "周期内已审核直播报告";
-  const inputUnit = payable ? "分钟" : "份";
-  const title = payable
+  const externalCost = scope === "external_cost";
+  const inputName = externalCost
+    ? "sales_amount"
+    : payable
+      ? "system_minutes"
+      : "period_report_count";
+  const inputDescription = externalCost
+    ? "导入行销售金额"
+    : payable
+      ? "系统直播时长"
+      : "周期内已审核报告数";
+  const inputSource = externalCost
+    ? "项目成本导入"
+    : payable
+      ? "直播报告系统计时"
+      : "周期内已审核直播报告";
+  const inputUnit = externalCost ? "元" : payable ? "分钟" : "份";
+  const title = externalCost
+    ? `${projectName || "当前项目"}项目成本规则草案`
+    : payable
     ? `${projectName || "当前项目"}主播应付规则草案`
     : `${projectName || "当前项目"}客户应收规则草案`;
-  const summary = payable
+  const summary = externalCost
+    ? "按成本导入行生成待审核项目成本。"
+    : payable
     ? "按项目直播报告计算主播应付金额。"
     : "按项目结算周期计算客户应收金额。";
-  const description = payable ? "计算最终主播应付金额" : "计算最终客户应收金额";
+  const description = externalCost
+    ? "生成待审核项目成本"
+    : payable
+      ? "计算最终主播应付金额"
+      : "计算最终客户应收金额";
 
   const example = (name, kind, descriptionText, value, amountCents) => ({
     name,
@@ -319,11 +346,11 @@ function createSeedContract({
     schemaVersion: 1,
     scope,
     target:
-      scope === "receivable"
+      scope === "receivable" || externalCost
         ? { targetType: "project", targetId: null }
         : target,
-    executionGrain: payable ? "report" : "project_period",
-    compositionMode: "replace",
+    executionGrain: payable || externalCost ? "report" : "project_period",
+    compositionMode: externalCost ? "emit_items" : "replace",
     title,
     summary,
     calculationComponents: [
@@ -331,7 +358,9 @@ function createSeedContract({
         name: "final",
         description,
         expression: "按确认后的业务条件计算最终金额",
-        resultType: { kind: "scalar", scalarType: "money_cents" },
+        resultType: externalCost
+          ? { kind: "array", itemType: { kind: "object", fields: {} } }
+          : { kind: "scalar", scalarType: "money_cents" },
       },
     ],
     requiredInputs: [
@@ -339,7 +368,10 @@ function createSeedContract({
         name: inputName,
         description: inputDescription,
         source: inputSource,
-        valueType: { kind: "scalar", scalarType: "integer" },
+        valueType: {
+          kind: "scalar",
+          scalarType: externalCost ? "money_cents" : "integer",
+        },
         userFacingUnit: inputUnit,
       },
     ],
@@ -355,7 +387,9 @@ function createSeedContract({
     effectiveStartAt,
     effectiveEndAt: null,
     missingDataPolicy: { action: "route_item_to_review" },
-    compositionDescription: payable
+    compositionDescription: externalCost
+      ? "生成项目成本待审核明细，不自动确认入账。"
+      : payable
       ? "替换当前项目的主播应付基础规则。"
       : "替换当前项目的客户应收基础规则。",
     businessTimezone,
@@ -542,10 +576,12 @@ function recoveryKindForError(code, hasSession) {
 }
 
 function scopeLabel(scope) {
+  if (scope === "external_cost") return "项目成本";
   return scope === "receivable" ? "客户应收" : "主播应付";
 }
 
 function targetLabel(target, scope) {
+  if (scope === "external_cost") return "当前项目成本";
   if (scope === "receivable" || target?.targetType === "project") {
     return scope === "receivable" ? "当前项目客户" : "当前项目主播";
   }
@@ -855,6 +891,28 @@ function ContractView({ draft }) {
         );
       })}
     </div>
+  );
+}
+
+function ExternalCostCatalogPanel({ catalog }) {
+  const variables = Array.isArray(catalog?.variables) ? catalog.variables : [];
+  if (!variables.length) return null;
+  return (
+    <section className="crw-band" aria-label="可用导入字段">
+      <div className="crw-source-label">
+        <Calculator size={15} aria-hidden="true" />
+        可用导入字段
+      </div>
+      <div className="crw-import-fields">
+        {variables.map((variable) => (
+          <span key={variable.id} className="crw-chip">
+            <span>{variable.id}</span>
+            {variable.label ? <span> · {variable.label}</span> : null}
+          </span>
+        ))}
+      </div>
+      <p className="crw-muted">生成待审核项目成本</p>
+    </section>
   );
 }
 
@@ -2556,6 +2614,10 @@ export default function CustomSettlementRuleWorkspace({
           })}
         </div>
       </div>
+
+      {selectedScope === "external_cost" && viewState.catalogStatus === "ready" ? (
+        <ExternalCostCatalogPanel catalog={viewState.catalog} />
+      ) : null}
 
       <div className="crw-tabs" role="tablist" aria-label="自定义结算规则视图">
         {[

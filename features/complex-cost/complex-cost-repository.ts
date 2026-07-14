@@ -598,6 +598,33 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
     return (data ?? []).map(mapExternalCostRuleExceptionRow);
   }
 
+  async listExternalCostRuleExceptionsForImportBatch(input: {
+    organizationId: string;
+    projectId: string;
+    importBatchId: string;
+    status?: ExternalCostRuleExceptionStatus;
+  }): Promise<ExternalCostRuleExceptionRecord[]> {
+    let query = this.client
+      .from("external_cost_rule_exceptions")
+      .select("*")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("import_batch_id", input.importBatchId)
+      .order("import_row_index", { ascending: true })
+      .order("variable_name", { ascending: true })
+      .order("id", { ascending: true });
+
+    if (input.status) {
+      query = query.eq("status", input.status);
+    }
+
+    const { data, error } = await query.returns<ExternalCostRuleExceptionRow[]>();
+    if (error) {
+      throw error;
+    }
+    return (data ?? []).map(mapExternalCostRuleExceptionRow);
+  }
+
   async replayExternalCostRuleExceptionItems(
     input: ReplayExternalCostRuleExceptionItemsInput,
   ): Promise<ReplayExternalCostRuleExceptionItemsResult> {

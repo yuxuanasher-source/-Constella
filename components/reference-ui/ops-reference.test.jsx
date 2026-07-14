@@ -10656,6 +10656,141 @@ describe("OpsReferenceApp complex cost smoke", () => {
 
     await screen.findByText("毛利率 58.0%");
   });
+
+  it("labels rule-generated project costs as pending review with deterministic provenance", async () => {
+    let exceptionResolved = false;
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/projects/project-live/cost-items") {
+        return {
+          ok: true,
+          json: async () => ({
+            items: [
+              {
+                id: "cost-rule-1",
+                itemType: "traffic",
+                amountCents: 12300,
+                direction: "cost",
+                evidenceLevel: "yellow",
+                status: "pending_review",
+                reason: "公式生成",
+                sourceRuleVersionId: "rule-v4",
+                sourceImportBatchId: "batch-1",
+                sourceExecutionKey: "exec-123",
+                sourceInputHash: "hash-123",
+                sourceExplanation:
+                  "Custom external-cost rule emitted traffic for 12300 cents",
+              },
+            ],
+          }),
+        };
+      }
+      if (
+        String(url) ===
+        "/api/projects/project-live/cost-imports/batch-1/rule-exceptions"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            exceptions: exceptionResolved
+              ? []
+              : [
+                  {
+                    id: "exception-cost-1",
+                    importBatchId: "batch-1",
+                    rowIndex: 2,
+                    variableName: "supplier_fee",
+                    policy: "route_item_to_review",
+                    status: "review_required",
+                    sourceRefs: {
+                      ruleVersionId: "rule-v4",
+                      sourceContextHash: "ctx-123",
+                    },
+                  },
+                ],
+          }),
+        };
+      }
+      if (
+        String(url) ===
+        "/api/projects/project-live/cost-imports/batch-1/rule-exceptions/exception-cost-1/resolve"
+      ) {
+        exceptionResolved = true;
+        return {
+          ok: true,
+          json: async () => ({
+            exception: {
+              id: "exception-cost-1",
+              importBatchId: "batch-1",
+              status: "resolved",
+            },
+            replay: { replayed: true },
+            items: [],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={taskProjectCards}
+        settlementScope={{
+          projectId: "project-live",
+          projectName: "Fixture Project",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+        }}
+        complexCost={{ enabled: true, includedProjects: 5, usedProjects: 2 }}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "项目开支" }));
+    fireEvent.change(screen.getByLabelText("结算项目"), {
+      target: { value: "project-live" },
+    });
+    let loadButton;
+    await waitFor(() => {
+      loadButton = screen
+        .getAllByRole("button", { name: "加载/刷新" })
+        .find((button) => !button.disabled);
+      expect(loadButton).toBeTruthy();
+    });
+    fireEvent.click(loadButton);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(await screen.findByText("待审核")).toBeInTheDocument();
+    expect(screen.getByText("规则版本 rule-v4")).toBeInTheDocument();
+    expect(screen.getByText(/exec-123/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Custom external-cost rule emitted traffic/),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("导入行异常待审核")).toBeInTheDocument();
+    expect(screen.getByText("exception-cost-1 · batch batch-1")).toBeInTheDocument();
+    expect(screen.getByText(/supplier_fee/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("复核值 exception-cost-1"), {
+      target: { value: "188.88" },
+    });
+    fireEvent.change(screen.getByLabelText("复核原因 exception-cost-1"), {
+      target: { value: "供应商发票金额复核" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交复核" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/projects/project-live/cost-imports/batch-1/rule-exceptions/exception-cost-1/resolve",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            resolutionValue: { type: "money_cents", amountCents: 18888 },
+            resolutionReason: "供应商发票金额复核",
+          }),
+        }),
+      ),
+    );
+  });
 });
 
 describe("OpsReferenceApp war room smoke", () => {

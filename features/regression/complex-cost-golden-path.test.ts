@@ -378,6 +378,10 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
     return [];
   }
 
+  async listExternalCostRuleExceptionsForImportBatch() {
+    return [];
+  }
+
   async replayExternalCostRuleExceptionItems() {
     return { items: [], idempotencyStatus: "existing" as const };
   }

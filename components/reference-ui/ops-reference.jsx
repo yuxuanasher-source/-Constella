@@ -60,6 +60,7 @@ import {
   COST_ITEM_TYPE_OPTIONS,
   defaultCostDraft,
   formatYuanFromCents,
+  yuanInputToCents,
 } from "./external-cost-view";
 
 // ===== src\ui.jsx =====
@@ -19695,6 +19696,37 @@ const CUSTOM_RULE_PROJECT_TARGET = Object.freeze({
   targetId: null,
 });
 
+function buildExternalCostResolutionValue(draft) {
+  const raw = draft?.reviewedValue;
+  const valueType = draft?.valueType || "money_cents";
+  if (valueType === "money_cents") {
+    const amountCents = yuanInputToCents(raw);
+    return amountCents === null ? null : { type: "money_cents", amountCents };
+  }
+  if (valueType === "rate_bps") {
+    const percent = Number(raw);
+    if (!Number.isFinite(percent) || percent < 0) return null;
+    return { type: "rate_bps", rateBps: Math.round(percent * 100) };
+  }
+  if (valueType === "integer") {
+    const value = Number(raw);
+    return Number.isSafeInteger(value) ? { type: "integer", value } : null;
+  }
+  if (valueType === "number") {
+    const value = Number(raw);
+    return Number.isFinite(value) ? { type: "number", value } : null;
+  }
+  if (valueType === "boolean") {
+    if (raw === "true") return { type: "boolean", value: true };
+    if (raw === "false") return { type: "boolean", value: false };
+    return null;
+  }
+  if (valueType === "timestamp") {
+    return raw ? { type: "timestamp", value: String(raw) } : null;
+  }
+  return raw ? { type: "string", value: String(raw) } : null;
+}
+
 function ScreenSettlement({ go }) {
   const projects = useOpsProjects();
   const batches = useOpsSettlementBatches();
@@ -19767,6 +19799,8 @@ function ScreenSettlement({ go }) {
   const [reconciliationKey, setReconciliationKey] = React.useState(null);
   const [costItems, setCostItems] = React.useState([]);
   const [costItemsLoadedFor, setCostItemsLoadedFor] = React.useState(null);
+  const [costRuleExceptions, setCostRuleExceptions] = React.useState([]);
+  const [costExceptionDrafts, setCostExceptionDrafts] = React.useState({});
   const [costDraft, setCostDraft] = React.useState(() => defaultCostDraft());
 
   React.useEffect(() => {
@@ -19985,19 +20019,73 @@ function ScreenSettlement({ go }) {
   const updateCostDraft = (field) => (event) =>
     setCostDraft((draft) => ({ ...draft, [field]: event.target.value }));
 
+  const updateCostExceptionDraft = (exceptionId, field) => (event) =>
+    setCostExceptionDrafts((drafts) => ({
+      ...drafts,
+      [exceptionId]: {
+        valueType: "money_cents",
+        reviewedValue: "",
+        reason: "",
+        ...(drafts[exceptionId] ?? {}),
+        [field]: event.target.value,
+      },
+    }));
+
   const reloadCostItems = async (projectId) => {
     const items = await actions.fetchProjectCostItems?.(projectId);
-    setCostItems(Array.isArray(items) ? items : []);
+    const nextItems = Array.isArray(items) ? items : [];
+    setCostItems(nextItems);
     setCostItemsLoadedFor(projectId);
+    const batchIds = [
+      ...new Set(
+        nextItems
+          .map((item) => item.sourceImportBatchId)
+          .filter((batchId) => typeof batchId === "string" && batchId),
+      ),
+    ];
+    if (!actions.fetchExternalCostRuleExceptions || batchIds.length === 0) {
+      setCostRuleExceptions([]);
+      return;
+    }
+    const groups = await Promise.all(
+      batchIds.map(async (batchId) => {
+        const exceptions = await actions.fetchExternalCostRuleExceptions(
+          projectId,
+          batchId,
+        );
+        return Array.isArray(exceptions)
+          ? exceptions.map((exception) => ({
+              ...exception,
+              importBatchId: exception.importBatchId || batchId,
+            }))
+          : [];
+      }),
+    );
+    const nextExceptions = groups.flat();
+    setCostRuleExceptions(nextExceptions);
+    setCostExceptionDrafts((drafts) => {
+      const nextDrafts = { ...drafts };
+      nextExceptions.forEach((exception) => {
+        if (!nextDrafts[exception.id]) {
+          nextDrafts[exception.id] = {
+            valueType: "money_cents",
+            reviewedValue: "",
+            reason: "",
+          };
+        }
+      });
+      return nextDrafts;
+    });
   };
 
   const loadCostItems = () =>
     runSettlementAction("cost-load", async () => {
-      if (!selectedProjectId) {
+      const costProjectId = selectedProjectId || selectedProject?.id || "";
+      if (!costProjectId) {
         setSettlementMessage("请先选择结算项目");
         return false;
       }
-      await reloadCostItems(selectedProjectId);
+      await reloadCostItems(costProjectId);
       setSettlementMessage("");
       return false;
     });
@@ -20038,6 +20126,45 @@ function ScreenSettlement({ go }) {
       });
       await reloadCostItems(selectedProjectId);
       setSettlementMessage("");
+      return false;
+    });
+
+  const resolveCostRuleException = (exception) =>
+    runSettlementAction(`cost-exception-${exception.id}`, async () => {
+      const costProjectId = selectedProjectId || selectedProject?.id || "";
+      if (!costProjectId || !exception.importBatchId) {
+        setSettlementMessage("缺少项目或导入批次，无法复核异常");
+        return false;
+      }
+      const draft = costExceptionDrafts[exception.id] ?? {
+        valueType: "money_cents",
+        reviewedValue: "",
+        reason: "",
+      };
+      const resolutionValue = buildExternalCostResolutionValue(draft);
+      if (!resolutionValue) {
+        setSettlementMessage("请填写有效的复核值");
+        return false;
+      }
+      if (!draft.reason?.trim()) {
+        setSettlementMessage("请填写复核原因");
+        return false;
+      }
+      const result = await actions.resolveExternalCostRuleException?.(
+        costProjectId,
+        exception.importBatchId,
+        exception.id,
+        {
+          resolutionValue,
+          resolutionReason: draft.reason.trim(),
+        },
+      );
+      await reloadCostItems(costProjectId);
+      setSettlementMessage(
+        result?.replay?.replayed
+          ? "异常已复核，公式成本已重新生成并等待审核"
+          : "异常已复核，等待同批次其他异常处理",
+      );
       return false;
     });
 
@@ -21087,7 +21214,7 @@ function ScreenSettlement({ go }) {
               <Button
                 kind="default"
                 onClick={loadCostItems}
-                disabled={!!busyAction || !selectedProjectId}
+                disabled={!!busyAction || !(selectedProjectId || selectedProject?.id)}
               >
                 {busyAction === "cost-load" ? "加载中…" : "加载/刷新"}
               </Button>
@@ -21142,6 +21269,21 @@ function ScreenSettlement({ go }) {
                       <span style={{ color: "var(--ink-400)" }}>
                         {item.reason}
                       </span>
+                      {item.sourceRuleVersionId ? (
+                        <span style={{ color: "var(--ink-500)" }}>
+                          规则版本 {item.sourceRuleVersionId}
+                        </span>
+                      ) : null}
+                      {item.sourceExecutionKey ? (
+                        <span className="mono" style={{ color: "var(--ink-400)" }}>
+                          {item.sourceExecutionKey}
+                        </span>
+                      ) : null}
+                      {item.sourceExplanation ? (
+                        <span style={{ color: "var(--ink-500)" }}>
+                          {item.sourceExplanation}
+                        </span>
+                      ) : null}
                     </div>
                     <div style={{ display: "flex", gap: 6 }}>
                       {canConfirmCostItem(item.status) ? (
@@ -21184,6 +21326,154 @@ function ScreenSettlement({ go }) {
               点击「加载/刷新」查看本项目已录入的外部成本
             </div>
           )}
+
+          {costItemsLoadedFor === selectedProjectId &&
+          costRuleExceptions.length > 0 ? (
+            <div
+              aria-label="导入行异常待审核"
+              style={{
+                marginTop: 12,
+                padding: 12,
+                borderRadius: 8,
+                border: "1px solid var(--line)",
+                background: "var(--bg-soft)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  marginBottom: 10,
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700 }}>
+                  导入行异常复核
+                </div>
+                <Badge tone="amber">{costRuleExceptions.length} 个待审核</Badge>
+              </div>
+              <div style={{ display: "grid", gap: 10 }}>
+                {costRuleExceptions.map((exception) => {
+                  const draft = costExceptionDrafts[exception.id] ?? {
+                    valueType: "money_cents",
+                    reviewedValue: "",
+                    reason: "",
+                  };
+                  return (
+                    <div
+                      key={exception.id}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1fr) minmax(360px, 1fr)",
+                        gap: 10,
+                        alignItems: "end",
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          className="mono"
+                          style={{
+                            fontSize: 11,
+                            color: "var(--ink-500)",
+                            wordBreak: "break-all",
+                          }}
+                        >
+                          {exception.id} · batch {exception.importBatchId}
+                        </div>
+                        <div
+                          style={{
+                            marginTop: 4,
+                            fontSize: 12,
+                            color: "var(--ink-700)",
+                          }}
+                        >
+                          第 {Number(exception.rowIndex) + 1} 行 ·{" "}
+                          {exception.variableName} · {exception.policy}
+                        </div>
+                        {exception.sourceRefs?.ruleVersionId ||
+                        exception.sourceRefs?.sourceContextHash ? (
+                          <div
+                            className="mono"
+                            style={{
+                              marginTop: 4,
+                              fontSize: 10.5,
+                              color: "var(--ink-400)",
+                              wordBreak: "break-all",
+                            }}
+                          >
+                            {exception.sourceRefs?.ruleVersionId
+                              ? `rule ${exception.sourceRefs.ruleVersionId}`
+                              : ""}
+                            {exception.sourceRefs?.sourceContextHash
+                              ? ` · ${exception.sourceRefs.sourceContextHash}`
+                              : ""}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "110px 1fr 1fr auto",
+                          gap: 8,
+                          alignItems: "end",
+                        }}
+                      >
+                        <TaskFormLabel label="复核类型">
+                          <select
+                            aria-label={`复核类型 ${exception.id}`}
+                            value={draft.valueType}
+                            onChange={updateCostExceptionDraft(
+                              exception.id,
+                              "valueType",
+                            )}
+                            style={taskInputStyle}
+                          >
+                            <option value="money_cents">金额(元)</option>
+                            <option value="rate_bps">比例(%)</option>
+                            <option value="integer">整数</option>
+                            <option value="number">数字</option>
+                            <option value="string">文本</option>
+                            <option value="boolean">布尔</option>
+                            <option value="timestamp">时间</option>
+                          </select>
+                        </TaskFormLabel>
+                        <TaskFormLabel label="复核值">
+                          <input
+                            aria-label={`复核值 ${exception.id}`}
+                            value={draft.reviewedValue}
+                            onChange={updateCostExceptionDraft(
+                              exception.id,
+                              "reviewedValue",
+                            )}
+                            style={taskInputStyle}
+                          />
+                        </TaskFormLabel>
+                        <TaskFormLabel label="复核原因">
+                          <input
+                            aria-label={`复核原因 ${exception.id}`}
+                            value={draft.reason}
+                            onChange={updateCostExceptionDraft(
+                              exception.id,
+                              "reason",
+                            )}
+                            style={taskInputStyle}
+                          />
+                        </TaskFormLabel>
+                        <Button
+                          kind="default"
+                          onClick={() => resolveCostRuleException(exception)}
+                          disabled={!!busyAction}
+                        >
+                          提交复核
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
           </div>
           )}
 
@@ -34558,6 +34848,13 @@ function OpsReferenceInner({
         );
         return body.items ?? [];
       },
+      fetchExternalCostRuleExceptions: async (projectId, batchId) => {
+        const body = await fetchJson(
+          `/api/projects/${projectId}/cost-imports/${batchId}/rule-exceptions`,
+          "load external cost rule exceptions failed",
+        );
+        return body.exceptions ?? [];
+      },
       createProjectCostItem: async (projectId, input) => {
         const body = await fetchJson(
           `/api/projects/${projectId}/cost-items`,
@@ -34582,6 +34879,21 @@ function OpsReferenceInner({
         );
         return body.item ?? null;
       },
+      resolveExternalCostRuleException: async (
+        projectId,
+        batchId,
+        exceptionId,
+        input,
+      ) =>
+        fetchJson(
+          `/api/projects/${projectId}/cost-imports/${batchId}/rule-exceptions/${exceptionId}/resolve`,
+          "resolve external cost rule exception failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+          },
+        ),
       refreshAuditEntries,
       refreshOcrJobs,
       runNextOcrJob,
