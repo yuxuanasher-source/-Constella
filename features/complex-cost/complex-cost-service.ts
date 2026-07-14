@@ -75,6 +75,11 @@ export type CreateImportBatchRepoInput = {
   createdBy: string;
 };
 
+export type ExternalCostRuleExceptionBatchSummary = {
+  importBatchId: string;
+  unresolvedExceptionCount: number;
+};
+
 export type ComplexCostRepository = {
   getProjectEntitlement(input: {
     organizationId: string;
@@ -155,6 +160,11 @@ export type ComplexCostRepository = {
     importBatchId: string;
     status?: ExternalCostRuleExceptionRecord["status"];
   }): Promise<ExternalCostRuleExceptionRecord[]>;
+  listExternalCostRuleExceptionBatchSummaries(input: {
+    organizationId: string;
+    projectId: string;
+    status?: ExternalCostRuleExceptionRecord["status"];
+  }): Promise<ExternalCostRuleExceptionBatchSummary[]>;
   replayExternalCostRuleExceptionItems(
     input: ReplayExternalCostRuleExceptionItemsInput,
   ): Promise<ReplayExternalCostRuleExceptionItemsResult>;

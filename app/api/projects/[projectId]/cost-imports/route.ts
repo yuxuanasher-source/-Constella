@@ -20,13 +20,19 @@ export async function GET(
   try {
     const { projectId } = await params;
     const context = await getComplexCostRouteContext();
-    const batches = await context.repo.listImportBatches({
+    const exceptionBatches =
+      await context.repo.listExternalCostRuleExceptionBatchSummaries({
       organizationId: context.auth.organizationId,
       projectId,
-      limit: 25,
+      status: "review_required",
     });
 
-    return NextResponse.json({ batches });
+    return NextResponse.json({
+      exceptionBatches: exceptionBatches.map((batch) => ({
+        importBatchId: batch.importBatchId,
+        unresolvedExceptionCount: batch.unresolvedExceptionCount,
+      })),
+    });
   } catch (error) {
     return jsonError(error);
   }

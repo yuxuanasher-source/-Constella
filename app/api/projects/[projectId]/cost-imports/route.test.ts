@@ -49,6 +49,12 @@ describe("project cost imports route", () => {
             status: "parsed",
           },
         ]),
+        listExternalCostRuleExceptionBatchSummaries: vi.fn().mockResolvedValue([
+          {
+            importBatchId: "batch-exception-only",
+            unresolvedExceptionCount: 2,
+          },
+        ]),
       },
       audit: vi.fn(),
     } as never);
@@ -81,28 +87,34 @@ describe("project cost imports route", () => {
     });
   });
 
-  it("lists cost import batches for exception discovery", async () => {
+  it("lists redacted exception batch summaries for discovery", async () => {
     const response = await GET(new Request("http://localhost"), {
       params: Promise.resolve({ projectId: "project-1" }),
     });
+    const body = await response.json();
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      batches: [
+    expect(body).toEqual({
+      exceptionBatches: [
         {
-          id: "batch-exception-only",
-          importType: "traffic",
-          status: "parsed",
+          importBatchId: "batch-exception-only",
+          unresolvedExceptionCount: 2,
         },
       ],
     });
+    expect(JSON.stringify(body)).not.toContain("parsedPayload");
+    expect(JSON.stringify(body)).not.toContain("rawRow");
+    expect(JSON.stringify(body)).not.toContain("formula");
+    expect(JSON.stringify(body)).not.toContain("ast");
+    const context = await vi.mocked(getComplexCostRouteContext).mock.results[0]
+      .value;
+    expect(context.repo.listImportBatches).not.toHaveBeenCalled();
     expect(
-      (await vi.mocked(getComplexCostRouteContext).mock.results[0].value).repo
-        .listImportBatches,
+      context.repo.listExternalCostRuleExceptionBatchSummaries,
     ).toHaveBeenCalledWith({
       organizationId: "org-1",
       projectId: "project-1",
-      limit: 25,
+      status: "review_required",
     });
   });
 });

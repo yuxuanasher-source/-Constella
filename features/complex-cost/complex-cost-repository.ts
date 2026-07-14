@@ -5,6 +5,7 @@ import type {
   CreateImportBatchRepoInput,
   CreateProjectCostItemRepoInput,
   CreateRuleVersionRepoInput,
+  ExternalCostRuleExceptionBatchSummary,
 } from "./complex-cost-service";
 import type {
   ComplexCostRuleStatus,
@@ -115,6 +116,10 @@ type ExternalCostRuleExceptionRow = {
   resolved_by: string | null;
   created_at: string;
   resolved_at: string | null;
+};
+
+type ExternalCostRuleExceptionBatchSummaryRow = {
+  import_batch_id: string;
 };
 
 type SettlementReconciliationRunRow = {
@@ -648,6 +653,45 @@ export class SupabaseComplexCostRepository implements ComplexCostRepository {
       throw error;
     }
     return (data ?? []).map(mapExternalCostRuleExceptionRow);
+  }
+
+  async listExternalCostRuleExceptionBatchSummaries(input: {
+    organizationId: string;
+    projectId: string;
+    status?: ExternalCostRuleExceptionStatus;
+  }): Promise<ExternalCostRuleExceptionBatchSummary[]> {
+    let query = this.client
+      .from("external_cost_rule_exceptions")
+      .select("import_batch_id")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId);
+
+    if (input.status) {
+      query = query.eq("status", input.status);
+    }
+
+    const { data, error } =
+      await query.returns<ExternalCostRuleExceptionBatchSummaryRow[]>();
+    if (error) {
+      throw error;
+    }
+
+    const counts = new Map<string, number>();
+    (data ?? []).forEach((row) => {
+      if (row.import_batch_id) {
+        counts.set(
+          row.import_batch_id,
+          (counts.get(row.import_batch_id) ?? 0) + 1,
+        );
+      }
+    });
+
+    return [...counts.entries()].map(
+      ([importBatchId, unresolvedExceptionCount]) => ({
+        importBatchId,
+        unresolvedExceptionCount,
+      }),
+    );
   }
 
   async replayExternalCostRuleExceptionItems(

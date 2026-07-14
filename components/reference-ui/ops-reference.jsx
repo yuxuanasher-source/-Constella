@@ -20043,36 +20043,18 @@ function ScreenSettlement({ go }) {
           .filter((batchId) => typeof batchId === "string" && batchId),
       ),
     ];
-    let importBatches = [];
+    let exceptionBatchSummaries = [];
     try {
-      importBatches =
-        (await actions.fetchProjectCostImportBatches?.(projectId)) ?? [];
+      exceptionBatchSummaries =
+        (await actions.fetchExternalCostRuleExceptionBatches?.(projectId)) ??
+        [];
     } catch {
-      importBatches = [];
+      exceptionBatchSummaries = [];
     }
-    const exceptionBatchIds = Array.isArray(importBatches)
-      ? importBatches
-          .filter(
-            (batch) =>
-              typeof batch?.id === "string" &&
-              (!batch.projectId || batch.projectId === projectId) &&
-              (!batch.importType ||
-                [
-                  "external_cost",
-                  "cpa",
-                  "cps",
-                  "gift",
-                  "traffic",
-                  "supplier_bill",
-                ].includes(batch.importType)) &&
-              [
-                "parsed",
-                "review_required",
-                "pending_review",
-                "previewed",
-              ].includes(batch.status),
-          )
-          .map((batch) => batch.id)
+    const exceptionBatchIds = Array.isArray(exceptionBatchSummaries)
+      ? exceptionBatchSummaries
+          .map((batch) => batch?.importBatchId || batch?.id)
+          .filter((batchId) => typeof batchId === "string" && batchId)
       : [];
     const batchIds = [...new Set([...itemBatchIds, ...exceptionBatchIds])];
     if (!actions.fetchExternalCostRuleExceptions || batchIds.length === 0) {
@@ -34890,12 +34872,12 @@ function OpsReferenceInner({
         );
         return body.items ?? [];
       },
-      fetchProjectCostImportBatches: async (projectId) => {
+      fetchExternalCostRuleExceptionBatches: async (projectId) => {
         const body = await fetchJson(
           `/api/projects/${projectId}/cost-imports`,
-          "load project cost imports failed",
+          "load external cost rule exception batches failed",
         );
-        return body.batches ?? [];
+        return body.exceptionBatches ?? [];
       },
       fetchExternalCostRuleExceptions: async (projectId, batchId) => {
         const body = await fetchJson(

@@ -303,6 +303,10 @@ class InMemoryComplexCostRepository implements ComplexCostRepository {
       .slice(0, input.limit ?? this.importBatches.length);
   }
 
+  async listExternalCostRuleExceptionBatchSummaries() {
+    return [];
+  }
+
   async getImportBatchById(batchId: string) {
     return this.importBatches.find((batch) => batch.id === batchId) ?? null;
   }

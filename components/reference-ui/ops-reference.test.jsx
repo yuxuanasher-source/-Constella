@@ -10803,15 +10803,27 @@ describe("OpsReferenceApp complex cost smoke", () => {
         return {
           ok: true,
           json: async () => ({
-            batches: [
+            exceptionBatches: [
               {
-                id: "batch-exception-only",
-                projectId: "project-live",
-                importType: "external_cost",
-                status: "review_required",
+                importBatchId: "batch-exception-only",
+                unresolvedExceptionCount: 1,
               },
             ],
+            batches: [
+              ...Array.from({ length: 25 }, (_, index) => ({
+                id: `batch-newer-${index + 1}`,
+                projectId: "project-live",
+                importType: "traffic",
+                status: "parsed",
+              })),
+            ],
           }),
+        };
+      }
+      if (/\/cost-imports\/batch-newer-\d+\/rule-exceptions$/u.test(String(url))) {
+        return {
+          ok: true,
+          json: async () => ({ exceptions: [] }),
         };
       }
       if (
@@ -10866,6 +10878,10 @@ describe("OpsReferenceApp complex cost smoke", () => {
       ),
     );
     expect(await screen.findByLabelText("导入行异常待审核")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-live/cost-imports/batch-exception-only/rule-exceptions",
+      undefined,
+    );
     expect(
       screen.getByText("exception-only-1 · batch batch-exception-only"),
     ).toBeInTheDocument();
