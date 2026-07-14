@@ -183,6 +183,104 @@ describe("Phase 2 custom rule lifecycle repository", () => {
     expect(Object.isFrozen(cached)).toBe(true);
   });
 
+  it("rehydrates cached reconciliation run DTOs from persisted final custom checks", async () => {
+    const inserted = {
+      id: "00000000-0000-4000-8000-000000000111",
+      organization_id: ORGANIZATION_ID,
+      project_id: PROJECT_ID,
+      period_start: "2026-06-01",
+      period_end: "2026-06-30",
+      trigger_type: "manual",
+      trigger_batch_id: null,
+      core_input_hash: HASH_E,
+      core_result: {
+        income: { receivableCents: 1000 },
+        checks: [{ key: "core_only", severity: "pass", message: "core ok" }],
+        hasBlocking: false,
+        hasWarning: false,
+        canConfirm: true,
+        canLock: true,
+      },
+      rule_version_id: RULE_VERSION_ID,
+      formula_hash: HASH_C,
+      custom_checks: [
+        {
+          source: "custom_rule",
+          severity: "block",
+          code: `custom_rule:${RULE_VERSION_ID}:0`,
+          message: "custom block",
+          ruleVersionId: RULE_VERSION_ID,
+          formulaHash: HASH_C,
+        },
+      ],
+      final_checks: [
+        {
+          source: "core",
+          severity: "pass",
+          code: "core_only",
+          message: "core ok",
+        },
+        {
+          source: "custom_rule",
+          severity: "block",
+          code: `custom_rule:${RULE_VERSION_ID}:0`,
+          message: "custom block",
+          ruleVersionId: RULE_VERSION_ID,
+          formulaHash: HASH_C,
+        },
+      ],
+      blocked: true,
+      warnings: [
+        {
+          source: "custom_rule",
+          severity: "warn",
+          code: `custom_rule:${RULE_VERSION_ID}:1`,
+          message: "custom warning",
+          ruleVersionId: RULE_VERSION_ID,
+          formulaHash: HASH_C,
+        },
+      ],
+      created_by: CREATOR_ID,
+      created_at: "2026-07-14T00:00:00.000Z",
+    };
+    const repository = new SupabaseCustomRuleReadRepository({
+      from: vi.fn((table: string) => {
+        expect(table).toBe("settlement_reconciliation_runs");
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          order: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockReturnThis(),
+          maybeSingle: vi.fn(async () => ({ data: inserted, error: null })),
+        };
+      }),
+    } as unknown as SupabaseClient);
+
+    const cached = await repository.getCachedSettlementReconciliationRun({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+      inputHash: HASH_E,
+    });
+
+    expect(cached?.result.checks).toEqual(inserted.final_checks);
+    expect(cached?.result.customChecks).toEqual(inserted.custom_checks);
+    expect(cached?.result.warnings).toEqual(inserted.warnings);
+    expect(cached?.result).toMatchObject({
+      hasBlocking: true,
+      hasWarning: true,
+      canConfirm: false,
+      canLock: false,
+      customRule: {
+        ruleVersionId: RULE_VERSION_ID,
+        formulaHash: HASH_C,
+      },
+    });
+    expect(cached?.customChecks).toEqual(inserted.custom_checks);
+    expect(cached?.warnings).toEqual(inserted.warnings);
+  });
+
   it("resolves executable rule versions by organization, project, scope, target, and execution timestamp", async () => {
     const rpc = vi.fn(async () => ({
       data: {

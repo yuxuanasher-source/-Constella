@@ -486,6 +486,7 @@ describe("SupabaseReconciliationDataSource", () => {
               ? {
                   data: [
                     {
+                      status: "confirmed",
                       computed_amount: 1234.56,
                       manual_amount: 10.0,
                       adjustment_amount: 0,
@@ -513,5 +514,97 @@ describe("SupabaseReconciliationDataSource", () => {
     expect(totals.manualCents).toBe(1_000);
     expect(evidence.green).toBe(3);
     expect(evidence.yellow).toBe(1);
+  });
+
+  it("marks overlapping generated draft pending and reopened batches as not finalized", async () => {
+    const select = vi.fn(() => query);
+    const query = {
+      select,
+      eq: vi.fn(function () {
+        return query;
+      }),
+      neq: vi.fn(function () {
+        return query;
+      }),
+      lte: vi.fn(function () {
+        return query;
+      }),
+      gte: vi.fn(function () {
+        return query;
+      }),
+      returns: vi.fn(async () => ({
+        data: [
+          {
+            status: "confirmed",
+            computed_amount: 100,
+            manual_amount: 1,
+            adjustment_amount: 0,
+            evidence_summary: { green: 1 },
+          },
+          {
+            status: "locked",
+            computed_amount: 20,
+            manual_amount: 0,
+            adjustment_amount: 0,
+            evidence_summary: { yellow: 1 },
+          },
+          {
+            status: "generated",
+            computed_amount: 999,
+            manual_amount: 0,
+            adjustment_amount: 0,
+            evidence_summary: { red: 1 },
+          },
+          {
+            status: "draft",
+            computed_amount: 999,
+            manual_amount: 0,
+            adjustment_amount: 0,
+            evidence_summary: { red: 1 },
+          },
+          {
+            status: "pending",
+            computed_amount: 999,
+            manual_amount: 0,
+            adjustment_amount: 0,
+            evidence_summary: { red: 1 },
+          },
+          {
+            status: "reopened",
+            computed_amount: 999,
+            manual_amount: 0,
+            adjustment_amount: 0,
+            evidence_summary: { red: 1 },
+          },
+        ],
+        error: null,
+      })),
+    };
+    const client = {
+      from: (table: string) => {
+        expect(table).toBe("settlement_batches");
+        return query;
+      },
+    };
+
+    const source = new SupabaseReconciliationDataSource(client as never);
+    const result = await source.getBatchTotals({
+      organizationId: "org-1",
+      projectId: "p-1",
+      batchType: "receivable",
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+    });
+
+    expect(select).toHaveBeenCalledWith(
+      "computed_amount, manual_amount, adjustment_amount, evidence_summary, status",
+    );
+    expect(result.finalized).toBe(false);
+    expect(result.totals).toEqual({
+      computedCents: 12_000,
+      manualCents: 100,
+      adjustmentCents: 0,
+    });
+    expect(result.evidence).toMatchObject({ green: 1, yellow: 1, red: 0 });
   });
 });

@@ -6207,6 +6207,7 @@ function toCustomSettlementRuleReviewEvent(
 function toSettlementReconciliationRunSnapshot(
   row: z.infer<typeof settlementReconciliationRunRowSchema>,
 ): SettlementReconciliationRunSnapshot {
+  const result = rehydrateSettlementReconciliationResult(row);
   return deepFreezeOwned({
     id: row.id,
     organizationId: row.organization_id,
@@ -6216,7 +6217,7 @@ function toSettlementReconciliationRunSnapshot(
     triggerType: row.trigger_type,
     triggerBatchId: row.trigger_batch_id,
     inputHash: row.core_input_hash,
-    result: row.core_result,
+    result,
     ruleVersionId: row.rule_version_id,
     formulaHash: row.formula_hash,
     customChecks: row.custom_checks,
@@ -6226,6 +6227,47 @@ function toSettlementReconciliationRunSnapshot(
     createdBy: row.created_by,
     createdAt: row.created_at,
   });
+}
+
+function rehydrateSettlementReconciliationResult(
+  row: z.infer<typeof settlementReconciliationRunRowSchema>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    ...row.core_result,
+    checks: row.final_checks,
+    customChecks: row.custom_checks,
+    warnings: row.warnings,
+    hasBlocking: row.blocked,
+    hasWarning:
+      row.warnings.length > 0 ||
+      row.final_checks.some(
+        (check) =>
+          check !== null &&
+          typeof check === "object" &&
+          (check as { severity?: unknown }).severity === "warn",
+      ),
+    canConfirm: !row.blocked,
+    canLock: !row.blocked,
+  };
+
+  if (row.rule_version_id !== null && row.formula_hash !== null) {
+    const existingCustomRule =
+      row.core_result.customRule !== null &&
+      typeof row.core_result.customRule === "object"
+        ? (row.core_result.customRule as Record<string, unknown>)
+        : {};
+    result.customRule = {
+      ...existingCustomRule,
+      ruleVersionId: row.rule_version_id,
+      formulaHash: row.formula_hash,
+      contractLabel:
+        typeof existingCustomRule.contractLabel === "string"
+          ? existingCustomRule.contractLabel
+          : "",
+    };
+  }
+
+  return result;
 }
 
 function deepFreezeOwned<Value>(value: Value): Value {

@@ -312,7 +312,10 @@ type SettlementBatchTotalsRow = {
   manual_amount: number | null;
   adjustment_amount: number | null;
   evidence_summary: Record<string, unknown> | null;
+  status: string | null;
 };
+
+const FINALIZED_SETTLEMENT_BATCH_STATUSES = new Set(["confirmed", "locked"]);
 
 type CostSummaryRow = {
   amount_cents: number | null;
@@ -330,11 +333,15 @@ export class SupabaseReconciliationDataSource
     batchType: "receivable" | "payable";
     periodStart: string;
     periodEnd: string;
-  }): Promise<{ totals: BatchTotals; evidence: ReconciliationEvidence }> {
+  }): Promise<{
+    totals: BatchTotals;
+    evidence: ReconciliationEvidence;
+    finalized?: boolean;
+  }> {
     const { data, error } = await this.client
       .from("settlement_batches")
       .select(
-        "computed_amount, manual_amount, adjustment_amount, evidence_summary",
+        "computed_amount, manual_amount, adjustment_amount, evidence_summary, status",
       )
       .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
@@ -360,8 +367,13 @@ export class SupabaseReconciliationDataSource
       red: 0,
       unknown: 0,
     };
+    let finalized = true;
 
     for (const row of data ?? []) {
+      if (!FINALIZED_SETTLEMENT_BATCH_STATUSES.has(row.status ?? "")) {
+        finalized = false;
+        continue;
+      }
       // settlement_batches amounts are numeric(12,2) yuan, while the cost and
       // tax lines are stored in cents. Normalize batch amounts to cents here so
       // the reconciliation sums one consistent unit (mixing the two would skew
@@ -376,7 +388,7 @@ export class SupabaseReconciliationDataSource
       evidence.unknown = (evidence.unknown ?? 0) + countOf(summary, "unknown");
     }
 
-    return { totals, evidence };
+    return { totals, evidence, finalized };
   }
 
   async getConfirmedCostSummary(input: {
