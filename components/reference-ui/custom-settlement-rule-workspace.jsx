@@ -79,6 +79,12 @@ const SCOPE_OPTIONS = [
     icon: Calculator,
     executionGrain: "report",
   },
+  {
+    value: "reconciliation_check",
+    label: "结算风险校验",
+    icon: ShieldCheck,
+    executionGrain: "project_period",
+  },
 ];
 
 const INITIAL_REQUEST_STATE = {
@@ -302,34 +308,47 @@ function createSeedContract({
 }) {
   const payable = scope === "payable";
   const externalCost = scope === "external_cost";
+  const reconciliationCheck = scope === "reconciliation_check";
   const inputName = externalCost
     ? "sales_amount"
+    : reconciliationCheck
+      ? "receivable_total_cents"
     : payable
       ? "system_minutes"
       : "period_report_count";
   const inputDescription = externalCost
     ? "导入行销售金额"
+    : reconciliationCheck
+      ? "已定稿客户应收合计"
     : payable
       ? "系统直播时长"
       : "周期内已审核报告数";
   const inputSource = externalCost
     ? "项目成本导入"
+    : reconciliationCheck
+      ? "单项目结算校验"
     : payable
       ? "直播报告系统计时"
       : "周期内已审核直播报告";
-  const inputUnit = externalCost ? "元" : payable ? "分钟" : "份";
+  const inputUnit = externalCost || reconciliationCheck ? "元" : payable ? "分钟" : "份";
   const title = externalCost
     ? `${projectName || "当前项目"}项目成本规则草案`
+    : reconciliationCheck
+    ? `${projectName || "当前项目"}结算风险校验草案`
     : payable
     ? `${projectName || "当前项目"}主播应付规则草案`
     : `${projectName || "当前项目"}客户应收规则草案`;
   const summary = externalCost
     ? "按成本导入行生成待审核项目成本。"
+    : reconciliationCheck
+    ? "在应收、应付、成本、税费完成后检查本期结算风险。"
     : payable
     ? "按项目直播报告计算主播应付金额。"
     : "按项目结算周期计算客户应收金额。";
   const description = externalCost
     ? "生成待审核项目成本"
+    : reconciliationCheck
+      ? "检查结算风险并输出阻断或告警"
     : payable
       ? "计算最终主播应付金额"
       : "计算最终客户应收金额";
@@ -366,11 +385,15 @@ function createSeedContract({
     schemaVersion: 1,
     scope,
     target:
-      scope === "receivable" || externalCost
+      scope === "receivable" || externalCost || reconciliationCheck
         ? { targetType: "project", targetId: null }
         : target,
     executionGrain: payable || externalCost ? "report" : "project_period",
-    compositionMode: externalCost ? "emit_items" : "replace",
+    compositionMode: externalCost
+      ? "emit_items"
+      : reconciliationCheck
+        ? "check"
+        : "replace",
     title,
     summary,
     calculationComponents: [
@@ -379,9 +402,13 @@ function createSeedContract({
         description,
         expression: externalCost
           ? "cost_items([{ category, amount: sales_amount * cost_rate, status: 'pending_review' }])"
+          : reconciliationCheck
+            ? "按已确认风险条件输出结算校验结论"
           : "按确认后的业务条件计算最终金额",
         resultType: externalCost
           ? { kind: "array", itemType: { kind: "object", fields: {} } }
+          : reconciliationCheck
+            ? { kind: "scalar", scalarType: "boolean" }
           : { kind: "scalar", scalarType: "money_cents" },
       },
     ],
@@ -392,7 +419,7 @@ function createSeedContract({
         source: inputSource,
         valueType: {
           kind: "scalar",
-          scalarType: externalCost ? "money_cents" : "integer",
+          scalarType: externalCost || reconciliationCheck ? "money_cents" : "integer",
         },
         userFacingUnit: inputUnit,
       },
@@ -402,12 +429,19 @@ function createSeedContract({
         name: "unit_price",
         description: externalCost
           ? "项目成本金额或比例参数"
+          : reconciliationCheck
+            ? "风险阈值"
           : payable
             ? "基础结算单价"
             : "基础应收单价",
-        valueType: { kind: "scalar", scalarType: "money_cents" },
-        userFacingUnit: "元",
-        defaultValue: { type: "money_cents", amountCents: 0 },
+        valueType: {
+          kind: "scalar",
+          scalarType: reconciliationCheck ? "rate_bps" : "money_cents",
+        },
+        userFacingUnit: reconciliationCheck ? "%" : "元",
+        defaultValue: reconciliationCheck
+          ? { type: "rate_bps", rateBps: 0 }
+          : { type: "money_cents", amountCents: 0 },
       },
     ],
     effectiveStartAt,
@@ -415,11 +449,37 @@ function createSeedContract({
     missingDataPolicy: { action: "route_item_to_review" },
     compositionDescription: externalCost
       ? "生成项目成本待审核明细，不自动确认入账。"
+      : reconciliationCheck
+      ? "不改写金额，仅在锁定前输出可执行的阻断或告警。"
       : payable
       ? "替换当前项目的主播应付基础规则。"
       : "替换当前项目的客户应收基础规则。",
     businessTimezone,
-    examples: externalCost
+    examples: reconciliationCheck
+      ? [
+          {
+            name: "风险通过",
+            kind: "normal",
+            description: "应收、应付、成本、税费完整且满足风险阈值。",
+            inputs: { [inputName]: { type: "money_cents", amountCents: 100_000 } },
+            expectedResult: { type: "boolean", value: true },
+          },
+          {
+            name: "缺失数据",
+            kind: "boundary",
+            description: "缺少已定稿输入时输出阻断。",
+            inputs: {},
+            expectedResult: { type: "boolean", value: false },
+          },
+          {
+            name: "风险告警",
+            kind: "normal",
+            description: "金额完整但触发人工复看阈值。",
+            inputs: { [inputName]: { type: "money_cents", amountCents: 100_000 } },
+            expectedResult: { type: "boolean", value: true },
+          },
+        ]
+      : externalCost
       ? [
           externalCostExample(
             "导入行生成流量成本",
@@ -630,11 +690,13 @@ function recoveryKindForError(code, hasSession) {
 
 function scopeLabel(scope) {
   if (scope === "external_cost") return "项目成本";
+  if (scope === "reconciliation_check") return "结算风险校验";
   return scope === "receivable" ? "客户应收" : "主播应付";
 }
 
 function targetLabel(target, scope) {
   if (scope === "external_cost") return "当前项目成本";
+  if (scope === "reconciliation_check") return "当前项目风险校验";
   if (scope === "receivable" || target?.targetType === "project") {
     return scope === "receivable" ? "当前项目客户" : "当前项目主播";
   }
@@ -965,6 +1027,32 @@ function ExternalCostCatalogPanel({ catalog }) {
         ))}
       </div>
       <p className="crw-muted">生成待审核项目成本</p>
+    </section>
+  );
+}
+
+function FinalizedVariableCatalogPanel({ catalog }) {
+  const variables = Array.isArray(catalog?.variables)
+    ? catalog.variables.filter((variable) => variable.availability === "finalized")
+    : [];
+  if (!variables.length) return null;
+  return (
+    <section className="crw-band" aria-label="可用已定稿变量">
+      <div className="crw-source-label">
+        <ShieldCheck size={15} aria-hidden="true" />
+        可用已定稿变量
+      </div>
+      <div className="crw-import-fields">
+        {variables.map((variable) => (
+          <span key={variable.id} className="crw-chip">
+            <span>{variable.id}</span>
+            {variable.label ? <span> · {variable.label}</span> : null}
+          </span>
+        ))}
+      </div>
+      <p className="crw-muted">
+        校验会在应收、应付、成本、税费计算完成后运行。
+      </p>
     </section>
   );
 }
@@ -2910,6 +2998,11 @@ export default function CustomSettlementRuleWorkspace({
 
       {selectedScope === "external_cost" && viewState.catalogStatus === "ready" ? (
         <ExternalCostCatalogPanel catalog={viewState.catalog} />
+      ) : null}
+
+      {selectedScope === "reconciliation_check" &&
+      viewState.catalogStatus === "ready" ? (
+        <FinalizedVariableCatalogPanel catalog={viewState.catalog} />
       ) : null}
 
       <div className="crw-tabs" role="tablist" aria-label="自定义结算规则视图">

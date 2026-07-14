@@ -694,7 +694,9 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(
       screen.getByRole("button", { name: "项目成本" }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("风险校验")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "结算风险校验" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("保存并请求审核")).not.toBeInTheDocument();
     expect(screen.getByTestId("custom-rule-workspace")).toHaveAttribute(
       "data-layout",
@@ -755,6 +757,76 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(screen.getByText("gift_amount")).toBeInTheDocument();
     expect(screen.getByText("生成待审核项目成本")).toBeInTheDocument();
     expect(screen.queryByText(/自动确认/)).not.toBeInTheDocument();
+  });
+
+  it("loads finalized variables for settlement risk checks without exposing formula syntax", async () => {
+    const apiClient = api({
+      getVariableCatalog: vi.fn(({ scope, executionGrain }) =>
+        Promise.resolve(
+          catalog(true, {
+            scope,
+            executionGrain,
+            variables: [
+              {
+                id: "receivable_total_cents",
+                label: "客户应收合计",
+                runtimeType: { kind: "scalar", scalarType: "money_cents" },
+                unit: "元",
+                sourceLabel: "应收结算",
+                availability: "finalized",
+                coverageNumerator: 1,
+                coverageDenominator: 1,
+              },
+              {
+                id: "payable_total_cents",
+                label: "主播应付合计",
+                runtimeType: { kind: "scalar", scalarType: "money_cents" },
+                unit: "元",
+                sourceLabel: "应付结算",
+                availability: "finalized",
+                coverageNumerator: 1,
+                coverageDenominator: 1,
+              },
+              {
+                id: "tax_total_cents",
+                label: "税费合计",
+                runtimeType: { kind: "scalar", scalarType: "money_cents" },
+                unit: "元",
+                sourceLabel: "税费结算",
+                availability: "available",
+                coverageNumerator: 1,
+                coverageDenominator: 1,
+              },
+            ],
+          }),
+        ),
+      ),
+    });
+    renderWorkspace(apiClient);
+
+    fireEvent.click(screen.getByRole("button", { name: "结算风险校验" }));
+
+    await waitFor(() =>
+      expect(apiClient.getVariableCatalog).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          projectId: PROJECT_ID,
+          scope: "reconciliation_check",
+          executionGrain: "project_period",
+        }),
+      ),
+    );
+    const variables = await screen.findByRole("region", {
+      name: "可用已定稿变量",
+    });
+    expect(variables).toHaveTextContent("receivable_total_cents");
+    expect(variables).toHaveTextContent("客户应收合计");
+    expect(variables).toHaveTextContent("payable_total_cents");
+    expect(variables).toHaveTextContent("主播应付合计");
+    expect(variables).not.toHaveTextContent("tax_total_cents");
+    expect(variables).toHaveTextContent(
+      "校验会在应收、应付、成本、税费计算完成后运行",
+    );
+    expect(variables).not.toHaveTextContent(/formula|expression|AST|语法/u);
   });
 
   it("seeds project-cost examples as emitted pending-review cost items", async () => {

@@ -44,9 +44,11 @@ import ProjectFinancialSettings, {
   serializeFinancialDraft,
 } from "./project-financial-settings";
 import {
+  buildReconciliationCheckGroups,
   buildReconciliationRows,
   reconciliationBlockMessage,
   reconciliationGate,
+  reconciliationRunMeta,
   reconciliationSeverityTone,
 } from "./settlement-reconciliation-view";
 import {
@@ -158,6 +160,7 @@ function Button({
   disabled,
   style,
   type = "button",
+  ...buttonProps
 }) {
   const sizes = {
     sm: { h: 26, px: 10, fs: 12, gap: 4 },
@@ -204,6 +207,7 @@ function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
+      {...buttonProps}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -19786,6 +19790,7 @@ function ScreenSettlement({ go }) {
     evidenceLevel: "red",
     reason: "人工录入 CPA/CPS/礼物金额",
   });
+  const [lockReason, setLockReason] = React.useState("财务核对无误");
   const [ruleDraft, setRuleDraft] = React.useState(() =>
     settlementRuleDraft(projectOptions[0]),
   );
@@ -19802,6 +19807,7 @@ function ScreenSettlement({ go }) {
   const [costRuleExceptions, setCostRuleExceptions] = React.useState([]);
   const [costExceptionDrafts, setCostExceptionDrafts] = React.useState({});
   const [costDraft, setCostDraft] = React.useState(() => defaultCostDraft());
+  const reconciliationBlockingHeadingRef = React.useRef(null);
 
   React.useEffect(() => {
     if (!projectOptions.length) return;
@@ -20225,6 +20231,18 @@ function ScreenSettlement({ go }) {
       ? reconciliation
       : null;
   const activeGate = reconciliationGate(activeReconciliation);
+  const reconciliationMeta = reconciliation
+    ? reconciliationRunMeta(reconciliation)
+    : null;
+  const reconciliationGroups = reconciliation
+    ? buildReconciliationCheckGroups(reconciliation)
+    : [];
+
+  React.useEffect(() => {
+    if (reconciliationGate(reconciliation).hasBlocking) {
+      reconciliationBlockingHeadingRef.current?.focus();
+    }
+  }, [reconciliation]);
 
   const updateBatchDraft = (field) => (event) => {
     setBatchDraft((draft) => ({ ...draft, [field]: event.target.value }));
@@ -20309,8 +20327,13 @@ function ScreenSettlement({ go }) {
         setSettlementMessage(reconciliationBlockMessage(activeReconciliation));
         return false;
       }
+      const reason = lockReason.trim();
+      if (!reason) {
+        setSettlementMessage("锁定前请填写锁定原因");
+        return false;
+      }
       await actions.lockSettlementBatch?.(activeBatch.id, {
-        reason: "财务核对无误",
+        reason,
       });
       return false;
     });
@@ -20668,7 +20691,27 @@ function ScreenSettlement({ go }) {
             </div>
 
             {reconciliation ? (
-              <>
+              <section
+                role="region"
+                aria-label="单项目结算校验结果"
+                style={{ display: "flex", flexDirection: "column", gap: 12 }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    flexWrap: "wrap",
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                  }}
+                >
+                  <span>{reconciliationMeta?.runAtLabel}</span>
+                  <Badge tone={reconciliationMeta?.stale ? "amber" : "green"}>
+                    {reconciliationMeta?.freshnessLabel}
+                  </Badge>
+                </div>
                 <div
                   className="ops-settlement-reconciliation-metrics"
                   style={{
@@ -20710,30 +20753,110 @@ function ScreenSettlement({ go }) {
                   ))}
                 </div>
 
-                {reconciliation.checks?.length ? (
+                {reconciliationGroups.length ? (
                   <div
                     style={{
                       display: "flex",
                       flexDirection: "column",
-                      gap: 6,
+                      gap: 10,
                     }}
                   >
-                    {reconciliation.checks.map((check) => (
+                    {activeGate.hasBlocking ? (
                       <div
-                        key={check.key}
+                        role="alert"
                         style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          fontSize: 12,
+                          padding: "8px 10px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(217,45,32,0.24)",
+                          background: "rgba(217,45,32,0.06)",
+                          color: "var(--danger-700)",
                         }}
                       >
-                        <Badge tone={reconciliationSeverityTone(check.severity)}>
-                          {check.severity === "block" ? "阻断" : "告警"}
-                        </Badge>
-                        <span style={{ color: "var(--ink-700)" }}>
-                          {check.message}
-                        </span>
+                        <h3
+                          ref={reconciliationBlockingHeadingRef}
+                          tabIndex={-1}
+                          style={{
+                            margin: 0,
+                            fontSize: 13,
+                            fontWeight: 700,
+                          }}
+                        >
+                          阻断项
+                        </h3>
+                        <div style={{ marginTop: 4, fontSize: 12 }}>
+                          {activeGate.disabledReasons.join("；")}
+                        </div>
+                      </div>
+                    ) : null}
+                    {reconciliationGroups.map((group) => (
+                      <div
+                        key={group.key}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "120px minmax(0, 1fr)",
+                          gap: 8,
+                          alignItems: "start",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: "var(--ink-700)",
+                          }}
+                        >
+                          {group.label}
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                            minWidth: 0,
+                          }}
+                        >
+                          {group.checks.map((check) => (
+                            <div
+                              key={check.key}
+                              aria-label={check.accessibleText}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                flexWrap: "wrap",
+                                fontSize: 12,
+                              }}
+                            >
+                              <Badge
+                                tone={reconciliationSeverityTone(check.severity)}
+                              >
+                                {check.severityLabel}
+                              </Badge>
+                              {check.categoryLabel ? (
+                                <Badge tone="neutral">{check.categoryLabel}</Badge>
+                              ) : null}
+                              <span style={{ color: "var(--ink-700)" }}>
+                                {check.message}
+                              </span>
+                              {check.ruleVersionLabel && check.ruleVersion?.id ? (
+                                <a
+                                  href={`/ops/internal/settlement-rules/${check.ruleVersion.id}`}
+                                  style={{
+                                    color: "var(--blue-600)",
+                                    textDecoration: "none",
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  {check.ruleVersionLabel}
+                                </a>
+                              ) : check.ruleVersionLabel ? (
+                                <span style={{ color: "var(--ink-500)" }}>
+                                  {check.ruleVersionLabel}
+                                </span>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -20742,7 +20865,7 @@ function ScreenSettlement({ go }) {
                     无阻断或告警项
                   </div>
                 )}
-              </>
+              </section>
             ) : (
               <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
                 点击「运行校验」生成本期对账单与可结判定
@@ -21940,6 +22063,8 @@ function ScreenSettlement({ go }) {
             onNotifyStreamers={notifyBatchStreamers}
             lockGate={activeGate}
             lockBlockMessage={reconciliationBlockMessage(activeReconciliation)}
+            lockReason={lockReason}
+            onLockReasonChange={setLockReason}
             busyAction={busyAction}
           />
         </div>
@@ -22128,6 +22253,8 @@ function BatchDetail({
   onNotifyStreamers,
   lockGate = { evaluated: false, hasBlocking: false },
   lockBlockMessage = "",
+  lockReason = "",
+  onLockReasonChange,
   busyAction,
 }) {
   const [detailMessage, setDetailMessage] = React.useState("");
@@ -22854,6 +22981,35 @@ function BatchDetail({
             </>
           ) : (
             <>
+              <label
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                  minWidth: 220,
+                  flex: "1 1 260px",
+                  fontSize: 11,
+                  color: "var(--ink-500)",
+                }}
+              >
+                锁定原因
+                <input
+                  value={lockReason}
+                  onChange={(event) =>
+                    onLockReasonChange?.(event.target.value)
+                  }
+                  disabled={!!busyAction}
+                  style={{
+                    height: 32,
+                    border: "1px solid var(--line)",
+                    borderRadius: 6,
+                    padding: "0 10px",
+                    fontSize: 12,
+                    color: "var(--ink-800)",
+                    background: "#fff",
+                  }}
+                />
+              </label>
               <Button
                 kind="ghost"
                 onClick={() =>
@@ -22910,9 +23066,9 @@ function BatchDetail({
                 kind="primary"
                 icon={<Icon.Lock size={14} stroke="#fff" />}
                 onClick={onLockBatch}
-                disabled={!!busyAction || lockGate?.hasBlocking}
+                disabled={!!busyAction || !lockGate?.canLock}
                 title={
-                  lockGate?.hasBlocking
+                  !lockGate?.canLock
                     ? lockBlockMessage
                     : lockGate?.evaluated
                       ? undefined
@@ -22921,7 +23077,7 @@ function BatchDetail({
               >
                 {busyAction === "lock"
                   ? "处理中…"
-                  : lockGate?.hasBlocking
+                  : !lockGate?.canLock && lockGate?.evaluated
                     ? "校验未通过 · 不可锁定"
                     : "确认并锁定"}
               </Button>

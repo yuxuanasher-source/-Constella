@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import {
   act,
   fireEvent,
@@ -8957,6 +8959,173 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.queryByText("¥286,400")).not.toBeInTheDocument();
     expect(screen.queryByText("¥92,400")).not.toBeInTheDocument();
     expect(screen.queryByText("¥73,200")).not.toBeInTheDocument();
+  });
+
+  it("shows reconciliation provenance, actionable blockers, warnings, freshness, and keeps the lock reason", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (
+        String(url) ===
+        "/api/projects/project-alpha/settlement-reconciliation?periodStart=2026-07-01&periodEnd=2026-07-31"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            reconciliation: {
+              runAt: "2026-07-12T01:02:00.000Z",
+              inputFreshness: { stale: false },
+              income: { receivableCents: 120_000 },
+              cost: {
+                payableCents: 90_000,
+                externalCostCents: 10_000,
+                procurementCents: 0,
+                totalCents: 100_000,
+              },
+              tax: {
+                outputVatCents: 7_200,
+                surtaxCents: 864,
+                taxTotalCents: 8_064,
+                invoiceAmountCents: 127_200,
+              },
+              profit: { grossMarginCents: 11_936, marginRateBps: 995 },
+              checks: [
+                {
+                  key: "core_margin",
+                  source: "core",
+                  severity: "pass",
+                  message: "毛利率 10.0% 达标",
+                },
+                {
+                  key: "custom_missing_cap",
+                  source: { kind: "custom_rule", label: "结算风险校验" },
+                  severity: "block",
+                  blockCategory: "missing_data",
+                  message: "缺少投流成本确认值",
+                  ruleVersion: {
+                    id: "rule-risk-v3",
+                    versionNumber: 3,
+                    contractTitle: "投流成本完整性",
+                    contractHash: "abcdef1234567890",
+                    formula: "traffic_cost == null",
+                    ast: { type: "identifier" },
+                  },
+                },
+                {
+                  key: "custom_exception",
+                  source: { kind: "custom_rule", label: "结算风险校验" },
+                  severity: "warn",
+                  blockCategory: "unresolved_exception",
+                  message: "一条成本异常已复核但仍建议财务复看",
+                },
+              ],
+            },
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        currentUser={{ id: "user-finance", name: "Finance A", role: "finance" }}
+        projectCards={projectManagementCards}
+        liveBatches={[
+          {
+            id: "batch-risk-check",
+            projectId: "project-alpha",
+            type: "streamer_payable",
+            name: "Alpha Launch · 七月主播应付",
+            project: "Alpha Launch",
+            vendor: "—",
+            period: "2026-07-01 → 2026-07-31",
+            periodStart: "2026-07-01",
+            periodEnd: "2026-07-31",
+            items: 1,
+            amount: 900,
+            status: "confirmed",
+            updated: "2026-07-31 12:00",
+            creator: "Finance Owner",
+          },
+        ]}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    const lockReason = screen.getByLabelText("锁定原因");
+    fireEvent.change(lockReason, {
+      target: { value: "已核对流水，等待补投流成本" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "运行校验" }));
+
+    const blockingHeading = await screen.findByRole("heading", {
+      name: "阻断项",
+    });
+    expect(blockingHeading).toHaveFocus();
+    const reconciliation = screen.getByRole("region", {
+      name: "单项目结算校验结果",
+    });
+    expect(reconciliation).toHaveTextContent("运行时间 2026-07-12 01:02");
+    expect(reconciliation).toHaveTextContent("输入新鲜");
+    expect(reconciliation).toHaveTextContent("系统校验");
+    expect(reconciliation).toHaveTextContent("结算风险校验");
+    expect(reconciliation).toHaveTextContent("阻断");
+    expect(reconciliation).toHaveTextContent("告警");
+    expect(reconciliation).toHaveTextContent("通过");
+    expect(reconciliation).toHaveTextContent("缺少数据");
+    expect(reconciliation).toHaveTextContent("未解决异常");
+    expect(reconciliation).toHaveTextContent("投流成本完整性 v3 · 合同 abcdef12");
+    expect(
+      within(reconciliation).getByRole("link", {
+        name: "投流成本完整性 v3 · 合同 abcdef12",
+      }),
+    ).toHaveAttribute("href", "/ops/internal/settlement-rules/rule-risk-v3");
+    expect(reconciliation).toHaveTextContent("¥1,200.00");
+    expect(reconciliation).toHaveTextContent("10.0%");
+    expect(reconciliation).not.toHaveTextContent("traffic_cost");
+    expect(reconciliation).not.toHaveTextContent("identifier");
+    expect(screen.getByLabelText("锁定原因")).toHaveValue(
+      "已核对流水，等待补投流成本",
+    );
+    const lockButton = screen.getByRole("button", {
+      name: "校验未通过 · 不可锁定",
+    });
+    expect(lockButton).toBeDisabled();
+    expect(lockButton).toHaveAttribute(
+      "title",
+      "结算校验未通过，无法锁定：缺少数据：缺少投流成本确认值",
+    );
+    expect(screen.getByText("缺少数据：缺少投流成本确认值")).toBeInTheDocument();
+  });
+
+  it("keeps streamer-facing reference screens free of reconciliation rule surfaces", () => {
+    const files = [
+      "./streamer-mobile-reference.jsx",
+      "./streamer-desktop-reference.jsx",
+      "../streamer-lifecycle/streamer-lifecycle-shell.tsx",
+      "../streamer-lifecycle/streamer-lifecycle-panel.tsx",
+    ];
+    const forbidden = [
+      "settlement-reconciliation-view",
+      "buildReconciliationCheckGroups",
+      "reconciliationGate",
+      "CustomSettlementRuleWorkspace",
+      "结算风险校验",
+      "单项目结算校验",
+    ];
+
+    files.forEach((file) => {
+      const source = readFileSync(new URL(file, import.meta.url), "utf8");
+      forbidden.forEach((token) => {
+        expect(source, `${file} should not expose ${token}`).not.toContain(token);
+      });
+    });
   });
 
   it("exports report settlement details from the export settings panel", async () => {
