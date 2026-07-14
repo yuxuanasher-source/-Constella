@@ -649,12 +649,6 @@ function objectRecord(value: unknown): Record<string, unknown> {
   return {};
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
 function requiredStringArray(value: unknown, field: string): string[] {
   if (
     Array.isArray(value) &&

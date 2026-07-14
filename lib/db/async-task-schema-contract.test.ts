@@ -72,9 +72,8 @@ function extractBackgroundJobsKnownTypeConstraintBodies(sql: string): string[] {
   const constraintPattern =
     /alter table public\.background_jobs\s+add constraint background_jobs_known_type\s+check\s*\(/gu;
   const bodies: string[] = [];
-  let match: RegExpExecArray | null;
 
-  while ((match = constraintPattern.exec(sql)) !== null) {
+  while (constraintPattern.exec(sql) !== null) {
     const bodyStart = constraintPattern.lastIndex;
     const bodyEnd = findMatchingClosingParenthesis(sql, bodyStart - 1);
     expect(
