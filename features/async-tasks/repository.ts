@@ -457,14 +457,10 @@ export async function reconcileExpiredScheduledJobWork(
     "reconcile expired scheduled job work failed",
   );
 
-  if (typeof data === "number") {
-    return { failedItemIds: [], finalizedRunIds: [] };
-  }
-
-  const row = asRow(data, "reconciled scheduled work");
+  const row = asSingleRpcRow(data, "reconciled scheduled work");
   return {
-    failedItemIds: stringArray(row.failed_item_ids),
-    finalizedRunIds: stringArray(row.finalized_run_ids),
+    failedItemIds: requiredStringArray(row.failed_item_ids, "failed_item_ids"),
+    finalizedRunIds: requiredStringArray(row.finalized_run_ids, "finalized_run_ids"),
   };
 }
 
@@ -605,6 +601,17 @@ function asRow(value: unknown, label: string): Row {
   throw new Error(`Invalid ${label} row`);
 }
 
+function asSingleRpcRow(value: unknown, label: string): Row {
+  if (Array.isArray(value)) {
+    if (value.length === 1) {
+      return asRow(value[0], label);
+    }
+    throw new Error(`Invalid ${label} row`);
+  }
+
+  return asRow(value, label);
+}
+
 function requiredString(value: unknown, field: string): string {
   const parsed = stringValue(value);
   if (parsed === null) {
@@ -646,4 +653,15 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+function requiredStringArray(value: unknown, field: string): string[] {
+  if (
+    Array.isArray(value) &&
+    value.every((item): item is string => typeof item === "string")
+  ) {
+    return value;
+  }
+
+  throw new Error(`Missing required field: ${field}`);
 }

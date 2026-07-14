@@ -459,6 +459,12 @@ describe("async task runtime schema contract", () => {
     );
 
     const reconcile = extractFunction("reconcile_expired_scheduled_job_work");
+    expect(normalizedMigration).toContain(
+      "create or replace function public.reconcile_expired_scheduled_job_work( p_now timestamptz default now(), p_limit integer default 100 ) returns table ( failed_item_ids text[], finalized_run_ids uuid[] )",
+    );
+    expect(reconcile).toContain("failed_item_ids");
+    expect(reconcile).toContain("finalized_run_ids");
+    expect(reconcile).not.toContain("returns integer");
     expect(reconcile).toContain("attempt >= max_attempts");
     expect(reconcile).toContain("worker_lease_exhausted");
     expect(reconcile).toContain("affected_runs");

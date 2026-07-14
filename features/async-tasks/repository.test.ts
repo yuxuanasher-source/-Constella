@@ -501,10 +501,12 @@ describe("async task runtime repository", () => {
       ok(false),
       ok(true),
       ok({ status: "succeeded", result: { total: 1 } }),
-      ok({
-        failed_item_ids: ["item-1"],
-        finalized_run_ids: ["run-1"],
-      }),
+      ok([
+        {
+          failed_item_ids: ["item-1"],
+          finalized_run_ids: ["run-1"],
+        },
+      ]),
       ok(true),
       ok(true),
     ]);
@@ -574,6 +576,17 @@ describe("async task runtime repository", () => {
       "renew_maintenance_execution_lease",
       "release_maintenance_execution_lease",
     ]);
+  });
+
+  it("rejects scalar scheduled reconciliation RPC results", async () => {
+    const client = new FakeClient([ok(2)]);
+
+    await expect(
+      reconcileExpiredScheduledJobWork(client, {
+        now: "2026-07-14T01:00:00.000Z",
+        limit: 50,
+      }),
+    ).rejects.toThrow("Invalid reconciled scheduled work row");
   });
 
   it("rethrows every database error instead of converting unknown errors into duplicate or skip states", async () => {

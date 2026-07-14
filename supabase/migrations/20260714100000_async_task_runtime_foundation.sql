@@ -739,18 +739,25 @@ begin
 end;
 $$;
 
+drop function if exists public.reconcile_expired_scheduled_job_work(timestamptz, integer);
+
 create or replace function public.reconcile_expired_scheduled_job_work(
   p_now timestamptz default now(),
   p_limit integer default 100
-) returns integer
+) returns table (
+  failed_item_ids text[],
+  finalized_run_ids uuid[]
+)
 language plpgsql
 security definer
 set search_path = public, pg_temp
 as $$
 declare
-  v_changed integer := 0;
   v_run_id uuid;
+  v_finalized_run public.scheduled_job_runs;
   v_affected_run_ids uuid[] := '{}'::uuid[];
+  v_failed_item_ids text[] := '{}'::text[];
+  v_finalized_run_ids uuid[] := '{}'::uuid[];
 begin
   with expired as (
     select run_id, organization_id
@@ -772,10 +779,18 @@ begin
     from expired
     where item.run_id = expired.run_id
       and item.organization_id = expired.organization_id
-    returning item.run_id
+    returning item.run_id, item.organization_id
   )
-  select count(*), coalesce(array_agg(distinct run_id), '{}'::uuid[])
-  into v_changed, v_affected_run_ids
+  select
+    coalesce(
+      array_agg(
+        distinct marked.run_id::text || ':' || marked.organization_id::text
+        order by marked.run_id::text || ':' || marked.organization_id::text
+      ),
+      '{}'::text[]
+    ),
+    coalesce(array_agg(distinct marked.run_id order by marked.run_id), '{}'::uuid[])
+  into v_failed_item_ids, v_affected_run_ids
   from marked;
 
   with retryable as (
@@ -828,10 +843,18 @@ begin
       select run_id from complete_open_runs
     ) candidates
   loop
-    perform public.finalize_scheduled_job_run_reconciled(v_run_id, p_now);
+    v_finalized_run := public.finalize_scheduled_job_run_reconciled(v_run_id, p_now);
+    if v_finalized_run.id is not null
+      and v_finalized_run.status in ('succeeded', 'failed', 'skipped')
+    then
+      v_finalized_run_ids := array_append(v_finalized_run_ids, v_finalized_run.id);
+    end if;
   end loop;
 
-  return v_changed;
+  return query
+  select
+    coalesce(v_failed_item_ids, '{}'::text[]) as failed_item_ids,
+    coalesce(v_finalized_run_ids, '{}'::uuid[]) as finalized_run_ids;
 end;
 $$;
 
