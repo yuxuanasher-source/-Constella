@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
+import type { SettlementReconciliationRunTriggerType } from "@/features/complex-cost/complex-cost-types";
 import {
   businessRuleContractSchema,
   normalizedAstNodeSchema,
@@ -819,6 +820,58 @@ export type SavedCustomRuleDraftResult = Omit<
   "event"
 >;
 
+export type GetActiveProjectReconciliationRuleInput = {
+  organizationId: string;
+  projectId: string;
+  executionTimestamp: string;
+};
+
+export type GetCachedSettlementReconciliationRunInput = {
+  organizationId: string;
+  projectId: string;
+  periodStart: string;
+  periodEnd: string;
+  inputHash: string;
+};
+
+export type SettlementReconciliationRunSnapshot = {
+  id: string;
+  organizationId: string;
+  projectId: string;
+  periodStart: string;
+  periodEnd: string;
+  triggerType: SettlementReconciliationRunTriggerType;
+  triggerBatchId: string | null;
+  inputHash: string;
+  result: Record<string, unknown>;
+  ruleVersionId: string | null;
+  formulaHash: string | null;
+  customChecks: unknown[];
+  finalChecks: unknown[];
+  blocked: boolean;
+  warnings: unknown[];
+  createdBy: string | null;
+  createdAt: string;
+};
+
+export type CreateSettlementReconciliationRunInput = {
+  organizationId: string;
+  projectId: string;
+  periodStart: string;
+  periodEnd: string;
+  triggerType: SettlementReconciliationRunTriggerType;
+  triggerBatchId?: string | null;
+  inputHash: string;
+  coreResult: Record<string, unknown>;
+  ruleVersionId?: string | null;
+  formulaHash?: string | null;
+  customChecks: unknown[];
+  finalChecks: unknown[];
+  blocked: boolean;
+  warnings: unknown[];
+  createdBy: string;
+};
+
 export type CloneCustomRuleToDraftInput = {
   organizationId: string;
   sourceProjectId: string;
@@ -923,6 +976,15 @@ export type CustomRuleRepository = CustomRuleReadRepository & {
   listCustomRuleReviewEvents(
     input: ListCustomRuleReviewEventsInput,
   ): Promise<CustomSettlementRuleReviewEvent[]>;
+  getActiveProjectReconciliationRule(
+    input: GetActiveProjectReconciliationRuleInput,
+  ): Promise<CustomSettlementRuleVersion | null>;
+  getCachedSettlementReconciliationRun(
+    input: GetCachedSettlementReconciliationRunInput,
+  ): Promise<SettlementReconciliationRunSnapshot | null>;
+  createSettlementReconciliationRun(
+    input: CreateSettlementReconciliationRunInput,
+  ): Promise<SettlementReconciliationRunSnapshot>;
   cloneCustomRuleToDraft(
     input: CloneCustomRuleToDraftInput,
   ): Promise<CloneRuleVersionToEditableDraftResult>;
@@ -1056,7 +1118,8 @@ export class CustomRulePersistenceDataError extends Error {
       | "group"
       | "assignment"
       | "reuse draft"
-      | "organization template",
+      | "organization template"
+      | "reconciliation_run",
     message: string,
   ) {
     super(`Invalid persisted custom-rule ${entity}: ${message}`);
@@ -2469,6 +2532,30 @@ const lifecycleReviewEventRowSchema = z.strictObject({
   data_selection_hash: hashSchema,
   created_at: timestampSchema,
 });
+const settlementReconciliationRunRowSchema = z.strictObject({
+  id: uuidSchema,
+  organization_id: uuidSchema,
+  project_id: uuidSchema,
+  period_start: businessDateSchema,
+  period_end: businessDateSchema,
+  trigger_type: z.enum([
+    "manual",
+    "import_batch",
+    "settlement_batch",
+    "scheduled",
+  ]),
+  trigger_batch_id: uuidSchema.nullable(),
+  core_input_hash: hashSchema,
+  core_result: z.record(z.string(), jsonValueSchema),
+  rule_version_id: uuidSchema.nullable(),
+  formula_hash: hashSchema.nullable(),
+  custom_checks: z.array(jsonValueSchema),
+  final_checks: z.array(jsonValueSchema),
+  blocked: z.boolean(),
+  warnings: z.array(jsonValueSchema),
+  created_by: uuidSchema.nullable(),
+  created_at: timestampSchema,
+});
 const lifecycleResultRowSchema = z.strictObject({
   version: lifecycleVersionRowSchema,
   simulation: completeSimulationRowSchema,
@@ -3380,6 +3467,116 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
     return data.map((row) =>
       toCustomSettlementRuleReviewEvent(
         parsePersistenceRow(lifecycleReviewEventRowSchema, row, "lifecycle"),
+      ),
+    );
+  }
+
+  async getActiveProjectReconciliationRule(
+    input: GetActiveProjectReconciliationRuleInput,
+  ): Promise<CustomSettlementRuleVersion | null> {
+    const { data, error } = await this.client
+      .from("custom_settlement_rule_versions")
+      .select(LIFECYCLE_VERSION_SELECT)
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("scope", "reconciliation")
+      .eq("target_type", "project")
+      .eq("status", "active")
+      .order("effective_from", { ascending: false })
+      .order("version_number", { ascending: false })
+      .limit(10)
+      .returns<unknown[]>();
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "get_active_reconciliation_rule",
+        error,
+      );
+    }
+    const versions = (Array.isArray(data) ? data : [])
+      .map((row) =>
+        parsePersistenceRow(lifecycleVersionRowSchema, row, "lifecycle"),
+      )
+      .filter((row) =>
+        isExecutableVersionRow(row, {
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          scope: "reconciliation",
+          executionTimestamp: input.executionTimestamp,
+          groupIds: new Set(),
+          projectStreamerIds: new Set(),
+        }),
+      )
+      .map(toCustomSettlementRuleVersion)
+      .sort(compareExecutableVersionRecency);
+
+    return versions[0] ?? null;
+  }
+
+  async getCachedSettlementReconciliationRun(
+    input: GetCachedSettlementReconciliationRunInput,
+  ): Promise<SettlementReconciliationRunSnapshot | null> {
+    const { data, error } = await this.client
+      .from("settlement_reconciliation_runs")
+      .select("*")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .eq("period_start", input.periodStart)
+      .eq("period_end", input.periodEnd)
+      .eq("core_input_hash", input.inputHash)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "get_cached_reconciliation_run",
+        error,
+      );
+    }
+    if (data === null) return null;
+    return toSettlementReconciliationRunSnapshot(
+      parsePersistenceRow(
+        settlementReconciliationRunRowSchema,
+        data,
+        "reconciliation_run",
+      ),
+    );
+  }
+
+  async createSettlementReconciliationRun(
+    input: CreateSettlementReconciliationRunInput,
+  ): Promise<SettlementReconciliationRunSnapshot> {
+    const { data, error } = await this.client
+      .from("settlement_reconciliation_runs")
+      .insert({
+        organization_id: input.organizationId,
+        project_id: input.projectId,
+        period_start: input.periodStart,
+        period_end: input.periodEnd,
+        trigger_type: input.triggerType,
+        trigger_batch_id: input.triggerBatchId ?? null,
+        core_input_hash: input.inputHash,
+        core_result: input.coreResult,
+        rule_version_id: input.ruleVersionId ?? null,
+        formula_hash: input.formulaHash ?? null,
+        custom_checks: input.customChecks,
+        final_checks: input.finalChecks,
+        blocked: input.blocked,
+        warnings: input.warnings,
+        created_by: input.createdBy,
+      })
+      .select("*")
+      .single();
+    if (error) {
+      throw new CustomRulePersistenceQueryError(
+        "create_reconciliation_run",
+        error,
+      );
+    }
+    return toSettlementReconciliationRunSnapshot(
+      parsePersistenceRow(
+        settlementReconciliationRunRowSchema,
+        data,
+        "reconciliation_run",
       ),
     );
   }
@@ -5037,7 +5234,8 @@ function parsePersistenceRow<Output>(
     | "group"
     | "assignment"
     | "reuse draft"
-    | "organization template",
+    | "organization template"
+    | "reconciliation_run",
 ): Output {
   const result = schema.safeParse(value);
   if (!result.success) {
@@ -6004,6 +6202,40 @@ function toCustomSettlementRuleReviewEvent(
     dataSelectionHash: row.data_selection_hash,
     createdAt: row.created_at,
   });
+}
+
+function toSettlementReconciliationRunSnapshot(
+  row: z.infer<typeof settlementReconciliationRunRowSchema>,
+): SettlementReconciliationRunSnapshot {
+  return deepFreezeOwned({
+    id: row.id,
+    organizationId: row.organization_id,
+    projectId: row.project_id,
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    triggerType: row.trigger_type,
+    triggerBatchId: row.trigger_batch_id,
+    inputHash: row.core_input_hash,
+    result: row.core_result,
+    ruleVersionId: row.rule_version_id,
+    formulaHash: row.formula_hash,
+    customChecks: row.custom_checks,
+    finalChecks: row.final_checks,
+    blocked: row.blocked,
+    warnings: row.warnings,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  });
+}
+
+function deepFreezeOwned<Value>(value: Value): Value {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) {
+      deepFreezeOwned(child);
+    }
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function parseLifecycleRpcResult(

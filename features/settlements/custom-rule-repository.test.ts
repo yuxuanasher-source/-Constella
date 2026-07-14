@@ -29,6 +29,160 @@ import {
 import type { CustomRuleExecutionUnit } from "./custom-rule-types";
 
 describe("Phase 2 custom rule lifecycle repository", () => {
+  it("loads only the active project-period reconciliation rule for the same organization", async () => {
+    const calls: Array<[string, unknown]> = [];
+    const rows = [
+      executableVersionRow({
+        id: RULE_VERSION_ID,
+        scope: "reconciliation",
+        target_type: "project",
+        target_id: null,
+        execution_grain: "project_period",
+        composition_mode: "check",
+      }),
+      executableVersionRow({
+        id: "00000000-0000-4000-8000-000000000099",
+        organization_id: "00000000-0000-4000-8000-000000000099",
+        scope: "reconciliation",
+        target_type: "project",
+        target_id: null,
+        execution_grain: "project_period",
+        composition_mode: "check",
+      }),
+    ];
+    const query = {
+      select: vi.fn((columns: string) => {
+        calls.push(["select", columns]);
+        return query;
+      }),
+      eq: vi.fn((column: string, value: unknown) => {
+        calls.push([column, value]);
+        return query;
+      }),
+      lte: vi.fn((column: string, value: unknown) => {
+        calls.push([`lte:${column}`, value]);
+        return query;
+      }),
+      or: vi.fn((value: string) => {
+        calls.push(["or", value]);
+        return query;
+      }),
+      order: vi.fn(() => query),
+      limit: vi.fn(() => query),
+      returns: vi.fn(async () => ({ data: rows, error: null })),
+    };
+    const repository = new SupabaseCustomRuleReadRepository({
+      from: vi.fn((table: string) => {
+        expect(table).toBe("custom_settlement_rule_versions");
+        return query;
+      }),
+    } as unknown as SupabaseClient);
+
+    const result = await repository.getActiveProjectReconciliationRule({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      executionTimestamp: "2026-07-15T00:00:00.000Z",
+    });
+
+    expect(result?.id).toBe(RULE_VERSION_ID);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        ["organization_id", ORGANIZATION_ID],
+        ["project_id", PROJECT_ID],
+        ["scope", "reconciliation"],
+        ["target_type", "project"],
+        ["status", "active"],
+      ]),
+    );
+  });
+
+  it("persists and reads immutable reconciliation run snapshots by full input hash", async () => {
+    const inserted = {
+      id: "00000000-0000-4000-8000-000000000111",
+      organization_id: ORGANIZATION_ID,
+      project_id: PROJECT_ID,
+      period_start: "2026-06-01",
+      period_end: "2026-06-30",
+      trigger_type: "manual",
+      trigger_batch_id: null,
+      core_input_hash: HASH_E,
+      core_result: { income: { receivableCents: 1000 } },
+      rule_version_id: RULE_VERSION_ID,
+      formula_hash: HASH_C,
+      custom_checks: [{ source: "custom_rule" }],
+      final_checks: [{ source: "core" }, { source: "custom_rule" }],
+      blocked: true,
+      warnings: [{ code: "custom" }],
+      created_by: CREATOR_ID,
+      created_at: "2026-07-14T00:00:00.000Z",
+    };
+    const insert = vi.fn(() => ({
+      select: vi.fn(() => ({
+        single: vi.fn(async () => ({ data: inserted, error: null })),
+      })),
+    }));
+    const from = vi.fn((table: string) => {
+      expect(table).toBe("settlement_reconciliation_runs");
+      return {
+        insert,
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        order: vi.fn().mockReturnThis(),
+        limit: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn(async () => ({ data: inserted, error: null })),
+      };
+    });
+    const repository = new SupabaseCustomRuleReadRepository({
+      from,
+    } as unknown as SupabaseClient);
+
+    const created = await repository.createSettlementReconciliationRun({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+      triggerType: "manual",
+      triggerBatchId: null,
+      inputHash: HASH_E,
+      coreResult: inserted.core_result,
+      ruleVersionId: RULE_VERSION_ID,
+      formulaHash: HASH_C,
+      customChecks: inserted.custom_checks,
+      finalChecks: inserted.final_checks,
+      blocked: true,
+      warnings: inserted.warnings,
+      createdBy: CREATOR_ID,
+    });
+    const cached = await repository.getCachedSettlementReconciliationRun({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+      inputHash: HASH_E,
+    });
+
+    expect(insert).toHaveBeenCalledWith({
+      organization_id: ORGANIZATION_ID,
+      project_id: PROJECT_ID,
+      period_start: "2026-06-01",
+      period_end: "2026-06-30",
+      trigger_type: "manual",
+      trigger_batch_id: null,
+      core_input_hash: HASH_E,
+      core_result: inserted.core_result,
+      rule_version_id: RULE_VERSION_ID,
+      formula_hash: HASH_C,
+      custom_checks: inserted.custom_checks,
+      final_checks: inserted.final_checks,
+      blocked: true,
+      warnings: inserted.warnings,
+      created_by: CREATOR_ID,
+    });
+    expect(created.inputHash).toBe(HASH_E);
+    expect(cached?.inputHash).toBe(HASH_E);
+    expect(Object.isFrozen(cached)).toBe(true);
+  });
+
   it("resolves executable rule versions by organization, project, scope, target, and execution timestamp", async () => {
     const rpc = vi.fn(async () => ({
       data: {
