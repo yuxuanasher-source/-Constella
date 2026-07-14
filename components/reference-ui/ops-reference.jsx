@@ -2394,6 +2394,9 @@ export function Sidebar({
   const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
   const [accountPanel, setAccountPanel] = React.useState(null);
+  const accountSummaryRef = React.useRef(null);
+  const accountPanelWasOpenRef = React.useRef(false);
+  const accountMeta = formatCurrentUserMeta(displayUser);
 
   React.useLayoutEffect(() => {
     if (accountPanel) {
@@ -2647,6 +2650,52 @@ export function Sidebar({
         })}
       </nav>
 
+      {route !== "warroom" ? (
+        <div
+          style={{
+            padding: "10px 12px",
+            borderTop: "1px solid var(--line)",
+          }}
+        >
+          <button
+            type="button"
+            onClick={onOpenOrganizationSettings}
+            style={{
+              width: "100%",
+              minHeight: 54,
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              cursor: "pointer",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-start",
+              justifyContent: "center",
+              gap: 3,
+              padding: "8px 10px",
+              textAlign: "left",
+            }}
+          >
+            <span
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--ink-900)",
+                maxWidth: "100%",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {orgSettings.name}
+            </span>
+            <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+              当前组织 · 设置与权限
+            </span>
+          </button>
+        </div>
+      ) : null}
+
       {/* User */}
       <div
         style={{
@@ -2667,7 +2716,7 @@ export function Sidebar({
             ref={accountSummaryRef}
             role="button"
             aria-haspopup="menu"
-            aria-label={`${displayUser.name} ${formatCurrentUserMeta(displayUser)} 账号菜单`}
+            aria-label={`${displayUser.name} ${accountMeta} 账号菜单`}
             style={{
               listStyle: "none",
               width: "100%",
@@ -2710,7 +2759,7 @@ export function Sidebar({
                   whiteSpace: "nowrap",
                 }}
               >
-                {formatCurrentUserMeta(displayUser)}
+                {accountMeta}
               </div>
             </div>
             <Icon.ChevDown
@@ -29785,6 +29834,7 @@ function ScreenOrg({ go, onOpenOrganizationSettings }) {
   const orgPlanName = billingStatus
     ? billingPlanName(billingStatus.plan)
     : orgSettings.plan;
+  const visibleMemberCount = canViewMembers ? members.length : null;
 
   const handleCreateMember = async (input) => {
     if (!actions.createOrganizationMember) {
@@ -29925,7 +29975,10 @@ function ScreenOrg({ go, onOpenOrganizationSettings }) {
                 <span className="mono">
                   {displayRecordId(orgSettings.id, "组织编号待配置")}
                 </span>{" "}
-                · {orgSettings.name} · MCN 经营舱
+                · 当前组织
+                {visibleMemberCount != null
+                  ? ` · ${visibleMemberCount} 名成员`
+                  : ""}
               </div>
             </div>
             <Button
@@ -35503,7 +35556,7 @@ function OpsReferenceInner({
           navCounts={navCounts}
           currentUser={currentUserState}
           organizationSettings={organizationSettingsState}
-          onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
+          onOpenOrganizationSettings={openOrganizationSettingsFromNavigation}
           onUpdateAvatar={updateProfileAvatar}
           mobileNavigationOpen={mobileNavigationOpen}
           onCloseMobileNavigation={closeMobileNavigation}

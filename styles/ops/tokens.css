@@ -1,0 +1,21 @@
+:root {
+  --ops-bg: #f7f8fa;
+  --ops-surface: #ffffff;
+  --ops-border: #e5e6eb;
+  --ops-text-1: #1d2129;
+  --ops-text-2: #4e5969;
+  --ops-text-3: #86909c;
+  --ops-primary: #165dff;
+  --ops-primary-soft: #e8f0ff;
+  --ops-success: #00b42a;
+  --ops-warning: #ff7d00;
+  --ops-danger: #f53f3f;
+  --ops-radius-control: 4px;
+  --ops-radius-card: 6px;
+  --ops-sidebar-width: 248px;
+  --ops-sidebar-width-compact: 220px;
+  --ops-topbar-height: 68px;
+  --ops-topbar-height-mobile: 60px;
+  --ops-nav-item-height: 38px;
+  --ops-nav-badge-size: 20px;
+}

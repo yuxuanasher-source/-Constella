@@ -1,0 +1,3118 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>选播准入 · 经营舱</title>
+    <script src="https://code.iconify.design/iconify-icon/3.0.0/iconify-icon.min.js"></script>
+    <style>
+      :root {
+        --primary: #165dff;
+        --primary-hover: #0e42d2;
+        --primary-soft: #e8f3ff;
+        --cyan: #0fc6c2;
+        --cyan-soft: #e8fffb;
+        --green: #00b42a;
+        --green-soft: #e8ffea;
+        --orange: #ff7d00;
+        --orange-soft: #fff7e8;
+        --red: #f53f3f;
+        --red-soft: #ffece8;
+        --purple: #722ed1;
+        --purple-soft: #f5e8ff;
+        --text-1: #1d2129;
+        --text-2: #4e5969;
+        --text-3: #86909c;
+        --border: #e5e6eb;
+        --border-strong: #c9cdd4;
+        --fill-1: #f7f8fa;
+        --fill-2: #f2f3f5;
+        --surface: #ffffff;
+        --sidebar-width: 220px;
+        --shadow: 0 2px 8px rgba(29, 33, 41, 0.06);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        background: var(--fill-1);
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        color: var(--text-1);
+        background: var(--fill-1);
+        font-family:
+          Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        font-size: 14px;
+        letter-spacing: 0;
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        color: inherit;
+        font: inherit;
+        letter-spacing: 0;
+      }
+
+      button,
+      select {
+        cursor: pointer;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      .app-shell {
+        display: grid;
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        height: 100vh;
+        flex-direction: column;
+        overflow: hidden;
+        border-right: 1px solid var(--border);
+        background: var(--surface);
+      }
+
+      .brand {
+        display: flex;
+        height: 64px;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 10px;
+        padding: 0 18px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .brand img {
+        width: 34px;
+        height: 34px;
+        object-fit: contain;
+      }
+
+      .brand-title {
+        font-size: 16px;
+        font-weight: 700;
+      }
+
+      .brand-subtitle {
+        margin-top: 2px;
+        color: var(--text-3);
+        font-size: 9px;
+        line-height: 1;
+      }
+
+      .nav-group {
+        flex: 1;
+        overflow-y: auto;
+        padding: 14px 10px;
+      }
+
+      .nav-title {
+        padding: 7px 12px;
+        color: var(--text-3);
+        font-size: 11px;
+      }
+
+      .nav-item {
+        display: grid;
+        min-height: 40px;
+        grid-template-columns: 20px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        margin: 2px 0;
+        padding: 0 12px;
+        border-radius: 5px;
+        color: var(--text-2);
+        transition: background-color 0.15s ease;
+      }
+
+      .nav-item iconify-icon {
+        font-size: 18px;
+      }
+
+      .nav-item:hover {
+        background: var(--fill-2);
+        color: var(--text-1);
+      }
+
+      .nav-item.active {
+        color: var(--primary);
+        background: var(--primary-soft);
+        font-weight: 600;
+      }
+
+      .nav-badge {
+        min-width: 22px;
+        padding: 2px 6px;
+        border-radius: 10px;
+        color: var(--text-3);
+        background: var(--fill-2);
+        font-size: 10px;
+        line-height: 16px;
+        text-align: center;
+      }
+
+      .active .nav-badge {
+        color: var(--primary);
+        background: #fff;
+      }
+
+      .sidebar-footer {
+        padding: 12px;
+        border-top: 1px solid var(--border);
+      }
+
+      .queue-note {
+        padding: 10px 12px;
+        border-left: 3px solid var(--orange);
+        color: var(--text-2);
+        background: var(--orange-soft);
+        font-size: 11px;
+        line-height: 1.55;
+      }
+
+      .queue-note strong {
+        display: block;
+        color: var(--text-1);
+        font-size: 12px;
+      }
+
+      .main {
+        min-width: 0;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 15;
+        display: flex;
+        height: 64px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 0 24px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.96);
+      }
+
+      .breadcrumb {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 8px;
+        color: var(--text-3);
+        font-size: 12px;
+      }
+
+      .breadcrumb b {
+        overflow: hidden;
+        color: var(--text-1);
+        font-weight: 500;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .icon-button,
+      .avatar-button {
+        display: inline-grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: var(--surface);
+      }
+
+      .icon-button iconify-icon {
+        font-size: 18px;
+      }
+
+      .avatar-button {
+        border: 0;
+        color: #fff;
+        background: var(--primary);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .content {
+        width: 100%;
+        max-width: 1800px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .page-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 18px;
+      }
+
+      .page-title h1 {
+        margin: 0;
+        font-size: 22px;
+        line-height: 1.35;
+      }
+
+      .page-title p {
+        margin: 6px 0 0;
+        color: var(--text-3);
+        font-size: 12px;
+      }
+
+      .page-actions,
+      .selection-actions,
+      .review-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .button {
+        display: inline-flex;
+        min-height: 34px;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        padding: 0 14px;
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+        color: var(--text-1);
+        background: var(--surface);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .button:hover {
+        border-color: var(--primary);
+        color: var(--primary);
+      }
+
+      .button.primary {
+        border-color: var(--primary);
+        color: #fff;
+        background: var(--primary);
+      }
+
+      .button.primary:hover {
+        border-color: var(--primary-hover);
+        color: #fff;
+        background: var(--primary-hover);
+      }
+
+      .button.danger {
+        border-color: #ffb3b3;
+        color: var(--red);
+      }
+
+      .button:disabled {
+        cursor: not-allowed;
+        border-color: var(--border);
+        color: var(--text-3);
+        background: var(--fill-2);
+      }
+
+      .button iconify-icon {
+        font-size: 16px;
+      }
+
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+
+      .summary-strip {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-bottom: 16px;
+      }
+
+      .summary-item {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 12px;
+        padding: 16px 18px;
+      }
+
+      .summary-item + .summary-item {
+        border-left: 1px solid var(--border);
+      }
+
+      .summary-icon {
+        display: grid;
+        width: 36px;
+        height: 36px;
+        flex: 0 0 auto;
+        place-items: center;
+        border-radius: 5px;
+        color: var(--primary);
+        background: var(--primary-soft);
+      }
+
+      .summary-icon.orange {
+        color: var(--orange);
+        background: var(--orange-soft);
+      }
+
+      .summary-icon.green {
+        color: var(--green);
+        background: var(--green-soft);
+      }
+
+      .summary-icon.red {
+        color: var(--red);
+        background: var(--red-soft);
+      }
+
+      .summary-icon iconify-icon {
+        font-size: 19px;
+      }
+
+      .summary-copy {
+        min-width: 0;
+      }
+
+      .summary-copy span {
+        display: block;
+        overflow: hidden;
+        margin-bottom: 3px;
+        color: var(--text-3);
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .summary-copy strong {
+        font-size: 21px;
+        line-height: 1.1;
+      }
+
+      .summary-copy small {
+        margin-left: 5px;
+        color: var(--text-3);
+        font-size: 10px;
+        font-weight: 400;
+      }
+
+      .flow-tabs {
+        display: flex;
+        min-height: 52px;
+        align-items: flex-end;
+        gap: 2px;
+        overflow-x: auto;
+        padding: 0 16px;
+        margin-bottom: 16px;
+        scrollbar-width: none;
+      }
+
+      .flow-tabs::-webkit-scrollbar {
+        display: none;
+      }
+
+      .flow-tab {
+        position: relative;
+        display: inline-flex;
+        min-height: 51px;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 7px;
+        padding: 0 15px;
+        border: 0;
+        color: var(--text-2);
+        background: transparent;
+        font-size: 12px;
+      }
+
+      .flow-tab:hover,
+      .flow-tab.active {
+        color: var(--primary);
+      }
+
+      .flow-tab.active::after {
+        position: absolute;
+        right: 12px;
+        bottom: 0;
+        left: 12px;
+        height: 2px;
+        background: var(--primary);
+        content: "";
+      }
+
+      .flow-tab b {
+        min-width: 20px;
+        padding: 1px 6px;
+        border-radius: 9px;
+        color: var(--text-3);
+        background: var(--fill-2);
+        font-size: 10px;
+        font-weight: 500;
+        text-align: center;
+      }
+
+      .flow-tab.active b {
+        color: var(--primary);
+        background: var(--primary-soft);
+      }
+
+      .admission-layout {
+        display: grid;
+        grid-template-columns: 196px minmax(520px, 1fr) 344px;
+        align-items: start;
+        gap: 14px;
+      }
+
+      .batch-panel,
+      .candidate-panel,
+      .review-panel {
+        min-width: 0;
+      }
+
+      .section-head {
+        display: flex;
+        min-height: 48px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 0 14px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .section-head h2 {
+        margin: 0;
+        font-size: 13px;
+      }
+
+      .section-head span {
+        color: var(--text-3);
+        font-size: 10px;
+      }
+
+      .batch-list {
+        padding: 7px;
+      }
+
+      .batch-item {
+        width: 100%;
+        padding: 10px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        text-align: left;
+      }
+
+      .batch-item:hover {
+        background: var(--fill-1);
+      }
+
+      .batch-item.active {
+        background: var(--primary-soft);
+      }
+
+      .batch-name {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 1.45;
+      }
+
+      .batch-name b {
+        min-width: 18px;
+        padding: 1px 5px;
+        border-radius: 9px;
+        color: var(--orange);
+        background: var(--orange-soft);
+        font-size: 9px;
+        text-align: center;
+      }
+
+      .batch-item.active .batch-name {
+        color: var(--primary);
+      }
+
+      .batch-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 7px;
+        color: var(--text-3);
+        font-size: 9px;
+      }
+
+      .batch-progress {
+        height: 3px;
+        margin-top: 7px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: var(--fill-2);
+      }
+
+      .batch-progress i {
+        display: block;
+        height: 100%;
+        background: var(--green);
+      }
+
+      .batch-footer {
+        padding: 11px 14px;
+        border-top: 1px solid var(--border);
+        color: var(--text-3);
+        font-size: 10px;
+        line-height: 1.6;
+      }
+
+      .batch-footer b {
+        color: var(--text-2);
+      }
+
+      .filter-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .filter-group {
+        display: flex;
+        min-width: 0;
+        flex: 1;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .search-control {
+        position: relative;
+        display: flex;
+        min-width: 170px;
+        max-width: 260px;
+        flex: 1;
+        align-items: center;
+      }
+
+      .search-control iconify-icon {
+        position: absolute;
+        left: 10px;
+        z-index: 1;
+        color: var(--text-3);
+      }
+
+      .search-control .input {
+        width: 100%;
+        padding-left: 32px;
+      }
+
+      .input,
+      .select,
+      .textarea {
+        min-height: 32px;
+        border: 1px solid var(--border-strong);
+        border-radius: 4px;
+        outline: 0;
+        background: var(--surface);
+        font-size: 11px;
+      }
+
+      .input {
+        padding: 0 10px;
+      }
+
+      .select {
+        min-width: 100px;
+        padding: 0 28px 0 9px;
+      }
+
+      .textarea {
+        width: 100%;
+        min-height: 72px;
+        resize: vertical;
+        padding: 9px 10px;
+        line-height: 1.6;
+      }
+
+      .input:focus,
+      .select:focus,
+      .textarea:focus {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 2px rgba(22, 93, 255, 0.1);
+      }
+
+      .filter-count {
+        flex: 0 0 auto;
+        color: var(--text-3);
+        font-size: 10px;
+      }
+
+      .selection-bar {
+        display: none;
+        min-height: 44px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 6px 12px;
+        border-bottom: 1px solid #94bfff;
+        color: var(--primary);
+        background: var(--primary-soft);
+        font-size: 11px;
+      }
+
+      .selection-bar.show {
+        display: flex;
+      }
+
+      .selection-bar .button {
+        min-height: 29px;
+        padding: 0 10px;
+        font-size: 10px;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+      }
+
+      .candidate-table {
+        width: 100%;
+        min-width: 720px;
+        border-collapse: collapse;
+        table-layout: fixed;
+      }
+
+      .candidate-table th {
+        height: 38px;
+        padding: 0 9px;
+        color: var(--text-3);
+        background: var(--fill-1);
+        font-size: 10px;
+        font-weight: 500;
+        text-align: left;
+      }
+
+      .candidate-table td {
+        height: 62px;
+        padding: 7px 9px;
+        border-top: 1px solid var(--border);
+        color: var(--text-2);
+        font-size: 10px;
+        vertical-align: middle;
+      }
+
+      .candidate-table tbody tr {
+        cursor: pointer;
+      }
+
+      .candidate-table tbody tr:hover,
+      .candidate-table tbody tr.active {
+        background: #f7faff;
+      }
+
+      .candidate-table tbody tr.active td:first-child {
+        box-shadow: inset 2px 0 0 var(--primary);
+      }
+
+      .check-cell {
+        width: 36px;
+        text-align: center !important;
+      }
+
+      input[type="checkbox"] {
+        width: 14px;
+        height: 14px;
+        margin: 0;
+        accent-color: var(--primary);
+      }
+
+      .person {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .person-avatar,
+      .detail-avatar {
+        display: grid;
+        width: 30px;
+        height: 30px;
+        flex: 0 0 auto;
+        place-items: center;
+        border-radius: 50%;
+        color: var(--primary);
+        background: var(--primary-soft);
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      .person-name {
+        overflow: hidden;
+        color: var(--text-1);
+        font-size: 11px;
+        font-weight: 600;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .person-sub {
+        overflow: hidden;
+        margin-top: 3px;
+        color: var(--text-3);
+        font-size: 9px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .tag,
+      .status-pill,
+      .risk {
+        display: inline-flex;
+        min-height: 20px;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        padding: 1px 7px;
+        border-radius: 3px;
+        font-size: 9px;
+        line-height: 1.4;
+        white-space: nowrap;
+      }
+
+      .tag.blue,
+      .status-pill.ai_review {
+        color: var(--primary);
+        background: var(--primary-soft);
+      }
+
+      .tag.gray,
+      .status-pill.draft {
+        color: var(--text-2);
+        background: var(--fill-2);
+      }
+
+      .tag.orange,
+      .status-pill.vendor_review {
+        color: var(--orange);
+        background: var(--orange-soft);
+      }
+
+      .tag.green,
+      .status-pill.approved {
+        color: var(--green);
+        background: var(--green-soft);
+      }
+
+      .tag.red,
+      .status-pill.rejected {
+        color: var(--red);
+        background: var(--red-soft);
+      }
+
+      .tag.purple,
+      .status-pill.supplement {
+        color: var(--purple);
+        background: var(--purple-soft);
+      }
+
+      .score {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 3px;
+        color: var(--text-1);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .score.good {
+        color: var(--green);
+      }
+
+      .score.warn {
+        color: var(--orange);
+      }
+
+      .score.bad {
+        color: var(--red);
+      }
+
+      .score small {
+        color: var(--text-3);
+        font-size: 8px;
+        font-weight: 400;
+      }
+
+      .evidence {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+
+      .evidence iconify-icon {
+        color: var(--primary);
+        font-size: 15px;
+      }
+
+      .risk i {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--green);
+      }
+
+      .risk.medium {
+        color: var(--orange);
+      }
+
+      .risk.medium i {
+        background: var(--orange);
+      }
+
+      .risk.high {
+        color: var(--red);
+      }
+
+      .risk.high i {
+        background: var(--red);
+      }
+
+      .sla {
+        color: var(--text-3);
+      }
+
+      .sla.urgent {
+        color: var(--red);
+      }
+
+      .mobile-list {
+        display: none;
+      }
+
+      .mobile-candidate {
+        padding: 13px;
+        border-top: 1px solid var(--border);
+      }
+
+      .mobile-candidate.active {
+        background: #f7faff;
+        box-shadow: inset 2px 0 0 var(--primary);
+      }
+
+      .mobile-head,
+      .mobile-meta,
+      .mobile-stats {
+        display: flex;
+        align-items: center;
+      }
+
+      .mobile-head {
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .mobile-meta {
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 10px;
+      }
+
+      .mobile-stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 11px;
+        padding-top: 10px;
+        border-top: 1px solid var(--border);
+      }
+
+      .mobile-stats div + div {
+        border-left: 1px solid var(--border);
+      }
+
+      .mobile-stats span,
+      .mobile-stats b {
+        display: block;
+        text-align: center;
+      }
+
+      .mobile-stats span {
+        color: var(--text-3);
+        font-size: 9px;
+      }
+
+      .mobile-stats b {
+        margin-top: 4px;
+        font-size: 11px;
+      }
+
+      .empty-state {
+        display: none;
+        min-height: 260px;
+        place-items: center;
+        color: var(--text-3);
+        font-size: 11px;
+      }
+
+      .empty-state iconify-icon {
+        display: block;
+        margin: 0 auto 10px;
+        font-size: 30px;
+      }
+
+      .review-panel {
+        position: sticky;
+        top: 78px;
+        max-height: calc(100vh - 102px);
+        overflow-y: auto;
+      }
+
+      .review-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 15px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .detail-profile {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .detail-avatar {
+        width: 40px;
+        height: 40px;
+        font-size: 14px;
+      }
+
+      .detail-name {
+        margin: 0;
+        font-size: 14px;
+      }
+
+      .detail-sub {
+        margin-top: 4px;
+        color: var(--text-3);
+        font-size: 9px;
+      }
+
+      .detail-status {
+        margin-top: 6px;
+      }
+
+      .more-button {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        flex: 0 0 auto;
+        place-items: center;
+        padding: 0;
+        border: 0;
+        border-radius: 4px;
+        color: var(--text-2);
+        background: transparent;
+      }
+
+      .more-button:hover {
+        background: var(--fill-2);
+      }
+
+      .video-review {
+        position: relative;
+        display: grid;
+        min-height: 174px;
+        place-items: center;
+        overflow: hidden;
+        color: #fff;
+        background: #20232b;
+      }
+
+      .video-grid {
+        position: absolute;
+        inset: 0;
+        opacity: 0.3;
+        background-image:
+          linear-gradient(#4e5969 1px, transparent 1px),
+          linear-gradient(90deg, #4e5969 1px, transparent 1px);
+        background-size: 30px 30px;
+      }
+
+      .video-person {
+        position: absolute;
+        right: 26px;
+        bottom: 0;
+        display: grid;
+        width: 90px;
+        height: 140px;
+        place-items: center;
+        border-radius: 46px 46px 0 0;
+        color: #94bfff;
+        background: #343a46;
+        font-size: 34px;
+        font-weight: 700;
+      }
+
+      .video-caption {
+        position: absolute;
+        right: 10px;
+        bottom: 9px;
+        left: 10px;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 9px;
+      }
+
+      .video-caption span {
+        max-width: 230px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .play-button {
+        position: relative;
+        z-index: 3;
+        display: grid;
+        width: 46px;
+        height: 46px;
+        place-items: center;
+        border: 0;
+        border-radius: 50%;
+        color: var(--text-1);
+        background: rgba(255, 255, 255, 0.92);
+      }
+
+      .play-button iconify-icon {
+        font-size: 22px;
+      }
+
+      .video-review.playing .play-button {
+        color: var(--primary);
+      }
+
+      .review-section {
+        padding: 13px 15px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .review-section-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 11px;
+        font-size: 11px;
+        font-weight: 600;
+      }
+
+      .review-section-title small {
+        color: var(--text-3);
+        font-size: 9px;
+        font-weight: 400;
+      }
+
+      .score-overview {
+        display: grid;
+        grid-template-columns: 66px minmax(0, 1fr);
+        align-items: center;
+        gap: 14px;
+      }
+
+      .score-ring {
+        display: grid;
+        width: 62px;
+        height: 62px;
+        place-items: center;
+        border: 5px solid var(--primary-soft);
+        border-top-color: var(--primary);
+        border-right-color: var(--primary);
+        border-radius: 50%;
+        color: var(--primary);
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .score-ring small {
+        font-size: 8px;
+        font-weight: 400;
+      }
+
+      .score-list {
+        display: grid;
+        gap: 7px;
+      }
+
+      .score-row {
+        display: grid;
+        grid-template-columns: 52px minmax(0, 1fr) 24px;
+        align-items: center;
+        gap: 6px;
+        color: var(--text-3);
+        font-size: 9px;
+      }
+
+      .bar {
+        height: 4px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: var(--fill-2);
+      }
+
+      .bar i {
+        display: block;
+        height: 100%;
+        background: var(--primary);
+      }
+
+      .score-row b {
+        color: var(--text-2);
+        font-size: 9px;
+        text-align: right;
+      }
+
+      .check-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .check-item {
+        display: grid;
+        grid-template-columns: 17px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 7px;
+        color: var(--text-2);
+        font-size: 9px;
+      }
+
+      .check-item iconify-icon {
+        color: var(--green);
+        font-size: 15px;
+      }
+
+      .check-item.warn iconify-icon {
+        color: var(--orange);
+      }
+
+      .check-item b {
+        color: var(--text-3);
+        font-size: 8px;
+        font-weight: 400;
+      }
+
+      .timeline {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 3px;
+      }
+
+      .timeline-step {
+        position: relative;
+        min-width: 0;
+        padding-top: 13px;
+        color: var(--text-3);
+        font-size: 8px;
+        text-align: center;
+      }
+
+      .timeline-step::before {
+        position: absolute;
+        top: 3px;
+        left: 50%;
+        width: 7px;
+        height: 7px;
+        border: 2px solid var(--border-strong);
+        border-radius: 50%;
+        background: var(--surface);
+        content: "";
+        transform: translateX(-50%);
+      }
+
+      .timeline-step::after {
+        position: absolute;
+        top: 7px;
+        right: 50%;
+        left: -50%;
+        height: 1px;
+        background: var(--border);
+        content: "";
+      }
+
+      .timeline-step:first-child::after {
+        display: none;
+      }
+
+      .timeline-step.done,
+      .timeline-step.current {
+        color: var(--primary);
+      }
+
+      .timeline-step.done::before,
+      .timeline-step.current::before {
+        border-color: var(--primary);
+        background: var(--primary);
+      }
+
+      .timeline-step.done::after,
+      .timeline-step.current::after {
+        background: var(--primary);
+      }
+
+      .review-actions {
+        position: sticky;
+        bottom: 0;
+        z-index: 2;
+        justify-content: flex-end;
+        padding: 12px 15px;
+        border-top: 1px solid var(--border);
+        background: var(--surface);
+      }
+
+      .review-actions .button {
+        flex: 1;
+        padding: 0 8px;
+        font-size: 10px;
+      }
+
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 80;
+        display: none;
+        place-items: center;
+        padding: 20px;
+        background: rgba(29, 33, 41, 0.48);
+      }
+
+      .modal-backdrop.open {
+        display: grid;
+      }
+
+      .modal {
+        width: min(560px, 100%);
+        max-height: calc(100vh - 40px);
+        overflow-y: auto;
+        border-radius: 7px;
+        background: var(--surface);
+        box-shadow: 0 16px 48px rgba(29, 33, 41, 0.18);
+      }
+
+      .modal.small {
+        width: min(440px, 100%);
+      }
+
+      .modal-head,
+      .modal-foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 18px;
+      }
+
+      .modal-head {
+        border-bottom: 1px solid var(--border);
+      }
+
+      .modal-head h2 {
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .modal-body {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        padding: 18px;
+      }
+
+      .modal-field {
+        display: grid;
+        gap: 6px;
+      }
+
+      .modal-field.full {
+        grid-column: 1 / -1;
+      }
+
+      .modal-field label {
+        color: var(--text-2);
+        font-size: 11px;
+      }
+
+      .modal-field .input,
+      .modal-field .select {
+        width: 100%;
+        min-height: 36px;
+      }
+
+      .check-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .check-option {
+        display: flex;
+        min-height: 38px;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font-size: 10px;
+      }
+
+      .modal-foot {
+        justify-content: flex-end;
+        border-top: 1px solid var(--border);
+      }
+
+      .toast {
+        position: fixed;
+        top: 76px;
+        left: 50%;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 14px;
+        border: 1px solid #b7eb8f;
+        border-radius: 5px;
+        color: #135200;
+        background: #f6ffed;
+        box-shadow: var(--shadow);
+        font-size: 11px;
+        opacity: 0;
+        pointer-events: none;
+        transform: translate(-50%, -8px);
+        transition: 0.18s ease;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translate(-50%, 0);
+      }
+
+      .toast iconify-icon {
+        font-size: 16px;
+      }
+
+      .nav-item:focus-visible,
+      .button:focus-visible,
+      .icon-button:focus-visible,
+      .flow-tab:focus-visible,
+      .batch-item:focus-visible,
+      .more-button:focus-visible,
+      .play-button:focus-visible {
+        outline: 2px solid rgba(22, 93, 255, 0.35);
+        outline-offset: 2px;
+      }
+
+      @media (max-width: 1320px) {
+        .admission-layout {
+          grid-template-columns: 180px minmax(500px, 1fr);
+        }
+
+        .review-panel {
+          position: static;
+          grid-column: 1 / -1;
+          display: grid;
+          max-height: none;
+          grid-template-columns: 320px minmax(0, 1fr);
+        }
+
+        .review-head,
+        .video-review {
+          grid-column: 1;
+        }
+
+        .video-review {
+          min-height: 220px;
+        }
+
+        .review-sections {
+          grid-column: 2;
+          grid-row: 1 / span 2;
+          border-left: 1px solid var(--border);
+        }
+
+        .review-actions {
+          grid-column: 1 / -1;
+        }
+      }
+
+      @media (max-width: 1080px) {
+        .summary-strip {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .summary-item:nth-child(3) {
+          border-top: 1px solid var(--border);
+          border-left: 0;
+        }
+
+        .summary-item:nth-child(4) {
+          border-top: 1px solid var(--border);
+        }
+
+        .filter-strip {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .filter-group,
+        .search-control {
+          width: 100%;
+          max-width: none;
+        }
+      }
+
+      @media (max-width: 900px) {
+        .app-shell {
+          display: block;
+        }
+
+        .sidebar {
+          position: static;
+          height: auto;
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .brand {
+          height: 60px;
+          border-bottom: 0;
+        }
+
+        .nav-group {
+          display: flex;
+          gap: 6px;
+          overflow-x: auto;
+          padding: 0 12px 10px;
+          scrollbar-width: none;
+        }
+
+        .nav-group::-webkit-scrollbar {
+          display: none;
+        }
+
+        .nav-title,
+        .sidebar-footer {
+          display: none;
+        }
+
+        .nav-item {
+          min-width: max-content;
+          flex: 0 0 auto;
+          grid-template-columns: 20px auto auto;
+          margin: 0;
+        }
+
+        .admission-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .batch-panel {
+          overflow-x: auto;
+        }
+
+        .batch-list {
+          display: flex;
+          min-width: max-content;
+        }
+
+        .batch-item {
+          width: 180px;
+        }
+
+        .batch-footer {
+          display: none;
+        }
+
+        .review-panel {
+          grid-column: auto;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .topbar {
+          height: 60px;
+          padding: 0 16px;
+        }
+
+        .breadcrumb span,
+        .page-actions .button:not(.primary) {
+          display: none;
+        }
+
+        .content {
+          padding: 16px;
+        }
+
+        .page-head {
+          align-items: stretch;
+          flex-direction: column;
+          gap: 12px;
+        }
+
+        .page-actions,
+        .page-actions .button.primary {
+          width: 100%;
+        }
+
+        .flow-tabs {
+          padding: 0 8px;
+        }
+
+        .filter-group {
+          flex-wrap: wrap;
+        }
+
+        .filter-group .select {
+          flex: 1 1 120px;
+          min-width: 0;
+        }
+
+        .table-wrap {
+          display: none;
+        }
+
+        .mobile-list {
+          display: block;
+        }
+
+        .review-panel {
+          display: block;
+        }
+
+        .review-sections {
+          border-left: 0;
+        }
+
+        .modal-body {
+          grid-template-columns: 1fr;
+        }
+
+        .modal-field.full {
+          grid-column: auto;
+        }
+      }
+
+      @media (max-width: 420px) {
+        .brand-subtitle,
+        .nav-badge {
+          display: none;
+        }
+
+        .content {
+          padding: 12px;
+        }
+
+        .summary-item {
+          align-items: flex-start;
+          gap: 8px;
+          padding: 12px;
+        }
+
+        .summary-icon {
+          display: none;
+        }
+
+        .summary-copy strong {
+          font-size: 18px;
+        }
+
+        .selection-bar {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .selection-actions .button {
+          flex: 1;
+        }
+
+        .review-actions {
+          flex-wrap: wrap;
+        }
+
+        .review-actions .button.primary {
+          flex-basis: 100%;
+          order: -1;
+        }
+
+        .check-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+    <link rel="stylesheet" href="./sidebar.css" />
+    <link rel="stylesheet" href="./typography.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="../brand/ops-mascot-logo.png" alt="经营舱品牌标识" />
+          <div>
+            <div class="brand-title">经营舱</div>
+            <div class="brand-subtitle">MCN Operations Suite</div>
+          </div>
+        </div>
+        <nav class="nav-group" aria-label="主导航">
+          <div class="nav-title">工作台</div>
+          <a class="nav-item" href="./index.html">
+            <iconify-icon
+              icon="lucide:layout-dashboard"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>经营总览</span><span class="nav-badge">12</span>
+          </a>
+          <a class="nav-item" href="./projects.html">
+            <iconify-icon
+              icon="lucide:folder-kanban"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>项目管理</span><span class="nav-badge">19</span>
+          </a>
+          <a class="nav-item" href="./streamers.html">
+            <iconify-icon icon="lucide:users" aria-hidden="true"></iconify-icon>
+            <span>主播资源池</span><span class="nav-badge">86</span>
+          </a>
+          <a
+            class="nav-item active"
+            href="./admissions.html"
+            aria-current="page"
+          >
+            <iconify-icon
+              icon="lucide:circle-play"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>选播准入</span><span class="nav-badge">27</span>
+          </a>
+          <a class="nav-item" href="./schedules.html">
+            <iconify-icon
+              icon="lucide:calendar-days"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>排班直播</span><span class="nav-badge">8</span>
+          </a>
+          <a class="nav-item" href="./reports.html">
+            <iconify-icon
+              icon="lucide:clipboard-check"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>报数审核</span><span class="nav-badge">35</span>
+          </a>
+          <a class="nav-item" href="./settlements.html">
+            <iconify-icon
+              icon="lucide:wallet-cards"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>结算中心</span><span class="nav-badge">5</span>
+          </a>
+          <a class="nav-item" href="./audit.html">
+            <iconify-icon
+              icon="lucide:file-search"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>审计与导出</span><span class="nav-badge">4</span>
+          </a>
+          <a class="nav-item" href="./ai-workbench.html">
+            <iconify-icon
+              icon="lucide:sparkles"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>星耀 AI 作战台</span><span class="nav-badge">AI</span>
+          </a>
+          <a class="nav-item" href="./knowledge-base.html">
+            <iconify-icon
+              icon="lucide:library-big"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>知识库</span><span class="nav-badge">48</span>
+          </a>
+          <a class="nav-item" href="./settings.html">
+            <iconify-icon
+              icon="lucide:settings-2"
+              aria-hidden="true"
+            ></iconify-icon>
+            <span>组织设置</span>
+          </a>
+        </nav>
+        <div class="sidebar-footer">
+          <div class="queue-note">
+            <strong>今日审核剩余 18 人</strong>
+            3 人将在 2 小时内超时，建议优先处理。
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="breadcrumb">
+            <span>经营舱</span><span>/</span><b>选播准入</b>
+          </div>
+          <div class="top-actions">
+            <button
+              class="icon-button"
+              type="button"
+              aria-label="通知"
+              title="通知"
+            >
+              <iconify-icon
+                icon="lucide:bell"
+                aria-hidden="true"
+              ></iconify-icon>
+            </button>
+            <button
+              class="icon-button"
+              type="button"
+              aria-label="帮助"
+              title="帮助"
+            >
+              <iconify-icon
+                icon="lucide:circle-help"
+                aria-hidden="true"
+              ></iconify-icon>
+            </button>
+            <button class="avatar-button" type="button" aria-label="账号菜单">
+              河
+            </button>
+          </div>
+        </header>
+
+        <div class="content">
+          <section class="page-head">
+            <div class="page-title">
+              <h1>选播准入</h1>
+              <p>最近数据更新于 14:32。</p>
+            </div>
+            <div class="page-actions">
+              <button class="button" id="export-button" type="button">
+                <iconify-icon
+                  icon="lucide:download"
+                  aria-hidden="true"
+                ></iconify-icon
+                >导出审核表
+              </button>
+              <button class="button" id="rule-button" type="button">
+                <iconify-icon
+                  icon="lucide:sliders-horizontal"
+                  aria-hidden="true"
+                ></iconify-icon
+                >准入规则
+              </button>
+              <button class="button primary" id="launch-button" type="button">
+                <iconify-icon
+                  icon="lucide:plus"
+                  aria-hidden="true"
+                ></iconify-icon
+                >发起选播
+              </button>
+            </div>
+          </section>
+
+          <section class="card summary-strip" aria-label="准入概览">
+            <div class="summary-item">
+              <span class="summary-icon"
+                ><iconify-icon
+                  icon="lucide:inbox"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>待审核候选</span><strong id="pending-total">18</strong
+                ><small>人</small>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span class="summary-icon orange"
+                ><iconify-icon
+                  icon="lucide:factory"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>待厂家确认</span><strong id="vendor-total">7</strong
+                ><small>人</small>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span class="summary-icon green"
+                ><iconify-icon
+                  icon="lucide:badge-check"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>本周准入率</span><strong>72.4%</strong
+                ><small>+4.8%</small>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span class="summary-icon red"
+                ><iconify-icon
+                  icon="lucide:timer-off"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>即将超时</span><strong>3</strong><small>2h 内</small>
+              </div>
+            </div>
+          </section>
+
+          <div class="card flow-tabs" role="tablist" aria-label="审核阶段">
+            <button
+              class="flow-tab active"
+              data-stage="all"
+              role="tab"
+              aria-selected="true"
+              type="button"
+            >
+              全部候选 <b id="tab-all">27</b>
+            </button>
+            <button
+              class="flow-tab"
+              data-stage="draft"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              待补录屏 <b id="tab-draft">2</b>
+            </button>
+            <button
+              class="flow-tab"
+              data-stage="ai_review"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              AI 初审 <b id="tab-ai">8</b>
+            </button>
+            <button
+              class="flow-tab"
+              data-stage="vendor_review"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              厂家确认 <b id="tab-vendor">7</b>
+            </button>
+            <button
+              class="flow-tab"
+              data-stage="approved"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              已准入 <b id="tab-approved">8</b>
+            </button>
+            <button
+              class="flow-tab"
+              data-stage="rejected"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              已驳回 <b id="tab-rejected">2</b>
+            </button>
+          </div>
+
+          <div class="admission-layout">
+            <aside class="card batch-panel">
+              <div class="section-head">
+                <h2>选播批次</h2>
+                <span>6 个进行中</span>
+              </div>
+              <div class="batch-list" id="batch-list">
+                <button
+                  class="batch-item active"
+                  data-project="all"
+                  type="button"
+                >
+                  <div class="batch-name">全部进行中 <b>27</b></div>
+                  <div class="batch-meta">
+                    <span>跨项目审核</span><span>今日</span>
+                  </div>
+                  <div class="batch-progress"><i style="width: 64%"></i></div>
+                </button>
+                <button
+                  class="batch-item"
+                  data-project="王者荣耀暑期代播"
+                  type="button"
+                >
+                  <div class="batch-name">王者荣耀暑期代播 <b>7</b></div>
+                  <div class="batch-meta">
+                    <span>14 / 21 已处理</span><span>07-14</span>
+                  </div>
+                  <div class="batch-progress"><i style="width: 67%"></i></div>
+                </button>
+                <button
+                  class="batch-item"
+                  data-project="新品服饰矩阵直播"
+                  type="button"
+                >
+                  <div class="batch-name">新品服饰矩阵直播 <b>6</b></div>
+                  <div class="batch-meta">
+                    <span>18 / 24 已处理</span><span>07-15</span>
+                  </div>
+                  <div class="batch-progress"><i style="width: 75%"></i></div>
+                </button>
+                <button
+                  class="batch-item"
+                  data-project="二次元手游预约"
+                  type="button"
+                >
+                  <div class="batch-name">二次元手游预约 <b>5</b></div>
+                  <div class="batch-meta">
+                    <span>9 / 14 已处理</span><span>07-15</span>
+                  </div>
+                  <div class="batch-progress"><i style="width: 64%"></i></div>
+                </button>
+                <button
+                  class="batch-item"
+                  data-project="夏日数码节联播"
+                  type="button"
+                >
+                  <div class="batch-name">夏日数码节联播 <b>4</b></div>
+                  <div class="batch-meta">
+                    <span>8 / 12 已处理</span><span>07-16</span>
+                  </div>
+                  <div class="batch-progress"><i style="width: 67%"></i></div>
+                </button>
+                <button
+                  class="batch-item"
+                  data-project="食品快消冲榜项目"
+                  type="button"
+                >
+                  <div class="batch-name">食品快消冲榜项目 <b>3</b></div>
+                  <div class="batch-meta">
+                    <span>12 / 15 已处理</span><span>07-17</span>
+                  </div>
+                  <div class="batch-progress"><i style="width: 80%"></i></div>
+                </button>
+                <button
+                  class="batch-item"
+                  data-project="母婴品牌达人招募"
+                  type="button"
+                >
+                  <div class="batch-name">母婴品牌达人招募 <b>2</b></div>
+                  <div class="batch-meta">
+                    <span>6 / 8 已处理</span><span>07-18</span>
+                  </div>
+                  <div class="batch-progress"><i style="width: 75%"></i></div>
+                </button>
+              </div>
+              <div class="batch-footer">
+                <b>批次整体进度 71%</b><br />67 人已结束审核，27 人仍在流程中。
+              </div>
+            </aside>
+
+            <section class="card candidate-panel">
+              <div class="filter-strip">
+                <div class="filter-group">
+                  <label class="search-control">
+                    <iconify-icon
+                      icon="lucide:search"
+                      aria-hidden="true"
+                    ></iconify-icon>
+                    <input
+                      class="input"
+                      id="candidate-search"
+                      type="search"
+                      aria-label="搜索候选主播"
+                      placeholder="主播名 / 批次 / 平台"
+                    />
+                  </label>
+                  <select
+                    class="select"
+                    id="score-filter"
+                    aria-label="AI 分数筛选"
+                  >
+                    <option value="all">全部评分</option>
+                    <option value="high">85 分以上</option>
+                    <option value="medium">70 - 84 分</option>
+                    <option value="low">70 分以下</option>
+                  </select>
+                  <select class="select" id="risk-filter" aria-label="风险筛选">
+                    <option value="all">全部风险</option>
+                    <option value="low">低风险</option>
+                    <option value="medium">中风险</option>
+                    <option value="high">高风险</option>
+                  </select>
+                </div>
+                <span class="filter-count"
+                  ><b id="result-count">12</b> 位候选</span
+                >
+              </div>
+
+              <div class="selection-bar" id="selection-bar">
+                <span>已选择 <b id="selection-count">0</b> 位候选</span>
+                <div class="selection-actions">
+                  <button class="button" id="clear-selection" type="button">
+                    取消选择
+                  </button>
+                  <button class="button" id="bulk-supplement" type="button">
+                    批量补件
+                  </button>
+                  <button
+                    class="button primary"
+                    id="bulk-approve"
+                    type="button"
+                  >
+                    批量准入
+                  </button>
+                </div>
+              </div>
+
+              <div class="table-wrap" id="table-wrap">
+                <table class="candidate-table">
+                  <thead>
+                    <tr>
+                      <th class="check-cell">
+                        <input
+                          id="select-all"
+                          type="checkbox"
+                          aria-label="选择当前全部候选"
+                        />
+                      </th>
+                      <th style="width: 138px">候选主播</th>
+                      <th style="width: 150px">项目批次</th>
+                      <th style="width: 78px">录屏证据</th>
+                      <th style="width: 62px">AI 评分</th>
+                      <th style="width: 84px">审核阶段</th>
+                      <th style="width: 66px">风险</th>
+                      <th style="width: 64px">SLA</th>
+                    </tr>
+                  </thead>
+                  <tbody id="candidate-rows"></tbody>
+                </table>
+              </div>
+              <div class="mobile-list" id="mobile-list"></div>
+              <div class="empty-state" id="empty-state">
+                <div>
+                  <iconify-icon
+                    icon="lucide:list-filter"
+                    aria-hidden="true"
+                  ></iconify-icon
+                  >当前条件下没有候选主播
+                </div>
+              </div>
+            </section>
+
+            <aside class="card review-panel" id="review-panel">
+              <div class="review-head">
+                <div class="detail-profile">
+                  <div class="detail-avatar" id="detail-avatar">鹿</div>
+                  <div style="min-width: 0">
+                    <h2 class="detail-name" id="detail-name">小鹿</h2>
+                    <div class="detail-sub">
+                      <span id="detail-id">ADM-027</span> ·
+                      <span id="detail-project">王者荣耀暑期代播</span>
+                    </div>
+                    <div class="detail-status" id="detail-status"></div>
+                  </div>
+                </div>
+                <button
+                  class="more-button"
+                  id="more-button"
+                  type="button"
+                  aria-label="更多操作"
+                  title="更多操作"
+                >
+                  <iconify-icon
+                    icon="lucide:ellipsis"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                </button>
+              </div>
+
+              <div class="video-review" id="video-review">
+                <div class="video-grid"></div>
+                <div class="video-person" id="video-person">鹿</div>
+                <button
+                  class="play-button"
+                  id="play-button"
+                  type="button"
+                  aria-label="播放录屏"
+                >
+                  <iconify-icon
+                    icon="lucide:play"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                </button>
+                <div class="video-caption">
+                  <span id="video-caption">试播录屏 02 · 03:42</span
+                  ><time id="video-time">00:00 / 03:42</time>
+                </div>
+              </div>
+
+              <div class="review-sections">
+                <section class="review-section">
+                  <div class="review-section-title">
+                    <span>AI 初审分析</span
+                    ><small id="ai-version">v2.6 · 2 分钟前</small>
+                  </div>
+                  <div class="score-overview">
+                    <div class="score-ring">
+                      <span id="detail-score">88<small>分</small></span>
+                    </div>
+                    <div class="score-list" id="score-list"></div>
+                  </div>
+                </section>
+
+                <section class="review-section">
+                  <div class="review-section-title">
+                    <span>准入证据</span
+                    ><small id="evidence-count">4 / 5 通过</small>
+                  </div>
+                  <div class="check-list" id="check-list"></div>
+                </section>
+
+                <section class="review-section">
+                  <div class="review-section-title">
+                    <span>审核进度</span
+                    ><small id="review-owner">负责人：林然</small>
+                  </div>
+                  <div class="timeline" id="timeline"></div>
+                </section>
+
+                <section class="review-section">
+                  <div class="review-section-title">
+                    <span>厂家意见</span><small id="note-state">自动保存</small>
+                  </div>
+                  <textarea
+                    class="textarea"
+                    id="vendor-note"
+                    aria-label="厂家意见"
+                    placeholder="记录厂家偏好、试播调整项或驳回原因"
+                  ></textarea>
+                </section>
+              </div>
+
+              <div class="review-actions">
+                <button class="button danger" id="reject-button" type="button">
+                  驳回
+                </button>
+                <button class="button" id="supplement-button" type="button">
+                  要求补件
+                </button>
+                <button
+                  class="button primary"
+                  id="approve-button"
+                  type="button"
+                >
+                  确认准入
+                </button>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="launch-modal" role="presentation">
+      <form
+        class="modal"
+        id="launch-form"
+        aria-labelledby="launch-title"
+        novalidate
+      >
+        <div class="modal-head">
+          <h2 id="launch-title">发起选播</h2>
+          <button
+            class="icon-button"
+            data-close="launch-modal"
+            type="button"
+            aria-label="关闭"
+          >
+            <iconify-icon icon="lucide:x" aria-hidden="true"></iconify-icon>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-field full">
+            <label for="launch-project">目标项目</label>
+            <select class="select" id="launch-project" required>
+              <option value="">请选择项目</option>
+              <option>王者荣耀暑期代播</option>
+              <option>新品服饰矩阵直播</option>
+              <option>二次元手游预约</option>
+              <option>夏日数码节联播</option>
+            </select>
+          </div>
+          <div class="modal-field">
+            <label for="launch-count">计划准入人数</label>
+            <input
+              class="input"
+              id="launch-count"
+              type="number"
+              min="1"
+              value="8"
+            />
+          </div>
+          <div class="modal-field">
+            <label for="launch-deadline">审核截止时间</label>
+            <input
+              class="input"
+              id="launch-deadline"
+              type="datetime-local"
+              value="2026-07-15T18:00"
+            />
+          </div>
+          <div class="modal-field full">
+            <label>候选来源</label>
+            <div class="check-grid">
+              <label class="check-option"
+                ><input type="checkbox" checked />主播资源池</label
+              >
+              <label class="check-option"
+                ><input type="checkbox" checked />供应商推荐</label
+              >
+              <label class="check-option"
+                ><input type="checkbox" />项目历史合作</label
+              >
+              <label class="check-option"
+                ><input type="checkbox" />公开招募</label
+              >
+            </div>
+          </div>
+          <div class="modal-field full">
+            <label for="launch-note">试播要求</label>
+            <textarea
+              class="textarea"
+              id="launch-note"
+              placeholder="例如：3 分钟竖屏录屏，包含开场、产品讲解与互动话术"
+            ></textarea>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="button" data-close="launch-modal" type="button">
+            取消
+          </button>
+          <button class="button primary" type="submit">创建选播批次</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="modal-backdrop" id="decision-modal" role="presentation">
+      <form
+        class="modal small"
+        id="decision-form"
+        aria-labelledby="decision-title"
+        novalidate
+      >
+        <div class="modal-head">
+          <h2 id="decision-title">驳回候选</h2>
+          <button
+            class="icon-button"
+            data-close="decision-modal"
+            type="button"
+            aria-label="关闭"
+          >
+            <iconify-icon icon="lucide:x" aria-hidden="true"></iconify-icon>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-field full">
+            <label for="decision-reason">原因类型</label>
+            <select class="select" id="decision-reason">
+              <option>试播表现未达标</option>
+              <option>话术或品牌调性不匹配</option>
+              <option>录屏证据不完整</option>
+              <option>风险或合规原因</option>
+            </select>
+          </div>
+          <div class="modal-field full">
+            <label for="decision-detail">备注</label>
+            <textarea
+              class="textarea"
+              id="decision-detail"
+              required
+              placeholder="填写可执行的调整建议"
+            ></textarea>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="button" data-close="decision-modal" type="button">
+            取消
+          </button>
+          <button class="button danger" type="submit">确认驳回</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite">
+      <iconify-icon icon="lucide:circle-check" aria-hidden="true"></iconify-icon
+      ><span id="toast-message">操作成功</span>
+    </div>
+
+    <script>
+      const candidates = [
+        {
+          id: "ADM-027",
+          alias: "小鹿",
+          streamerId: "STR-0086",
+          project: "王者荣耀暑期代播",
+          platform: "抖音",
+          evidence: 2,
+          duration: "03:42",
+          score: 88,
+          dimensions: [92, 86, 84, 90],
+          status: "vendor_review",
+          risk: "low",
+          sla: "1h 24m",
+          urgent: true,
+          owner: "林然",
+          note: "节奏稳定，人设与项目调性匹配，建议补充一段逆风局讲解。",
+          checks: [true, true, true, true, false],
+        },
+        {
+          id: "ADM-026",
+          alias: "阿森",
+          streamerId: "STR-0085",
+          project: "王者荣耀暑期代播",
+          platform: "快手",
+          evidence: 1,
+          duration: "02:58",
+          score: 82,
+          dimensions: [88, 80, 78, 84],
+          status: "ai_review",
+          risk: "medium",
+          sla: "3h 48m",
+          owner: "林然",
+          note: "",
+          checks: [true, true, true, false, true],
+        },
+        {
+          id: "ADM-025",
+          alias: "七月",
+          streamerId: "STR-0083",
+          project: "二次元手游预约",
+          platform: "抖音",
+          evidence: 3,
+          duration: "04:10",
+          score: 93,
+          dimensions: [96, 92, 90, 94],
+          status: "approved",
+          risk: "low",
+          sla: "已完成",
+          owner: "孙菲",
+          note: "厂家确认优先安排黄金时段。",
+          checks: [true, true, true, true, true],
+        },
+        {
+          id: "ADM-024",
+          alias: "橙子",
+          streamerId: "STR-0082",
+          project: "新品服饰矩阵直播",
+          platform: "小红书",
+          evidence: 2,
+          duration: "03:21",
+          score: 90,
+          dimensions: [91, 94, 87, 88],
+          status: "vendor_review",
+          risk: "low",
+          sla: "5h 12m",
+          owner: "王一宁",
+          note: "穿搭表现好，待确认是否可以接受双平台排班。",
+          checks: [true, true, true, true, true],
+        },
+        {
+          id: "ADM-023",
+          alias: "然然",
+          streamerId: "STR-0081",
+          project: "母婴品牌达人招募",
+          platform: "抖音",
+          evidence: 1,
+          duration: "03:08",
+          score: 76,
+          dimensions: [82, 79, 74, 69],
+          status: "supplement",
+          risk: "medium",
+          sla: "8h 05m",
+          owner: "孙菲",
+          note: "需补充产品成分解读片段。",
+          checks: [true, true, false, true, false],
+        },
+        {
+          id: "ADM-022",
+          alias: "清风",
+          streamerId: "STR-0080",
+          project: "夏日数码节联播",
+          platform: "B站",
+          evidence: 2,
+          duration: "05:12",
+          score: 67,
+          dimensions: [78, 72, 58, 61],
+          status: "rejected",
+          risk: "high",
+          sla: "已完成",
+          owner: "王一宁",
+          note: "项目周期内存在竞品合作，已驳回。",
+          checks: [true, true, false, false, true],
+        },
+        {
+          id: "ADM-021",
+          alias: "可可",
+          streamerId: "STR-0079",
+          project: "食品快消冲榜项目",
+          platform: "快手",
+          evidence: 2,
+          duration: "03:36",
+          score: 86,
+          dimensions: [89, 91, 83, 81],
+          status: "vendor_review",
+          risk: "low",
+          sla: "6h 42m",
+          owner: "林然",
+          note: "",
+          checks: [true, true, true, true, true],
+        },
+        {
+          id: "ADM-020",
+          alias: "阿黎",
+          streamerId: "STR-0078",
+          project: "二次元手游预约",
+          platform: "B站",
+          evidence: 1,
+          duration: "04:33",
+          score: 91,
+          dimensions: [94, 88, 93, 89],
+          status: "ai_review",
+          risk: "low",
+          sla: "9h 17m",
+          owner: "孙菲",
+          note: "",
+          checks: [true, true, true, true, true],
+        },
+        {
+          id: "ADM-019",
+          alias: "Momo",
+          streamerId: "STR-0077",
+          project: "新品服饰矩阵直播",
+          platform: "小红书",
+          evidence: 2,
+          duration: "03:50",
+          score: 79,
+          dimensions: [85, 88, 72, 71],
+          status: "ai_review",
+          risk: "medium",
+          sla: "12h 30m",
+          owner: "王一宁",
+          note: "",
+          checks: [true, true, true, false, true],
+        },
+        {
+          id: "ADM-018",
+          alias: "小野",
+          streamerId: "STR-0076",
+          project: "夏日数码节联播",
+          platform: "抖音",
+          evidence: 0,
+          duration: "--:--",
+          score: 0,
+          dimensions: [0, 0, 0, 0],
+          status: "draft",
+          risk: "low",
+          sla: "18h 10m",
+          owner: "林然",
+          note: "待上传第一版试播录屏。",
+          checks: [false, true, true, true, true],
+        },
+        {
+          id: "ADM-017",
+          alias: "北辰",
+          streamerId: "STR-0084",
+          project: "王者荣耀暑期代播",
+          platform: "虎牙",
+          evidence: 2,
+          duration: "04:05",
+          score: 84,
+          dimensions: [90, 84, 82, 80],
+          status: "vendor_review",
+          risk: "medium",
+          sla: "1h 52m",
+          urgent: true,
+          owner: "林然",
+          note: "厂家关注高端局解说能力。",
+          checks: [true, true, true, true, false],
+        },
+        {
+          id: "ADM-016",
+          alias: "林溪",
+          streamerId: "STR-0075",
+          project: "食品快消冲榜项目",
+          platform: "抖音",
+          evidence: 1,
+          duration: "02:44",
+          score: 61,
+          dimensions: [68, 66, 59, 51],
+          status: "rejected",
+          risk: "high",
+          sla: "已完成",
+          owner: "王一宁",
+          note: "风险审计不通过。",
+          checks: [true, false, false, true, false],
+        },
+      ];
+
+      const statusNames = {
+        draft: "待补录屏",
+        ai_review: "AI 初审",
+        vendor_review: "厂家确认",
+        supplement: "待补件",
+        approved: "已准入",
+        rejected: "已驳回",
+      };
+      const riskNames = { low: "低风险", medium: "中风险", high: "高风险" };
+      const checkNames = [
+        "录屏文件完整",
+        "身份与合约有效",
+        "禁用词与合规",
+        "项目话术覆盖",
+        "近 30 日竞品排查",
+      ];
+      const dimensionNames = ["内容表现", "品牌匹配", "话术覆盖", "音画质量"];
+
+      let activeId = candidates[0].id;
+      let activeStage = "all";
+      let activeProject = "all";
+      let toastTimer;
+      let playTimer;
+      let playSeconds = 0;
+      const selectedIds = new Set();
+      const rows = document.querySelector("#candidate-rows");
+      const mobileList = document.querySelector("#mobile-list");
+      const search = document.querySelector("#candidate-search");
+      const scoreFilter = document.querySelector("#score-filter");
+      const riskFilter = document.querySelector("#risk-filter");
+      const selectAll = document.querySelector("#select-all");
+
+      function escapeHtml(value) {
+        const entities = {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#039;",
+        };
+        return String(value).replace(
+          /[&<>"']/g,
+          (character) => entities[character],
+        );
+      }
+
+      function scoreTone(score) {
+        return score >= 85 ? "good" : score >= 70 ? "warn" : "bad";
+      }
+
+      function getVisibleCandidates() {
+        const query = search.value.trim().toLowerCase();
+        return candidates.filter((item) => {
+          const scoreMatch =
+            scoreFilter.value === "all" ||
+            (scoreFilter.value === "high" && item.score >= 85) ||
+            (scoreFilter.value === "medium" &&
+              item.score >= 70 &&
+              item.score < 85) ||
+            (scoreFilter.value === "low" && item.score < 70);
+          return (
+            (!query ||
+              [item.alias, item.streamerId, item.project, item.platform]
+                .join(" ")
+                .toLowerCase()
+                .includes(query)) &&
+            (activeStage === "all" || item.status === activeStage) &&
+            (activeProject === "all" || item.project === activeProject) &&
+            scoreMatch &&
+            (riskFilter.value === "all" || item.risk === riskFilter.value)
+          );
+        });
+      }
+
+      function tableRow(item) {
+        return `<tr data-id="${item.id}" class="${item.id === activeId ? "active" : ""}"><td class="check-cell"><input class="row-check" type="checkbox" data-check-id="${item.id}" aria-label="选择 ${escapeHtml(item.alias)}" ${selectedIds.has(item.id) ? "checked" : ""}></td><td><div class="person"><span class="person-avatar">${escapeHtml(item.alias.slice(0, 1))}</span><div style="min-width:0"><div class="person-name">${escapeHtml(item.alias)}</div><div class="person-sub">${item.streamerId} · ${escapeHtml(item.platform)}</div></div></div></td><td><div class="person-name">${escapeHtml(item.project)}</div><div class="person-sub">${item.id}</div></td><td><span class="evidence"><iconify-icon icon="lucide:video" aria-hidden="true"></iconify-icon>${item.evidence} 段</span></td><td><span class="score ${scoreTone(item.score)}">${item.score || "--"}<small>/100</small></span></td><td><span class="status-pill ${item.status}">${statusNames[item.status]}</span></td><td><span class="risk ${item.risk}"><i></i>${riskNames[item.risk]}</span></td><td><span class="sla ${item.urgent ? "urgent" : ""}">${item.sla}</span></td></tr>`;
+      }
+
+      function mobileRow(item) {
+        return `<article class="mobile-candidate ${item.id === activeId ? "active" : ""}" tabindex="0" data-id="${item.id}"><div class="mobile-head"><div class="person"><span class="person-avatar">${escapeHtml(item.alias.slice(0, 1))}</span><div><div class="person-name">${escapeHtml(item.alias)}</div><div class="person-sub">${item.streamerId} · ${escapeHtml(item.platform)}</div></div></div><span class="status-pill ${item.status}">${statusNames[item.status]}</span></div><div class="mobile-meta"><span class="tag gray">${escapeHtml(item.project)}</span><span class="risk ${item.risk}"><i></i>${riskNames[item.risk]}</span></div><div class="mobile-stats"><div><span>AI 评分</span><b>${item.score || "--"}</b></div><div><span>录屏证据</span><b>${item.evidence} 段</b></div><div><span>SLA</span><b class="${item.urgent ? "sla urgent" : ""}">${item.sla}</b></div></div></article>`;
+      }
+
+      function renderDetail() {
+        const item = candidates.find((candidate) => candidate.id === activeId);
+        if (!item) return;
+        const setText = (selector, value) =>
+          (document.querySelector(selector).textContent = value);
+        setText("#detail-avatar", item.alias.slice(0, 1));
+        setText("#video-person", item.alias.slice(0, 1));
+        setText("#detail-name", item.alias);
+        setText("#detail-id", item.id);
+        setText("#detail-project", item.project);
+        setText(
+          "#video-caption",
+          `试播录屏 ${String(item.evidence).padStart(2, "0")} · ${item.duration}`,
+        );
+        setText("#video-time", `00:00 / ${item.duration}`);
+        document.querySelector("#detail-status").innerHTML =
+          `<span class="status-pill ${item.status}">${statusNames[item.status]}</span> <span class="risk ${item.risk}"><i></i>${riskNames[item.risk]}</span>`;
+        document.querySelector("#detail-score").innerHTML =
+          `${item.score || "--"}<small>分</small>`;
+        document.querySelector("#score-list").innerHTML = item.dimensions
+          .map(
+            (score, index) =>
+              `<div class="score-row"><span>${dimensionNames[index]}</span><div class="bar"><i style="width:${score}%"></i></div><b>${score || "--"}</b></div>`,
+          )
+          .join("");
+        document.querySelector("#check-list").innerHTML = item.checks
+          .map(
+            (passed, index) =>
+              `<div class="check-item ${passed ? "" : "warn"}"><iconify-icon icon="lucide:${passed ? "circle-check" : "triangle-alert"}" aria-hidden="true"></iconify-icon><span>${checkNames[index]}</span><b>${passed ? "通过" : "待处理"}</b></div>`,
+          )
+          .join("");
+        setText(
+          "#evidence-count",
+          `${item.checks.filter(Boolean).length} / ${item.checks.length} 通过`,
+        );
+        setText("#review-owner", `负责人：${item.owner}`);
+        document.querySelector("#vendor-note").value = item.note;
+        const steps = ["ai_review", "vendor_review", "approved"];
+        const currentIndex =
+          item.status === "draft" || item.status === "supplement"
+            ? 0
+            : item.status === "rejected"
+              ? 2
+              : Math.max(0, steps.indexOf(item.status) + 1);
+        document.querySelector("#timeline").innerHTML = [
+          "提交录屏",
+          "AI 初审",
+          "厂家确认",
+          "准入结果",
+        ]
+          .map(
+            (label, index) =>
+              `<span class="timeline-step ${index < currentIndex ? "done" : index === currentIndex ? "current" : ""}">${label}</span>`,
+          )
+          .join("");
+        const isFinal = ["approved", "rejected"].includes(item.status);
+        document.querySelector("#approve-button").disabled = isFinal;
+        document.querySelector("#supplement-button").disabled = isFinal;
+        document.querySelector("#reject-button").disabled = isFinal;
+        stopPlayback();
+      }
+
+      function updateSelectionBar() {
+        document.querySelector("#selection-count").textContent = String(
+          selectedIds.size,
+        );
+        document
+          .querySelector("#selection-bar")
+          .classList.toggle("show", selectedIds.size > 0);
+        const visible = getVisibleCandidates();
+        selectAll.checked =
+          visible.length > 0 &&
+          visible.every((item) => selectedIds.has(item.id));
+        selectAll.indeterminate =
+          visible.some((item) => selectedIds.has(item.id)) &&
+          !selectAll.checked;
+      }
+
+      function updateCounts() {
+        const count = (status) =>
+          candidates.filter((item) => item.status === status).length;
+        document.querySelector("#tab-all").textContent = String(
+          candidates.length + 15,
+        );
+        document.querySelector("#tab-draft").textContent = String(
+          count("draft") + count("supplement"),
+        );
+        document.querySelector("#tab-ai").textContent = String(
+          count("ai_review") + 5,
+        );
+        document.querySelector("#tab-vendor").textContent = String(
+          count("vendor_review") + 3,
+        );
+        document.querySelector("#tab-approved").textContent = String(
+          count("approved") + 7,
+        );
+        document.querySelector("#tab-rejected").textContent = String(
+          count("rejected"),
+        );
+        document.querySelector("#pending-total").textContent = String(
+          candidates.filter(
+            (item) =>
+              !["approved", "rejected", "vendor_review"].includes(item.status),
+          ).length + 13,
+        );
+        document.querySelector("#vendor-total").textContent = String(
+          count("vendor_review") + 3,
+        );
+      }
+
+      function render() {
+        const visible = getVisibleCandidates();
+        if (!visible.some((item) => item.id === activeId))
+          activeId = visible[0]?.id || "";
+        rows.innerHTML = visible.map(tableRow).join("");
+        mobileList.innerHTML = visible.map(mobileRow).join("");
+        document.querySelector("#result-count").textContent = String(
+          visible.length,
+        );
+        document.querySelector("#empty-state").style.display = visible.length
+          ? "none"
+          : "grid";
+        document.querySelector("#table-wrap").hidden = visible.length === 0;
+        mobileList.hidden = visible.length === 0;
+        document.querySelector("#review-panel").hidden = visible.length === 0;
+        renderDetail();
+        updateSelectionBar();
+        updateCounts();
+      }
+
+      function selectCandidate(id) {
+        activeId = id;
+        render();
+      }
+
+      document
+        .querySelector("#candidate-rows")
+        .addEventListener("click", (event) => {
+          const checkbox = event.target.closest("[data-check-id]");
+          if (checkbox) {
+            event.stopPropagation();
+            checkbox.checked
+              ? selectedIds.add(checkbox.dataset.checkId)
+              : selectedIds.delete(checkbox.dataset.checkId);
+            render();
+            return;
+          }
+          const row = event.target.closest("[data-id]");
+          if (row) selectCandidate(row.dataset.id);
+        });
+
+      mobileList.addEventListener("click", (event) => {
+        const row = event.target.closest("[data-id]");
+        if (row) selectCandidate(row.dataset.id);
+      });
+
+      mobileList.addEventListener("keydown", (event) => {
+        const row = event.target.closest("[data-id]");
+        if (row && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          selectCandidate(row.dataset.id);
+        }
+      });
+
+      [search, scoreFilter, riskFilter].forEach((control) =>
+        control.addEventListener("input", render),
+      );
+
+      document.querySelectorAll(".flow-tab").forEach((tab) => {
+        tab.addEventListener("click", () => {
+          activeStage = tab.dataset.stage;
+          document.querySelectorAll(".flow-tab").forEach((item) => {
+            const isActive = item === tab;
+            item.classList.toggle("active", isActive);
+            item.setAttribute("aria-selected", String(isActive));
+          });
+          render();
+        });
+      });
+
+      document.querySelectorAll(".batch-item").forEach((button) => {
+        button.addEventListener("click", () => {
+          activeProject = button.dataset.project;
+          document
+            .querySelectorAll(".batch-item")
+            .forEach((item) =>
+              item.classList.toggle("active", item === button),
+            );
+          render();
+        });
+      });
+
+      selectAll.addEventListener("change", () => {
+        getVisibleCandidates().forEach((item) =>
+          selectAll.checked
+            ? selectedIds.add(item.id)
+            : selectedIds.delete(item.id),
+        );
+        render();
+      });
+
+      document
+        .querySelector("#clear-selection")
+        .addEventListener("click", () => {
+          selectedIds.clear();
+          render();
+        });
+
+      function showToast(message) {
+        clearTimeout(toastTimer);
+        document.querySelector("#toast-message").textContent = message;
+        document.querySelector("#toast").classList.add("show");
+        toastTimer = setTimeout(
+          () => document.querySelector("#toast").classList.remove("show"),
+          2200,
+        );
+      }
+
+      function applyDecision(ids, status, message) {
+        candidates.forEach((item) => {
+          if (ids.includes(item.id)) item.status = status;
+        });
+        selectedIds.clear();
+        render();
+        showToast(message);
+      }
+
+      document
+        .querySelector("#bulk-approve")
+        .addEventListener("click", () =>
+          applyDecision(
+            [...selectedIds],
+            "approved",
+            `已批量准入 ${selectedIds.size} 位候选`,
+          ),
+        );
+      document
+        .querySelector("#bulk-supplement")
+        .addEventListener("click", () =>
+          applyDecision(
+            [...selectedIds],
+            "supplement",
+            `已向 ${selectedIds.size} 位候选发起补件`,
+          ),
+        );
+      document
+        .querySelector("#approve-button")
+        .addEventListener("click", () =>
+          applyDecision([activeId], "approved", "已确认准入"),
+        );
+      document
+        .querySelector("#supplement-button")
+        .addEventListener("click", () =>
+          applyDecision([activeId], "supplement", "已发送补件要求"),
+        );
+
+      function openModal(id) {
+        document.querySelector(`#${id}`).classList.add("open");
+        document.body.style.overflow = "hidden";
+      }
+
+      function closeModal(id) {
+        document.querySelector(`#${id}`).classList.remove("open");
+        document.body.style.overflow = "";
+      }
+
+      document.querySelector("#launch-button").addEventListener("click", () => {
+        document.querySelector("#launch-form").reset();
+        openModal("launch-modal");
+        requestAnimationFrame(() =>
+          document.querySelector("#launch-project").focus(),
+        );
+      });
+      document.querySelector("#reject-button").addEventListener("click", () => {
+        document.querySelector("#decision-form").reset();
+        openModal("decision-modal");
+        requestAnimationFrame(() =>
+          document.querySelector("#decision-reason").focus(),
+        );
+      });
+
+      document
+        .querySelectorAll("[data-close]")
+        .forEach((button) =>
+          button.addEventListener("click", () =>
+            closeModal(button.dataset.close),
+          ),
+        );
+      document.querySelectorAll(".modal-backdrop").forEach((backdrop) =>
+        backdrop.addEventListener("click", (event) => {
+          if (event.target === backdrop) closeModal(backdrop.id);
+        }),
+      );
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape")
+          document
+            .querySelectorAll(".modal-backdrop.open")
+            .forEach((modal) => closeModal(modal.id));
+      });
+
+      document
+        .querySelector("#launch-form")
+        .addEventListener("submit", (event) => {
+          event.preventDefault();
+          const project = document.querySelector("#launch-project").value;
+          if (!project) {
+            document.querySelector("#launch-project").focus();
+            showToast("请选择目标项目");
+            return;
+          }
+          closeModal("launch-modal");
+          showToast(`已创建「${project}」选播批次`);
+        });
+
+      document
+        .querySelector("#decision-form")
+        .addEventListener("submit", (event) => {
+          event.preventDefault();
+          const detail = document
+            .querySelector("#decision-detail")
+            .value.trim();
+          if (!detail) {
+            document.querySelector("#decision-detail").focus();
+            showToast("请填写驳回备注");
+            return;
+          }
+          const item = candidates.find(
+            (candidate) => candidate.id === activeId,
+          );
+          item.note = detail;
+          closeModal("decision-modal");
+          applyDecision([activeId], "rejected", "已驳回并记录原因");
+        });
+
+      document
+        .querySelector("#vendor-note")
+        .addEventListener("input", (event) => {
+          const item = candidates.find(
+            (candidate) => candidate.id === activeId,
+          );
+          if (item) item.note = event.target.value;
+          document.querySelector("#note-state").textContent = "保存中…";
+          clearTimeout(event.target.saveTimer);
+          event.target.saveTimer = setTimeout(
+            () =>
+              (document.querySelector("#note-state").textContent =
+                "已自动保存"),
+            500,
+          );
+        });
+
+      function stopPlayback() {
+        clearInterval(playTimer);
+        playTimer = null;
+        playSeconds = 0;
+        document.querySelector("#video-review").classList.remove("playing");
+        document
+          .querySelector("#play-button iconify-icon")
+          .setAttribute("icon", "lucide:play");
+      }
+
+      document.querySelector("#play-button").addEventListener("click", () => {
+        const item = candidates.find((candidate) => candidate.id === activeId);
+        if (!item || !item.evidence) {
+          showToast("当前尚未上传试播录屏");
+          return;
+        }
+        if (playTimer) {
+          stopPlayback();
+          document.querySelector("#video-time").textContent =
+            `00:00 / ${item.duration}`;
+          return;
+        }
+        document.querySelector("#video-review").classList.add("playing");
+        document
+          .querySelector("#play-button iconify-icon")
+          .setAttribute("icon", "lucide:pause");
+        playTimer = setInterval(() => {
+          playSeconds += 1;
+          const seconds = String(playSeconds % 60).padStart(2, "0");
+          const minutes = String(Math.floor(playSeconds / 60)).padStart(2, "0");
+          document.querySelector("#video-time").textContent =
+            `${minutes}:${seconds} / ${item.duration}`;
+        }, 1000);
+      });
+
+      document
+        .querySelector("#rule-button")
+        .addEventListener("click", () => showToast("已打开当前项目准入规则"));
+      document
+        .querySelector("#more-button")
+        .addEventListener("click", () => showToast("候选档案操作已展开"));
+
+      document.querySelector("#export-button").addEventListener("click", () => {
+        const header = [
+          "候选主播",
+          "项目批次",
+          "平台",
+          "AI 评分",
+          "审核阶段",
+          "风险",
+          "SLA",
+        ];
+        const csvRows = getVisibleCandidates().map((item) => [
+          item.alias,
+          item.project,
+          item.platform,
+          item.score,
+          statusNames[item.status],
+          riskNames[item.risk],
+          item.sla,
+        ]);
+        const csv = [header, ...csvRows]
+          .map((row) =>
+            row
+              .map((cell) => `"${String(cell).replaceAll('"', '""')}"`)
+              .join(","),
+          )
+          .join("\n");
+        const url = URL.createObjectURL(
+          new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }),
+        );
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "经营舱-选播准入.csv";
+        link.click();
+        URL.revokeObjectURL(url);
+        showToast("审核表已导出");
+      });
+
+      render();
+    </script>
+  </body>
+</html>

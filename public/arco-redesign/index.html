@@ -1,0 +1,1894 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>经营舱 · 运营控制台</title>
+    <style>
+      :root {
+        --color-bg-1: #ffffff;
+        --color-bg-2: #f7f8fa;
+        --color-bg-3: #f2f3f5;
+        --color-bg-4: #e5e6eb;
+        --color-fill-1: #f7f8fa;
+        --color-fill-2: #f2f3f5;
+        --color-fill-3: #e5e6eb;
+        --color-border: #e5e6eb;
+        --color-border-strong: #c9cdd4;
+        --color-text-1: #1d2129;
+        --color-text-2: #4e5969;
+        --color-text-3: #86909c;
+        --color-text-4: #c9cdd4;
+        --primary-1: #e8f3ff;
+        --primary-2: #bedaff;
+        --primary-3: #94bfff;
+        --primary-6: #165dff;
+        --primary-7: #0e42d2;
+        --success-1: #e8ffea;
+        --success-6: #00b42a;
+        --warning-1: #fff7e8;
+        --warning-6: #ff7d00;
+        --danger-1: #ffece8;
+        --danger-6: #f53f3f;
+        --purple-1: #f5e8ff;
+        --purple-6: #722ed1;
+        --cyan-1: #e8fffb;
+        --cyan-6: #14c9c9;
+        --shadow-card: 0 1px 2px rgba(29, 33, 41, 0.04);
+        --focus-ring: 0 0 0 3px rgba(22, 93, 255, 0.16);
+        --radius: 6px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        background: var(--color-bg-2);
+        color: var(--color-text-1);
+        font-family:
+          Inter, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial,
+          sans-serif;
+        letter-spacing: 0;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button,
+      select {
+        outline: none;
+      }
+
+      svg {
+        flex: 0 0 auto;
+      }
+
+      .app-shell {
+        display: grid;
+        grid-template-columns: 248px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        border-right: 1px solid var(--color-border);
+        background: var(--color-bg-1);
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+      }
+
+      .brand {
+        height: 68px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 20px;
+        border-bottom: 1px solid var(--color-border);
+      }
+
+      .brand img {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        border: 1px solid var(--color-border);
+      }
+
+      .brand-title {
+        font-size: 16px;
+        font-weight: 700;
+        line-height: 20px;
+      }
+
+      .brand-subtitle {
+        margin-top: 2px;
+        font-size: 11px;
+        color: var(--color-text-3);
+      }
+
+      .nav-section {
+        padding: 14px 12px 0;
+      }
+
+      .nav-title {
+        padding: 8px 10px;
+        color: var(--color-text-3);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .nav-item {
+        height: 38px;
+        display: grid;
+        grid-template-columns: 28px 1fr auto;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 4px;
+        padding: 0 10px;
+        border-radius: var(--radius);
+        color: var(--color-text-2);
+        font-size: 13px;
+        text-decoration: none;
+        transition:
+          background-color 160ms ease,
+          color 160ms ease;
+      }
+
+      .nav-item:not(.active):hover {
+        background: var(--color-fill-1);
+        color: var(--color-text-1);
+      }
+
+      .nav-item.active {
+        background: var(--primary-1);
+        color: var(--primary-7);
+        font-weight: 600;
+      }
+
+      .nav-icon {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        display: grid;
+        place-items: center;
+        color: currentColor;
+      }
+
+      .nav-icon svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      .nav-badge {
+        min-width: 20px;
+        height: 20px;
+        display: inline-grid;
+        place-items: center;
+        padding: 0 6px;
+        border-radius: 10px;
+        background: var(--color-fill-2);
+        color: var(--color-text-3);
+        font-size: 11px;
+      }
+
+      .active .nav-badge {
+        background: var(--primary-2);
+        color: var(--primary-7);
+      }
+
+      .sidebar-footer {
+        margin-top: auto;
+        padding: 14px 16px 18px;
+        border-top: 1px solid var(--color-border);
+      }
+
+      .plan-card {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-bg-2);
+        padding: 12px;
+      }
+
+      .plan-card strong {
+        display: block;
+        font-size: 13px;
+      }
+
+      .plan-card span {
+        display: block;
+        margin-top: 4px;
+        color: var(--color-text-3);
+        font-size: 12px;
+        line-height: 18px;
+      }
+
+      .main {
+        min-width: 0;
+      }
+
+      .topbar {
+        height: 68px;
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 0 24px;
+        border-bottom: 1px solid var(--color-border);
+        background: rgba(255, 255, 255, 0.92);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+      }
+
+      .breadcrumb {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--color-text-3);
+        font-size: 13px;
+      }
+
+      .breadcrumb b {
+        color: var(--color-text-1);
+        font-weight: 600;
+      }
+
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .search {
+        width: 320px;
+        height: 34px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-fill-1);
+        padding: 0 12px;
+        color: var(--color-text-3);
+        font-size: 13px;
+        cursor: pointer;
+        transition:
+          border-color 160ms ease,
+          background-color 160ms ease;
+      }
+
+      .search:hover {
+        border-color: var(--color-border-strong);
+        background: var(--color-bg-1);
+      }
+
+      .search:focus-visible,
+      .chip:focus-visible {
+        border-color: var(--primary-6);
+        box-shadow: var(--focus-ring);
+      }
+
+      .icon-button,
+      .button {
+        height: 34px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-bg-1);
+        color: var(--color-text-2);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 0 12px;
+        cursor: pointer;
+        transition:
+          border-color 160ms ease,
+          background-color 160ms ease,
+          color 160ms ease,
+          box-shadow 160ms ease,
+          transform 100ms ease;
+      }
+
+      .icon-button {
+        width: 34px;
+        padding: 0;
+        position: relative;
+      }
+
+      .icon-button:hover,
+      .button:hover {
+        border-color: var(--color-border-strong);
+        background: var(--color-fill-1);
+        color: var(--color-text-1);
+      }
+
+      .icon-button:active,
+      .button:active {
+        transform: translateY(1px);
+      }
+
+      .icon-button:focus-visible,
+      .button:focus-visible,
+      .select:focus-visible {
+        border-color: var(--primary-6);
+        box-shadow: var(--focus-ring);
+      }
+
+      .notification-dot {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        width: 7px;
+        height: 7px;
+        border: 1.5px solid var(--color-bg-1);
+        border-radius: 50%;
+        background: var(--danger-6);
+      }
+
+      .button.primary {
+        border-color: var(--primary-6);
+        background: var(--primary-6);
+        color: #fff;
+      }
+
+      .button.primary:hover {
+        border-color: var(--primary-7);
+        background: var(--primary-7);
+        color: #fff;
+      }
+
+      .button.secondary {
+        border-color: var(--primary-2);
+        background: var(--primary-1);
+        color: var(--primary-7);
+      }
+
+      .button.secondary:hover {
+        border-color: var(--primary-3);
+        background: #dbeafe;
+        color: var(--primary-7);
+      }
+
+      .button svg {
+        width: 15px;
+        height: 15px;
+      }
+
+      .topbar .button {
+        gap: 6px;
+        font-size: 12px;
+      }
+
+      .topbar .button svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      .avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--primary-1);
+        color: var(--primary-7);
+        font-weight: 700;
+        font-size: 13px;
+        text-decoration: none;
+      }
+
+      .content {
+        padding: 20px 24px 32px;
+      }
+
+      .page-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 18px;
+        align-items: end;
+        margin-bottom: 16px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 24px;
+        line-height: 32px;
+        font-weight: 700;
+      }
+
+      .page-head p {
+        margin-top: 6px;
+        color: var(--color-text-3);
+        font-size: 13px;
+      }
+
+      .filters {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .select,
+      .date-input {
+        height: 34px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-bg-1);
+        padding: 0 10px;
+        color: var(--color-text-2);
+        font-size: 13px;
+      }
+
+      .select {
+        cursor: pointer;
+      }
+
+      .date-input {
+        display: flex;
+        align-items: center;
+        white-space: nowrap;
+      }
+
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .card {
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-bg-1);
+        box-shadow: var(--shadow-card);
+      }
+
+      .metric-card {
+        padding: 16px;
+        min-height: 128px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      .metric-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--color-text-3);
+        font-size: 13px;
+      }
+
+      .metric-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+      }
+
+      .metric-icon svg {
+        width: 18px;
+        height: 18px;
+      }
+
+      .metric-value {
+        margin-top: 14px;
+        font-size: 28px;
+        line-height: 34px;
+        font-weight: 700;
+      }
+
+      .metric-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+        color: var(--color-text-3);
+        font-size: 12px;
+      }
+
+      .trend-up {
+        color: var(--success-6);
+      }
+
+      .trend-warn {
+        color: var(--warning-6);
+      }
+
+      .trend-down {
+        color: var(--danger-6);
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.85fr);
+        gap: 12px;
+        margin-top: 12px;
+      }
+
+      .panel {
+        padding: 16px;
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .panel-title {
+        font-size: 16px;
+        font-weight: 700;
+      }
+
+      .panel-subtitle {
+        margin-top: 3px;
+        color: var(--color-text-3);
+        font-size: 12px;
+      }
+
+      .tabs {
+        display: inline-flex;
+        height: 32px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-fill-1);
+        padding: 2px;
+      }
+
+      .tab {
+        min-width: 64px;
+        height: 26px;
+        display: grid;
+        place-items: center;
+        padding: 0 10px;
+        border-radius: 4px;
+        color: var(--color-text-3);
+        font-size: 12px;
+        border: 0;
+        background: transparent;
+        cursor: pointer;
+        transition:
+          background-color 160ms ease,
+          color 160ms ease;
+      }
+
+      .tab:hover {
+        color: var(--color-text-1);
+      }
+
+      .tab:focus-visible {
+        box-shadow: inset var(--focus-ring);
+      }
+
+      .tab.active {
+        background: var(--color-bg-1);
+        color: var(--primary-7);
+        box-shadow: 0 1px 2px rgba(29, 33, 41, 0.08);
+        font-weight: 600;
+      }
+
+      .command-layout {
+        display: grid;
+        grid-template-columns: 1fr 248px;
+        gap: 12px;
+      }
+
+      .timeline {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+
+      .stage {
+        min-height: 86px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-bg-2);
+        padding: 10px;
+        transition:
+          border-color 160ms ease,
+          background-color 160ms ease;
+      }
+
+      .stage:hover {
+        border-color: var(--color-border-strong);
+      }
+
+      .stage.current {
+        border-color: var(--primary-3);
+        background: var(--primary-1);
+      }
+
+      .stage strong {
+        display: block;
+        font-size: 13px;
+      }
+
+      .stage span {
+        display: block;
+        margin-top: 8px;
+        color: var(--color-text-3);
+        font-size: 12px;
+        line-height: 18px;
+      }
+
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 13px;
+      }
+
+      .table-shell {
+        min-width: 0;
+        overflow-x: auto;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+      }
+
+      .table th {
+        height: 38px;
+        background: var(--color-fill-1);
+        border-bottom: 1px solid var(--color-border);
+        color: var(--color-text-3);
+        font-weight: 600;
+        text-align: left;
+        padding: 0 12px;
+      }
+
+      .table td {
+        height: 52px;
+        border-bottom: 1px solid var(--color-border);
+        padding: 0 12px;
+        color: var(--color-text-2);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .table tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .table tbody tr {
+        transition: background-color 140ms ease;
+      }
+
+      .table tbody tr:hover {
+        background: var(--color-fill-1);
+      }
+
+      .name-cell {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--primary-6);
+        flex: 0 0 auto;
+      }
+
+      .dot.green {
+        background: var(--success-6);
+      }
+
+      .dot.orange {
+        background: var(--warning-6);
+      }
+
+      .dot.red {
+        background: var(--danger-6);
+      }
+
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        height: 22px;
+        border-radius: 4px;
+        padding: 0 8px;
+        font-size: 12px;
+        font-weight: 500;
+      }
+
+      .tag.blue {
+        background: var(--primary-1);
+        color: var(--primary-7);
+      }
+
+      .tag.green {
+        background: var(--success-1);
+        color: var(--success-6);
+      }
+
+      .tag.orange {
+        background: var(--warning-1);
+        color: var(--warning-6);
+      }
+
+      .tag.red {
+        background: var(--danger-1);
+        color: var(--danger-6);
+      }
+
+      .tag.purple {
+        background: var(--purple-1);
+        color: var(--purple-6);
+      }
+
+      .risk-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .risk-item {
+        display: grid;
+        grid-template-columns: 8px 1fr auto;
+        gap: 10px;
+        align-items: start;
+        padding: 10px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-bg-2);
+        transition:
+          border-color 160ms ease,
+          background-color 160ms ease;
+      }
+
+      .risk-item:hover {
+        border-color: var(--color-border-strong);
+        background: var(--color-bg-1);
+      }
+
+      .risk-item h3 {
+        font-size: 13px;
+        line-height: 18px;
+      }
+
+      .risk-item p {
+        margin-top: 4px;
+        color: var(--color-text-3);
+        font-size: 12px;
+        line-height: 18px;
+      }
+
+      .right-stack {
+        display: grid;
+        gap: 12px;
+      }
+
+      .ai-card {
+        border-color: var(--primary-2);
+      }
+
+      .ai-input {
+        min-height: 92px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius);
+        background: var(--color-bg-2);
+        padding: 10px;
+        color: var(--color-text-3);
+        font-size: 13px;
+        line-height: 20px;
+      }
+
+      .prompt-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 12px 0;
+      }
+
+      .chip {
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--color-border);
+        border-radius: 14px;
+        background: var(--color-bg-1);
+        padding: 0 10px;
+        color: var(--color-text-2);
+        font-size: 12px;
+        cursor: pointer;
+        transition:
+          border-color 160ms ease,
+          background-color 160ms ease;
+      }
+
+      .chip:hover {
+        border-color: var(--primary-3);
+        background: var(--primary-1);
+      }
+
+      .split-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 12px;
+      }
+
+      .mini-panel {
+        min-height: 304px;
+        padding: 16px;
+      }
+
+      .pipeline {
+        display: grid;
+        gap: 10px;
+      }
+
+      .pipeline-row {
+        display: grid;
+        grid-template-columns: 88px 1fr 42px;
+        gap: 10px;
+        align-items: center;
+        font-size: 12px;
+        color: var(--color-text-2);
+      }
+
+      .bar {
+        height: 8px;
+        border-radius: 4px;
+        background: var(--color-fill-2);
+        overflow: hidden;
+      }
+
+      .bar i {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--primary-6);
+      }
+
+      .check-list {
+        display: grid;
+        gap: 9px;
+      }
+
+      .check-row {
+        display: grid;
+        grid-template-columns: 22px 1fr auto;
+        gap: 8px;
+        align-items: center;
+        color: var(--color-text-2);
+        font-size: 13px;
+      }
+
+      .check {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: var(--success-1);
+        color: var(--success-6);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .approval-card {
+        display: grid;
+        grid-template-columns: 92px 1fr;
+        gap: 12px;
+        padding: 12px 0;
+        border-top: 1px solid var(--color-border);
+      }
+
+      .approval-card:last-child {
+        padding-bottom: 0;
+      }
+
+      .video-thumb {
+        width: 92px;
+        aspect-ratio: 16 / 10;
+        border-radius: var(--radius);
+        background: var(--primary-1);
+        display: grid;
+        place-items: center;
+        color: var(--primary-7);
+      }
+
+      .approval-card h3 {
+        font-size: 13px;
+        line-height: 18px;
+      }
+
+      .approval-card p {
+        margin-top: 4px;
+        color: var(--color-text-3);
+        font-size: 12px;
+        line-height: 18px;
+      }
+
+      @media (max-width: 1280px) {
+        .summary-grid,
+        .split-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+
+        .command-layout {
+          grid-template-columns: minmax(0, 1fr) 224px;
+        }
+      }
+
+      @media (max-width: 1024px) {
+        .app-shell {
+          grid-template-columns: 220px minmax(0, 1fr);
+        }
+
+        .search {
+          width: 240px;
+        }
+
+        .command-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .risk-list {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 900px) {
+        .app-shell {
+          display: block;
+        }
+
+        .sidebar {
+          position: static;
+          height: auto;
+          overflow: hidden;
+          border-right: 0;
+          border-bottom: 1px solid var(--color-border);
+        }
+
+        .brand {
+          height: 60px;
+          border-bottom: 0;
+        }
+
+        .nav-section {
+          display: none;
+        }
+
+        .nav-section.primary-nav {
+          display: flex;
+          gap: 6px;
+          overflow-x: auto;
+          padding: 0 12px 10px;
+          scrollbar-width: none;
+        }
+
+        .nav-section.primary-nav::-webkit-scrollbar {
+          display: none;
+        }
+
+        .nav-title,
+        .sidebar-footer {
+          display: none;
+        }
+
+        .nav-item {
+          flex: 0 0 auto;
+          grid-template-columns: 22px auto auto;
+          margin: 0;
+        }
+
+        .topbar {
+          top: 0;
+        }
+      }
+
+      @media (max-width: 720px) {
+        .topbar {
+          height: 60px;
+          padding: 0 16px;
+        }
+
+        .breadcrumb span,
+        .search,
+        .topbar .button.secondary {
+          display: none;
+        }
+
+        .top-actions {
+          gap: 8px;
+        }
+
+        .content {
+          padding: 16px;
+        }
+
+        .page-head {
+          grid-template-columns: 1fr;
+          align-items: start;
+        }
+
+        .filters {
+          width: 100%;
+          overflow-x: auto;
+        }
+
+        .date-input {
+          flex: 1 0 auto;
+        }
+
+        .timeline {
+          grid-template-columns: none;
+          grid-auto-flow: column;
+          grid-auto-columns: 156px;
+          overflow-x: auto;
+          padding-bottom: 4px;
+          scrollbar-width: thin;
+        }
+
+        .risk-list,
+        .split-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .table-shell .table {
+          min-width: 640px;
+        }
+      }
+
+      @media (max-width: 480px) {
+        .brand-subtitle,
+        .topbar .button.primary {
+          display: none;
+        }
+
+        .brand {
+          padding: 0 16px;
+        }
+
+        .summary-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .metric-card {
+          min-height: 118px;
+          padding: 12px;
+        }
+
+        .metric-icon {
+          width: 28px;
+          height: 28px;
+        }
+
+        .metric-value {
+          margin-top: 10px;
+          font-size: 24px;
+          line-height: 30px;
+        }
+
+        .metric-meta {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .panel,
+        .mini-panel {
+          padding: 14px;
+        }
+
+        .panel-head {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .tabs {
+          width: 100%;
+        }
+
+        .tab {
+          min-width: 0;
+          flex: 1;
+        }
+
+        .approval-card {
+          grid-template-columns: 72px minmax(0, 1fr);
+        }
+
+        .video-thumb {
+          width: 72px;
+        }
+
+        .pipeline-row {
+          grid-template-columns: 72px 1fr 36px;
+          gap: 8px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+    <link rel="stylesheet" href="./sidebar.css" />
+    <link rel="stylesheet" href="./typography.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="../brand/ops-mascot-logo.png" alt="经营舱品牌标识" />
+          <div>
+            <div class="brand-title">经营舱</div>
+            <div class="brand-subtitle">MCN Operations Suite</div>
+          </div>
+        </div>
+
+        <div class="nav-section primary-nav">
+          <div class="nav-title">工作台</div>
+          <div class="nav-item active" aria-current="page">
+            <span class="nav-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path d="M4 5h7v7H4zM13 5h7v4h-7zM13 11h7v8h-7zM4 14h7v5H4z" />
+              </svg>
+            </span>
+            <span>经营总览</span>
+            <span class="nav-badge">12</span>
+          </div>
+          <a class="nav-item" href="./projects.html">
+            <span class="nav-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path d="M4 7h16M6 7v12h12V7M9 11h6M9 15h4" />
+              </svg>
+            </span>
+            <span>项目管理</span>
+            <span class="nav-badge">19</span>
+          </a>
+          <a class="nav-item" href="./streamers.html">
+            <span class="nav-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path
+                  d="M8 9a4 4 0 1 0 8 0 4 4 0 0 0-8 0zM4 21a8 8 0 0 1 16 0"
+                />
+              </svg>
+            </span>
+            <span>主播资源池</span>
+            <span class="nav-badge">86</span>
+          </a>
+          <a class="nav-item" href="./admissions.html">
+            <span class="nav-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path
+                  d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"
+                />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </span>
+            <span>选播准入</span>
+            <span class="nav-badge">27</span>
+          </a>
+          <a class="nav-item" href="./schedules.html">
+            <span class="nav-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path
+                  d="M7 4v3M17 4v3M4 9h16M6 6h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"
+                />
+              </svg>
+            </span>
+            <span>排班直播</span>
+            <span class="nav-badge">8</span>
+          </a>
+        </div>
+
+        <div class="nav-section">
+          <div class="nav-title">财务与治理</div>
+          <a class="nav-item" href="./reports.html">
+            <span class="nav-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path d="M4 5h16v14H4zM8 9h8M8 13h5M8 17h8" />
+              </svg>
+            </span>
+            <span>报数审核</span>
+            <span class="nav-badge">35</span>
+          </a>
+          <a class="nav-item" href="./settlements.html">
+            <span class="nav-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path d="M4 7h16v10H4zM8 12h8M12 7v10" />
+              </svg>
+            </span>
+            <span>结算中心</span>
+            <span class="nav-badge">5</span>
+          </a>
+          <a class="nav-item" href="./audit.html">
+            <span class="nav-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path d="M6 3h9l3 3v15H6zM9 11h6M9 15h6" />
+              </svg>
+            </span>
+            <span>审计与导出</span>
+            <span class="nav-badge">4</span>
+          </a>
+          <a class="nav-item" href="./ai-workbench.html">
+            <span class="nav-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path
+                  d="M12 3l2.3 5.4L20 10.2l-4.5 3.7L16.8 20 12 16.8 7.2 20l1.3-6.1L4 10.2l5.7-1.8z"
+                />
+              </svg>
+            </span>
+            <span>星耀 AI 作战台</span>
+            <span class="nav-badge">AI</span>
+          </a>
+          <a class="nav-item" href="./knowledge-base.html">
+            <span class="nav-icon">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path
+                  d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5z"
+                />
+                <path
+                  d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5z"
+                />
+              </svg>
+            </span>
+            <span>知识库</span>
+            <span class="nav-badge">48</span>
+          </a>
+        </div>
+
+        <div class="sidebar-footer">
+          <div class="plan-card">
+            <strong>今日经营健康度 92</strong>
+            <span>履约稳定，3 个项目需要在 18:00 前处理。</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="breadcrumb">
+            <span>经营舱</span>
+            <span>/</span>
+            <b>运营控制台</b>
+          </div>
+          <div class="top-actions">
+            <button class="search" type="button" aria-label="全局搜索">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <circle cx="11" cy="11" r="7" />
+                <path d="m16 16 4 4" />
+              </svg>
+              <span>搜索项目、主播、报数、结算单</span>
+            </button>
+            <button
+              class="icon-button"
+              type="button"
+              aria-label="通知，3 条未读"
+              title="通知"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+                <path d="M10 21h4" />
+              </svg>
+              <span class="notification-dot" aria-hidden="true"></span>
+            </button>
+            <button class="button secondary" type="button">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path d="M12 3v12m0 0 4-4m-4 4-4-4" />
+                <path d="M5 19h14" />
+              </svg>
+              导出日报
+            </button>
+            <button class="button primary" type="button">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              新建项目
+            </button>
+            <a
+              class="avatar"
+              href="./settings.html"
+              aria-label="打开星耀传媒组织设置"
+              title="组织设置"
+            >
+              星
+            </a>
+          </div>
+        </header>
+
+        <section class="content">
+          <div class="page-head">
+            <div>
+              <h1>经营总览</h1>
+              <p>最近数据更新于 14:32。</p>
+            </div>
+            <div class="filters">
+              <select class="select" aria-label="组织">
+                <option>星耀传媒 · 全组织</option>
+              </select>
+              <div class="date-input">2026-07-01 至 2026-07-13</div>
+            </div>
+          </div>
+
+          <div class="summary-grid">
+            <article class="card metric-card">
+              <div class="metric-top">
+                <span>在营项目</span>
+                <span
+                  class="metric-icon"
+                  style="background: var(--primary-1); color: var(--primary-7)"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    <path d="M4 7h16M6 7v12h12V7M9 11h6M9 15h4" />
+                  </svg>
+                </span>
+              </div>
+              <div>
+                <div class="metric-value">19</div>
+                <div class="metric-meta">
+                  <span class="trend-up">+12.5%</span
+                  ><span>较上周期新增 3 个</span>
+                </div>
+              </div>
+            </article>
+            <article class="card metric-card">
+              <div class="metric-top">
+                <span>今日直播场次</span>
+                <span
+                  class="metric-icon"
+                  style="background: var(--cyan-1); color: var(--cyan-6)"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    <path d="M4 7h16v10H4zM10 11l5 2.5-5 2.5z" />
+                  </svg>
+                </span>
+              </div>
+              <div>
+                <div class="metric-value">48</div>
+                <div class="metric-meta">
+                  <span class="trend-warn">8 场待开播</span
+                  ><span>3 场异常预警</span>
+                </div>
+              </div>
+            </article>
+            <article class="card metric-card">
+              <div class="metric-top">
+                <span>待审报数</span>
+                <span
+                  class="metric-icon"
+                  style="background: var(--warning-1); color: var(--warning-6)"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    <path d="M4 5h16v14H4zM8 9h8M8 13h5M8 17h8" />
+                  </svg>
+                </span>
+              </div>
+              <div>
+                <div class="metric-value">35</div>
+                <div class="metric-meta">
+                  <span class="trend-warn">12 条弱证据</span
+                  ><span>6 条需复核</span>
+                </div>
+              </div>
+            </article>
+            <article class="card metric-card">
+              <div class="metric-top">
+                <span>预计毛利率</span>
+                <span
+                  class="metric-icon"
+                  style="background: var(--success-1); color: var(--success-6)"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    <path d="M4 18 9 9l4 5 7-10" />
+                    <path d="M20 4v6h-6" />
+                  </svg>
+                </span>
+              </div>
+              <div>
+                <div class="metric-value">31.8%</div>
+                <div class="metric-meta">
+                  <span class="trend-up">+2.1%</span
+                  ><span>低毛利项目 3 个</span>
+                </div>
+              </div>
+            </article>
+          </div>
+
+          <div class="workspace">
+            <section class="card panel">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">项目作战面板</div>
+                  <div class="panel-subtitle">
+                    19 个在营项目 · 4 个需要关注 · 本周预计收入 ¥826,400
+                  </div>
+                </div>
+                <div class="tabs" role="tablist" aria-label="作战面板维度">
+                  <button
+                    class="tab active"
+                    type="button"
+                    role="tab"
+                    aria-selected="true"
+                  >
+                    项目
+                  </button>
+                  <button
+                    class="tab"
+                    type="button"
+                    role="tab"
+                    aria-selected="false"
+                  >
+                    主播
+                  </button>
+                  <button
+                    class="tab"
+                    type="button"
+                    role="tab"
+                    aria-selected="false"
+                  >
+                    报数
+                  </button>
+                  <button
+                    class="tab"
+                    type="button"
+                    role="tab"
+                    aria-selected="false"
+                  >
+                    结算
+                  </button>
+                </div>
+              </div>
+
+              <div class="timeline">
+                <div class="stage">
+                  <strong>项目立项</strong>
+                  <span>合同、结算规则、厂家单价</span>
+                </div>
+                <div class="stage current">
+                  <strong>选播准入</strong>
+                  <span>候选录屏、厂家备注、AI 初筛</span>
+                </div>
+                <div class="stage">
+                  <strong>排班直播</strong>
+                  <span>任务计划、开播、下播截图</span>
+                </div>
+                <div class="stage">
+                  <strong>报数审核</strong>
+                  <span>OCR、弱证据、人工复核</span>
+                </div>
+                <div class="stage">
+                  <strong>结算交付</strong>
+                  <span>批次、对账、审计导出</span>
+                </div>
+              </div>
+
+              <div class="command-layout">
+                <div class="table-shell">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th style="width: 34%">项目</th>
+                        <th>阶段</th>
+                        <th>主播</th>
+                        <th>毛利率</th>
+                        <th>风险</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>
+                          <span class="name-cell"
+                            ><i class="dot green"></i>王者荣耀暑期代播</span
+                          >
+                        </td>
+                        <td><span class="tag blue">执行中</span></td>
+                        <td>24 / 30</td>
+                        <td>34.2%</td>
+                        <td><span class="tag orange">弱证据 4</span></td>
+                      </tr>
+                      <tr>
+                        <td>
+                          <span class="name-cell"
+                            ><i class="dot orange"></i>新品服饰矩阵直播</span
+                          >
+                        </td>
+                        <td><span class="tag purple">准入审核</span></td>
+                        <td>18 / 42</td>
+                        <td>27.6%</td>
+                        <td><span class="tag red">缺口</span></td>
+                      </tr>
+                      <tr>
+                        <td>
+                          <span class="name-cell"
+                            ><i class="dot"></i>达人陪玩转化测试</span
+                          >
+                        </td>
+                        <td><span class="tag green">结算中</span></td>
+                        <td>16 / 16</td>
+                        <td>39.8%</td>
+                        <td><span class="tag blue">正常</span></td>
+                      </tr>
+                      <tr>
+                        <td>
+                          <span class="name-cell"
+                            ><i class="dot red"></i>食品快消冲榜项目</span
+                          >
+                        </td>
+                        <td><span class="tag orange">报数复核</span></td>
+                        <td>12 / 20</td>
+                        <td>18.9%</td>
+                        <td><span class="tag red">高风险</span></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="risk-list">
+                  <div class="risk-item">
+                    <i class="dot red"></i>
+                    <div>
+                      <h3>食品快消项目低毛利</h3>
+                      <p>外部投流与主播应付叠加，建议调整 CPS 阶梯。</p>
+                    </div>
+                    <span class="tag red">P1</span>
+                  </div>
+                  <div class="risk-item">
+                    <i class="dot orange"></i>
+                    <div>
+                      <h3>服饰项目主播缺口</h3>
+                      <p>距厂家分享截止剩 18 小时，仍缺 24 人。</p>
+                    </div>
+                    <span class="tag orange">P2</span>
+                  </div>
+                  <div class="risk-item">
+                    <i class="dot green"></i>
+                    <div>
+                      <h3>陪玩测试转化稳定</h3>
+                      <p>近 5 场 ROI 高于同类项目均值 13%。</p>
+                    </div>
+                    <span class="tag green">OK</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <div class="right-stack">
+              <section class="card panel ai-card">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">星耀 AI 助手</div>
+                    <div class="panel-subtitle">
+                      基于当前经营数据生成复盘与行动建议。
+                    </div>
+                  </div>
+                  <span class="tag blue">事实引用</span>
+                </div>
+                <div class="ai-input">
+                  复盘本周低毛利项目，按「项目卡点、主播供给、报数证据、结算影响」给我一页经营简报。
+                </div>
+                <div class="prompt-chips">
+                  <button class="chip" type="button">生成项目复盘</button>
+                  <button class="chip" type="button">解释毛利波动</button>
+                  <button class="chip" type="button">推荐候选主播</button>
+                  <button class="chip" type="button">整理风险清单</button>
+                </div>
+                <button
+                  class="button primary"
+                  type="button"
+                  style="width: 100%"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    <path
+                      d="m12 3 1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"
+                    />
+                    <path
+                      d="m18 15 .8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"
+                    />
+                  </svg>
+                  生成经营建议
+                </button>
+              </section>
+
+              <section class="card panel">
+                <div class="panel-head">
+                  <div>
+                    <div class="panel-title">今日待办</div>
+                    <div class="panel-subtitle">
+                      27 项待处理 · 其中 2 项已临近截止时间
+                    </div>
+                  </div>
+                </div>
+                <div class="check-list">
+                  <div class="check-row">
+                    <span class="check">✓</span
+                    ><span>厂家分享页待确认 7 条</span
+                    ><span class="tag orange">18:00</span>
+                  </div>
+                  <div class="check-row">
+                    <span class="check">✓</span
+                    ><span>报数弱证据待复核 12 条</span
+                    ><span class="tag red">P1</span>
+                  </div>
+                  <div class="check-row">
+                    <span class="check">✓</span><span>结算批次待锁定 5 个</span
+                    ><span class="tag blue">财务</span>
+                  </div>
+                  <div class="check-row">
+                    <span class="check">✓</span
+                    ><span>主播缺口项目需补招 3 个</span
+                    ><span class="tag purple">运营</span>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <div class="split-grid">
+            <section class="card mini-panel">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">选播准入</div>
+                  <div class="panel-subtitle">
+                    待初审 18 人 · 待厂家确认 7 人
+                  </div>
+                </div>
+              </div>
+              <div class="approval-card">
+                <div class="video-thumb">
+                  <svg
+                    width="26"
+                    height="26"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3>小鹿 · 王者荣耀 · 录屏 02</h3>
+                  <p>AI 评分 86；节奏稳定，话术覆盖 4/5，厂家备注待确认。</p>
+                </div>
+              </div>
+              <div class="approval-card">
+                <div
+                  class="video-thumb"
+                  style="background: var(--warning-1); color: var(--warning-6)"
+                >
+                  <svg
+                    width="26"
+                    height="26"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                  >
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3>阿森 · 服饰 · 录屏 01</h3>
+                  <p>音画质量需复核；AI 标记为中置信度，建议人工二审。</p>
+                </div>
+              </div>
+            </section>
+
+            <section class="card mini-panel">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">履约漏斗</div>
+                  <div class="panel-subtitle">
+                    近 30 天 · 整体履约转化率 24.5%
+                  </div>
+                </div>
+              </div>
+              <div class="pipeline">
+                <div class="pipeline-row">
+                  <span>报名/候选</span
+                  ><span class="bar"><i style="width: 92%"></i></span><b>278</b>
+                </div>
+                <div class="pipeline-row">
+                  <span>录屏待审</span
+                  ><span class="bar"
+                    ><i style="width: 78%; background: var(--cyan-6)"></i></span
+                  ><b>216</b>
+                </div>
+                <div class="pipeline-row">
+                  <span>厂家确认</span
+                  ><span class="bar"
+                    ><i
+                      style="width: 64%; background: var(--purple-6)"
+                    ></i></span
+                  ><b>142</b>
+                </div>
+                <div class="pipeline-row">
+                  <span>排班直播</span
+                  ><span class="bar"
+                    ><i
+                      style="width: 51%; background: var(--warning-6)"
+                    ></i></span
+                  ><b>96</b>
+                </div>
+                <div class="pipeline-row">
+                  <span>结算锁定</span
+                  ><span class="bar"
+                    ><i
+                      style="width: 35%; background: var(--success-6)"
+                    ></i></span
+                  ><b>68</b>
+                </div>
+              </div>
+            </section>
+
+            <section class="card mini-panel">
+              <div class="panel-head">
+                <div>
+                  <div class="panel-title">结算治理</div>
+                  <div class="panel-subtitle">
+                    本月第 2 批 · 预计 7 月 16 日锁定
+                  </div>
+                </div>
+              </div>
+              <table class="table">
+                <tbody>
+                  <tr>
+                    <td>可结算池</td>
+                    <td style="text-align: right"><b>¥428,600</b></td>
+                  </tr>
+                  <tr>
+                    <td>弱证据金额</td>
+                    <td style="text-align: right">
+                      <span class="tag orange">¥36,900</span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>人工承载金额</td>
+                    <td style="text-align: right">
+                      <span class="tag purple">¥18,200</span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>重开批次</td>
+                    <td style="text-align: right">
+                      <span class="tag red">2 个</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

@@ -38,7 +38,7 @@ describe("settlement database regression CI contract", () => {
     ];
 
     expect(job).toContain("  database-regression:");
-    expect(job).toContain("runs-on: ubuntu-latest");
+    expect(job).toContain("runs-on: [self-hosted, linux, x64, constella-ci]");
     expect(job).toContain("timeout-minutes: 30");
     expect(job).toContain("uses: actions/checkout@v4");
     expect(job).toContain("uses: pnpm/action-setup@v4");
