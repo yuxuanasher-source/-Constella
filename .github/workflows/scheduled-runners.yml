@@ -22,7 +22,7 @@ permissions:
 jobs:
   ocr-runner:
     name: OCR runner (every 5 minutes)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, constella-ci]
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *') }}
     steps:
@@ -45,7 +45,7 @@ jobs:
 
   recording-ai-runner:
     name: Recording AI runner (every 30 minutes)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, constella-ci]
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/30 * * * *') }}
     steps:
@@ -68,7 +68,7 @@ jobs:
 
   recording-intelligence-learn:
     name: Recording intelligence calibration (daily)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, constella-ci]
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
     steps:
@@ -91,7 +91,7 @@ jobs:
 
   anomaly-runner:
     name: Anomaly scan runner (every 30 minutes)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, constella-ci]
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/30 * * * *') }}
     steps:
@@ -114,7 +114,7 @@ jobs:
 
   account-metrics-sync-runner:
     name: Account metrics sync runner (daily)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, constella-ci]
     # 平台指标网关（PLATFORM_METRICS_ENDPOINT）就绪前保持关闭，避免 400 变红
     if: ${{ vars.APP_BASE_URL != '' && vars.PLATFORM_METRICS_SYNC_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
     steps:
@@ -137,7 +137,7 @@ jobs:
 
   account-idle-scan-runner:
     name: Account idle scan runner (daily)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, constella-ci]
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
     steps:
