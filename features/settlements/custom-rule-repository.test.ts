@@ -8,6 +8,7 @@ import {
   SupabaseCustomRuleReadRepository,
   type ClarifyingCustomRuleDraftInput,
   type ContractReadyCustomRuleDraftInput,
+  type CreateSettlementReconciliationRunInput,
   type CreateCustomRuleDraftInput,
   type CustomRuleRepository,
   type CustomRuleReadRepository,
@@ -414,7 +415,7 @@ describe("Phase 2 custom rule lifecycle repository", () => {
       }),
     } as unknown as SupabaseClient);
 
-    await repository.createSettlementReconciliationRun({
+    const reconciliationRunInput: CreateSettlementReconciliationRunInput = {
       organizationId: ORGANIZATION_ID,
       projectId: PROJECT_ID,
       periodStart: "2026-06-01",
@@ -434,7 +435,9 @@ describe("Phase 2 custom rule lifecycle repository", () => {
       blocked: false,
       warnings: publicResult.checks,
       createdBy: CREATOR_ID,
-    } as any);
+    };
+
+    await repository.createSettlementReconciliationRun(reconciliationRunInput);
 
     expect(insert).toHaveBeenCalledWith(
       expect.objectContaining({ core_result: publicResult }),

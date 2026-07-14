@@ -66,6 +66,12 @@ function createSource(
 
 type Totals = { computedCents: number; manualCents: number; adjustmentCents: number };
 type Evidence = { green: number; yellow: number; red: number; unknown?: number };
+type PersistReconciliationRunInput = Parameters<
+  NonNullable<ReconciliationDataSource["persistReconciliationRun"]>
+>[0];
+type CachedReconciliationRunInput = Parameters<
+  NonNullable<ReconciliationDataSource["getCachedReconciliationRun"]>
+>[0];
 
 describe("runProjectSettlementReconciliation", () => {
   it("composes batch, cost and tax inputs into the reconciliation result", async () => {
@@ -166,12 +172,14 @@ describe("runProjectSettlementReconciliation", () => {
     const source = createSource() as ReconciliationDataSource &
       Record<string, ReturnType<typeof vi.fn>>;
     source.resolveActiveReconciliationRule = vi.fn(async () => null);
-    source.persistReconciliationRun = vi.fn(async (snapshot: any) => ({
+    source.persistReconciliationRun = vi.fn(
+      async (snapshot: PersistReconciliationRunInput) => ({
       id: "run-1",
       createdAt: "2026-07-14T00:00:00.000Z",
       inputHash: snapshot.inputHash,
       result: snapshot.result,
-    }));
+      }),
+    );
 
     const result = await runProjectSettlementReconciliation({
       source,
@@ -235,7 +243,8 @@ describe("runProjectSettlementReconciliation", () => {
       events.push("load:active_rule");
       return rule;
     });
-    source.persistReconciliationRun = vi.fn(async (snapshot: any) => {
+    source.persistReconciliationRun = vi.fn(
+      async (snapshot: PersistReconciliationRunInput) => {
       events.push("persist:run");
       expect(
         snapshot.finalChecks.map((check: { source: string }) => check.source),
@@ -246,7 +255,8 @@ describe("runProjectSettlementReconciliation", () => {
         inputHash: snapshot.inputHash,
         result: snapshot.result,
       };
-    });
+      },
+    );
 
     const result = await runProjectSettlementReconciliation({
       source,
@@ -282,7 +292,8 @@ describe("runProjectSettlementReconciliation", () => {
     const source = createSource() as ReconciliationDataSource &
       Record<string, ReturnType<typeof vi.fn>>;
     source.resolveActiveReconciliationRule = vi.fn(async () => null);
-    source.getCachedReconciliationRun = vi.fn(async ({ inputHash }: any) => ({
+    source.getCachedReconciliationRun = vi.fn(
+      async ({ inputHash }: CachedReconciliationRunInput) => ({
       id: "cached-run",
       inputHash,
       result: {
@@ -290,7 +301,8 @@ describe("runProjectSettlementReconciliation", () => {
         run: { id: "cached-run", inputHash },
       },
       createdAt: "2026-07-14T00:00:00.000Z",
-    }));
+      }),
+    );
     source.persistReconciliationRun = vi.fn();
 
     const result = await runProjectSettlementReconciliation({
@@ -315,7 +327,8 @@ describe("runProjectSettlementReconciliation", () => {
     const source = createSource() as ReconciliationDataSource &
       Record<string, ReturnType<typeof vi.fn>>;
     source.resolveActiveReconciliationRule = vi.fn(async () => staleRule);
-    source.getCachedReconciliationRun = vi.fn(async ({ inputHash }: any) => ({
+    source.getCachedReconciliationRun = vi.fn(
+      async ({ inputHash }: CachedReconciliationRunInput) => ({
       id: "cached-run",
       inputHash,
       result: {
@@ -323,7 +336,8 @@ describe("runProjectSettlementReconciliation", () => {
         run: { id: "cached-run", inputHash },
       },
       createdAt: "2026-07-14T00:00:00.000Z",
-    }));
+      }),
+    );
     source.persistReconciliationRun = vi.fn();
 
     await expect(
@@ -406,12 +420,14 @@ describe("runProjectSettlementReconciliation", () => {
     source.resolveActiveReconciliationRule = vi.fn(async () =>
       reconciliationRule('pass_if(true, "核对通过")'),
     );
-    source.persistReconciliationRun = vi.fn(async (snapshot: any) => ({
+    source.persistReconciliationRun = vi.fn(
+      async (snapshot: PersistReconciliationRunInput) => ({
       id: "run-1",
       inputHash: snapshot.inputHash,
       createdAt: "2026-07-14T00:00:00.000Z",
       result: snapshot.result,
-    }));
+      }),
+    );
 
     await expect(
       runProjectSettlementReconciliation({
