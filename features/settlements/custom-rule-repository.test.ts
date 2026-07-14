@@ -184,6 +184,34 @@ describe("Phase 2 custom rule lifecycle repository", () => {
   });
 
   it("rehydrates cached reconciliation run DTOs from persisted final custom checks", async () => {
+    const publicResult = {
+      income: { receivableCents: 1000 },
+      checks: [
+        {
+          source: "core",
+          severity: "pass",
+          code: "core_only",
+          message: "core ok",
+        },
+        {
+          source: "custom_rule",
+          severity: "block",
+          code: `custom_rule:${RULE_VERSION_ID}:0`,
+          message: "custom block",
+          ruleVersionId: RULE_VERSION_ID,
+          formulaHash: HASH_C,
+        },
+      ],
+      hasBlocking: true,
+      hasWarning: true,
+      canConfirm: false,
+      canLock: false,
+      customRule: {
+        ruleVersionId: RULE_VERSION_ID,
+        contractLabel: "Margin guardrail",
+        formulaHash: HASH_C,
+      },
+    };
     const inserted = {
       id: "00000000-0000-4000-8000-000000000111",
       organization_id: ORGANIZATION_ID,
@@ -193,14 +221,7 @@ describe("Phase 2 custom rule lifecycle repository", () => {
       trigger_type: "manual",
       trigger_batch_id: null,
       core_input_hash: HASH_E,
-      core_result: {
-        income: { receivableCents: 1000 },
-        checks: [{ key: "core_only", severity: "pass", message: "core ok" }],
-        hasBlocking: false,
-        hasWarning: false,
-        canConfirm: true,
-        canLock: true,
-      },
+      core_result: publicResult,
       rule_version_id: RULE_VERSION_ID,
       formula_hash: HASH_C,
       custom_checks: [
@@ -264,21 +285,167 @@ describe("Phase 2 custom rule lifecycle repository", () => {
       inputHash: HASH_E,
     });
 
-    expect(cached?.result.checks).toEqual(inserted.final_checks);
-    expect(cached?.result.customChecks).toEqual(inserted.custom_checks);
-    expect(cached?.result.warnings).toEqual(inserted.warnings);
-    expect(cached?.result).toMatchObject({
-      hasBlocking: true,
-      hasWarning: true,
-      canConfirm: false,
-      canLock: false,
-      customRule: {
-        ruleVersionId: RULE_VERSION_ID,
-        formulaHash: HASH_C,
-      },
-    });
+    expect(cached?.result).toEqual(publicResult);
+    expect(cached?.result).not.toHaveProperty("customChecks");
+    expect(cached?.result).not.toHaveProperty("warnings");
     expect(cached?.customChecks).toEqual(inserted.custom_checks);
     expect(cached?.warnings).toEqual(inserted.warnings);
+  });
+
+  it("rehydrates core-only cached reconciliation runs without sourced check shape drift", async () => {
+    const coreResult = {
+      income: { receivableCents: 1000 },
+      checks: [{ key: "core_only", severity: "pass", message: "core ok" }],
+      hasBlocking: false,
+      hasWarning: false,
+      canConfirm: true,
+      canLock: true,
+    };
+    const inserted = {
+      id: "00000000-0000-4000-8000-000000000111",
+      organization_id: ORGANIZATION_ID,
+      project_id: PROJECT_ID,
+      period_start: "2026-06-01",
+      period_end: "2026-06-30",
+      trigger_type: "manual",
+      trigger_batch_id: null,
+      core_input_hash: HASH_E,
+      core_result: coreResult,
+      rule_version_id: null,
+      formula_hash: null,
+      custom_checks: [],
+      final_checks: [
+        {
+          source: "core",
+          severity: "pass",
+          code: "core_only",
+          message: "core ok",
+        },
+      ],
+      blocked: false,
+      warnings: [],
+      created_by: CREATOR_ID,
+      created_at: "2026-07-14T00:00:00.000Z",
+    };
+    const repository = new SupabaseCustomRuleReadRepository({
+      from: vi.fn((table: string) => {
+        expect(table).toBe("settlement_reconciliation_runs");
+        return {
+          select: vi.fn().mockReturnThis(),
+          eq: vi.fn().mockReturnThis(),
+          order: vi.fn().mockReturnThis(),
+          limit: vi.fn().mockReturnThis(),
+          maybeSingle: vi.fn(async () => ({ data: inserted, error: null })),
+        };
+      }),
+    } as unknown as SupabaseClient);
+
+    const cached = await repository.getCachedSettlementReconciliationRun({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+      inputHash: HASH_E,
+    });
+
+    expect(cached?.result).toEqual(coreResult);
+    expect(cached?.result.checks).toEqual([
+      { key: "core_only", severity: "pass", message: "core ok" },
+    ]);
+    expect(cached?.result).not.toHaveProperty("customChecks");
+    expect(cached?.result).not.toHaveProperty("warnings");
+  });
+
+  it("persists the public reconciliation result snapshot without formula internals", async () => {
+    const publicResult = {
+      income: { receivableCents: 1000 },
+      checks: [
+        {
+          source: "custom_rule",
+          severity: "warn",
+          code: `custom_rule:${RULE_VERSION_ID}:0`,
+          message: "custom warning",
+          ruleVersionId: RULE_VERSION_ID,
+          formulaHash: HASH_C,
+        },
+      ],
+      hasBlocking: false,
+      hasWarning: true,
+      canConfirm: true,
+      canLock: true,
+      customRule: {
+        ruleVersionId: RULE_VERSION_ID,
+        contractLabel: "Margin guardrail",
+        formulaHash: HASH_C,
+      },
+    };
+    const inserted = {
+      id: "00000000-0000-4000-8000-000000000111",
+      organization_id: ORGANIZATION_ID,
+      project_id: PROJECT_ID,
+      period_start: "2026-06-01",
+      period_end: "2026-06-30",
+      trigger_type: "manual",
+      trigger_batch_id: null,
+      core_input_hash: HASH_E,
+      core_result: publicResult,
+      rule_version_id: RULE_VERSION_ID,
+      formula_hash: HASH_C,
+      custom_checks: [],
+      final_checks: publicResult.checks,
+      blocked: false,
+      warnings: publicResult.checks,
+      created_by: CREATOR_ID,
+      created_at: "2026-07-14T00:00:00.000Z",
+    };
+    const insertedPayloads: unknown[] = [];
+    const insert = vi.fn((payload: unknown) => {
+      insertedPayloads.push(payload);
+      return {
+        select: vi.fn(() => ({
+          single: vi.fn(async () => ({ data: inserted, error: null })),
+        })),
+      };
+    });
+    const repository = new SupabaseCustomRuleReadRepository({
+      from: vi.fn((table: string) => {
+        expect(table).toBe("settlement_reconciliation_runs");
+        return { insert };
+      }),
+    } as unknown as SupabaseClient);
+
+    await repository.createSettlementReconciliationRun({
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      periodStart: "2026-06-01",
+      periodEnd: "2026-06-30",
+      triggerType: "manual",
+      triggerBatchId: null,
+      inputHash: HASH_E,
+      coreResult: {
+        income: { receivableCents: 1000 },
+        checks: [{ key: "core_only", severity: "pass", message: "core ok" }],
+      },
+      result: publicResult,
+      ruleVersionId: RULE_VERSION_ID,
+      formulaHash: HASH_C,
+      customChecks: [],
+      finalChecks: publicResult.checks,
+      blocked: false,
+      warnings: publicResult.checks,
+      createdBy: CREATOR_ID,
+    } as any);
+
+    expect(insert).toHaveBeenCalledWith(
+      expect.objectContaining({ core_result: publicResult }),
+    );
+    const insertedPayload = insertedPayloads[0] as
+      | { core_result: unknown }
+      | undefined;
+    expect(insertedPayload).toBeDefined();
+    expect(JSON.stringify(insertedPayload?.core_result)).not.toMatch(
+      /formula("|:)|compiledAst|normalizedAst/,
+    );
   });
 
   it("resolves executable rule versions by organization, project, scope, target, and execution timestamp", async () => {

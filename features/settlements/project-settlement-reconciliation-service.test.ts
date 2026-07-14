@@ -608,7 +608,7 @@ describe("SupabaseReconciliationDataSource", () => {
     expect(result.evidence).toMatchObject({ green: 1, yellow: 1, red: 0 });
   });
 
-  it("treats overlapping voided batches as non-finalized while summing only finalized batches", async () => {
+  it("ignores overlapping voided batches while keeping finalized inputs true", async () => {
     let excludedStatus: string | null = null;
     const rows = [
       {
@@ -665,7 +665,7 @@ describe("SupabaseReconciliationDataSource", () => {
     });
 
     expect(query.neq).not.toHaveBeenCalled();
-    expect(result.finalized).toBe(false);
+    expect(result.finalized).toBe(true);
     expect(result.totals).toEqual({
       computedCents: 10_000,
       manualCents: 100,

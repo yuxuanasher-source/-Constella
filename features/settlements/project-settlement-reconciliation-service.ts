@@ -316,6 +316,7 @@ type SettlementBatchTotalsRow = {
 };
 
 const FINALIZED_SETTLEMENT_BATCH_STATUSES = new Set(["confirmed", "locked"]);
+const EXCLUDED_SETTLEMENT_BATCH_STATUSES = new Set(["voided"]);
 
 type CostSummaryRow = {
   amount_cents: number | null;
@@ -369,6 +370,9 @@ export class SupabaseReconciliationDataSource
     let finalized = true;
 
     for (const row of data ?? []) {
+      if (EXCLUDED_SETTLEMENT_BATCH_STATUSES.has(row.status ?? "")) {
+        continue;
+      }
       if (!FINALIZED_SETTLEMENT_BATCH_STATUSES.has(row.status ?? "")) {
         finalized = false;
         continue;

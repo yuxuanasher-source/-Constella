@@ -863,6 +863,7 @@ export type CreateSettlementReconciliationRunInput = {
   triggerBatchId?: string | null;
   inputHash: string;
   coreResult: Record<string, unknown>;
+  result?: Record<string, unknown>;
   ruleVersionId?: string | null;
   formulaHash?: string | null;
   customChecks: unknown[];
@@ -3555,7 +3556,7 @@ export class SupabaseCustomRuleReadRepository implements CustomRuleRepository {
         trigger_type: input.triggerType,
         trigger_batch_id: input.triggerBatchId ?? null,
         core_input_hash: input.inputHash,
-        core_result: input.coreResult,
+        core_result: stripRawRuleInternals(input.result ?? input.coreResult),
         rule_version_id: input.ruleVersionId ?? null,
         formula_hash: input.formulaHash ?? null,
         custom_checks: input.customChecks,
@@ -6232,11 +6233,17 @@ function toSettlementReconciliationRunSnapshot(
 function rehydrateSettlementReconciliationResult(
   row: z.infer<typeof settlementReconciliationRunRowSchema>,
 ): Record<string, unknown> {
+  if (row.rule_version_id === null) {
+    return row.core_result;
+  }
+
+  if (isPublicCustomRuleReconciliationResult(row.core_result)) {
+    return row.core_result;
+  }
+
   const result: Record<string, unknown> = {
     ...row.core_result,
     checks: row.final_checks,
-    customChecks: row.custom_checks,
-    warnings: row.warnings,
     hasBlocking: row.blocked,
     hasWarning:
       row.warnings.length > 0 ||
@@ -6268,6 +6275,41 @@ function rehydrateSettlementReconciliationResult(
   }
 
   return result;
+}
+
+function isPublicCustomRuleReconciliationResult(
+  result: Record<string, unknown>,
+): boolean {
+  const customRule = result.customRule;
+  return (
+    Array.isArray(result.checks) &&
+    customRule !== null &&
+    typeof customRule === "object" &&
+    typeof (customRule as { ruleVersionId?: unknown }).ruleVersionId === "string" &&
+    typeof (customRule as { formulaHash?: unknown }).formulaHash === "string" &&
+    typeof (customRule as { contractLabel?: unknown }).contractLabel === "string"
+  );
+}
+
+function stripRawRuleInternals(value: unknown): Record<string, unknown> {
+  return stripRawRuleInternalsValue(value) as Record<string, unknown>;
+}
+
+function stripRawRuleInternalsValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripRawRuleInternalsValue);
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(
+          ([key]) =>
+            key !== "formula" && key !== "compiledAst" && key !== "normalizedAst",
+        )
+        .map(([key, child]) => [key, stripRawRuleInternalsValue(child)]),
+    );
+  }
+  return value;
 }
 
 function deepFreezeOwned<Value>(value: Value): Value {
