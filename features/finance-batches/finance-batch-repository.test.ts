@@ -5,6 +5,7 @@ import {
   type FinanceBatchItemRow,
   type FinanceBatchRow,
   SupabaseFinanceBatchRepository,
+  listOpsFinanceBatches,
   toFinanceBatchAdjustmentRecord,
   toFinanceBatchItemRecord,
   toFinanceBatchRecord,
@@ -84,6 +85,7 @@ type MockQuery = {
   lte: ReturnType<typeof vi.fn>;
   order: ReturnType<typeof vi.fn>;
   in: ReturnType<typeof vi.fn>;
+  limit: ReturnType<typeof vi.fn>;
   maybeSingle: ReturnType<typeof vi.fn>;
   returns: ReturnType<typeof vi.fn>;
 };
@@ -93,13 +95,25 @@ function createQuery(table: string, data: unknown[]): MockQuery {
     table,
     calls: [] as Array<{ method: string; args: unknown[] }>,
   } as MockQuery;
-  for (const method of ["select", "eq", "neq", "gte", "lte", "order", "in"]) {
+  for (const method of [
+    "select",
+    "eq",
+    "neq",
+    "gte",
+    "lte",
+    "order",
+    "in",
+    "limit",
+  ]) {
     query[method as keyof MockQuery] = vi.fn((...args: unknown[]) => {
       query.calls.push({ method, args });
       return query;
     }) as never;
   }
-  query.maybeSingle = vi.fn(async () => ({ data: data[0] ?? null, error: null }));
+  query.maybeSingle = vi.fn(async () => ({
+    data: data[0] ?? null,
+    error: null,
+  }));
   query.returns = vi.fn(async () => ({ data, error: null }));
   return query;
 }
@@ -244,7 +258,11 @@ describe("SupabaseFinanceBatchRepository RPC writes", () => {
 
   it("uses add_finance_batch_adjustment for adjustment writes", async () => {
     const client = createRpcClient({
-      batch: { ...batchRow, adjustment_amount: "25.35", final_amount: "235.35" },
+      batch: {
+        ...batchRow,
+        adjustment_amount: "25.35",
+        final_amount: "235.35",
+      },
       adjustment: adjustmentRow,
     });
     const repo = new SupabaseFinanceBatchRepository(client as never);
@@ -315,10 +333,79 @@ describe("SupabaseFinanceBatchRepository finance batch detail reads", () => {
     expect(result?.items).toEqual([
       expect.objectContaining({ id: "item-1", status: "voided" }),
     ]);
-    expect(supabase.queryFor("finance_batch_items").eq).not.toHaveBeenCalledWith(
-      "status",
-      "active",
-    );
+    expect(
+      supabase.queryFor("finance_batch_items").eq,
+    ).not.toHaveBeenCalledWith("status", "active");
+  });
+});
+
+describe("listOpsFinanceBatches", () => {
+  it("returns org-scoped ops reference batches ordered by recent updates", async () => {
+    const supabase = createListSourcesClient({
+      finance_batches: [batchRow],
+    });
+
+    const result = await listOpsFinanceBatches(supabase.client as never, {
+      organizationId: "org-1",
+    });
+
+    const query = supabase.queryFor("finance_batches");
+    expect(query.select).toHaveBeenCalledWith(expect.stringContaining("id"));
+    expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(query.order).toHaveBeenCalledWith("updated_at", {
+      ascending: false,
+    });
+    expect(query.limit).toHaveBeenCalledWith(200);
+    expect(result).toEqual([
+      expect.objectContaining({
+        id: "batch-1",
+        type: "streamer_payable",
+        title: "July streamer payable",
+        finalAmount: 210,
+        itemCount: 2,
+      }),
+    ]);
+  });
+
+  it("filters ops reference batches through finance batch items for a project", async () => {
+    const supabase = createListSourcesClient({
+      finance_batch_items: [
+        { finance_batch_id: "batch-1" },
+        { finance_batch_id: "batch-1" },
+        { finance_batch_id: "batch-2" },
+        { finance_batch_id: null },
+      ],
+      finance_batches: [batchRow],
+    });
+
+    await listOpsFinanceBatches(supabase.client as never, {
+      organizationId: "org-1",
+      projectId: "project-1",
+    });
+
+    const itemQuery = supabase.queryFor("finance_batch_items");
+    expect(itemQuery.select).toHaveBeenCalledWith("finance_batch_id");
+    expect(itemQuery.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(itemQuery.eq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(supabase.queryFor("finance_batches").in).toHaveBeenCalledWith("id", [
+      "batch-1",
+      "batch-2",
+    ]);
+  });
+
+  it("returns no ops reference batches when a project has no finance batch items", async () => {
+    const supabase = createListSourcesClient({
+      finance_batch_items: [],
+      finance_batches: [batchRow],
+    });
+
+    const result = await listOpsFinanceBatches(supabase.client as never, {
+      organizationId: "org-1",
+      projectId: "project-empty",
+    });
+
+    expect(result).toEqual([]);
+    expect(supabase.client.from).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -419,7 +506,10 @@ describe("SupabaseFinanceBatchRepository streamer payable sources", () => {
     expect(liveReportsQuery.select).toHaveBeenCalledWith(
       expect.stringContaining("time_source"),
     );
-    expect(liveReportsQuery.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(liveReportsQuery.eq).toHaveBeenCalledWith(
+      "organization_id",
+      "org-1",
+    );
     expect(liveReportsQuery.eq).toHaveBeenCalledWith("status", "approved");
     expect(liveReportsQuery.eq).toHaveBeenCalledWith(
       "enter_settlement_pool",
@@ -450,11 +540,7 @@ describe("SupabaseFinanceBatchRepository streamer payable sources", () => {
 
     expect(supabase.queryFor("finance_batch_items").in).toHaveBeenCalledWith(
       "source_id",
-      [
-        "report-eligible",
-        "report-new-consumed",
-        "report-legacy-consumed",
-      ],
+      ["report-eligible", "report-new-consumed", "report-legacy-consumed"],
     );
     expect(
       supabase.queryFor("settlement_batch_item_reports").in,

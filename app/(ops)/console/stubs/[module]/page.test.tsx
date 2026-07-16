@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import { listOpsApplicationQueue } from "@/features/applications/application-queries";
+import { listOpsFinanceBatches } from "@/features/finance-batches/finance-batch-repository";
+import type { OpsReferenceFinanceBatch } from "@/features/finance-batches/finance-batch-ui-adapters";
 import {
   getOpsSettlementDefaultScope,
   listOpsSettlementBatches,
@@ -38,6 +40,10 @@ vi.mock("@/features/audit-center/audit-center-queries", () => ({
 
 vi.mock("@/features/billing/billing-status", () => ({
   getBillingStatus: vi.fn(),
+}));
+
+vi.mock("@/features/finance-batches/finance-batch-repository", () => ({
+  listOpsFinanceBatches: vi.fn(),
 }));
 
 vi.mock("@/features/live-operations/live-operations-queries", () => ({
@@ -116,6 +122,22 @@ describe("console module stubs route", () => {
 
   it("hydrates the settlement module with org-scoped batch reads", async () => {
     const supabase = {};
+    const financeBatches: OpsReferenceFinanceBatch[] = [
+      {
+        id: "finance-batch-1",
+        type: "streamer_payable",
+        typeLabel: "主播应付",
+        status: "draft",
+        statusLabel: "草稿",
+        statusTone: "neutral",
+        title: "July streamer payable",
+        period: "2026-07-01 → 2026-07-31",
+        periodStart: "2026-07-01",
+        periodEnd: "2026-07-31",
+        finalAmount: 120,
+        itemCount: 1,
+      },
+    ];
     vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
     vi.mocked(getAuthContext).mockResolvedValue({
       userId: "user-finance",
@@ -129,6 +151,7 @@ describe("console module stubs route", () => {
     vi.mocked(listOpsSettlementBatchDetails).mockResolvedValue({});
     vi.mocked(getOpsSettlementDefaultScope).mockResolvedValue(null);
     vi.mocked(listOpsSettlementPool).mockResolvedValue([]);
+    vi.mocked(listOpsFinanceBatches).mockResolvedValue(financeBatches);
 
     render(await StubPage({ params: Promise.resolve({ module: "m6" }) }));
 
@@ -140,7 +163,14 @@ describe("console module stubs route", () => {
       supabase,
       "org-1",
     );
+    expect(listOpsFinanceBatches).toHaveBeenCalledWith(supabase, {
+      organizationId: "org-1",
+    });
     expect(listOpsSettlementPool).not.toHaveBeenCalled();
+    expect(OpsReferenceApp).toHaveBeenCalledWith(
+      expect.objectContaining({ liveFinanceBatches: financeBatches }),
+      undefined,
+    );
   });
 
   it("m3 no longer prefetches the application queue during SSR", async () => {

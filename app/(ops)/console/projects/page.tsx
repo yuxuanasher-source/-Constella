@@ -13,6 +13,7 @@ import {
   listPartnerCollaborationProjects,
   SupabaseProjectCollaborationRepository,
 } from "@/features/collaborations/project-collaboration-service";
+import { listOpsFinanceBatches } from "@/features/finance-batches/finance-batch-repository";
 import type { AuthContext } from "@/lib/auth/context";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import {
@@ -52,12 +53,16 @@ export default async function ProjectsPage() {
     supabase,
     auth.organizationId,
   );
+  const financeBatchesPromise = listOpsFinanceBatches(supabase, {
+    organizationId: auth.organizationId,
+  });
   const [
     projects,
     applicationQueue,
     collaborations,
     liveTasks,
     settlementData,
+    financeBatches,
     dashboardHome,
   ] = await Promise.all([
     projectsPromise,
@@ -65,6 +70,7 @@ export default async function ProjectsPage() {
     loadPartnerCollaborations(collaborationRepo, auth),
     liveTasksPromise,
     loadSettlementReferenceData(supabase, auth.organizationId, batchesPromise),
+    financeBatchesPromise,
     loadConsoleDashboardHome(supabase, auth, {
       projects: projectsPromise,
       applications: applicationQueuePromise,
@@ -89,6 +95,7 @@ export default async function ProjectsPage() {
       ]}
       liveTasks={liveTasks.map((task) => toOpsReferenceTask(task))}
       liveBatches={settlementData.liveBatches}
+      liveFinanceBatches={financeBatches}
       liveSettlementPool={settlementData.liveSettlementPool}
       settlementScope={settlementData.settlementScope}
     />

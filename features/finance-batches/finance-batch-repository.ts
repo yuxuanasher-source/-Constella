@@ -20,6 +20,10 @@ import type {
   FinanceBatchRepository,
   StreamerPayableSource,
 } from "./finance-batch-service";
+import {
+  toOpsReferenceFinanceBatch,
+  type OpsReferenceFinanceBatch,
+} from "./finance-batch-ui-adapters";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -186,9 +190,7 @@ const streamerPayableSourceSelect = `
   streamers(display_name)
 `;
 
-export class SupabaseFinanceBatchRepository
-  implements FinanceBatchRepository
-{
+export class SupabaseFinanceBatchRepository implements FinanceBatchRepository {
   constructor(private readonly client: SupabaseClient) {}
 
   async listFinanceBatches(input: {
@@ -266,14 +268,13 @@ export class SupabaseFinanceBatchRepository
       query = query.in("id", input.sourceIds);
     }
 
-    const { data, error } = await query.returns<StreamerPayableLiveReportRow[]>();
+    const { data, error } =
+      await query.returns<StreamerPayableLiveReportRow[]>();
     if (error) {
       throw error;
     }
 
-    const rows = (data ?? []).filter(
-      (row) => row.settlement_duration !== null,
-    );
+    const rows = (data ?? []).filter((row) => row.settlement_duration !== null);
     const consumedSourceIds =
       rows.length > 0
         ? await this.listConsumedStreamerPayableLiveReportIds({
@@ -539,6 +540,57 @@ export function toFinanceBatchRecord(row: FinanceBatchRow): FinanceBatchRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+export async function listOpsFinanceBatches(
+  client: SupabaseClient,
+  input: { organizationId: string; projectId?: string },
+): Promise<OpsReferenceFinanceBatch[]> {
+  let financeBatchIds: string[] | null = null;
+
+  if (input.projectId) {
+    const { data: itemRows, error: itemError } = await client
+      .from("finance_batch_items")
+      .select("finance_batch_id")
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId)
+      .returns<Array<{ finance_batch_id: string | null }>>();
+
+    if (itemError) {
+      throw itemError;
+    }
+
+    financeBatchIds = uniqueStable(
+      (itemRows ?? [])
+        .map((row) => row.finance_batch_id)
+        .filter((id): id is string => Boolean(id)),
+    );
+
+    if (financeBatchIds.length === 0) {
+      return [];
+    }
+  }
+
+  let query = client
+    .from("finance_batches")
+    .select(financeBatchSelect)
+    .eq("organization_id", input.organizationId)
+    .order("updated_at", { ascending: false })
+    .limit(200);
+
+  if (financeBatchIds) {
+    query = query.in("id", financeBatchIds);
+  }
+
+  const { data, error } = await query.returns<FinanceBatchRow[]>();
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? [])
+    .map((row) => toFinanceBatchRecord(row))
+    .map((batch) => toOpsReferenceFinanceBatch(batch));
 }
 
 export function toFinanceBatchItemRecord(
