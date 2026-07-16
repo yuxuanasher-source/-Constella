@@ -1,13 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { resolveOcrImageInput } from "@/features/ai/ocr-image-source";
-import { claimRunnableOcrJobs, runOcrJobOnce } from "@/features/ai/ocr-jobs";
+import { runOcrWorkerIteration } from "@/features/ai/ocr-worker";
 import { resolveOcrRunnerIdentity } from "@/features/ai/ocr-runner-identity";
-import {
-  createTencentOcrProvider,
-  readTencentOcrConfigFromEnv,
-} from "@/features/ai/providers/tencent-ocr-provider";
-import { getPrivateStorageBucket } from "@/lib/config/env";
 
 export async function POST(request: Request) {
   const expected = process.env.OCR_RUNNER_TOKEN;
@@ -40,16 +34,13 @@ export async function POST(request: Request) {
     typeof body.limit === "number" && Number.isFinite(body.limit)
       ? Math.max(1, Math.min(Math.trunc(body.limit), 10))
       : 5;
-  const provider = createTencentOcrProvider(
-    readTencentOcrConfigFromEnv(process.env),
-  );
-  let jobs;
+  let result;
   try {
-    jobs = await claimRunnableOcrJobs({
+    result = await runOcrWorkerIteration({
       client: supabase as never,
-      organizationId: actor.organizationId,
-      runnerId: actor.userId,
+      workerId: `ocr:http:${actor.userId}`,
       limit,
+      leaseSeconds: 15 * 60,
     });
   } catch {
     return NextResponse.json(
@@ -61,46 +52,30 @@ export async function POST(request: Request) {
     );
   }
 
-  const completed = [];
-  const failures = [];
-  for (const job of jobs) {
-    try {
-      const result = await runOcrJobOnce({
-        client: supabase as never,
-        actor,
-        jobId: job.id,
-        provider,
-        runnerId: actor.userId,
-        imageResolver: (payload) =>
-          resolveOcrImageInput({
-            client: supabase,
-            payload,
-            defaultBucket: getPrivateStorageBucket(),
-          }),
-      });
-      completed.push({
-        id: result.id,
-        status: result.status,
-        attempt: result.attempt,
-      });
-    } catch (error) {
-      failures.push({
-        jobId: job.id,
-        errorCode: "runner_failed",
-        errorMessage: sanitizeRunnerError(error),
-      });
-    }
-  }
-
-  return NextResponse.json({ jobs: completed, failures });
+  return NextResponse.json({
+    jobs: result.jobs ?? [],
+    failures: (result.failures ?? []).map((failure) => ({
+      jobId: failure.jobId,
+      errorCode: "runner_failed",
+      errorMessage: sanitizeRunnerError(failure.errorMessage),
+    })),
+    summary: {
+      claimed: result.claimed,
+      succeeded: result.succeeded,
+      failed: result.failed,
+    },
+  });
 }
 
 function sanitizeRunnerError(error: unknown): string {
   const message =
-    error instanceof Error && error.message.trim()
-      ? error.message.trim()
-      : "OCR runner failed";
+    typeof error === "string" && error.trim()
+      ? error.trim()
+      : error instanceof Error && error.message.trim()
+        ? error.message.trim()
+        : "OCR runner failed";
   return message
+    .replace(/tencent\s+ocr\s+credentials[^\n;]*/gi, "[redacted]")
     .replace(/[A-Za-z0-9_.-]+\/[^\s;]+/g, "[redacted]")
     .replace(/\s+with\s+secret[^\s;]*/gi, "")
     .replace(/secret[^\s;]*/gi, "[redacted]")

@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   claimRunnableOcrJobs,
+  claimPlatformOcrJobs,
   confirmOcrJob,
   createOcrJob,
   listRunnableOcrJobs,
   retryOcrJob,
+  runClaimedOcrJob,
   runOcrJobOnce,
   type OcrJobRecord,
 } from "./ocr-jobs";
@@ -178,6 +180,9 @@ describe("OCR jobs", () => {
         job_type: "ocr.extract_live_report",
         status: "queued",
         ai_invocation_id: "invocation-1",
+        requested_by: "user-ops",
+        priority: 0,
+        idempotency_key: "ocr:live-report:report-1",
       }),
     ]);
     expect(inserts.ocr_results).toEqual([
@@ -619,6 +624,119 @@ describe("OCR jobs", () => {
         lockedBy: "runner-1",
       }),
     ]);
+  });
+
+  it("claims platform OCR jobs without organization scoping", async () => {
+    const { client } = createClient();
+    vi.mocked(client.rpc).mockResolvedValueOnce({
+      data: [
+        {
+          id: "job-platform",
+          organization_id: "org-1",
+          job_type: "ocr.extract_live_report",
+          status: "running",
+          attempt: 1,
+          max_attempts: 3,
+          locked_by: "worker-1",
+          payload: { liveReportId: "report-platform", imageBase64: "AQID" },
+        },
+      ],
+      error: null,
+    });
+
+    const jobs = await claimPlatformOcrJobs({
+      client,
+      workerId: "worker-1",
+      limit: 2,
+      leaseSeconds: 60,
+      now: new Date("2026-07-14T10:00:00.000Z"),
+    });
+
+    expect(client.rpc).toHaveBeenCalledWith("claim_async_ocr_jobs", {
+      p_worker_id: "worker-1",
+      p_limit: 2,
+      p_lease_seconds: 60,
+      p_now: "2026-07-14T10:00:00.000Z",
+    });
+    const platformClaimCalls = vi.mocked(client.rpc).mock.calls as unknown as Array<
+      [string, Record<string, unknown>]
+    >;
+    const platformClaimArgs = platformClaimCalls[0]?.[1] as
+      | Record<string, unknown>
+      | undefined;
+    expect(JSON.stringify(platformClaimArgs)).not.toContain("organization");
+    expect(jobs).toEqual([
+      expect.objectContaining({ id: "job-platform", attempt: 1 }),
+    ]);
+  });
+
+  it("runs a platform-claimed OCR job without consuming a second attempt", async () => {
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-platform-run",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "running",
+          attempt: 1,
+          maxAttempts: 3,
+          lockedBy: "worker-1",
+          payload: {
+            liveReportId: "report-platform-run",
+            imageBase64: "AQID",
+            expectedDuration: 80,
+          },
+        },
+      ],
+    });
+
+    const result = await runClaimedOcrJob({
+      client,
+      actor,
+      job: {
+        id: "job-platform-run",
+        organizationId: "org-1",
+        jobType: "ocr.extract_live_report",
+        status: "running",
+        attempt: 1,
+        maxAttempts: 3,
+        lockedBy: "worker-1",
+        payload: {
+          liveReportId: "report-platform-run",
+          imageBase64: "AQID",
+          expectedDuration: 80,
+        },
+      },
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "succeeded" as const,
+          textLines: ["直播时长 80分钟", "观看人数 320"],
+          textItems: [],
+          confidence: 96,
+          requestId: "request-platform",
+          rawResponse: {},
+        })),
+      },
+      startedAt: new Date("2026-07-14T10:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({ status: "succeeded", attempt: 1 });
+    expect(updates.background_jobs).not.toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          status: "running",
+          attempt: 2,
+        }),
+      }),
+    );
+    expect(updates.background_jobs.at(-1)).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          status: "succeeded",
+          attempt: 1,
+        }),
+      }),
+    );
   });
 
   it("lets manual retry override a final failed job without clearing attempts", async () => {

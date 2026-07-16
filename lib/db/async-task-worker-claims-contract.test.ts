@@ -335,6 +335,7 @@ describe("async task worker claim RPC contract", () => {
     expect(body).toContain("completed_at = p_now");
     expect(body).toContain("lease_expires_at = null");
     expect(body).toContain("locked_by = p_worker_id");
+    expect(body).toContain("result = case when p_metadata ? 'result'");
     expect(body).toContain("claimed_by = p_worker_id");
     expect(body).toContain("lease_expires_at > p_now");
     expect(body).toContain("status in ('succeeded', 'failed', 'cancelled', 'needs_confirmation')");

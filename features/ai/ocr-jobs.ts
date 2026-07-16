@@ -4,7 +4,7 @@ import { writeAuditLog } from "@/lib/audit/audit";
 import { recordUsageEvent } from "@/features/billing/usage-metering";
 import { resolveReportEvidence } from "@/features/live-operations/live-report-evidence";
 
-import type { AiActor } from "./contracts";
+import type { AiActor, AiExecutionActor } from "./contracts";
 import { recordAiInvocation } from "./invocation-ledger";
 import { parseLiveReportOcrText } from "./ocr-template-parser";
 import type {
@@ -201,6 +201,9 @@ export async function createOcrJob({
     attempt: 0,
     max_attempts: 3,
     ai_invocation_id: invocationId,
+    requested_by: actor.userId ?? null,
+    priority: 0,
+    idempotency_key: `ocr:live-report:${input.liveReportId}`,
     run_after: new Date().toISOString(),
     next_run_at: new Date().toISOString(),
     result: {},
@@ -228,6 +231,35 @@ export async function createOcrJob({
     aiInvocationId: invocationId,
     payload,
   };
+}
+
+export async function claimPlatformOcrJobs({
+  client,
+  workerId,
+  now = new Date(),
+  leaseSeconds,
+  limit = 3,
+}: {
+  client: OcrJobClient;
+  workerId: string;
+  now?: Date;
+  leaseSeconds: number;
+  limit?: number;
+}): Promise<OcrJobRecord[]> {
+  if (typeof client.rpc !== "function") {
+    return [];
+  }
+
+  const { data, error } = await client.rpc("claim_async_ocr_jobs", {
+    p_worker_id: workerId,
+    p_limit: Math.max(1, Math.trunc(limit)),
+    p_lease_seconds: Math.max(1, Math.trunc(leaseSeconds)),
+    p_now: now.toISOString(),
+  });
+  if (error) {
+    throw error;
+  }
+  return (data ?? []).map((row) => toOcrJobRecord(row as OcrJobRow));
 }
 
 export async function getOcrJob({
@@ -457,16 +489,21 @@ export async function runOcrJobOnce({
   });
 
   try {
-    return await runLockedOcrJob({
+    return await runClaimedOcrJob({
       client,
       actor,
-      job,
-      jobId,
+      job: {
+        ...job,
+        status: "running",
+        attempt,
+        maxAttempts,
+        lockedAt: startedAt.toISOString(),
+        lockedBy: runnerId,
+      },
       provider,
-      attempt,
-      maxAttempts,
       startedAt,
       imageResolver,
+      unexpectedProviderErrorCode: "runner_error",
     });
   } catch (error) {
     // The lock was already taken; any unexpected error here would otherwise
@@ -487,30 +524,37 @@ export async function runOcrJobOnce({
   }
 }
 
-async function runLockedOcrJob({
+export async function runClaimedOcrJob({
   client,
   actor,
   job,
-  jobId,
   provider,
-  attempt,
-  maxAttempts,
-  startedAt,
+  startedAt = new Date(),
   imageResolver,
+  deferTerminalJobUpdate = false,
+  unexpectedProviderErrorCode = "provider_failed",
+  beforeProvider,
+  beforePostTerminalSideEffects,
+  beforePostTerminalFailureSideEffects,
 }: {
   client: OcrJobClient;
-  actor: AiActor;
+  actor: AiExecutionActor;
   job: OcrJobRecord;
-  jobId: string;
   provider: TencentOcrProvider;
-  attempt: number;
-  maxAttempts: number;
   startedAt: Date;
-  imageResolver: (payload: OcrJobPayload) => Promise<TencentOcrInput>;
+  imageResolver?: (payload: OcrJobPayload) => Promise<TencentOcrInput>;
+  deferTerminalJobUpdate?: boolean;
+  unexpectedProviderErrorCode?: string;
+  beforeProvider?: () => Promise<void>;
+  beforePostTerminalSideEffects?: (result: OcrJobRecord) => Promise<void>;
+  beforePostTerminalFailureSideEffects?: (result: OcrJobRecord) => Promise<void>;
 }): Promise<OcrJobRecord> {
+  const attempt = job.attempt;
+  const maxAttempts = job.maxAttempts ?? 3;
+  const resolveImage = imageResolver ?? defaultOcrImageResolver;
   let providerInput: TencentOcrInput;
   try {
-    providerInput = await imageResolver(job.payload);
+    providerInput = await resolveImage(job.payload);
   } catch (error) {
     return failOcrJobAttempt({
       client,
@@ -523,10 +567,32 @@ async function runLockedOcrJob({
         error instanceof Error && error.message.trim()
           ? error.message
           : "OCR image source failed",
+      deferTerminalJobUpdate,
+      beforePostTerminalFailureSideEffects,
     });
   }
 
-  const providerResult = await provider.runGeneralBasicOcr(providerInput);
+  await beforeProvider?.();
+
+  let providerResult: Awaited<ReturnType<TencentOcrProvider["runGeneralBasicOcr"]>>;
+  try {
+    providerResult = await provider.runGeneralBasicOcr(providerInput);
+  } catch (error) {
+    return failOcrJobAttempt({
+      client,
+      job,
+      attempt,
+      maxAttempts,
+      startedAt,
+      errorCode: unexpectedProviderErrorCode,
+      errorSummary:
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "Tencent OCR failed",
+      deferTerminalJobUpdate,
+      beforePostTerminalFailureSideEffects,
+    });
+  }
 
   if (providerResult.status !== "succeeded") {
     const errorSummary =
@@ -542,6 +608,8 @@ async function runLockedOcrJob({
       startedAt,
       errorCode,
       errorSummary,
+      deferTerminalJobUpdate,
+      beforePostTerminalFailureSideEffects,
     });
   }
 
@@ -558,7 +626,7 @@ async function runLockedOcrJob({
       ? "succeeded"
       : "needs_confirmation";
 
-  await updateOcrResult(client, job, {
+  const ocrResultUpdate = {
     status,
     raw_result: {
       textLines: providerResult.textLines,
@@ -572,7 +640,7 @@ async function runLockedOcrJob({
     confidence: providerResult.confidence,
     needs_confirmation: status === "needs_confirmation",
     error_message: reasons.length ? reasons.join("; ") : null,
-  });
+  };
 
   const result = {
     extractedDuration: parsed.extractedDuration,
@@ -582,16 +650,40 @@ async function runLockedOcrJob({
     requestId: providerResult.requestId,
     parseReasons: reasons,
   };
-  await updateOrThrow(client, "background_jobs", jobId, {
+
+  if (!deferTerminalJobUpdate) {
+    await updateOcrResult(client, job, ocrResultUpdate);
+  }
+
+  if (!deferTerminalJobUpdate) {
+    await updateOrThrow(client, "background_jobs", job.id, {
+      status,
+      attempt,
+      locked_at: null,
+      locked_by: null,
+      error_code: status === "needs_confirmation" ? "needs_review" : null,
+      error_message: reasons.length ? reasons.join("; ") : null,
+      error_summary: reasons.length ? reasons.join("; ") : null,
+      result,
+    });
+  }
+
+  const completedJob = {
+    ...job,
     status,
     attempt,
-    locked_at: null,
-    locked_by: null,
-    error_code: status === "needs_confirmation" ? "needs_review" : null,
-    error_message: reasons.length ? reasons.join("; ") : null,
-    error_summary: reasons.length ? reasons.join("; ") : null,
+    lockedAt: undefined,
+    lockedBy: undefined,
+    errorCode: status === "needs_confirmation" ? "needs_review" : undefined,
+    errorMessage: reasons.length ? reasons.join("; ") : undefined,
     result,
-  });
+  };
+
+  await beforePostTerminalSideEffects?.(completedJob);
+
+  if (deferTerminalJobUpdate) {
+    await updateOcrResult(client, job, ocrResultUpdate);
+  }
 
   // Sync the extracted values back to the live report and move it into the
   // 报数审核池 (review pool). Both trusted and needs-confirmation results enter
@@ -613,7 +705,7 @@ async function runLockedOcrJob({
       quantity: 1,
       source: "ocr_job",
       objectType: "background_job",
-      objectId: jobId,
+      objectId: job.id,
       metadata: {
         provider: "tencent_ocr",
         requestId: providerResult.requestId,
@@ -622,16 +714,7 @@ async function runLockedOcrJob({
     },
   });
 
-  return {
-    ...job,
-    status,
-    attempt,
-    lockedAt: undefined,
-    lockedBy: undefined,
-    errorCode: status === "needs_confirmation" ? "needs_review" : undefined,
-    errorMessage: reasons.length ? reasons.join("; ") : undefined,
-    result,
-  };
+  return completedJob;
 }
 
 export async function confirmOcrJob({
@@ -1002,6 +1085,8 @@ async function failOcrJobAttempt({
   startedAt,
   errorCode,
   errorSummary,
+  deferTerminalJobUpdate = false,
+  beforePostTerminalFailureSideEffects,
 }: {
   client: OcrJobClient;
   job: OcrJobRecord;
@@ -1010,6 +1095,8 @@ async function failOcrJobAttempt({
   startedAt: Date;
   errorCode: string;
   errorSummary: string;
+  deferTerminalJobUpdate?: boolean;
+  beforePostTerminalFailureSideEffects?: (result: OcrJobRecord) => Promise<void>;
 }): Promise<OcrJobRecord> {
   const safeMessage = sanitizeErrorMessage(errorSummary);
   const finalAttempt = attempt >= maxAttempts;
@@ -1017,25 +1104,13 @@ async function failOcrJobAttempt({
     startedAt.getTime() + retryDelayMs(attempt),
   ).toISOString();
 
-  await updateOcrResult(client, job, {
+  const ocrResultUpdate = {
     status: finalAttempt ? "failed" : "pending",
     error_code: errorCode,
     error_message: safeMessage,
     needs_confirmation: false,
-  });
-  await updateOrThrow(client, "background_jobs", job.id, {
-    status: finalAttempt ? "failed" : "queued",
-    attempt,
-    run_after: finalAttempt ? startedAt.toISOString() : retryAt,
-    next_run_at: finalAttempt ? null : retryAt,
-    locked_at: null,
-    locked_by: null,
-    error_code: errorCode,
-    error_message: safeMessage,
-    error_summary: safeMessage,
-  });
-
-  return {
+  };
+  const failedJob: OcrJobRecord = {
     ...job,
     status: finalAttempt ? "failed" : "queued",
     attempt,
@@ -1046,6 +1121,31 @@ async function failOcrJobAttempt({
     errorCode,
     errorMessage: safeMessage,
   };
+  const deferFinalTerminal = deferTerminalJobUpdate && finalAttempt;
+
+  if (!deferFinalTerminal) {
+    await updateOcrResult(client, job, ocrResultUpdate);
+  }
+  if (!(deferTerminalJobUpdate && finalAttempt)) {
+    await updateOrThrow(client, "background_jobs", job.id, {
+      status: finalAttempt ? "failed" : "queued",
+      attempt,
+      run_after: finalAttempt ? startedAt.toISOString() : retryAt,
+      next_run_at: finalAttempt ? null : retryAt,
+      locked_at: null,
+      locked_by: null,
+      error_code: errorCode,
+      error_message: safeMessage,
+      error_summary: safeMessage,
+    });
+  }
+
+  if (deferFinalTerminal) {
+    await beforePostTerminalFailureSideEffects?.(failedJob);
+    await updateOcrResult(client, job, ocrResultUpdate);
+  }
+
+  return failedJob;
 }
 
 function toOcrJobRecord(row: OcrJobRow): OcrJobRecord {

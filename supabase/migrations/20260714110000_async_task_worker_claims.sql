@@ -573,6 +573,7 @@ begin
         locked_by = null,
         error_code = p_error_code,
         error_summary = p_error_code,
+        result = case when p_metadata ? 'result' then p_metadata->'result' else result end,
         updated_at = p_now
     where id = p_task_id
       and job_type = 'ocr.extract_live_report'
@@ -662,6 +663,7 @@ begin
         locked_by = null,
         error_code = p_error_code,
         error_summary = p_error_code,
+        result = case when p_metadata ? 'result' then p_metadata->'result' else result end,
         updated_at = p_now
     where id = p_task_id
       and job_type = 'settlement.simulate_large_sample'
