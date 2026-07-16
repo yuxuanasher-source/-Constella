@@ -97,6 +97,9 @@ describe("unified finance batch schema", () => {
   });
 
   it("keeps finance writes behind staff-scoped security-definer rpcs", () => {
+    expect(migration).toContain("function public.can_control_finance_batches");
+    expect(migration).toContain("om.role in ('owner', 'finance')");
+
     for (const rpc of [
       "create_finance_batch",
       "add_finance_batch_adjustment",
@@ -115,8 +118,27 @@ describe("unified finance batch schema", () => {
       expect(definition).toContain("v_actor_id uuid := auth.uid()");
       expect(definition).toContain("if v_actor_id is null then");
       expect(definition).toContain("public.is_org_member(p_organization_id)");
-      expect(definition).toContain("public.is_mcn_staff(p_organization_id)");
     }
+
+    for (const rpc of [
+      "add_finance_batch_adjustment",
+      "transition_finance_batch",
+    ]) {
+      const functionStart = migration.indexOf(`function public.${rpc}`);
+      const revokeStart = migration.indexOf(`revoke all on function public.${rpc}`);
+      const definition = migration.slice(functionStart, revokeStart);
+      expect(definition).toContain(
+        "public.can_control_finance_batches(p_organization_id)",
+      );
+      expect(definition).not.toContain("public.is_mcn_staff(p_organization_id)");
+    }
+
+    const createStart = migration.indexOf("function public.create_finance_batch");
+    const createRevokeStart = migration.indexOf(
+      "revoke all on function public.create_finance_batch",
+    );
+    const createDefinition = migration.slice(createStart, createRevokeStart);
+    expect(createDefinition).toContain("public.is_mcn_staff(p_organization_id)");
 
     expect(migration).toContain("if p_created_by is distinct from v_actor_id then");
     expect(migration).toContain(

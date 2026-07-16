@@ -364,6 +364,58 @@ describe("finance batch service", () => {
     );
   });
 
+  it("applies base salary once per streamer within a finance batch", async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.listStreamerPayableSources).mockResolvedValueOnce([
+      {
+        ...sourceA,
+        id: "report-base-1",
+        streamerId: "streamer-same",
+        settlementDuration: 60,
+        settlementMethod: "base_salary_cpt",
+        hourlyRate: 80,
+        baseSalary: 5000,
+      },
+      {
+        ...sourceA,
+        id: "report-base-2",
+        streamerId: "streamer-same",
+        settlementDuration: 30,
+        settlementMethod: "base_salary_cpt",
+        hourlyRate: 80,
+        baseSalary: 5000,
+      },
+    ]);
+
+    await createFinanceBatch({
+      repo,
+      actor,
+      input: {
+        batchType: "streamer_payable",
+        periodStart: "2026-07-01",
+        periodEnd: "2026-07-31",
+        selection: {},
+      },
+    });
+
+    expect(repo.createFinanceBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemAmount: 5120,
+        finalAmount: 5120,
+        items: [
+          expect.objectContaining({
+            sourceId: "report-base-1",
+            systemAmount: 5080,
+          }),
+          expect.objectContaining({
+            sourceId: "report-base-2",
+            systemAmount: 40,
+          }),
+        ],
+      }),
+    );
+  });
+
   it("generates zero system amount for CPS and manual settlement methods", async () => {
     const repo = makeRepo();
     vi.mocked(repo.listStreamerPayableSources).mockResolvedValueOnce([
@@ -464,6 +516,42 @@ describe("finance batch service", () => {
     });
     expect(result.batch.systemAmount).toBe(210);
     expect(result.batch.adjustmentAmount).toBe(25.35);
+  });
+
+  it("rejects non-finance controller roles from adjustments and transitions", async () => {
+    const repo = makeRepo();
+    const operatorActor = {
+      ...actor,
+      role: "operator_business" as const,
+    };
+
+    await expect(
+      addFinanceBatchAdjustment({
+        repo,
+        actor: operatorActor,
+        input: {
+          financeBatchId: "batch-1",
+          direction: "increase",
+          amount: 10,
+          reason: "Operator tried to adjust.",
+        },
+      }),
+    ).rejects.toThrow("Only owner or finance can control finance batches");
+
+    await expect(
+      transitionFinanceBatch({
+        repo,
+        actor: operatorActor,
+        input: {
+          financeBatchId: "batch-1",
+          action: "submit",
+        },
+      }),
+    ).rejects.toThrow("Only owner or finance can control finance batches");
+
+    expect(repo.getFinanceBatch).not.toHaveBeenCalled();
+    expect(repo.addAdjustment).not.toHaveBeenCalled();
+    expect(repo.transitionBatch).not.toHaveBeenCalled();
   });
 
   it("submits a draft batch for review", async () => {

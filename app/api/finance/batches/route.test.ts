@@ -12,8 +12,10 @@ import { getSettlementRouteContext } from "@/features/settlements/settlement-rou
 import { GET as listFinanceBatches, POST as createFinanceBatchRoute } from "./route";
 import { GET as getFinanceBatch } from "./[batchId]/route";
 import { POST as addAdjustmentRoute } from "./[batchId]/adjustments/route";
+import { POST as confirmFinanceBatch } from "./[batchId]/confirm/route";
 import { POST as lockFinanceBatch } from "./[batchId]/lock/route";
 import { POST as reopenFinanceBatch } from "./[batchId]/reopen/route";
+import { POST as submitFinanceBatch } from "./[batchId]/submit/route";
 import { POST as voidFinanceBatch } from "./[batchId]/void/route";
 
 const mocks = vi.hoisted(() => ({
@@ -314,6 +316,38 @@ describe("finance batch routes", () => {
         reason: "Reviewed",
       },
     });
+  });
+
+  it("submits and confirms finance batches through transition routes", async () => {
+    const submitResponse = await submitFinanceBatch(
+      jsonRequest(`http://localhost/api/finance/batches/${batchId}/submit`, {}),
+      { params: Promise.resolve({ batchId }) },
+    );
+    const confirmResponse = await confirmFinanceBatch(
+      jsonRequest(`http://localhost/api/finance/batches/${batchId}/confirm`, {}),
+      { params: Promise.resolve({ batchId }) },
+    );
+
+    expect(submitResponse.status).toBe(200);
+    expect(confirmResponse.status).toBe(200);
+    expect(transitionFinanceBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: {
+          financeBatchId: batchId,
+          action: "submit",
+          reason: null,
+        },
+      }),
+    );
+    expect(transitionFinanceBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: {
+          financeBatchId: batchId,
+          action: "confirm",
+          reason: null,
+        },
+      }),
+    );
   });
 
   it("rejects malformed lock batch ids before billing", async () => {

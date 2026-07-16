@@ -20180,6 +20180,24 @@ function ScreenSettlement({ go }) {
     }
   };
 
+  const transitionFinanceBatchRow = (batch, action, reason = null) =>
+    runSettlementAction(`finance-${action}:${batch.id}`, async () => {
+      const actionMap = {
+        submit: actions.submitFinanceBatch,
+        confirm: actions.confirmFinanceBatch,
+        lock: actions.lockFinanceBatch,
+        reopen: actions.reopenFinanceBatch,
+        void: actions.voidFinanceBatch,
+      };
+      const handler = actionMap[action];
+      if (!handler) {
+        throw new Error("财务批次状态接口不可用");
+      }
+      await handler(batch.id, reason ? { reason } : {});
+      setSettlementMessage("财务批次状态已更新");
+      return false;
+    });
+
   React.useEffect(() => {
     setBatchDraft((draft) => ({
       ...draft,
@@ -20785,6 +20803,70 @@ function ScreenSettlement({ go }) {
       title: "条目",
       align: "right",
       render: (row) => `${row.itemCount} 项`,
+    },
+    {
+      title: "操作",
+      align: "right",
+      render: (row) => (
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+          {row.status === "draft" || row.status === "reopened" ? (
+            <Button
+              size="sm"
+              kind="ghost"
+              onClick={() => transitionFinanceBatchRow(row, "submit")}
+              disabled={!!busyAction}
+            >
+              提交
+            </Button>
+          ) : null}
+          {row.status === "pending_review" ? (
+            <Button
+              size="sm"
+              kind="ghost"
+              onClick={() => transitionFinanceBatchRow(row, "confirm")}
+              disabled={!!busyAction}
+            >
+              确认
+            </Button>
+          ) : null}
+          {row.status === "confirmed" ? (
+            <Button
+              size="sm"
+              kind="ghost"
+              onClick={() => transitionFinanceBatchRow(row, "lock")}
+              disabled={!!busyAction}
+            >
+              锁定
+            </Button>
+          ) : null}
+          {["locked", "exported", "completed"].includes(row.status) ? (
+            <Button
+              size="sm"
+              kind="ghost"
+              onClick={() =>
+                transitionFinanceBatchRow(row, "reopen", "财务批次重开")
+              }
+              disabled={!!busyAction}
+            >
+              重开
+            </Button>
+          ) : null}
+          {["draft", "pending_review", "rejected", "reopened"].includes(
+            row.status,
+          ) ? (
+            <Button
+              size="sm"
+              kind="ghost"
+              onClick={() =>
+                transitionFinanceBatchRow(row, "void", "财务批次作废")
+              }
+              disabled={!!busyAction}
+            >
+              作废
+            </Button>
+          ) : null}
+        </div>
+      ),
     },
   ];
 
@@ -34920,6 +35002,10 @@ function OpsReferenceInner({
       refreshFinanceBatches,
       createFinanceBatch,
       addFinanceBatchAdjustment,
+      submitFinanceBatch: (batchId, input) =>
+        transitionFinanceBatch(batchId, "submit", input),
+      confirmFinanceBatch: (batchId, input) =>
+        transitionFinanceBatch(batchId, "confirm", input),
       lockFinanceBatch: (batchId, input) =>
         transitionFinanceBatch(batchId, "lock", input),
       reopenFinanceBatch: (batchId, input) =>

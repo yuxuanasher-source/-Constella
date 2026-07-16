@@ -8279,6 +8279,86 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.getByText("3 项")).toBeInTheDocument();
   });
 
+  it("exposes submit confirm and lock actions for finance batches", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/finance/batches") {
+        return {
+          ok: true,
+          json: async () => ({
+            batches: [
+              {
+                id: "finance-batch-draft",
+                batchType: "streamer_payable",
+                title: "草稿批次",
+                periodStart: "2026-07-01",
+                periodEnd: "2026-07-31",
+                status: "draft",
+                finalAmount: 100,
+                itemCount: 1,
+              },
+              {
+                id: "finance-batch-review",
+                batchType: "streamer_payable",
+                title: "待审核批次",
+                periodStart: "2026-07-01",
+                periodEnd: "2026-07-31",
+                status: "pending_review",
+                finalAmount: 120,
+                itemCount: 1,
+              },
+              {
+                id: "finance-batch-confirmed",
+                batchType: "streamer_payable",
+                title: "已确认批次",
+                periodStart: "2026-07-01",
+                periodEnd: "2026-07-31",
+                status: "confirmed",
+                finalAmount: 140,
+                itemCount: 1,
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ batch: {} }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[]}
+        liveSettlementPool={[]}
+      />,
+    );
+
+    expect(await screen.findByText("草稿批次")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/finance/batches/finance-batch-draft/submit",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/finance/batches/finance-batch-review/confirm",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "锁定" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/finance/batches/finance-batch-confirmed/lock",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
   it("loads unified finance batch data when no live prop is provided", async () => {
     const fetchMock = vi.fn(async (url) => {
       if (String(url) === "/api/finance/batches") {

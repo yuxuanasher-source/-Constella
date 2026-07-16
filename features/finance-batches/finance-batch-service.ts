@@ -1,4 +1,4 @@
-import { isMcnStaff } from "@/lib/rbac/roles";
+import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 import type {
   EvidenceLevel,
   TimeSource,
@@ -138,7 +138,15 @@ export async function createFinanceBatch(input: {
     throw new Error("No eligible streamer payable sources found");
   }
 
-  const items = sources.map(toStreamerPayableItem);
+  const baseSalaryAppliedStreamerIds = new Set<string>();
+  const items = sources.map((source) =>
+    toStreamerPayableItem(source, {
+      includeBaseSalary: shouldIncludeBaseSalaryForSource(
+        source,
+        baseSalaryAppliedStreamerIds,
+      ),
+    }),
+  );
   if (items.length === 0) {
     throw new Error("No eligible streamer payable sources found");
   }
@@ -179,7 +187,7 @@ export async function addFinanceBatchAdjustment(input: {
   batch: FinanceBatchRecord;
   adjustment: FinanceBatchAdjustmentRecord;
 }> {
-  assertMcnStaff(input.actor);
+  assertFinanceController(input.actor);
   const batch = await input.repo.getFinanceBatch({
     organizationId: input.actor.organizationId,
     financeBatchId: input.input.financeBatchId,
@@ -218,7 +226,7 @@ export async function transitionFinanceBatch(input: {
     reason?: string | null;
   };
 }): Promise<FinanceBatchRecord> {
-  assertMcnStaff(input.actor);
+  assertFinanceController(input.actor);
   const batch = await input.repo.getFinanceBatch({
     organizationId: input.actor.organizationId,
     financeBatchId: input.input.financeBatchId,
@@ -246,6 +254,7 @@ export async function transitionFinanceBatch(input: {
 
 function toStreamerPayableItem(
   source: StreamerPayableSource,
+  options: { includeBaseSalary: boolean },
 ): FinanceBatchAtomicItemInput {
   const rule = {
     settlementMethod: source.settlementMethod,
@@ -261,7 +270,7 @@ function toStreamerPayableItem(
       evidenceLevel: source.evidenceLevel,
     },
     rule,
-    includeBaseSalary: true,
+    includeBaseSalary: options.includeBaseSalary,
   });
   const systemAmount = financeAmount(calculated.computedAmount);
 
@@ -299,10 +308,37 @@ function toStreamerPayableItem(
   };
 }
 
+function shouldIncludeBaseSalaryForSource(
+  source: StreamerPayableSource,
+  appliedStreamerIds: Set<string>,
+): boolean {
+  const hasBaseSalary =
+    source.settlementMethod === "base_salary" ||
+    source.settlementMethod === "base_salary_cpt";
+  if (!hasBaseSalary) {
+    return false;
+  }
+  if (appliedStreamerIds.has(source.streamerId)) {
+    return false;
+  }
+  appliedStreamerIds.add(source.streamerId);
+  return true;
+}
+
 function assertMcnStaff(actor: FinanceActor): void {
   if (!isMcnStaff(actor.role)) {
     throw new Error("Only MCN staff can manage finance batches");
   }
+}
+
+function assertFinanceController(actor: FinanceActor): void {
+  if (!canRoleControlFinanceBatches(actor.role)) {
+    throw new Error("Only owner or finance can control finance batches");
+  }
+}
+
+function canRoleControlFinanceBatches(role: AppRole | null | undefined): boolean {
+  return role === "owner" || role === "finance";
 }
 
 function assertValidPeriod(periodStart: string, periodEnd: string): void {

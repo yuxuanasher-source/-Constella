@@ -201,6 +201,22 @@ before update on public.finance_batch_adjustments
 for each row
 execute function public.touch_updated_at();
 
+create or replace function public.can_control_finance_batches(target_organization_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.organization_members om
+    where om.organization_id = target_organization_id
+      and om.user_id = auth.uid()
+      and om.role in ('owner', 'finance')
+  );
+$$;
+
 create or replace function public.finance_batches_void_items_fn()
 returns trigger
 language plpgsql
@@ -505,7 +521,7 @@ begin
   end if;
 
   if not public.is_org_member(p_organization_id)
-     or not public.is_mcn_staff(p_organization_id) then
+     or not public.can_control_finance_batches(p_organization_id) then
     raise exception 'finance_batch_adjustment_access_denied';
   end if;
 
@@ -621,7 +637,7 @@ begin
   end if;
 
   if not public.is_org_member(p_organization_id)
-     or not public.is_mcn_staff(p_organization_id) then
+     or not public.can_control_finance_batches(p_organization_id) then
     raise exception 'finance_batch_transition_access_denied';
   end if;
 
@@ -695,6 +711,11 @@ $$;
 
 revoke all on function public.finance_batches_void_items_fn()
   from public, anon, authenticated, service_role;
+
+revoke all on function public.can_control_finance_batches(uuid)
+  from public, anon, authenticated, service_role;
+grant execute on function public.can_control_finance_batches(uuid)
+  to authenticated;
 
 revoke all on function public.create_finance_batch(
   uuid,
