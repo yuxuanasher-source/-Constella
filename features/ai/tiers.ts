@@ -67,6 +67,8 @@ export const STATE_MACHINE_META: readonly StateMeta[] = [
   // 通知（L3 受限执行）
   meta("notification", "queued", "L3_BOUNDED"), // 低风险通知：执行
   meta("notification", "high_risk_sent", "L3_BOUNDED", true), // 高风险通知：人工确认
+  // 主播项目复盘：AI 可生成草稿，正式发布 / 归档必须由人确认。
+  meta("streamer_project_review", "published", "L4_FORBIDDEN", true, false, true, false),
 ];
 
 export function findStateMeta(

@@ -4,6 +4,7 @@ import {
   buildSuggestedActionTodoDraft,
   buildRetrospectiveDraft,
   buildSettlementBatchDraft,
+  buildStreamerProjectReviewDraft,
   draftConfirmationRequirement,
   isCptEligible,
   type SettlementPoolItem,
@@ -116,5 +117,132 @@ describe("buildSuggestedActionTodoDraft", () => {
         sourceId: "panel:projectRanking:rank:p-low-margin",
       },
     ]);
+  });
+});
+
+describe("buildStreamerProjectReviewDraft", () => {
+  it("wraps a streamer project review profile as a pending human-confirmed draft", () => {
+    const draft = buildStreamerProjectReviewDraft({
+      profile: {
+        streamer: { id: "streamer-1", displayName: "阿星" },
+        project: { id: "project-1", name: "传奇复古", productType: "legend" },
+        participation: {
+          naturalDays: 5,
+          effectiveLiveDays: 2,
+          scheduledTaskCount: 3,
+          completedTaskCount: 2,
+          scheduleCompletionRateBps: 6667,
+          totalSystemDuration: 230,
+          totalSettlementDuration: 230,
+          firstScheduledAt: "2026-07-01T10:00:00.000Z",
+          lastScheduledAt: "2026-07-05T12:00:00.000Z",
+        },
+        liveMetrics: {
+          reportCount: 2,
+          approvedReportCount: 1,
+          totalViewers: 4200,
+          averageViewers: 2100,
+          averagePcu: 290,
+          averageAcu: 80,
+          evidenceLevels: { green: 1, yellow: 1 },
+          riskFlags: { duration_divergence: 1 },
+        },
+        recordings: {
+          submittedCount: 2,
+          approvedCount: 1,
+          rejectedCount: 1,
+          adoptedCount: 1,
+          passRateBps: 5000,
+          adoptionRateBps: 5000,
+          rejectionRateBps: 5000,
+          topRejectionReasons: [{ reason: "画面不清", count: 1 }],
+        },
+        facts: [
+          {
+            statement: "排班 task-1 状态为 completed。",
+            sourceTool: "streamer_project_profile",
+            sourceId: "task-1",
+          },
+        ],
+        findings: [
+          {
+            summary: "该主播在项目内已有 2 个有效直播日。",
+            evidence: [
+              { sourceTool: "streamer_project_profile", sourceId: "report-1" },
+            ],
+          },
+        ],
+        caveats: [],
+        recommendations: [
+          {
+            proposal: "安排运营针对主要录屏驳回原因进行一次主播复盘。",
+            requiresHumanApproval: true,
+          },
+        ],
+        reviewDraft: {
+          summary: "阿星在传奇复古项目已形成 2 个有效直播日。",
+          participation: "自然参与 5 天。",
+          livePerformance: "累计场观 4200。",
+          recordingPerformance: "录屏采用率 50.00%。",
+          productFit: "当前项目产品类型为 legend。",
+          externalReference: {
+            status: "provided",
+            summary: "已接入 1 条外部参考，仅作为同类产品/同行表现参照。",
+            references: [
+              {
+                id: "knowledge:doc-1:chunk-1",
+                title: "传奇复古同类项目复盘",
+                sourceName: "知识库",
+                sourceUrl: null,
+                retrievedAt: "2026-07-16T10:00:00.000Z",
+              },
+            ],
+          },
+          marketReferenceRequest: {
+            status: "satisfied",
+            purpose: "补充同类产品表现、同行打法和平台趋势，仅用于复盘参考。",
+            sourceIds: ["knowledge:doc-1:chunk-1"],
+            guardrails: [
+              "外部参考不能覆盖内部排班、报数、录屏和结算事实。",
+            ],
+          },
+          majorIssues: [],
+          opportunities: [],
+          actionItems: [
+            {
+              proposal: "安排运营针对主要录屏驳回原因进行一次主播复盘。",
+              requiresHumanApproval: true,
+            },
+          ],
+          dataGaps: [],
+        },
+      },
+    });
+
+    expect(draft).toMatchObject({
+      draftType: "streamer_project_review",
+      status: "pending",
+      targetStateMachine: "streamer_project_review",
+      targetState: "published",
+      payload: {
+        streamerId: "streamer-1",
+        projectId: "project-1",
+        summary: "阿星在传奇复古项目已形成 2 个有效直播日。",
+        reviewDraft: expect.objectContaining({
+          livePerformance: "累计场观 4200。",
+        }),
+        references: [
+          {
+            id: "knowledge:doc-1:chunk-1",
+            title: "传奇复古同类项目复盘",
+            sourceName: "知识库",
+            sourceUrl: null,
+            retrievedAt: "2026-07-16T10:00:00.000Z",
+          },
+        ],
+      },
+    });
+    expect(draft.note).toContain("需人工确认");
+    expect(draftConfirmationRequirement(draft).decision).toBe("draft_only");
   });
 });

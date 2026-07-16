@@ -1,6 +1,7 @@
 import { writeAuditLog } from "@/lib/audit/audit";
 
 import { runBusinessCopilotAgent } from "./business-copilot-agent";
+import { buildStreamerProjectReviewDraft } from "./drafts";
 import { createAiInvocationId, recordAiInvocation } from "./invocation-ledger";
 import { recordAiToolInvocation } from "./tool-ledger";
 import { assertRegistrableTool, type AiTier } from "./tiers";
@@ -281,12 +282,14 @@ const registeredTools: Record<string, RegisteredAiTool> = {
       const profile = buildStreamerProjectReviewProfile(
         objectValue(input.profileInput) as unknown as StreamerProjectReviewInput,
       );
+      const pendingDraft = buildStreamerProjectReviewDraft({ profile });
       return {
         answer: `${profile.streamer.displayName} 在 ${profile.project.name} 的项目复盘档案已生成。`,
         output: {
           profile,
           agentOutput: {
             reviewDraft: profile.reviewDraft,
+            pendingDraft,
             facts: profile.facts,
             findings: profile.findings,
             caveats: profile.caveats,
