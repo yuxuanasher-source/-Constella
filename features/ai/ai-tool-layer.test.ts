@@ -335,6 +335,45 @@ describe("runAiToolQuery", () => {
     ]);
   });
 
+  it("returns a market reference request when streamer project review has no external references", async () => {
+    const { client } = createClient();
+
+    const result = await runAiToolQuery({
+      client,
+      actor: {
+        userId: "user-ops",
+        name: "Ops Manager",
+        role: "ops_manager",
+        organizationId: "org-1",
+      },
+      toolName: "streamer_project_review",
+      input: {
+        profileInput: {
+          streamer: { id: "streamer-1", displayName: "阿星" },
+          project: { id: "project-1", name: "传奇复古", productType: "legend" },
+          tasks: [],
+          reports: [],
+          recordings: [],
+        },
+      },
+    });
+
+    expect(result.output.agentOutput).toMatchObject({
+      reviewDraft: {
+        marketReferenceRequest: {
+          status: "needed",
+          queries: [
+            expect.objectContaining({ channel: "knowledge_base" }),
+            expect.objectContaining({ channel: "web_search" }),
+          ],
+          guardrails: expect.arrayContaining([
+            "外部参考不能覆盖内部排班、报数、录屏和结算事实。",
+          ]),
+        },
+      },
+    });
+  });
+
   it("filters streamer diagnosis DTOs so streamer AI cannot see MCN finance", async () => {
     const { client } = createClient();
 
