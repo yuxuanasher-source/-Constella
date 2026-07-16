@@ -31,9 +31,13 @@ const sourceA: StreamerPayableSource = {
   streamerId: "streamer-1",
   streamerName: "Streamer One",
   settlementDuration: 90,
+  timeSource: "system",
   evidenceLevel: "green",
   createdAt: "2026-07-05T12:00:00.000Z",
+  settlementMethod: "cpt",
   hourlyRate: 80,
+  baseSalary: 0,
+  cpsRateBps: 0,
 };
 
 const sourceB: StreamerPayableSource = {
@@ -45,8 +49,12 @@ const sourceB: StreamerPayableSource = {
   streamerId: "streamer-2",
   streamerName: "Streamer Two",
   settlementDuration: 45,
-  evidenceLevel: "yellow",
+  timeSource: "system",
+  evidenceLevel: "green",
+  settlementMethod: "cpt",
   hourlyRate: 120,
+  baseSalary: 0,
+  cpsRateBps: 0,
 };
 
 function makeBatch(
@@ -203,11 +211,21 @@ describe("finance batch service", () => {
               projectId: "project-1",
               projectName: "Project One",
               hourlyRate: 80,
+              settlementMethod: "cpt",
               settlementDuration: 90,
+              timeSource: "system",
+              rule: expect.objectContaining({
+                settlementMethod: "cpt",
+                hourlyRate: 80,
+              }),
+              breakdown: expect.objectContaining({
+                baseAmount: 120,
+              }),
             }),
             evidenceSnapshot: expect.objectContaining({
               evidenceLevel: "green",
-              sourceType: "live_report",
+              timeSource: "system",
+              settlementDuration: 90,
             }),
           }),
           expect.objectContaining({
@@ -215,13 +233,186 @@ describe("finance batch service", () => {
             counterpartyId: "streamer-2",
             systemAmount: 90,
             finalAmount: 90,
-            evidenceLevel: "yellow",
+            evidenceLevel: "green",
           }),
         ],
       }),
     );
     expect(result.batch.systemAmount).toBe(210);
     expect(result.items).toHaveLength(2);
+  });
+
+  it("uses settlement engine for green system CPT payable amounts", async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.listStreamerPayableSources).mockResolvedValueOnce([
+      {
+        ...sourceA,
+        settlementDuration: 120,
+        timeSource: "system",
+        evidenceLevel: "green",
+        settlementMethod: "cpt",
+        hourlyRate: 80,
+      },
+    ]);
+
+    await createFinanceBatch({
+      repo,
+      actor,
+      input: {
+        batchType: "streamer_payable",
+        periodStart: "2026-07-01",
+        periodEnd: "2026-07-31",
+        selection: {},
+      },
+    });
+
+    expect(repo.createFinanceBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemAmount: 160,
+        finalAmount: 160,
+        items: [
+          expect.objectContaining({
+            systemAmount: 160,
+            finalAmount: 160,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("zeros CPT payable amounts when evidence is yellow or time is not system", async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.listStreamerPayableSources).mockResolvedValueOnce([
+      {
+        ...sourceA,
+        id: "report-yellow",
+        evidenceLevel: "yellow",
+        timeSource: "system",
+      },
+      {
+        ...sourceA,
+        id: "report-screenshot",
+        evidenceLevel: "green",
+        timeSource: "screenshot",
+      },
+    ]);
+
+    await createFinanceBatch({
+      repo,
+      actor,
+      input: {
+        batchType: "streamer_payable",
+        periodStart: "2026-07-01",
+        periodEnd: "2026-07-31",
+        selection: {},
+      },
+    });
+
+    expect(repo.createFinanceBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemAmount: 0,
+        finalAmount: 0,
+        items: [
+          expect.objectContaining({ sourceId: "report-yellow", systemAmount: 0 }),
+          expect.objectContaining({
+            sourceId: "report-screenshot",
+            systemAmount: 0,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("includes base salary for base_salary_cpt even when CPT evidence is not payable", async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.listStreamerPayableSources).mockResolvedValueOnce([
+      {
+        ...sourceA,
+        evidenceLevel: "yellow",
+        timeSource: "claimed",
+        settlementMethod: "base_salary_cpt",
+        hourlyRate: 80,
+        baseSalary: 5000,
+      },
+    ]);
+
+    await createFinanceBatch({
+      repo,
+      actor,
+      input: {
+        batchType: "streamer_payable",
+        periodStart: "2026-07-01",
+        periodEnd: "2026-07-31",
+        selection: {},
+      },
+    });
+
+    expect(repo.createFinanceBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemAmount: 5000,
+        items: [
+          expect.objectContaining({
+            systemAmount: 5000,
+            sourceSnapshot: expect.objectContaining({
+              settlementMethod: "base_salary_cpt",
+              baseSalary: 5000,
+              breakdown: expect.objectContaining({ baseAmount: 5000 }),
+            }),
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("generates zero system amount for CPS and manual settlement methods", async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.listStreamerPayableSources).mockResolvedValueOnce([
+      { ...sourceA, id: "report-cps", settlementMethod: "cps", cpsRateBps: 1500 },
+      { ...sourceA, id: "report-manual", settlementMethod: "manual" },
+    ]);
+
+    await createFinanceBatch({
+      repo,
+      actor,
+      input: {
+        batchType: "streamer_payable",
+        periodStart: "2026-07-01",
+        periodEnd: "2026-07-31",
+        selection: {},
+      },
+    });
+
+    expect(repo.createFinanceBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemAmount: 0,
+        items: [
+          expect.objectContaining({ sourceId: "report-cps", systemAmount: 0 }),
+          expect.objectContaining({
+            sourceId: "report-manual",
+            systemAmount: 0,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("does not create a batch when no eligible streamer payable sources exist", async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.listStreamerPayableSources).mockResolvedValueOnce([]);
+
+    await expect(
+      createFinanceBatch({
+        repo,
+        actor,
+        input: {
+          batchType: "streamer_payable",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          selection: {},
+        },
+      }),
+    ).rejects.toThrow("No eligible streamer payable sources found");
+    expect(repo.createFinanceBatchAtomic).not.toHaveBeenCalled();
   });
 
   it("rejects finance batch types that are not enabled yet", async () => {

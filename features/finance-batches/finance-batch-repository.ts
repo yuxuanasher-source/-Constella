@@ -1,4 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type {
+  EvidenceLevel,
+  TimeSource,
+} from "@/features/live-operations/live-report-evidence";
+import type { SettlementMethod } from "@/features/settlements/settlement-engine";
 
 import type {
   FinanceAdjustmentDirection,
@@ -82,7 +87,8 @@ type StreamerPayableLiveReportRow = {
   project_id: string;
   streamer_id: string;
   settlement_duration: number | null;
-  evidence_level: string | null;
+  time_source: TimeSource | null;
+  evidence_level: EvidenceLevel | null;
   created_at: string;
   projects:
     | { name: string | null; code: string | null }
@@ -94,10 +100,33 @@ type StreamerPayableLiveReportRow = {
     | null;
 };
 
-type ProjectStreamerHourlyRateRow = {
+type ProjectStreamerSettlementRuleRow = {
   project_id: string;
   streamer_id: string;
+  settlement_method: SettlementMethod | null;
   hourly_rate: number | string | null;
+  base_salary: number | string | null;
+  cps_rate_bps: number | string | null;
+};
+
+type LegacyConsumedSettlementBatchItemReportRow = {
+  live_report_id: string | null;
+  settlement_batch_items:
+    | {
+        organization_id: string | null;
+        settlement_batches:
+          | { batch_type: string | null; status: string | null }
+          | Array<{ batch_type: string | null; status: string | null }>
+          | null;
+      }
+    | Array<{
+        organization_id: string | null;
+        settlement_batches:
+          | { batch_type: string | null; status: string | null }
+          | Array<{ batch_type: string | null; status: string | null }>
+          | null;
+      }>
+    | null;
 };
 
 const financeBatchSelect = `
@@ -127,6 +156,7 @@ const streamerPayableSourceSelect = `
   project_id,
   streamer_id,
   settlement_duration,
+  time_source,
   evidence_level,
   created_at,
   projects(name, code),
@@ -171,7 +201,9 @@ export class SupabaseFinanceBatchRepository
       throw error;
     }
 
-    const rows = data ?? [];
+    const rows = (data ?? []).filter(
+      (row) => row.settlement_duration !== null,
+    );
     const consumedSourceIds =
       rows.length > 0
         ? await this.listConsumedStreamerPayableLiveReportIds({
@@ -180,14 +212,14 @@ export class SupabaseFinanceBatchRepository
           })
         : new Set<string>();
     const availableRows = rows.filter((row) => !consumedSourceIds.has(row.id));
-    const hourlyRatesByPair = await this.listProjectStreamerHourlyRates({
+    const rulesByPair = await this.listProjectStreamerSettlementRules({
       organizationId: input.organizationId,
       projectIds: uniqueStable(availableRows.map((row) => row.project_id)),
       streamerIds: uniqueStable(availableRows.map((row) => row.streamer_id)),
     });
 
     return availableRows.map((row) =>
-      toStreamerPayableSource(row, hourlyRatesByPair),
+      toStreamerPayableSource(row, rulesByPair),
     );
   }
 
@@ -325,6 +357,18 @@ export class SupabaseFinanceBatchRepository
       return new Set();
     }
 
+    const [newFinanceConsumedIds, legacyConsumedIds] = await Promise.all([
+      this.listNewFinanceConsumedStreamerPayableLiveReportIds(input),
+      this.listLegacyConsumedPayableLiveReportIds(input),
+    ]);
+
+    return new Set([...newFinanceConsumedIds, ...legacyConsumedIds]);
+  }
+
+  private async listNewFinanceConsumedStreamerPayableLiveReportIds(input: {
+    organizationId: string;
+    sourceIds: string[];
+  }): Promise<Set<string>> {
     const { data, error } = await this.client
       .from("finance_batch_items")
       .select("source_id")
@@ -346,22 +390,50 @@ export class SupabaseFinanceBatchRepository
     );
   }
 
-  private async listProjectStreamerHourlyRates(input: {
+  private async listLegacyConsumedPayableLiveReportIds(input: {
+    organizationId: string;
+    sourceIds: string[];
+  }): Promise<Set<string>> {
+    const { data, error } = await this.client
+      .from("settlement_batch_item_reports")
+      .select(
+        "live_report_id, settlement_batch_items!inner(organization_id, settlement_batches!inner(batch_type, status))",
+      )
+      .in("live_report_id", input.sourceIds)
+      .returns<LegacyConsumedSettlementBatchItemReportRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    return new Set(
+      (data ?? [])
+        .filter((row) =>
+          hasLegacyPayableSettlementBatch(row, input.organizationId),
+        )
+        .map((row) => row.live_report_id)
+        .filter((sourceId): sourceId is string => Boolean(sourceId)),
+    );
+  }
+
+  private async listProjectStreamerSettlementRules(input: {
     organizationId: string;
     projectIds: string[];
     streamerIds: string[];
-  }): Promise<Map<string, number>> {
+  }): Promise<Map<string, ProjectStreamerSettlementRuleRow>> {
     if (input.projectIds.length === 0 || input.streamerIds.length === 0) {
       return new Map();
     }
 
     const { data, error } = await this.client
       .from("project_streamers")
-      .select("project_id, streamer_id, hourly_rate")
+      .select(
+        "project_id, streamer_id, settlement_method, hourly_rate, base_salary, cps_rate_bps",
+      )
       .eq("organization_id", input.organizationId)
       .in("project_id", input.projectIds)
       .in("streamer_id", input.streamerIds)
-      .returns<ProjectStreamerHourlyRateRow[]>();
+      .returns<ProjectStreamerSettlementRuleRow[]>();
 
     if (error) {
       throw error;
@@ -370,7 +442,7 @@ export class SupabaseFinanceBatchRepository
     return new Map(
       (data ?? []).map((row) => [
         projectStreamerKey(row.project_id, row.streamer_id),
-        Number(row.hourly_rate ?? 0),
+        row,
       ]),
     );
   }
@@ -466,10 +538,13 @@ function toFinanceBatchItemRpcPayload(
 
 function toStreamerPayableSource(
   row: StreamerPayableLiveReportRow,
-  hourlyRatesByPair: Map<string, number>,
+  rulesByPair: Map<string, ProjectStreamerSettlementRuleRow>,
 ): StreamerPayableSource {
   const project = firstRelation(row.projects);
   const streamer = firstRelation(row.streamers);
+  const rule = rulesByPair.get(
+    projectStreamerKey(row.project_id, row.streamer_id),
+  );
 
   return {
     id: row.id,
@@ -480,12 +555,27 @@ function toStreamerPayableSource(
     streamerId: row.streamer_id,
     streamerName: streamer?.display_name ?? null,
     settlementDuration: row.settlement_duration ?? 0,
+    timeSource: row.time_source,
     evidenceLevel: row.evidence_level,
     createdAt: row.created_at,
-    hourlyRate:
-      hourlyRatesByPair.get(projectStreamerKey(row.project_id, row.streamer_id)) ??
-      0,
+    settlementMethod: rule?.settlement_method ?? "cpt",
+    hourlyRate: Number(rule?.hourly_rate ?? 0),
+    baseSalary: Number(rule?.base_salary ?? 0),
+    cpsRateBps: Number(rule?.cps_rate_bps ?? 0),
   };
+}
+
+function hasLegacyPayableSettlementBatch(
+  row: LegacyConsumedSettlementBatchItemReportRow,
+  organizationId: string,
+): boolean {
+  const item = firstRelation(row.settlement_batch_items);
+  if (!item || item.organization_id !== organizationId) {
+    return false;
+  }
+
+  const batch = firstRelation(item.settlement_batches);
+  return batch?.batch_type === "payable" && batch.status !== "voided";
 }
 
 function firstRelation<T>(relation: T | T[] | null | undefined): T | null {

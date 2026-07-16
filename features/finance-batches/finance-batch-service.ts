@@ -1,4 +1,12 @@
 import { isMcnStaff } from "@/lib/rbac/roles";
+import type {
+  EvidenceLevel,
+  TimeSource,
+} from "@/features/live-operations/live-report-evidence";
+import {
+  calculateSettlementItem,
+  type SettlementMethod,
+} from "@/features/settlements/settlement-engine";
 
 import { financeAmount } from "./finance-batch-money";
 import {
@@ -29,9 +37,13 @@ export type StreamerPayableSource = {
   streamerId: string;
   streamerName: string | null;
   settlementDuration: number;
-  evidenceLevel: string | null;
+  timeSource: TimeSource | null;
+  evidenceLevel: EvidenceLevel | null;
   createdAt: string;
+  settlementMethod: SettlementMethod;
   hourlyRate: number;
+  baseSalary: number;
+  cpsRateBps: number;
 };
 
 export type FinanceBatchAtomicItemInput = {
@@ -122,7 +134,15 @@ export async function createFinanceBatch(input: {
     periodEnd: input.input.periodEnd,
     ...selection,
   });
+  if (sources.length === 0) {
+    throw new Error("No eligible streamer payable sources found");
+  }
+
   const items = sources.map(toStreamerPayableItem);
+  if (items.length === 0) {
+    throw new Error("No eligible streamer payable sources found");
+  }
+
   const systemAmount = financeAmount(
     items.reduce((sum, item) => sum + item.systemAmount, 0),
   );
@@ -227,9 +247,23 @@ export async function transitionFinanceBatch(input: {
 function toStreamerPayableItem(
   source: StreamerPayableSource,
 ): FinanceBatchAtomicItemInput {
-  const systemAmount = financeAmount(
-    (source.settlementDuration / 60) * source.hourlyRate,
-  );
+  const rule = {
+    settlementMethod: source.settlementMethod,
+    hourlyRate: source.hourlyRate,
+    baseSalary: source.baseSalary,
+    cpsRateBps: source.cpsRateBps,
+  };
+  const calculated = calculateSettlementItem({
+    report: {
+      id: source.id,
+      settlementDuration: source.settlementDuration,
+      timeSource: source.timeSource,
+      evidenceLevel: source.evidenceLevel,
+    },
+    rule,
+    includeBaseSalary: true,
+  });
+  const systemAmount = financeAmount(calculated.computedAmount);
 
   return {
     projectId: source.projectId,
@@ -246,19 +280,21 @@ function toStreamerPayableItem(
       streamerId: source.streamerId,
       streamerName: source.streamerName,
       settlementDuration: source.settlementDuration,
+      timeSource: source.timeSource,
+      evidenceLevel: source.evidenceLevel,
+      settlementMethod: source.settlementMethod,
       hourlyRate: source.hourlyRate,
+      baseSalary: source.baseSalary,
+      cpsRateBps: source.cpsRateBps,
+      rule,
+      breakdown: calculated.breakdown,
       createdAt: source.createdAt,
     },
     systemAmount,
     adjustmentAmount: 0,
     finalAmount: systemAmount,
     evidenceLevel: source.evidenceLevel,
-    evidenceSnapshot: {
-      sourceType: "live_report",
-      evidenceLevel: source.evidenceLevel,
-      liveReportId: source.id,
-      createdAt: source.createdAt,
-    },
+    evidenceSnapshot: calculated.evidenceSnapshot,
     exceptionFlags: [],
   };
 }

@@ -74,6 +74,57 @@ function createRpcClient(result: unknown) {
   };
 }
 
+type MockQuery = {
+  table: string;
+  calls: Array<{ method: string; args: unknown[] }>;
+  select: ReturnType<typeof vi.fn>;
+  eq: ReturnType<typeof vi.fn>;
+  neq: ReturnType<typeof vi.fn>;
+  gte: ReturnType<typeof vi.fn>;
+  lte: ReturnType<typeof vi.fn>;
+  order: ReturnType<typeof vi.fn>;
+  in: ReturnType<typeof vi.fn>;
+  returns: ReturnType<typeof vi.fn>;
+};
+
+function createQuery(table: string, data: unknown[]): MockQuery {
+  const query = {
+    table,
+    calls: [] as Array<{ method: string; args: unknown[] }>,
+  } as MockQuery;
+  for (const method of ["select", "eq", "neq", "gte", "lte", "order", "in"]) {
+    query[method as keyof MockQuery] = vi.fn((...args: unknown[]) => {
+      query.calls.push({ method, args });
+      return query;
+    }) as never;
+  }
+  query.returns = vi.fn(async () => ({ data, error: null }));
+  return query;
+}
+
+function createListSourcesClient(responses: Record<string, unknown[]>) {
+  const queries: MockQuery[] = [];
+  const client = {
+    from: vi.fn((table: string) => {
+      const query = createQuery(table, responses[table] ?? []);
+      queries.push(query);
+      return query;
+    }),
+  };
+
+  return {
+    client,
+    queries,
+    queryFor(table: string): MockQuery {
+      const query = queries.find((item) => item.table === table);
+      if (!query) {
+        throw new Error(`Missing query for ${table}`);
+      }
+      return query;
+    },
+  };
+}
+
 describe("finance batch repository mappers", () => {
   it("maps finance batch rows to records", () => {
     expect(toFinanceBatchRecord(batchRow)).toEqual({
@@ -243,5 +294,172 @@ describe("SupabaseFinanceBatchRepository RPC writes", () => {
       p_reason: null,
     });
     expect(result.status).toBe("pending_review");
+  });
+});
+
+describe("SupabaseFinanceBatchRepository streamer payable sources", () => {
+  it("filters eligible sources and maps frozen settlement rule fields", async () => {
+    const supabase = createListSourcesClient({
+      live_reports: [
+        {
+          id: "report-eligible",
+          organization_id: "org-1",
+          project_id: "project-1",
+          streamer_id: "streamer-1",
+          settlement_duration: 120,
+          time_source: "system",
+          evidence_level: "green",
+          created_at: "2026-07-05T12:00:00.000Z",
+          projects: { name: "Project One", code: "P001" },
+          streamers: { display_name: "Streamer One" },
+        },
+        {
+          id: "report-null-duration",
+          organization_id: "org-1",
+          project_id: "project-1",
+          streamer_id: "streamer-1",
+          settlement_duration: null,
+          time_source: "system",
+          evidence_level: "green",
+          created_at: "2026-07-05T13:00:00.000Z",
+          projects: { name: "Project One", code: "P001" },
+          streamers: { display_name: "Streamer One" },
+        },
+        {
+          id: "report-new-consumed",
+          organization_id: "org-1",
+          project_id: "project-2",
+          streamer_id: "streamer-2",
+          settlement_duration: 60,
+          time_source: "system",
+          evidence_level: "green",
+          created_at: "2026-07-05T14:00:00.000Z",
+          projects: { name: "Project Two", code: "P002" },
+          streamers: { display_name: "Streamer Two" },
+        },
+        {
+          id: "report-legacy-consumed",
+          organization_id: "org-1",
+          project_id: "project-3",
+          streamer_id: "streamer-3",
+          settlement_duration: 60,
+          time_source: "system",
+          evidence_level: "green",
+          created_at: "2026-07-05T15:00:00.000Z",
+          projects: { name: "Project Three", code: "P003" },
+          streamers: { display_name: "Streamer Three" },
+        },
+      ],
+      finance_batch_items: [{ source_id: "report-new-consumed" }],
+      settlement_batch_item_reports: [
+        {
+          live_report_id: "report-legacy-consumed",
+          settlement_batch_items: {
+            organization_id: "org-1",
+            settlement_batches: {
+              batch_type: "payable",
+              status: "locked",
+            },
+          },
+        },
+      ],
+      project_streamers: [
+        {
+          project_id: "project-1",
+          streamer_id: "streamer-1",
+          settlement_method: "base_salary_cpt",
+          hourly_rate: "80.00",
+          base_salary: "5000.00",
+          cps_rate_bps: 1500,
+        },
+      ],
+    });
+    const repo = new SupabaseFinanceBatchRepository(supabase.client as never);
+
+    const result = await repo.listStreamerPayableSources({
+      organizationId: "org-1",
+      periodStart: "2026-07-01",
+      periodEnd: "2026-07-31",
+      projectIds: ["project-1", "project-2"],
+      streamerIds: ["streamer-1", "streamer-2"],
+      sourceIds: [
+        "report-eligible",
+        "report-null-duration",
+        "report-new-consumed",
+        "report-legacy-consumed",
+      ],
+    });
+
+    const liveReportsQuery = supabase.queryFor("live_reports");
+    expect(liveReportsQuery.select).toHaveBeenCalledWith(
+      expect.stringContaining("time_source"),
+    );
+    expect(liveReportsQuery.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(liveReportsQuery.eq).toHaveBeenCalledWith("status", "approved");
+    expect(liveReportsQuery.eq).toHaveBeenCalledWith(
+      "enter_settlement_pool",
+      true,
+    );
+    expect(liveReportsQuery.gte).toHaveBeenCalledWith(
+      "created_at",
+      "2026-07-01T00:00:00.000Z",
+    );
+    expect(liveReportsQuery.lte).toHaveBeenCalledWith(
+      "created_at",
+      "2026-07-31T23:59:59.999Z",
+    );
+    expect(liveReportsQuery.in).toHaveBeenCalledWith("project_id", [
+      "project-1",
+      "project-2",
+    ]);
+    expect(liveReportsQuery.in).toHaveBeenCalledWith("streamer_id", [
+      "streamer-1",
+      "streamer-2",
+    ]);
+    expect(liveReportsQuery.in).toHaveBeenCalledWith("id", [
+      "report-eligible",
+      "report-null-duration",
+      "report-new-consumed",
+      "report-legacy-consumed",
+    ]);
+
+    expect(supabase.queryFor("finance_batch_items").in).toHaveBeenCalledWith(
+      "source_id",
+      [
+        "report-eligible",
+        "report-new-consumed",
+        "report-legacy-consumed",
+      ],
+    );
+    expect(
+      supabase.queryFor("settlement_batch_item_reports").in,
+    ).toHaveBeenCalledWith("live_report_id", [
+      "report-eligible",
+      "report-new-consumed",
+      "report-legacy-consumed",
+    ]);
+    expect(supabase.queryFor("project_streamers").select).toHaveBeenCalledWith(
+      "project_id, streamer_id, settlement_method, hourly_rate, base_salary, cps_rate_bps",
+    );
+
+    expect(result).toEqual([
+      {
+        id: "report-eligible",
+        organizationId: "org-1",
+        projectId: "project-1",
+        projectName: "Project One",
+        projectCode: "P001",
+        streamerId: "streamer-1",
+        streamerName: "Streamer One",
+        settlementDuration: 120,
+        timeSource: "system",
+        evidenceLevel: "green",
+        createdAt: "2026-07-05T12:00:00.000Z",
+        settlementMethod: "base_salary_cpt",
+        hourlyRate: 80,
+        baseSalary: 5000,
+        cpsRateBps: 1500,
+      },
+    ]);
   });
 });
