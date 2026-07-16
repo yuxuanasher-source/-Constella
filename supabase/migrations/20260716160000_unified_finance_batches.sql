@@ -241,7 +241,8 @@ select
     - sum(case when item.batch_type = 'project_cost' then item.final_amount else 0 end)
     - sum(case when item.batch_type = 'collaboration_share' then item.final_amount else 0 end) as gross_margin_impact,
   count(*)::integer as item_count,
-  count(*) filter (where jsonb_array_length(item.exception_flags) > 0)::integer as exception_count
+  count(*) filter (where jsonb_array_length(item.exception_flags) > 0)::integer as exception_count,
+  greatest(max(item.updated_at), max(batch.updated_at)) as updated_at
 from public.finance_batch_items as item
 join public.finance_batches as batch on batch.id = item.finance_batch_id
 where item.status = 'active'

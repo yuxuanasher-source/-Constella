@@ -72,6 +72,7 @@ describe("unified finance batch schema", () => {
       "project_cost_amount",
       "collaboration_share_amount",
       "gross_margin_impact",
+      "greatest(max(item.updated_at), max(batch.updated_at)) as updated_at",
     ]) {
       expect(migration).toContain(summaryColumn);
     }
