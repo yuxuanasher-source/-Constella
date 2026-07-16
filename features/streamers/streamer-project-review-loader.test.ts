@@ -67,6 +67,17 @@ describe("loadStreamerProjectReviewInput", () => {
           created_at: "2026-07-01T12:05:00.000Z",
         },
       ],
+      ocr_results: [
+        {
+          live_report_id: "report-1",
+          raw_result: {
+            metricCandidates: [
+              { key: "pcu", value: 320 },
+              { key: "acu", value: 90 },
+            ],
+          },
+        },
+      ],
       project_applications: [
         {
           id: "application-1",
@@ -110,6 +121,8 @@ describe("loadStreamerProjectReviewInput", () => {
           status: "approved",
           settlementDuration: 120,
           viewers: 2400,
+          pcu: 320,
+          acu: 90,
           evidenceLevel: "green",
         },
       ],
@@ -125,6 +138,10 @@ describe("loadStreamerProjectReviewInput", () => {
     });
     expect(calls).toContainEqual(["eq", ["streamers", "organization_id", "org-1"]]);
     expect(calls).toContainEqual(["eq", ["live_tasks", "project_id", "project-1"]]);
+    expect(calls).toContainEqual([
+      "in",
+      ["ocr_results", "live_report_id", ["report-1"]],
+    ]);
     expect(calls).toContainEqual([
       "in",
       ["recording_submissions", "application_id", ["application-1"]],
