@@ -7993,6 +7993,7 @@ function ProjectDetail({ id, go }) {
   const applications = useOpsApplications();
   const tasks = useOpsTasks();
   const settlementBatches = useOpsSettlementBatches();
+  const financeBatches = useOpsFinanceBatches();
   const reports = useOpsReports();
   const auditEntries = useOpsAuditEntries();
   const actions = useOpsLiveActions();
@@ -8253,6 +8254,9 @@ function ProjectDetail({ id, go }) {
   const projectTasks = tasks.filter((task) => taskBelongsToProject(task, p));
   const projectBatches = settlementBatches.filter(
     (batch) => batch.projectId === p.id,
+  );
+  const projectFinanceBatches = financeBatches.filter((batch) =>
+    financeBatchBelongsToProject(batch, p.id),
   );
   const projectReports = reports.filter(
     (r) => r.projectId === p.id || r.project === p.name,
@@ -9120,6 +9124,74 @@ function ProjectDetail({ id, go }) {
               <EmptyHint
                 title="暂无结算批次"
                 hint="该项目尚未生成结算批次，可前往结算中心查看与生成。"
+                actionLabel="前往结算中心"
+                onAction={() => go("settle")}
+              />
+            )}
+          </Card>
+        )}
+
+        {detailTab === "settlement" && (
+          <Card
+            title="财务批次归因"
+            extra={
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {projectFinanceBatches.length > 0 ? (
+                  <Badge tone="violet">{projectFinanceBatches.length}</Badge>
+                ) : null}
+                <Button size="sm" kind="link" onClick={() => go("settle")}>
+                  前往结算中心 →
+                </Button>
+              </div>
+            }
+          >
+            {isPartnerCollaboration ? (
+              <EmptyHint
+                title="协作项目不展示财务批次归因"
+                hint="财务批次与项目金额归因由项目归属方管理，协作方不可见。"
+              />
+            ) : projectFinanceBatches.length ? (
+              <CappedTable
+                onMore={() => go("settle")}
+                columns={[
+                  {
+                    title: "批次",
+                    render: (batch) => (
+                      <span
+                        style={{ fontWeight: 600, color: "var(--ink-900)" }}
+                      >
+                        {batch.title}
+                      </span>
+                    ),
+                  },
+                  { title: "类型", render: (batch) => batch.typeLabel },
+                  {
+                    title: "状态",
+                    render: (batch) => (
+                      <Badge tone={batch.statusTone} dot>
+                        {batch.statusLabel}
+                      </Badge>
+                    ),
+                  },
+                  {
+                    title: "项目归因金额",
+                    align: "right",
+                    render: (batch) => (
+                      <span className="num">
+                        {formatFinanceAmount(
+                          financeBatchProjectAttributionAmount(batch, p.id),
+                        )}
+                      </span>
+                    ),
+                  },
+                ]}
+                rows={projectFinanceBatches}
+                onRowClick={() => go("settle")}
+              />
+            ) : (
+              <EmptyHint
+                title="暂无财务批次归因"
+                hint="项目相关财务批次生成后，会在这里展示项目级金额归因。"
                 actionLabel="前往结算中心"
                 onAction={() => go("settle")}
               />
@@ -19513,6 +19585,9 @@ function toReferenceFinanceBatchFromApi(batch) {
   const periodStart = batch.periodStart || "";
   const periodEnd = batch.periodEnd || "";
   const rawFinalAmount = Number(batch.finalAmount ?? batch.amount ?? 0);
+  const projectAmount = Number(
+    batch.projectAmount ?? batch.finalProjectAmount ?? NaN,
+  );
 
   return {
     id: batch.id,
@@ -19529,12 +19604,42 @@ function toReferenceFinanceBatchFromApi(batch) {
     periodStart,
     periodEnd,
     finalAmount: Number.isFinite(rawFinalAmount) ? rawFinalAmount : 0,
+    projectId: batch.projectId,
+    projectIds: Array.isArray(batch.projectIds) ? batch.projectIds : undefined,
+    projectAmount: Number.isFinite(projectAmount) ? projectAmount : undefined,
+    finalProjectAmount: Number.isFinite(projectAmount)
+      ? projectAmount
+      : undefined,
+    projectAmountById:
+      batch.projectAmountById && typeof batch.projectAmountById === "object"
+        ? batch.projectAmountById
+        : undefined,
     itemCount: Number(batch.itemCount ?? batch.items ?? 0),
   };
 }
 
 function formatFinanceAmount(value) {
   return formatYuanFromCents(Math.round((Number(value) || 0) * 100));
+}
+
+function financeBatchBelongsToProject(batch, projectId) {
+  if (!batch || !projectId) return false;
+  if (batch.projectId === projectId) return true;
+  return Array.isArray(batch.projectIds) && batch.projectIds.includes(projectId);
+}
+
+function financeBatchProjectAttributionAmount(batch, projectId) {
+  const byProject =
+    batch?.projectAmountById && typeof batch.projectAmountById === "object"
+      ? Number(batch.projectAmountById[projectId])
+      : NaN;
+  if (Number.isFinite(byProject)) return byProject;
+  const projectAmount = Number(batch?.projectAmount);
+  if (Number.isFinite(projectAmount)) return projectAmount;
+  const finalProjectAmount = Number(batch?.finalProjectAmount);
+  if (Number.isFinite(finalProjectAmount)) return finalProjectAmount;
+  const finalAmount = Number(batch?.finalAmount);
+  return Number.isFinite(finalAmount) ? finalAmount : 0;
 }
 
 function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {

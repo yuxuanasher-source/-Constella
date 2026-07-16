@@ -135,7 +135,21 @@ type LegacyConsumedSettlementBatchItemReportRow = {
 
 type FinanceBatchProjectSummaryRow = {
   finance_batch_id: string | null;
+  project_id: string | null;
+  receivable_amount: number | string | null;
+  streamer_payable_amount: number | string | null;
+  project_cost_amount: number | string | null;
+  collaboration_share_amount: number | string | null;
 };
+
+const financeBatchProjectSummarySelect = `
+  finance_batch_id,
+  project_id,
+  receivable_amount,
+  streamer_payable_amount,
+  project_cost_amount,
+  collaboration_share_amount
+`;
 
 const financeBatchSelect = `
   id,
@@ -551,11 +565,12 @@ export async function listOpsFinanceBatches(
   input: { organizationId: string; projectId?: string },
 ): Promise<OpsReferenceFinanceBatch[]> {
   let financeBatchIds: string[] | null = null;
+  const summaryByBatchId = new Map<string, FinanceBatchProjectSummaryRow>();
 
   if (input.projectId) {
     const { data: summaryRows, error: summaryError } = await client
       .from("finance_batch_project_summary")
-      .select("finance_batch_id")
+      .select(financeBatchProjectSummarySelect)
       .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
       .order("updated_at", { ascending: false })
@@ -571,6 +586,11 @@ export async function listOpsFinanceBatches(
         .map((row) => row.finance_batch_id)
         .filter((id): id is string => Boolean(id)),
     );
+    for (const row of summaryRows ?? []) {
+      if (row.finance_batch_id && !summaryByBatchId.has(row.finance_batch_id)) {
+        summaryByBatchId.set(row.finance_batch_id, row);
+      }
+    }
 
     if (financeBatchIds.length === 0) {
       return [];
@@ -596,7 +616,40 @@ export async function listOpsFinanceBatches(
 
   return (data ?? [])
     .map((row) => toFinanceBatchRecord(row))
-    .map((batch) => toOpsReferenceFinanceBatch(batch));
+    .map((batch) => {
+      const mapped = toOpsReferenceFinanceBatch(batch);
+      const summary = summaryByBatchId.get(batch.id);
+      if (!summary) {
+        return mapped;
+      }
+      const projectId = summary.project_id ?? input.projectId;
+      if (!projectId) {
+        return mapped;
+      }
+      const projectAmount = financeBatchProjectAmount(batch.batchType, summary);
+      return {
+        ...mapped,
+        projectId,
+        projectIds: [projectId],
+        projectAmount,
+        finalProjectAmount: projectAmount,
+        projectAmountById: { [projectId]: projectAmount },
+      };
+    });
+}
+
+function financeBatchProjectAmount(
+  batchType: FinanceBatchType,
+  row: FinanceBatchProjectSummaryRow,
+): number {
+  const amountByType: Record<FinanceBatchType, number | string | null> = {
+    receivable: row.receivable_amount,
+    streamer_payable: row.streamer_payable_amount,
+    project_cost: row.project_cost_amount,
+    collaboration_share: row.collaboration_share_amount,
+  };
+  const amount = Number(amountByType[batchType] ?? 0);
+  return Number.isFinite(amount) ? amount : 0;
 }
 
 export function toFinanceBatchItemRecord(

@@ -1761,6 +1761,41 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.queryByText("结算规则")).not.toBeInTheDocument();
   });
 
+  it("shows finance batch attribution in the project settlement tab", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={taskProjectCards}
+        streamerCards={[]}
+        applicationQueue={[]}
+        liveFinanceBatches={[
+          {
+            id: "finance-batch-project-a",
+            type: "streamer_payable",
+            typeLabel: "主播应付",
+            status: "confirmed",
+            statusLabel: "已确认",
+            statusTone: "blue",
+            title: "7月项目主播应付批次",
+            period: "2026-07-01 -> 2026-07-31",
+            finalAmount: 480,
+            projectId: "project-live",
+            projectIds: ["project-live"],
+            projectAmount: 160,
+            itemCount: 3,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Fixture Project"));
+    fireEvent.click(screen.getByRole("button", { name: "结算" }));
+
+    expect(screen.getByText("财务批次归因")).toBeInTheDocument();
+    expect(screen.getByText("7月项目主播应付批次")).toBeInTheDocument();
+    expect(screen.getByText("¥160.00")).toBeInTheDocument();
+  });
+
   it("opens the tasks anomaly view with the project filter preset from the detail anomaly stat", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-07T13:12:00.000Z"));

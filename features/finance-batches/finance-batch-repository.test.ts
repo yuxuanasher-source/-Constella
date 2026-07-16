@@ -370,21 +370,44 @@ describe("listOpsFinanceBatches", () => {
   it("filters ops reference batches through project summary rows for a project", async () => {
     const supabase = createListSourcesClient({
       finance_batch_project_summary: [
-        { finance_batch_id: "batch-1" },
-        { finance_batch_id: "batch-1" },
-        { finance_batch_id: "batch-2" },
+        {
+          finance_batch_id: "batch-1",
+          project_id: "project-1",
+          streamer_payable_amount: "160.00",
+          receivable_amount: "0.00",
+          project_cost_amount: "0.00",
+          collaboration_share_amount: "0.00",
+        },
+        {
+          finance_batch_id: "batch-1",
+          project_id: "project-1",
+          streamer_payable_amount: "160.00",
+          receivable_amount: "0.00",
+          project_cost_amount: "0.00",
+          collaboration_share_amount: "0.00",
+        },
+        {
+          finance_batch_id: "batch-2",
+          project_id: "project-1",
+          streamer_payable_amount: "75.00",
+          receivable_amount: "0.00",
+          project_cost_amount: "0.00",
+          collaboration_share_amount: "0.00",
+        },
         { finance_batch_id: null },
       ],
       finance_batches: [batchRow],
     });
 
-    await listOpsFinanceBatches(supabase.client as never, {
+    const result = await listOpsFinanceBatches(supabase.client as never, {
       organizationId: "org-1",
       projectId: "project-1",
     });
 
     const summaryQuery = supabase.queryFor("finance_batch_project_summary");
-    expect(summaryQuery.select).toHaveBeenCalledWith("finance_batch_id");
+    expect(summaryQuery.select).toHaveBeenCalledWith(
+      expect.stringContaining("streamer_payable_amount"),
+    );
     expect(summaryQuery.eq).toHaveBeenCalledWith("organization_id", "org-1");
     expect(summaryQuery.eq).toHaveBeenCalledWith("project_id", "project-1");
     expect(summaryQuery.order).toHaveBeenCalledWith("updated_at", {
@@ -395,6 +418,14 @@ describe("listOpsFinanceBatches", () => {
       "batch-1",
       "batch-2",
     ]);
+    expect(result[0]).toEqual(
+      expect.objectContaining({
+        projectId: "project-1",
+        projectIds: ["project-1"],
+        projectAmount: 160,
+        projectAmountById: { "project-1": 160 },
+      }),
+    );
   });
 
   it("returns no ops reference batches when a project has no project summary rows", async () => {

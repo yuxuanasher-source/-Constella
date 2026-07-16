@@ -19,6 +19,11 @@ export type OpsReferenceFinanceBatch = {
   periodStart: string;
   periodEnd: string;
   finalAmount: number;
+  projectId?: string;
+  projectIds?: string[];
+  projectAmount?: number;
+  finalProjectAmount?: number;
+  projectAmountById?: Record<string, number>;
   itemCount: number;
 };
 
