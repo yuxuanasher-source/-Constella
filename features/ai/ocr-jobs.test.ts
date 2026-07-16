@@ -292,6 +292,67 @@ describe("OCR jobs", () => {
     ]);
   });
 
+  it("stores operational metric candidates in raw OCR result without writing them to live reports", async () => {
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-metrics",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          aiInvocationId: "invocation-metrics",
+          payload: {
+            liveReportId: "report-metrics",
+            imageBase64: "ZmFrZQ==",
+            expectedDuration: 181,
+          },
+        },
+      ],
+    });
+
+    await runOcrJobOnce({
+      client,
+      actor,
+      jobId: "job-metrics",
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "succeeded" as const,
+          textLines: [
+            "直播日期 2026-07-16",
+            "开播时间 09:29",
+            "下播时间 12:30",
+            "场观 2,488",
+            "PCU 320",
+            "ACU 86",
+          ],
+          textItems: [],
+          confidence: 96,
+          requestId: "request-metrics",
+          rawResponse: { Response: { RequestId: "request-metrics" } },
+        })),
+      },
+    });
+
+    expect(updates.ocr_results).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          raw_result: expect.objectContaining({
+            extractedDate: "2026-07-16",
+            extractedStartedAt: "09:29",
+            extractedEndedAt: "12:30",
+            metricCandidates: expect.arrayContaining([
+              expect.objectContaining({ key: "pcu", value: 320 }),
+              expect.objectContaining({ key: "acu", value: 86 }),
+            ]),
+          }),
+        }),
+      }),
+    ]);
+    expect(updates.live_reports.at(-1)?.payload).not.toHaveProperty("pcu");
+    expect(updates.live_reports.at(-1)?.payload).not.toHaveProperty("acu");
+  });
+
   it("uses an injected image resolver before calling the OCR provider", async () => {
     const { client } = createClient({
       jobs: [

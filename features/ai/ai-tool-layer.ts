@@ -30,6 +30,10 @@ import { runXingyaoAssistant } from "./xingyao-assistant";
 import type { XingyaoFeatureStore } from "./xingyao-feature-store";
 import type { XingyaoRiskWeights } from "./xingyao-risk-radar";
 import type { RoleHomeDashboardDto } from "@/features/dashboards/role-home";
+import {
+  buildStreamerProjectReviewProfile,
+  type StreamerProjectReviewInput,
+} from "@/features/streamers/streamer-project-review";
 
 type AiClient = {
   from(
@@ -254,6 +258,39 @@ const registeredTools: Record<string, RegisteredAiTool> = {
           report: result.report,
           agentOutput: result.output,
           validation: result.validation,
+        },
+      };
+    },
+  },
+  streamer_project_review: {
+    name: "streamer_project_review",
+    description:
+      "Builds a read-only streamer-project review profile from authorized preloaded schedule, live report, and recording data.",
+    inputSchema: {
+      type: "object",
+      required: ["profileInput"],
+      properties: {
+        profileInput: { type: "object" },
+      },
+    },
+    scopes: ["mcn_staff"],
+    masking: { input: ["profileInput"], output: [], streamerForbiddenKeys },
+    readOnly: true,
+    tier: "L1_PERCEIVE",
+    handler(input) {
+      const profile = buildStreamerProjectReviewProfile(
+        objectValue(input.profileInput) as unknown as StreamerProjectReviewInput,
+      );
+      return {
+        answer: `${profile.streamer.displayName} 在 ${profile.project.name} 的项目复盘档案已生成。`,
+        output: {
+          profile,
+          agentOutput: {
+            facts: profile.facts,
+            findings: profile.findings,
+            caveats: profile.caveats,
+            recommendations: profile.recommendations,
+          },
         },
       };
     },

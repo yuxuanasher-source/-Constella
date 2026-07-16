@@ -81,6 +81,49 @@ describe("parseLiveReportOcrText", () => {
     });
   });
 
+  it("extracts date, start/end time, PCU and ACU from a single-stream recap", () => {
+    expect(
+      parseLiveReportOcrText([
+        "直播日期 2026-07-16",
+        "开播时间 09:29",
+        "下播时间 12:30",
+        "场观 2,488",
+        "PCU 320",
+        "ACU 86",
+      ]),
+    ).toMatchObject({
+      status: "trusted",
+      extractedDate: "2026-07-16",
+      extractedStartedAt: "09:29",
+      extractedEndedAt: "12:30",
+      extractedDuration: 181,
+      extractedViewers: 2488,
+      metricCandidates: expect.arrayContaining([
+        expect.objectContaining({ key: "pcu", value: 320 }),
+        expect.objectContaining({ key: "acu", value: 86 }),
+        expect.objectContaining({ key: "viewers", value: 2488 }),
+      ]),
+    });
+  });
+
+  it("pairs stacked operational metric labels with nearby values", () => {
+    expect(
+      parseLiveReportOcrText(["峰值在线", "平均在线", "1,280", "430"], {
+        items: [
+          { text: "峰值在线", x: 100, y: 100, width: 80, height: 20 },
+          { text: "平均在线", x: 240, y: 100, width: 80, height: 20 },
+          { text: "1,280", x: 100, y: 130, width: 60, height: 24 },
+          { text: "430", x: 240, y: 130, width: 50, height: 24 },
+        ],
+      }),
+    ).toMatchObject({
+      metricCandidates: expect.arrayContaining([
+        expect.objectContaining({ key: "pcu", value: 1280 }),
+        expect.objectContaining({ key: "acu", value: 430 }),
+      ]),
+    });
+  });
+
   it("pairs a grid viewer label with the value directly below it using coordinates", () => {
     expect(
       parseLiveReportOcrText(
