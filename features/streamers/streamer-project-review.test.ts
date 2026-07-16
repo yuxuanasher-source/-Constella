@@ -70,6 +70,17 @@ describe("buildStreamerProjectReviewProfile", () => {
           durationSeconds: 900,
         },
       ],
+      externalReferences: [
+        {
+          id: "market-legend-1",
+          title: "传奇复古类直播间强调长线留存和节奏稳定",
+          sourceName: "行业观察",
+          sourceUrl: "https://example.com/legend-live",
+          retrievedAt: "2026-07-16T10:00:00.000Z",
+          summary: "同类产品通常关注平均在线、讲解节奏和录屏可复用性。",
+          productType: "legend",
+        },
+      ],
     });
 
     expect(profile.participation.naturalDays).toBe(5);
@@ -90,8 +101,17 @@ describe("buildStreamerProjectReviewProfile", () => {
       recordingPerformance: expect.stringContaining("主要驳回原因：画面不清、讲解节奏差"),
       productFit: expect.stringContaining("legend"),
       externalReference: {
-        status: "not_connected",
-        summary: "暂未接入外部同类产品或同行表现参照。",
+        status: "provided",
+        summary: "已接入 1 条外部参考，仅作为同类产品/同行表现参照。",
+        references: [
+          {
+            id: "market-legend-1",
+            title: "传奇复古类直播间强调长线留存和节奏稳定",
+            sourceName: "行业观察",
+            sourceUrl: "https://example.com/legend-live",
+            retrievedAt: "2026-07-16T10:00:00.000Z",
+          },
+        ],
       },
       majorIssues: [
         expect.objectContaining({
@@ -109,13 +129,20 @@ describe("buildStreamerProjectReviewProfile", () => {
           requiresHumanApproval: true,
         }),
       ]),
-      dataGaps: ["暂未接入外部同类产品或同行表现参照。"],
+      dataGaps: [],
     });
     expect(profile.facts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           sourceTool: "streamer_project_profile",
           sourceId: "task-1",
+        }),
+      ]),
+    );
+    expect(profile.facts).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceId: "market-legend-1",
         }),
       ]),
     );

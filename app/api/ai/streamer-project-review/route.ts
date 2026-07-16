@@ -29,6 +29,7 @@ export async function POST(request: Request) {
     const body = (await request.json().catch(() => ({}))) as {
       streamerId?: unknown;
       projectId?: unknown;
+      externalReferences?: unknown;
     };
     const streamerId =
       typeof body.streamerId === "string" ? body.streamerId.trim() : "";
@@ -47,6 +48,11 @@ export async function POST(request: Request) {
       streamerId,
       projectId,
     });
+    const externalReferences = sanitizeExternalReferences(body.externalReferences);
+    const reviewProfileInput =
+      externalReferences.length > 0
+        ? { ...profileInput, externalReferences }
+        : profileInput;
     const result = await runAiToolQuery({
       client: supabase,
       actor: {
@@ -56,10 +62,10 @@ export async function POST(request: Request) {
         organizationId: auth.organizationId,
       },
       toolName: "streamer_project_review",
-      input: { profileInput },
+      input: { profileInput: reviewProfileInput },
     });
 
-    return NextResponse.json({ result, profileInput });
+    return NextResponse.json({ result, profileInput: reviewProfileInput });
   } catch (error) {
     if (error instanceof Error) {
       return NextResponse.json(
@@ -70,4 +76,36 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
   }
+}
+
+function sanitizeExternalReferences(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!isRecord(item)) return null;
+      const id = stringValue(item.id);
+      const title = stringValue(item.title);
+      const sourceName = stringValue(item.sourceName);
+      const retrievedAt = stringValue(item.retrievedAt);
+      const summary = stringValue(item.summary);
+      if (!id || !title || !sourceName || !retrievedAt || !summary) return null;
+      return {
+        id,
+        title,
+        sourceName,
+        sourceUrl: stringValue(item.sourceUrl),
+        retrievedAt,
+        summary,
+        productType: stringValue(item.productType),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }

@@ -98,6 +98,52 @@ describe("streamer project review route", () => {
     });
   });
 
+  it("passes sanitized external references into the review profile input", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/ai/streamer-project-review", {
+        method: "POST",
+        body: JSON.stringify({
+          streamerId: "streamer-1",
+          projectId: "project-1",
+          externalReferences: [
+            {
+              id: "market-legend-1",
+              title: "传奇复古类直播间强调长线留存和节奏稳定",
+              sourceName: "行业观察",
+              sourceUrl: "https://example.com/legend-live",
+              retrievedAt: "2026-07-16T10:00:00.000Z",
+              summary: "同类产品通常关注平均在线、讲解节奏和录屏可复用性。",
+              productType: "legend",
+              ignored: "should not pass through",
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runAiToolQuery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: {
+          profileInput: {
+            ...profileInput,
+            externalReferences: [
+              {
+                id: "market-legend-1",
+                title: "传奇复古类直播间强调长线留存和节奏稳定",
+                sourceName: "行业观察",
+                sourceUrl: "https://example.com/legend-live",
+                retrievedAt: "2026-07-16T10:00:00.000Z",
+                summary: "同类产品通常关注平均在线、讲解节奏和录屏可复用性。",
+                productType: "legend",
+              },
+            ],
+          },
+        },
+      }),
+    );
+  });
+
   it("blocks streamers from internal streamer project review", async () => {
     vi.mocked(getAuthContext).mockResolvedValue({
       ...auth,

@@ -279,6 +279,17 @@ describe("runAiToolQuery", () => {
               durationSeconds: 1800,
             },
           ],
+          externalReferences: [
+            {
+              id: "market-legend-1",
+              title: "传奇复古类直播间强调长线留存和节奏稳定",
+              sourceName: "行业观察",
+              sourceUrl: "https://example.com/legend-live",
+              retrievedAt: "2026-07-16T10:00:00.000Z",
+              summary: "同类产品通常关注平均在线、讲解节奏和录屏可复用性。",
+              productType: "legend",
+            },
+          ],
         },
       },
     });
@@ -295,6 +306,16 @@ describe("runAiToolQuery", () => {
         agentOutput: {
           reviewDraft: {
             summary: expect.stringContaining("阿星在传奇复古项目已形成 2 个有效直播日"),
+            externalReference: {
+              status: "provided",
+              summary: "已接入 1 条外部参考，仅作为同类产品/同行表现参照。",
+              references: [
+                expect.objectContaining({
+                  id: "market-legend-1",
+                  sourceName: "行业观察",
+                }),
+              ],
+            },
           },
           facts: expect.arrayContaining([
             expect.objectContaining({
