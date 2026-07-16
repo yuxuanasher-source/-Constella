@@ -69,6 +69,13 @@ const adjustmentRow = {
   voided_at: null,
 } satisfies FinanceBatchAdjustmentRow;
 
+function makeBatchRow(overrides: Partial<FinanceBatchRow>): FinanceBatchRow {
+  return {
+    ...batchRow,
+    ...overrides,
+  };
+}
+
 function createRpcClient(result: unknown) {
   return {
     rpc: vi.fn(async () => ({ data: result, error: null })),
@@ -86,6 +93,7 @@ type MockQuery = {
   order: ReturnType<typeof vi.fn>;
   in: ReturnType<typeof vi.fn>;
   limit: ReturnType<typeof vi.fn>;
+  range: ReturnType<typeof vi.fn>;
   maybeSingle: ReturnType<typeof vi.fn>;
   returns: ReturnType<typeof vi.fn>;
 };
@@ -104,6 +112,7 @@ function createQuery(table: string, data: unknown[]): MockQuery {
     "order",
     "in",
     "limit",
+    "range",
   ]) {
     query[method as keyof MockQuery] = vi.fn((...args: unknown[]) => {
       query.calls.push({ method, args });
@@ -114,7 +123,23 @@ function createQuery(table: string, data: unknown[]): MockQuery {
     data: data[0] ?? null,
     error: null,
   }));
-  query.returns = vi.fn(async () => ({ data, error: null }));
+  query.returns = vi.fn(async () => {
+    const rangeCall = [...query.calls]
+      .reverse()
+      .find((call) => call.method === "range");
+    if (rangeCall) {
+      const [from, to] = rangeCall.args.map(Number);
+      return { data: data.slice(from, to + 1), error: null };
+    }
+    const limitCall = [...query.calls]
+      .reverse()
+      .find((call) => call.method === "limit");
+    if (limitCall) {
+      const [limit] = limitCall.args.map(Number);
+      return { data: data.slice(0, limit), error: null };
+    }
+    return { data, error: null };
+  });
   return query;
 }
 
@@ -137,6 +162,9 @@ function createListSourcesClient(responses: Record<string, unknown[]>) {
         throw new Error(`Missing query for ${table}`);
       }
       return query;
+    },
+    queriesFor(table: string): MockQuery[] {
+      return queries.filter((item) => item.table === table);
     },
   };
 }
@@ -410,6 +438,110 @@ describe("listOpsFinanceBatches", () => {
       }),
     );
     expect(result[0]).not.toHaveProperty("projectAmount");
+  });
+
+  it("paginates org-scoped project summary attribution rows", async () => {
+    const summaryRows = Array.from({ length: 1001 }, (_, index) => ({
+      finance_batch_id: "batch-1",
+      project_id: `project-${index + 1}`,
+      streamer_payable_amount: String(index + 1),
+      receivable_amount: "0.00",
+      project_cost_amount: "0.00",
+      collaboration_share_amount: "0.00",
+    }));
+    const supabase = createListSourcesClient({
+      finance_batches: [batchRow],
+      finance_batch_project_summary: summaryRows,
+    });
+
+    const result = await listOpsFinanceBatches(supabase.client as never, {
+      organizationId: "org-1",
+    });
+
+    const summaryQueries = supabase.queriesFor(
+      "finance_batch_project_summary",
+    );
+    expect(summaryQueries[0]?.range).toHaveBeenCalledWith(0, 999);
+    expect(summaryQueries[1]?.range).toHaveBeenCalledWith(1000, 1999);
+    expect(result[0].projectIds).toHaveLength(1001);
+    expect(result[0].projectAmountById).toMatchObject({
+      "project-1": 1,
+      "project-1001": 1001,
+    });
+  });
+
+  it("uses the matching project summary amount column for each batch type", async () => {
+    const supabase = createListSourcesClient({
+      finance_batches: [
+        makeBatchRow({
+          id: "batch-receivable",
+          batch_type: "receivable",
+          title: "Receivable batch",
+        }),
+        makeBatchRow({
+          id: "batch-streamer",
+          batch_type: "streamer_payable",
+          title: "Streamer payable batch",
+        }),
+        makeBatchRow({
+          id: "batch-cost",
+          batch_type: "project_cost",
+          title: "Project cost batch",
+        }),
+        makeBatchRow({
+          id: "batch-share",
+          batch_type: "collaboration_share",
+          title: "Collaboration share batch",
+        }),
+      ],
+      finance_batch_project_summary: [
+        {
+          finance_batch_id: "batch-receivable",
+          project_id: "project-1",
+          receivable_amount: "110.00",
+          streamer_payable_amount: "910.00",
+          project_cost_amount: "920.00",
+          collaboration_share_amount: "930.00",
+        },
+        {
+          finance_batch_id: "batch-streamer",
+          project_id: "project-1",
+          receivable_amount: "910.00",
+          streamer_payable_amount: "120.00",
+          project_cost_amount: "920.00",
+          collaboration_share_amount: "930.00",
+        },
+        {
+          finance_batch_id: "batch-cost",
+          project_id: "project-1",
+          receivable_amount: "910.00",
+          streamer_payable_amount: "920.00",
+          project_cost_amount: "130.00",
+          collaboration_share_amount: "930.00",
+        },
+        {
+          finance_batch_id: "batch-share",
+          project_id: "project-1",
+          receivable_amount: "910.00",
+          streamer_payable_amount: "920.00",
+          project_cost_amount: "930.00",
+          collaboration_share_amount: "140.00",
+        },
+      ],
+    });
+
+    const result = await listOpsFinanceBatches(supabase.client as never, {
+      organizationId: "org-1",
+    });
+
+    const amountFor = (batchId: string) =>
+      result.find((batch) => batch.id === batchId)?.projectAmountById?.[
+        "project-1"
+      ];
+    expect(amountFor("batch-receivable")).toBe(110);
+    expect(amountFor("batch-streamer")).toBe(120);
+    expect(amountFor("batch-cost")).toBe(130);
+    expect(amountFor("batch-share")).toBe(140);
   });
 
   it("filters ops reference batches through project summary rows for a project", async () => {

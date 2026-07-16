@@ -151,6 +151,8 @@ const financeBatchProjectSummarySelect = `
   collaboration_share_amount
 `;
 
+const FINANCE_BATCH_PROJECT_SUMMARY_PAGE_SIZE = 1000;
+
 const financeBatchSelect = `
   id,
   organization_id,
@@ -624,19 +626,11 @@ export async function listOpsFinanceBatches(
       (data ?? []).map((row) => row.id).filter(Boolean),
     );
     if (returnedBatchIds.length > 0) {
-      const { data: summaryRows, error: summaryError } = await client
-        .from("finance_batch_project_summary")
-        .select(financeBatchProjectSummarySelect)
-        .eq("organization_id", input.organizationId)
-        .in("finance_batch_id", returnedBatchIds)
-        .limit(1000)
-        .returns<FinanceBatchProjectSummaryRow[]>();
-
-      if (summaryError) {
-        throw summaryError;
-      }
-
-      for (const row of summaryRows ?? []) {
+      const summaryRows = await listFinanceBatchProjectSummaryRows(client, {
+        organizationId: input.organizationId,
+        financeBatchIds: returnedBatchIds,
+      });
+      for (const row of summaryRows) {
         if (row.finance_batch_id) {
           const current = summaryRowsByBatchId.get(row.finance_batch_id) ?? [];
           current.push(row);
@@ -680,6 +674,34 @@ export async function listOpsFinanceBatches(
         projectAmountById,
       };
     });
+}
+
+async function listFinanceBatchProjectSummaryRows(
+  client: SupabaseClient,
+  input: { organizationId: string; financeBatchIds: string[] },
+): Promise<FinanceBatchProjectSummaryRow[]> {
+  const rows: FinanceBatchProjectSummaryRow[] = [];
+  for (let offset = 0; ; offset += FINANCE_BATCH_PROJECT_SUMMARY_PAGE_SIZE) {
+    const { data, error } = await client
+      .from("finance_batch_project_summary")
+      .select(financeBatchProjectSummarySelect)
+      .eq("organization_id", input.organizationId)
+      .in("finance_batch_id", input.financeBatchIds)
+      .order("finance_batch_id", { ascending: true })
+      .order("project_id", { ascending: true })
+      .range(offset, offset + FINANCE_BATCH_PROJECT_SUMMARY_PAGE_SIZE - 1)
+      .returns<FinanceBatchProjectSummaryRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < FINANCE_BATCH_PROJECT_SUMMARY_PAGE_SIZE) {
+      return rows;
+    }
+  }
 }
 
 function financeBatchProjectAmountById(
