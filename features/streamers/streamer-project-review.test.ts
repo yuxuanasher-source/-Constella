@@ -83,6 +83,34 @@ describe("buildStreamerProjectReviewProfile", () => {
       reason: "画面不清",
       count: 1,
     });
+    expect(profile.reviewDraft).toMatchObject({
+      summary: "阿星在传奇复古项目已形成 2 个有效直播日，排班完成率 66.67%，录屏采用率 50.00%。",
+      participation: expect.stringContaining("自然参与 5 天"),
+      livePerformance: expect.stringContaining("累计场观 4200"),
+      recordingPerformance: expect.stringContaining("主要驳回原因：画面不清、讲解节奏差"),
+      productFit: expect.stringContaining("legend"),
+      externalReference: {
+        status: "not_connected",
+        summary: "暂未接入外部同类产品或同行表现参照。",
+      },
+      majorIssues: [
+        expect.objectContaining({
+          title: "录屏质量需要复盘",
+          sourceIds: ["rec-2"],
+        }),
+      ],
+      opportunities: expect.arrayContaining([
+        expect.objectContaining({
+          title: "围绕主要驳回原因优化录屏脚本和画面检查",
+        }),
+      ]),
+      actionItems: expect.arrayContaining([
+        expect.objectContaining({
+          requiresHumanApproval: true,
+        }),
+      ]),
+      dataGaps: ["暂未接入外部同类产品或同行表现参照。"],
+    });
     expect(profile.facts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -104,6 +132,13 @@ describe("buildStreamerProjectReviewProfile", () => {
 
     expect(profile.participation.naturalDays).toBe(0);
     expect(profile.participation.effectiveLiveDays).toBe(0);
+    expect(profile.reviewDraft.dataGaps).toEqual(
+      expect.arrayContaining([
+        "缺少该主播在此项目的排班记录。",
+        "缺少该主播在此项目的报数记录。",
+        "缺少该主播在此项目的录屏记录。",
+      ]),
+    );
     expect(profile.caveats).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ summary: "缺少该主播在此项目的排班记录。" }),

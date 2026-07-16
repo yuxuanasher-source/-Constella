@@ -286,6 +286,7 @@ const registeredTools: Record<string, RegisteredAiTool> = {
         output: {
           profile,
           agentOutput: {
+            reviewDraft: profile.reviewDraft,
             facts: profile.facts,
             findings: profile.findings,
             caveats: profile.caveats,

@@ -293,6 +293,9 @@ describe("runAiToolQuery", () => {
           },
         },
         agentOutput: {
+          reviewDraft: {
+            summary: expect.stringContaining("阿星在传奇复古项目已形成 2 个有效直播日"),
+          },
           facts: expect.arrayContaining([
             expect.objectContaining({
               sourceTool: "streamer_project_profile",
