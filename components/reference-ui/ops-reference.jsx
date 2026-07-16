@@ -2316,6 +2316,9 @@ function isRestorableFocusTarget(element) {
   }
   const sidebar = element?.closest?.(".ops-reference-sidebar");
   if (sidebar && isMobile && sidebar.dataset.open !== "true") return false;
+  if (element?.dataset?.focusRestore === "true") {
+    return Boolean(element.isConnected && body?.contains(element));
+  }
 
   return Boolean(
     element?.isConnected &&
@@ -2394,6 +2397,9 @@ export function Sidebar({
   const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
   const [accountPanel, setAccountPanel] = React.useState(null);
+  const accountSummaryRef = React.useRef(null);
+  const accountPanelWasOpenRef = React.useRef(false);
+  const organizationSettingsButtonRef = React.useRef(null);
 
   React.useLayoutEffect(() => {
     if (accountPanel) {
@@ -2447,6 +2453,33 @@ export function Sidebar({
           borderBottom: "1px solid var(--line)",
         }}
       >
+        <button
+          ref={organizationSettingsButtonRef}
+          type="button"
+          tabIndex={-1}
+          data-focus-restore="true"
+          aria-label={
+            route === "export"
+              ? `${orgSettings.name} 组织设置`
+              : "组织品牌设置入口"
+          }
+          onClick={() =>
+            onOpenOrganizationSettings?.(organizationSettingsButtonRef.current)
+          }
+          style={{
+            flex: 1,
+            minWidth: 0,
+            border: "none",
+            background: "transparent",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: 0,
+            textAlign: "left",
+            cursor: "pointer",
+            color: "inherit",
+          }}
+        >
         <div
           aria-label="组织 LOGO"
           style={{
@@ -2509,6 +2542,7 @@ export function Sidebar({
             {orgSettings.brandTagline}
           </span>
         </div>
+        </button>
         <button
           ref={mobileCloseButtonRef}
           type="button"
@@ -35503,7 +35537,7 @@ function OpsReferenceInner({
           navCounts={navCounts}
           currentUser={currentUserState}
           organizationSettings={organizationSettingsState}
-          onOpenOrganizationSettings={() => setOrganizationSettingsOpen(true)}
+          onOpenOrganizationSettings={openOrganizationSettingsFromNavigation}
           onUpdateAvatar={updateProfileAvatar}
           mobileNavigationOpen={mobileNavigationOpen}
           onCloseMobileNavigation={closeMobileNavigation}
