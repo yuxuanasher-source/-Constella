@@ -94,4 +94,97 @@ describe("unified finance batch schema", () => {
       );
     }
   });
+
+  it("keeps finance writes behind staff-scoped security-definer rpcs", () => {
+    for (const rpc of [
+      "create_finance_batch",
+      "add_finance_batch_adjustment",
+      "transition_finance_batch",
+    ]) {
+      expect(migration).toContain(`function public.${rpc}`);
+
+      const functionStart = migration.indexOf(`function public.${rpc}`);
+      const revokeStart = migration.indexOf(`revoke all on function public.${rpc}`);
+      expect(functionStart).toBeGreaterThanOrEqual(0);
+      expect(revokeStart).toBeGreaterThan(functionStart);
+
+      const definition = migration.slice(functionStart, revokeStart);
+      expect(definition).toContain("security definer");
+      expect(definition).toContain("set search_path = pg_catalog, public");
+      expect(definition).toContain("v_actor_id uuid := auth.uid()");
+      expect(definition).toContain("if v_actor_id is null then");
+      expect(definition).toContain("public.is_org_member(p_organization_id)");
+      expect(definition).toContain("public.is_mcn_staff(p_organization_id)");
+    }
+
+    expect(migration).toContain("if p_created_by <> v_actor_id then");
+    expect(migration).toContain("if p_actor_user_id <> v_actor_id then");
+    expect(migration).toContain("finance_batch_adjustment_item_scope_mismatch");
+
+    for (const signature of [
+      "public.create_finance_batch",
+      "public.add_finance_batch_adjustment",
+      "public.transition_finance_batch",
+    ]) {
+      expect(migration).toMatch(
+        new RegExp(
+          `revoke all on function ${signature}\\([\\s\\S]+?from public, anon, authenticated, service_role;`,
+        ),
+      );
+      expect(migration).toMatch(
+        new RegExp(
+          `grant execute on function ${signature}\\([\\s\\S]+?to authenticated;`,
+        ),
+      );
+    }
+  });
+
+  it("voids child items when a batch is voided", () => {
+    expect(migration).toContain(
+      "function public.finance_batches_void_items_fn()",
+    );
+    expect(migration).toContain("old.status is distinct from 'voided'");
+    expect(migration).toMatch(
+      /update public\.finance_batch_items[\s\S]*set[\s\S]*status = 'voided'[\s\S]*where finance_batch_id = new\.id[\s\S]*and organization_id = new\.organization_id/,
+    );
+    expect(migration).toContain("finance_batches_void_items");
+    expect(migration).toContain("after update of status on public.finance_batches");
+  });
+
+  it("ties child rows to parent batch identity", () => {
+    expect(migration).toContain("finance_batches_id_org_type_key");
+    expect(migration).toContain("finance_batches_id_org_key");
+    expect(migration).toContain("finance_batch_items_id_batch_org_key");
+    expect(migration).toMatch(
+      /foreign key \(\s*finance_batch_id,\s*organization_id,\s*batch_type\s*\)[\s\S]*references public\.finance_batches \(\s*id,\s*organization_id,\s*batch_type\s*\)/,
+    );
+    expect(migration).toMatch(
+      /foreign key \(\s*finance_batch_id,\s*organization_id\s*\)[\s\S]*references public\.finance_batches \(\s*id,\s*organization_id\s*\)/,
+    );
+    expect(migration).toMatch(
+      /foreign key \(\s*finance_batch_item_id,\s*finance_batch_id,\s*organization_id\s*\)[\s\S]*references public\.finance_batch_items \(\s*id,\s*finance_batch_id,\s*organization_id\s*\)/,
+    );
+  });
+
+  it("validates jsonb shapes", () => {
+    for (const check of [
+      "jsonb_typeof(metadata) = 'object'",
+      "jsonb_typeof(source_snapshot) = 'object'",
+      "jsonb_typeof(evidence_snapshot) = 'object'",
+      "jsonb_typeof(exception_flags) = 'array'",
+    ]) {
+      expect(migration).toContain(check);
+    }
+  });
+
+  it("touches updated_at for mutable finance tables", () => {
+    for (const trigger of [
+      "finance_batches_touch_updated_at",
+      "finance_batch_items_touch_updated_at",
+      "finance_batch_adjustments_touch_updated_at",
+    ]) {
+      expect(migration).toContain(`create trigger ${trigger}`);
+      expect(migration).toContain("execute function public.touch_updated_at()");
+    }
+  });
 });
