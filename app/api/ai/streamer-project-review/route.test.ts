@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 
 import { runAiToolQuery } from "@/features/ai/ai-tool-layer";
+import { loadStreamerProjectMarketReferences } from "@/features/streamers/streamer-project-market-references";
 import { loadStreamerProjectReviewInput } from "@/features/streamers/streamer-project-review-loader";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
@@ -13,6 +14,10 @@ vi.mock("@/features/ai/ai-tool-layer", () => ({
 
 vi.mock("@/features/streamers/streamer-project-review-loader", () => ({
   loadStreamerProjectReviewInput: vi.fn(),
+}));
+
+vi.mock("@/features/streamers/streamer-project-market-references", () => ({
+  loadStreamerProjectMarketReferences: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/context", () => ({
@@ -48,6 +53,7 @@ describe("streamer project review route", () => {
     } as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth);
     vi.mocked(loadStreamerProjectReviewInput).mockResolvedValue(profileInput);
+    vi.mocked(loadStreamerProjectMarketReferences).mockResolvedValue([]);
     vi.mocked(runAiToolQuery).mockResolvedValue({
       toolName: "streamer_project_review",
       invocationId: "invocation-1",
@@ -122,6 +128,7 @@ describe("streamer project review route", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(loadStreamerProjectMarketReferences).not.toHaveBeenCalled();
     expect(runAiToolQuery).toHaveBeenCalledWith(
       expect.objectContaining({
         input: {
@@ -133,6 +140,57 @@ describe("streamer project review route", () => {
                 title: "传奇复古类直播间强调长线留存和节奏稳定",
                 sourceName: "行业观察",
                 sourceUrl: "https://example.com/legend-live",
+                retrievedAt: "2026-07-16T10:00:00.000Z",
+                summary: "同类产品通常关注平均在线、讲解节奏和录屏可复用性。",
+                productType: "legend",
+              },
+            ],
+          },
+        },
+      }),
+    );
+  });
+
+  it("loads knowledge-base market references when none are provided", async () => {
+    vi.mocked(loadStreamerProjectMarketReferences).mockResolvedValue([
+      {
+        id: "knowledge:doc-legend-1:chunk-legend-1",
+        title: "传奇复古同类项目复盘",
+        sourceName: "知识库",
+        sourceUrl: null,
+        retrievedAt: "2026-07-16T10:00:00.000Z",
+        summary: "同类产品通常关注平均在线、讲解节奏和录屏可复用性。",
+        productType: "legend",
+      },
+    ]);
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/streamer-project-review", {
+        method: "POST",
+        body: JSON.stringify({
+          streamerId: "streamer-1",
+          projectId: "project-1",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(loadStreamerProjectMarketReferences).toHaveBeenCalledWith({
+      client: { client: "supabase" },
+      organizationId: "org-1",
+      profileInput,
+    });
+    expect(runAiToolQuery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: {
+          profileInput: {
+            ...profileInput,
+            externalReferences: [
+              {
+                id: "knowledge:doc-legend-1:chunk-legend-1",
+                title: "传奇复古同类项目复盘",
+                sourceName: "知识库",
+                sourceUrl: null,
                 retrievedAt: "2026-07-16T10:00:00.000Z",
                 summary: "同类产品通常关注平均在线、讲解节奏和录屏可复用性。",
                 productType: "legend",
