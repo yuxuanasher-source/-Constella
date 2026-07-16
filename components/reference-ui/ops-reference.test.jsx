@@ -8189,7 +8189,7 @@ describe("OpsReferenceApp settlement smoke", () => {
             periodStart: "2026-07-01",
             periodEnd: "2026-07-31",
             status: "pending_review",
-            finalAmount: 123456,
+            finalAmount: 210,
             itemCount: 3,
           },
         ]}
@@ -8206,8 +8206,62 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.getByText("财务结算中心")).toBeInTheDocument();
     expect(screen.getByText("七月主播应付统一批次")).toBeInTheDocument();
     expect(screen.getAllByText("主播应付").length).toBeGreaterThan(0);
-    expect(screen.getByText("¥1,234.56")).toBeInTheDocument();
+    expect(screen.getByText("¥210.00")).toBeInTheDocument();
     expect(screen.getByText("3 项")).toBeInTheDocument();
+  });
+
+  it("loads unified finance batch data when no live prop is provided", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/finance/batches") {
+        return {
+          ok: true,
+          json: async () => ({
+            batches: [
+              {
+                id: "finance-batch-fetch-1",
+                batchType: "streamer_payable",
+                title: "接口返回主播应付批次",
+                periodStart: "2026-07-01",
+                periodEnd: "2026-07-31",
+                status: "draft",
+                finalAmount: 210,
+                itemCount: 2,
+              },
+            ],
+          }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[]}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("接口返回主播应付批次")).toBeInTheDocument();
+    expect(screen.getByText("¥210.00")).toBeInTheDocument();
+    expect(screen.getByText("2 项")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url]) => String(url) === "/api/finance/batches",
+      ),
+    ).toHaveLength(1);
   });
 
   const renderMobileSettlementLayout = () =>
@@ -9824,6 +9878,7 @@ describe("OpsReferenceApp settlement smoke", () => {
         initialRoute="settle"
         liveBatches={[]}
         liveBatchDetails={{}}
+        liveFinanceBatches={[]}
         liveSettlementPool={[
           {
             id: "report-ui-smoke-1",
@@ -10237,6 +10292,7 @@ describe("OpsReferenceApp settlement smoke", () => {
           },
         ]}
         liveBatchDetails={{ "batch-ui-smoke-manual": [] }}
+        liveFinanceBatches={[]}
         liveSettlementPool={[]}
         settlementScope={{
           projectId: "project-1",

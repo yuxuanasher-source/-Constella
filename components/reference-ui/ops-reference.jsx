@@ -19512,6 +19512,7 @@ function toReferenceFinanceBatchFromApi(batch) {
   const status = batch.status || "draft";
   const periodStart = batch.periodStart || "";
   const periodEnd = batch.periodEnd || "";
+  const rawFinalAmount = Number(batch.finalAmount ?? batch.amount ?? 0);
 
   return {
     id: batch.id,
@@ -19527,11 +19528,13 @@ function toReferenceFinanceBatchFromApi(batch) {
     period: batch.period || `${periodStart} → ${periodEnd}`,
     periodStart,
     periodEnd,
-    finalAmountCents: Number(
-      batch.finalAmountCents ?? batch.finalAmount ?? batch.amountCents ?? 0,
-    ),
+    finalAmount: Number.isFinite(rawFinalAmount) ? rawFinalAmount : 0,
     itemCount: Number(batch.itemCount ?? batch.items ?? 0),
   };
+}
+
+function formatFinanceAmount(value) {
+  return formatYuanFromCents(Math.round((Number(value) || 0) * 100));
 }
 
 function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
@@ -19800,6 +19803,10 @@ function buildExternalCostResolutionValue(draft) {
 function ScreenSettlement({ go }) {
   const projects = useOpsProjects();
   const batches = useOpsSettlementBatches();
+  const financeBatchContext = React.useContext(OpsLiveDataContext);
+  const financeBatchesLoaded = Array.isArray(
+    financeBatchContext.financeBatches,
+  );
   const financeBatches = useOpsFinanceBatches();
   const batchDetails = useOpsSettlementBatchDetails();
   const settlementPool = useOpsSettlementPool();
@@ -19875,6 +19882,7 @@ function ScreenSettlement({ go }) {
   const [costExceptionDrafts, setCostExceptionDrafts] = React.useState({});
   const [costDraft, setCostDraft] = React.useState(() => defaultCostDraft());
   const reconciliationBlockingHeadingRef = React.useRef(null);
+  const financeBatchRefreshRequestedRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!projectOptions.length) return;
@@ -19968,6 +19976,20 @@ function ScreenSettlement({ go }) {
   }, [actions, activeId, batchDetails, busyAction]);
 
   React.useEffect(() => {
+    if (
+      financeBatchesLoaded ||
+      financeBatchRefreshRequestedRef.current ||
+      !actions.refreshFinanceBatches
+    ) {
+      return;
+    }
+    financeBatchRefreshRequestedRef.current = true;
+    actions
+      .refreshFinanceBatches()
+      .catch((error) => warnBackgroundRefreshFailure("finance batches", error));
+  }, [actions, financeBatchesLoaded]);
+
+  React.useEffect(() => {
     setRuleDraft(settlementRuleDraft(selectedProject));
     setFinancialDraft(financialDraftFromProject(selectedProject));
   }, [selectedProject]);
@@ -20022,10 +20044,10 @@ function ScreenSettlement({ go }) {
         type: batch.type,
         label: batch.typeLabel,
         count: 0,
-        amountCents: 0,
+        amount: 0,
       };
       current.count += 1;
-      current.amountCents += batch.finalAmountCents;
+      current.amount += batch.finalAmount;
       byType.set(batch.type, current);
     });
     return Array.from(byType.values());
@@ -20646,7 +20668,7 @@ function ScreenSettlement({ go }) {
       title: "最终金额",
       align: "right",
       render: (row) => (
-        <span className="num">{formatYuanFromCents(row.finalAmountCents)}</span>
+        <span className="num">{formatFinanceAmount(row.finalAmount)}</span>
       ),
     },
     {
@@ -20724,7 +20746,7 @@ function ScreenSettlement({ go }) {
               {financeBatchSummary.map((item) => (
                 <Badge key={item.type} tone="blue">
                   {item.label} {item.count} 个 ·{" "}
-                  {formatYuanFromCents(item.amountCents)}
+                  {formatFinanceAmount(item.amount)}
                 </Badge>
               ))}
             </div>

@@ -18,7 +18,7 @@ export type OpsReferenceFinanceBatch = {
   period: string;
   periodStart: string;
   periodEnd: string;
-  finalAmountCents: number;
+  finalAmount: number;
   itemCount: number;
 };
 
@@ -71,7 +71,7 @@ export function toOpsReferenceFinanceBatch(
     period: `${batch.periodStart} → ${batch.periodEnd}`,
     periodStart: batch.periodStart,
     periodEnd: batch.periodEnd,
-    finalAmountCents: batch.finalAmount,
+    finalAmount: batch.finalAmount,
     itemCount: batch.itemCount,
   };
 }
