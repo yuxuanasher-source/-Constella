@@ -150,6 +150,29 @@ const financeBatchSelect = `
   updated_at
 `;
 
+const financeBatchItemSelect = `
+  id,
+  organization_id,
+  finance_batch_id,
+  batch_type,
+  project_id,
+  counterparty_type,
+  counterparty_id,
+  counterparty_name_snapshot,
+  source_type,
+  source_id,
+  source_snapshot,
+  system_amount,
+  adjustment_amount,
+  final_amount,
+  evidence_level,
+  evidence_snapshot,
+  status,
+  exception_flags,
+  created_at,
+  updated_at
+`;
+
 const streamerPayableSourceSelect = `
   id,
   organization_id,
@@ -167,6 +190,54 @@ export class SupabaseFinanceBatchRepository
   implements FinanceBatchRepository
 {
   constructor(private readonly client: SupabaseClient) {}
+
+  async listFinanceBatches(input: {
+    organizationId: string;
+  }): Promise<FinanceBatchRecord[]> {
+    const { data, error } = await this.client
+      .from("finance_batches")
+      .select(financeBatchSelect)
+      .eq("organization_id", input.organizationId)
+      .order("created_at", { ascending: false })
+      .returns<FinanceBatchRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    return (data ?? []).map(toFinanceBatchRecord);
+  }
+
+  async getFinanceBatchDetail(input: {
+    organizationId: string;
+    financeBatchId: string;
+  }): Promise<{
+    batch: FinanceBatchRecord;
+    items: FinanceBatchItemRecord[];
+  } | null> {
+    const batch = await this.getFinanceBatch(input);
+    if (!batch) {
+      return null;
+    }
+
+    const { data, error } = await this.client
+      .from("finance_batch_items")
+      .select(financeBatchItemSelect)
+      .eq("organization_id", input.organizationId)
+      .eq("finance_batch_id", input.financeBatchId)
+      .eq("status", "active")
+      .order("created_at", { ascending: true })
+      .returns<FinanceBatchItemRow[]>();
+
+    if (error) {
+      throw error;
+    }
+
+    return {
+      batch,
+      items: (data ?? []).map(toFinanceBatchItemRecord),
+    };
+  }
 
   async listStreamerPayableSources(input: {
     organizationId: string;
