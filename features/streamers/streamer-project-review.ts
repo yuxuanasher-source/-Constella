@@ -11,6 +11,7 @@ export type StreamerProjectReviewInput = {
   tasks: StreamerProjectReviewTask[];
   reports: StreamerProjectReviewReport[];
   recordings: StreamerProjectReviewRecording[];
+  externalReferences?: StreamerProjectExternalReference[];
 };
 
 export type StreamerProjectReviewTask = {
@@ -41,6 +42,16 @@ export type StreamerProjectReviewRecording = {
   adopted?: boolean | null;
   rejectionReasons?: string[] | null;
   durationSeconds?: number | null;
+};
+
+export type StreamerProjectExternalReference = {
+  id: string;
+  title: string;
+  sourceName: string;
+  sourceUrl?: string | null;
+  retrievedAt: string;
+  summary: string;
+  productType?: string | null;
 };
 
 export type StreamerProjectReviewFact = {
@@ -103,10 +114,22 @@ export type StreamerProjectReviewProfile = {
     livePerformance: string;
     recordingPerformance: string;
     productFit: string;
-    externalReference: {
-      status: "not_connected";
-      summary: string;
-    };
+    externalReference:
+      | {
+          status: "not_connected";
+          summary: string;
+        }
+      | {
+          status: "provided";
+          summary: string;
+          references: Array<{
+            id: string;
+            title: string;
+            sourceName: string;
+            sourceUrl?: string | null;
+            retrievedAt: string;
+          }>;
+        };
     majorIssues: Array<{
       title: string;
       summary: string;
@@ -131,6 +154,7 @@ export function buildStreamerProjectReviewProfile(
   const tasks = input.tasks ?? [];
   const reports = input.reports ?? [];
   const recordings = input.recordings ?? [];
+  const externalReferences = input.externalReferences ?? [];
   const taskById = new Map(tasks.map((task) => [task.id, task]));
   const scheduledDates = tasks
     .flatMap((task) => [task.plannedStartAt, task.plannedEndAt])
@@ -240,6 +264,7 @@ export function buildStreamerProjectReviewProfile(
       liveMetrics,
       recordings: recordingMetrics,
       sourceRecordings: recordings,
+      externalReferences,
       caveats,
       recommendations,
     }),
@@ -373,10 +398,28 @@ function buildReviewDraft(input: {
   liveMetrics: StreamerProjectReviewProfile["liveMetrics"];
   recordings: StreamerProjectReviewProfile["recordings"];
   sourceRecordings: StreamerProjectReviewRecording[];
+  externalReferences: StreamerProjectExternalReference[];
   caveats: StreamerProjectReviewProfile["caveats"];
   recommendations: StreamerProjectReviewProfile["recommendations"];
 }): StreamerProjectReviewProfile["reviewDraft"] {
   const externalReferenceSummary = "暂未接入外部同类产品或同行表现参照。";
+  const externalReference =
+    input.externalReferences.length > 0
+      ? {
+          status: "provided" as const,
+          summary: `已接入 ${input.externalReferences.length} 条外部参考，仅作为同类产品/同行表现参照。`,
+          references: input.externalReferences.map((reference) => ({
+            id: reference.id,
+            title: reference.title,
+            sourceName: reference.sourceName,
+            sourceUrl: reference.sourceUrl,
+            retrievedAt: reference.retrievedAt,
+          })),
+        }
+      : {
+          status: "not_connected" as const,
+          summary: externalReferenceSummary,
+        };
   const topReasonText =
     input.recordings.topRejectionReasons.map((item) => item.reason).join("、") ||
     "暂无录屏驳回原因";
@@ -395,7 +438,7 @@ function buildReviewDraft(input: {
       : [];
   const dataGaps = [
     ...input.caveats.map((caveat) => caveat.summary),
-    externalReferenceSummary,
+    ...(input.externalReferences.length > 0 ? [] : [externalReferenceSummary]),
   ];
 
   return {
@@ -404,10 +447,7 @@ function buildReviewDraft(input: {
     livePerformance: `累计场观 ${input.liveMetrics.totalViewers}，平均场观 ${input.liveMetrics.averageViewers ?? 0}，平均 PCU ${input.liveMetrics.averagePcu ?? 0}，平均 ACU ${input.liveMetrics.averageAcu ?? 0}。`,
     recordingPerformance: `录屏提交 ${input.recordings.submittedCount} 条，通过率 ${formatBps(input.recordings.passRateBps)}，采用率 ${formatBps(input.recordings.adoptionRateBps)}，主要驳回原因：${topReasonText}。`,
     productFit: `当前项目产品类型为 ${input.project.productType}，适配判断基于内部排班、直播报数与录屏记录生成。`,
-    externalReference: {
-      status: "not_connected",
-      summary: externalReferenceSummary,
-    },
+    externalReference,
     majorIssues,
     opportunities: majorIssues.length
       ? [
