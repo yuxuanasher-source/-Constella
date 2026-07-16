@@ -97,6 +97,32 @@ export type StreamerProjectReviewProfile = {
     expectedImpact?: string;
     requiresHumanApproval: true;
   }>;
+  reviewDraft: {
+    summary: string;
+    participation: string;
+    livePerformance: string;
+    recordingPerformance: string;
+    productFit: string;
+    externalReference: {
+      status: "not_connected";
+      summary: string;
+    };
+    majorIssues: Array<{
+      title: string;
+      summary: string;
+      sourceIds: string[];
+    }>;
+    opportunities: Array<{
+      title: string;
+      expectedImpact: string;
+    }>;
+    actionItems: Array<{
+      proposal: string;
+      expectedImpact?: string;
+      requiresHumanApproval: true;
+    }>;
+    dataGaps: string[];
+  };
 };
 
 export function buildStreamerProjectReviewProfile(
@@ -155,52 +181,68 @@ export function buildStreamerProjectReviewProfile(
     recordings,
     effectiveLiveDays: effectiveDateKeys.size,
   });
+  const recommendations = buildRecommendations({ findings, caveats });
+  const topRejectionReasons = topReasons(recordings);
+  const participation = {
+    naturalDays: inclusiveDays(firstScheduledAt, lastScheduledAt),
+    effectiveLiveDays: effectiveDateKeys.size,
+    scheduledTaskCount: tasks.length,
+    completedTaskCount: tasks.filter(isTaskEffectivelyCompleted).length,
+    scheduleCompletionRateBps: ratioBps(effectiveDateKeys.size, tasks.length),
+    totalSystemDuration,
+    totalSettlementDuration,
+    firstScheduledAt,
+    lastScheduledAt,
+  };
+  const liveMetrics = {
+    reportCount: reports.length,
+    approvedReportCount: reports.filter((report) => report.status === "approved")
+      .length,
+    totalViewers,
+    averageViewers: averageOrNull(viewerValues),
+    averagePcu: averageOrNull(pcuValues),
+    averageAcu: averageOrNull(acuValues),
+    evidenceLevels: countByString(
+      reports.map((report) => report.evidenceLevel).filter(Boolean),
+    ),
+    riskFlags: countByString(reports.flatMap((report) => report.riskFlags ?? [])),
+  };
+  const recordingMetrics = {
+    submittedCount: recordings.length,
+    approvedCount,
+    rejectedCount,
+    adoptedCount,
+    passRateBps: ratioBps(approvedCount, recordings.length),
+    adoptionRateBps: ratioBps(adoptedCount, recordings.length),
+    rejectionRateBps: ratioBps(rejectedCount, recordings.length),
+    topRejectionReasons,
+  };
+  const project = {
+    id: input.project.id,
+    name: input.project.name,
+    productType: input.project.productType ?? "unknown",
+  };
 
   return {
     streamer: input.streamer,
-    project: {
-      id: input.project.id,
-      name: input.project.name,
-      productType: input.project.productType ?? "unknown",
-    },
-    participation: {
-      naturalDays: inclusiveDays(firstScheduledAt, lastScheduledAt),
-      effectiveLiveDays: effectiveDateKeys.size,
-      scheduledTaskCount: tasks.length,
-      completedTaskCount: tasks.filter(isTaskEffectivelyCompleted).length,
-      scheduleCompletionRateBps: ratioBps(effectiveDateKeys.size, tasks.length),
-      totalSystemDuration,
-      totalSettlementDuration,
-      firstScheduledAt,
-      lastScheduledAt,
-    },
-    liveMetrics: {
-      reportCount: reports.length,
-      approvedReportCount: reports.filter((report) => report.status === "approved")
-        .length,
-      totalViewers,
-      averageViewers: averageOrNull(viewerValues),
-      averagePcu: averageOrNull(pcuValues),
-      averageAcu: averageOrNull(acuValues),
-      evidenceLevels: countByString(
-        reports.map((report) => report.evidenceLevel).filter(Boolean),
-      ),
-      riskFlags: countByString(reports.flatMap((report) => report.riskFlags ?? [])),
-    },
-    recordings: {
-      submittedCount: recordings.length,
-      approvedCount,
-      rejectedCount,
-      adoptedCount,
-      passRateBps: ratioBps(approvedCount, recordings.length),
-      adoptionRateBps: ratioBps(adoptedCount, recordings.length),
-      rejectionRateBps: ratioBps(rejectedCount, recordings.length),
-      topRejectionReasons: topReasons(recordings),
-    },
+    project,
+    participation,
+    liveMetrics,
+    recordings: recordingMetrics,
     facts: buildFacts({ tasks, reports, recordings }),
     findings,
     caveats,
-    recommendations: buildRecommendations({ findings, caveats }),
+    recommendations,
+    reviewDraft: buildReviewDraft({
+      streamer: input.streamer,
+      project,
+      participation,
+      liveMetrics,
+      recordings: recordingMetrics,
+      sourceRecordings: recordings,
+      caveats,
+      recommendations,
+    }),
   };
 }
 
@@ -324,6 +366,67 @@ function buildRecommendations(input: {
   ];
 }
 
+function buildReviewDraft(input: {
+  streamer: StreamerProjectReviewProfile["streamer"];
+  project: StreamerProjectReviewProfile["project"];
+  participation: StreamerProjectReviewProfile["participation"];
+  liveMetrics: StreamerProjectReviewProfile["liveMetrics"];
+  recordings: StreamerProjectReviewProfile["recordings"];
+  sourceRecordings: StreamerProjectReviewRecording[];
+  caveats: StreamerProjectReviewProfile["caveats"];
+  recommendations: StreamerProjectReviewProfile["recommendations"];
+}): StreamerProjectReviewProfile["reviewDraft"] {
+  const externalReferenceSummary = "暂未接入外部同类产品或同行表现参照。";
+  const topReasonText =
+    input.recordings.topRejectionReasons.map((item) => item.reason).join("、") ||
+    "暂无录屏驳回原因";
+  const rejectedRecordingIds = input.sourceRecordings
+    .filter((recording) => recording.status === "rejected")
+    .map((recording) => recording.id);
+  const majorIssues =
+    rejectedRecordingIds.length > 0
+      ? [
+          {
+            title: "录屏质量需要复盘",
+            summary: `主要驳回原因：${topReasonText}。`,
+            sourceIds: rejectedRecordingIds,
+          },
+        ]
+      : [];
+  const dataGaps = [
+    ...input.caveats.map((caveat) => caveat.summary),
+    externalReferenceSummary,
+  ];
+
+  return {
+    summary: `${input.streamer.displayName}在${input.project.name}项目已形成 ${input.participation.effectiveLiveDays} 个有效直播日，排班完成率 ${formatBps(input.participation.scheduleCompletionRateBps)}，录屏采用率 ${formatBps(input.recordings.adoptionRateBps)}。`,
+    participation: `自然参与 ${input.participation.naturalDays} 天，有效履约 ${input.participation.effectiveLiveDays} 天，排班完成率 ${formatBps(input.participation.scheduleCompletionRateBps)}。`,
+    livePerformance: `累计场观 ${input.liveMetrics.totalViewers}，平均场观 ${input.liveMetrics.averageViewers ?? 0}，平均 PCU ${input.liveMetrics.averagePcu ?? 0}，平均 ACU ${input.liveMetrics.averageAcu ?? 0}。`,
+    recordingPerformance: `录屏提交 ${input.recordings.submittedCount} 条，通过率 ${formatBps(input.recordings.passRateBps)}，采用率 ${formatBps(input.recordings.adoptionRateBps)}，主要驳回原因：${topReasonText}。`,
+    productFit: `当前项目产品类型为 ${input.project.productType}，适配判断基于内部排班、直播报数与录屏记录生成。`,
+    externalReference: {
+      status: "not_connected",
+      summary: externalReferenceSummary,
+    },
+    majorIssues,
+    opportunities: majorIssues.length
+      ? [
+          {
+            title: "围绕主要驳回原因优化录屏脚本和画面检查",
+            expectedImpact: "提升后续录屏采用率，并减少重复打回。",
+          },
+        ]
+      : [
+          {
+            title: "继续积累同类项目样本",
+            expectedImpact: "提高后续产品适配判断的稳定性。",
+          },
+        ],
+    actionItems: input.recommendations,
+    dataGaps,
+  };
+}
+
 function topReasons(
   recordings: StreamerProjectReviewRecording[],
 ): Array<{ reason: string; count: number }> {
@@ -386,4 +489,8 @@ function averageOrNull(values: number[]): number | null {
 
 function ratioBps(part: number, whole: number): number {
   return whole > 0 ? Math.round((part / whole) * 10_000) : 0;
+}
+
+function formatBps(value: number): string {
+  return `${(value / 100).toFixed(2)}%`;
 }
