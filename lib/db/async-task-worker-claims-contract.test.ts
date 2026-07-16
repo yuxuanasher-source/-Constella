@@ -240,7 +240,11 @@ describe("async task worker claim RPC contract", () => {
       expect(body).toMatch(/desired_state[^']*'running'\) <> 'paused'/u);
       expect(body).toContain(`task_type = '${contract.taskType}'`);
       expect(body).toContain(`stage = '${contract.stage}'`);
-      expect(body).toContain("cancel_requested_at is null");
+      if (contract.taskType === "recording_ai") {
+        expect(body).not.toContain("cancel_requested_at is null");
+      } else {
+        expect(body).toContain("cancel_requested_at is null");
+      }
       expect(body).toContain("ranked.org_rank asc");
       expect(body).toContain("run_after asc");
       expectLockBeforeActiveCount(body);
@@ -337,6 +341,10 @@ describe("async task worker claim RPC contract", () => {
     expect(body).toContain("locked_by = p_worker_id");
     expect(body).toContain("result = case when p_metadata ? 'result'");
     expect(body).toContain("claimed_by = p_worker_id");
+    expect(body).toContain("p_metadata ? 'recordingresult'");
+    expect(body).toContain("provider_name = case");
+    expect(body).toContain("insert into public.recording_ai_segments");
+    expect(body).toContain("jsonb_to_recordset");
     expect(body).toContain("lease_expires_at > p_now");
     expect(body).toContain("status in ('succeeded', 'failed', 'cancelled', 'needs_confirmation')");
     expect(body).toContain("return v_event");
@@ -353,9 +361,14 @@ describe("async task worker claim RPC contract", () => {
     expect(body).toContain("returning * into v_event");
 
     const firstUpdate = body.indexOf("update public.");
+    const recordingUpdate = body.indexOf("update public.recording_ai_analyses");
+    const segmentInsert = body.indexOf("insert into public.recording_ai_segments");
     const eventInsert = body.indexOf("insert into public.async_task_events");
     const eventInsertSection = body.slice(eventInsert);
     expect(firstUpdate).toBeGreaterThanOrEqual(0);
+    expect(recordingUpdate).toBeGreaterThanOrEqual(0);
+    expect(segmentInsert).toBeGreaterThan(recordingUpdate);
+    expect(eventInsert).toBeGreaterThan(segmentInsert);
     expect(eventInsert).toBeGreaterThan(firstUpdate);
     expect(eventInsertSection).not.toContain("on conflict do nothing");
 

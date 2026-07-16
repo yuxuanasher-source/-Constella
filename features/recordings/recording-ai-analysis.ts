@@ -2,9 +2,10 @@ import {
   createAiInvocationId,
   recordAiInvocation,
 } from "@/features/ai/invocation-ledger";
-import type { AiActor } from "@/features/ai/contracts";
+import type { AiActor, AiExecutionActor } from "@/features/ai/contracts";
 
 import type {
+  RecordingAiPipelineStage,
   RecordingAiDraftPipeline,
   RecordingAiPipelineResult,
 } from "./recording-ai-pipeline";
@@ -21,7 +22,8 @@ export type RecordingAiAnalysisStatus =
   | "queued"
   | "running"
   | "succeeded"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 export type RecordingAiDimensionKey =
   | "rhythm"
@@ -220,6 +222,11 @@ type RecordingAiWorkItemRow = RecordingAiAnalysisRow & {
   organization_id: string;
   attempt: number;
   max_attempts: number;
+  stage?: string | null;
+  claimed_by?: string | null;
+  claimed_at?: string | null;
+  lease_expires_at?: string | null;
+  cancel_requested_at?: string | null;
   recording_assets?: RecordingAssetWorkItemRow | null;
 };
 
@@ -252,6 +259,7 @@ const statusLabels: Record<RecordingAiAnalysisStatus, string> = {
   running: "分析中",
   succeeded: "已完成",
   failed: "分析失败",
+  cancelled: "已取消",
 };
 
 export const recordingAiAnalysisSelect = [
@@ -311,6 +319,7 @@ const analysisWorkItemSelect = [
   "asr_provider",
   "attempt",
   "max_attempts",
+  "cancel_requested_at",
   "error_summary",
   "ai_invocation_id",
   "created_at",
@@ -467,7 +476,7 @@ export async function requestRecordingAiAnalysis({
   assetId,
 }: {
   client: RecordingAiClient;
-  actor: AiActor;
+  actor: AiExecutionActor;
   assetId: string;
 }): Promise<RecordingAiAnalysisDto> {
   const normalizedAssetId = assetId.trim();
@@ -546,6 +555,9 @@ export async function runRecordingAiAnalysisOnce({
   if (workItem.organization_id !== actor.organizationId) {
     throw new Error("Recording AI analysis belongs to another organization");
   }
+  if (workItem.cancel_requested_at) {
+    throw new Error("Recording AI analysis was cancelled");
+  }
 
   if (workItem.status !== "queued") {
     throw new Error(`Recording AI analysis is not queued: ${workItem.status}`);
@@ -565,9 +577,9 @@ export async function runRecordingAiAnalysisOnce({
   }
 
   return executeClaimedRecordingAiAnalysis({
-    db,
+    client: client as unknown as RecordingAiRunnerDb,
+    actor,
     workItem: claimed,
-    attempt,
     now,
     draftBuilder,
     pipeline,
@@ -745,9 +757,9 @@ export async function claimAndRunRecordingAiAnalyses({
 
     try {
       const result = await executeClaimedRecordingAiAnalysis({
-        db,
+        client: db,
+        actor,
         workItem: claimed,
-        attempt,
         now,
         draftBuilder,
         pipeline,
@@ -865,24 +877,67 @@ async function failStaleRunningRecordingAiAnalysis(
   return data !== null;
 }
 
-async function executeClaimedRecordingAiAnalysis({
-  db,
+export async function executeClaimedRecordingAiAnalysis({
+  client,
+  actor,
   workItem,
-  attempt,
   now,
   draftBuilder,
   pipeline = null,
+  signal,
+  onStage,
+  beforeFinalize,
+  deferTerminalStatus = false,
 }: {
-  db: RecordingAiRunnerDb;
+  client: RecordingAiRunnerDb;
+  actor: AiExecutionActor;
   workItem: RecordingAiWorkItemRow;
-  attempt: number;
   now: () => Date;
   draftBuilder: typeof buildRecordingAiAnalysisDraft;
   pipeline?: RecordingAiDraftPipeline | null;
+  signal?: AbortSignal;
+  onStage?: (stage: RecordingAiPipelineStage | "persisting") => Promise<void> | void;
+  beforeFinalize?: (input: {
+    status: "succeeded" | "failed" | "cancelled";
+    errorCode: string | null;
+    metadata: Record<string, unknown>;
+  }) => Promise<void>;
+  deferTerminalStatus?: boolean;
 }): Promise<RecordingAiAnalysisDto> {
+  const db = client;
   const analysisId = workItem.id;
+  const attempt = Math.max(0, Math.trunc(workItem.attempt ?? 0));
+  let finalizationAttempted = false;
 
   try {
+    if (workItem.cancel_requested_at) {
+      await onStage?.("persisting");
+      if (beforeFinalize) {
+        finalizationAttempted = true;
+        await beforeFinalize({
+          status: "cancelled",
+          errorCode: null,
+          metadata: { cancelledAt: workItem.cancel_requested_at },
+        });
+      }
+      const updated = deferTerminalStatus
+        ? {
+            ...workItem,
+            status: "cancelled" as const,
+            completed_at: now().toISOString(),
+            claimed_at: null,
+            claimed_by: null,
+            lease_expires_at: null,
+          }
+        : await updateAnalysis(db, analysisId, {
+            status: "cancelled",
+            claimed_at: null,
+            error_summary: "cancelled",
+            completed_at: now().toISOString(),
+          });
+      return toRecordingAiAnalysisDto(updated);
+    }
+
     const asset = toRecordingAssetDtoFromWorkItem(workItem.recording_assets);
 
     // 优先走「抽音频 -> 豆包 ASR 转写 -> DeepSeek 分析」流水线；流水线不可用
@@ -891,8 +946,35 @@ async function executeClaimedRecordingAiAnalysis({
     let pipelineError: string | null = null;
     if (pipeline) {
       try {
-        pipelineResult = await pipeline({ asset });
+        pipelineResult = await pipeline({ asset, signal, onStage });
       } catch (error) {
+        if (isAbortError(error)) {
+          await onStage?.("persisting");
+          if (beforeFinalize) {
+            finalizationAttempted = true;
+            await beforeFinalize({
+              status: "cancelled",
+              errorCode: null,
+              metadata: { cancelledAt: now().toISOString() },
+            });
+          }
+          const updated = deferTerminalStatus
+            ? {
+                ...workItem,
+                status: "cancelled" as const,
+                completed_at: now().toISOString(),
+                claimed_at: null,
+                claimed_by: null,
+                lease_expires_at: null,
+              }
+            : await updateAnalysis(db, analysisId, {
+                status: "cancelled",
+                claimed_at: null,
+                error_summary: "cancelled",
+                completed_at: now().toISOString(),
+              });
+          return toRecordingAiAnalysisDto(updated);
+        }
         pipelineError = sanitizeErrorSummary(error);
       }
     }
@@ -920,13 +1002,56 @@ async function executeClaimedRecordingAiAnalysis({
       sort_order: segment.sortOrder,
     }));
 
-    if (segmentRows.length > 0) {
-      const { error } = await db
-        .from("recording_ai_segments")
-        .insert(segmentRows);
-      if (error) {
-        throw error;
-      }
+    await onStage?.("persisting");
+    if (beforeFinalize) {
+      finalizationAttempted = true;
+      await beforeFinalize({
+        status: "succeeded",
+        errorCode: null,
+        metadata: {
+          recordingResult: {
+            assetId: workItem.asset_id,
+            providerName: pipelineResult?.providerName ?? "deterministic",
+            summary: draft.summary,
+            scorecard: draft.scorecard,
+            dimensions: draft.dimensions,
+            riskFlags: draft.riskFlags,
+            recommendations: draft.recommendations,
+            transcriptText: pipelineResult?.transcriptText ?? null,
+            transcriptUtterances: pipelineResult?.transcriptUtterances ?? [],
+            asrProvider: pipelineResult?.asrProvider ?? null,
+          },
+          segments: segmentRows,
+        },
+      });
+    }
+
+    if (deferTerminalStatus) {
+      return toRecordingAiAnalysisDto({
+        ...workItem,
+        status: "succeeded",
+        provider_name: pipelineResult?.providerName ?? "deterministic",
+        summary: draft.summary,
+        scorecard: draft.scorecard,
+        dimensions: draft.dimensions,
+        risk_flags: draft.riskFlags,
+        recommendations: draft.recommendations,
+        transcript_text: pipelineResult?.transcriptText ?? null,
+        asr_provider: pipelineResult?.asrProvider ?? null,
+        completed_at: completedAt,
+        recording_ai_segments:
+          segmentRows.map((segment, index) => ({
+            id: `segment-${index + 1}`,
+            segment_kind: String(segment.segment_kind),
+            start_seconds: Number(segment.start_seconds),
+            end_seconds: Number(segment.end_seconds),
+            title: String(segment.title),
+            summary: String(segment.summary),
+            risk_level: segment.risk_level as "low" | "medium" | "high",
+            evidence: segment.evidence,
+            sort_order: Number(segment.sort_order),
+          })) ?? [],
+      });
     }
 
     const updated = await updateAnalysis(db, analysisId, {
@@ -945,8 +1070,18 @@ async function executeClaimedRecordingAiAnalysis({
       completed_at: completedAt,
     });
 
+    if (segmentRows.length > 0) {
+      const { error } = await db
+        .from("recording_ai_segments")
+        .insert(segmentRows);
+      if (error) {
+        throw error;
+      }
+    }
+
     return toRecordingAiAnalysisDto({
       ...updated,
+      status: deferTerminalStatus ? "succeeded" : updated.status,
       recording_ai_segments:
         segmentRows.map((segment, index) => ({
           id: `segment-${index + 1}`,
@@ -961,8 +1096,30 @@ async function executeClaimedRecordingAiAnalysis({
         })) ?? [],
     });
   } catch (error) {
+    if (finalizationAttempted) {
+      throw error;
+    }
     const finalFailure = attempt >= Math.max(1, workItem.max_attempts ?? 3);
     const completedAt = finalFailure ? now().toISOString() : null;
+    if (finalFailure) {
+      await onStage?.("persisting");
+      if (beforeFinalize) {
+        finalizationAttempted = true;
+        await beforeFinalize({
+          status: "failed",
+          errorCode: "provider_failed",
+          metadata: { errorSummary: sanitizeErrorSummary(error) },
+        });
+      }
+    }
+    if (finalFailure && deferTerminalStatus) {
+      return toRecordingAiAnalysisDto({
+        ...workItem,
+        status: "failed",
+        error_summary: sanitizeErrorSummary(error),
+        completed_at: completedAt,
+      });
+    }
     const updated = await updateAnalysis(db, analysisId, {
       status: finalFailure ? "failed" : "queued",
       attempt,
@@ -972,6 +1129,12 @@ async function executeClaimedRecordingAiAnalysis({
     });
     return toRecordingAiAnalysisDto(updated);
   }
+}
+
+function isAbortError(error: unknown) {
+  return (
+    error instanceof DOMException && error.name === "AbortError"
+  ) || (error instanceof Error && error.name === "AbortError");
 }
 
 function buildSegments(

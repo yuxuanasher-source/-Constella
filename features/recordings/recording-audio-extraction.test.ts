@@ -228,6 +228,69 @@ describe("recording audio extraction", () => {
     await expect(stat(workDirInput)).rejects.toThrow();
   });
 
+  it("honors cancellation after download and cleans up the temp directory", async () => {
+    const controller = new AbortController();
+    let workDirInput = "";
+    const runCommand: RunCommand = async (_command, args) => {
+      workDirInput = args[args.length - 1];
+      controller.abort();
+      return {
+        stdout: probeStdout({ duration: "60", size: "10" }),
+        stderr: "",
+      };
+    };
+    const { fetchImpl } = streamedFetch([Buffer.from("fake-video")]);
+
+    await expect(
+      extractRecordingAudioFromStorage({
+        client: fakeStorageClient("https://storage.internal/signed/a.mp4"),
+        bucket: "jy-private",
+        storagePath: "recordings/replay.mp4",
+        runCommand,
+        fetchImpl,
+        tempRoot,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/cancelled/);
+
+    expect(workDirInput).not.toBe("");
+    await expect(stat(workDirInput)).rejects.toThrow();
+  });
+
+  it("passes the abort signal into fetch, ffprobe, and ffmpeg", async () => {
+    const controller = new AbortController();
+    const commandSignals: Array<AbortSignal | undefined> = [];
+    const fetchSignals: Array<AbortSignal | undefined> = [];
+    const runCommand: RunCommand = async (command, args, options) => {
+      commandSignals.push(options?.signal);
+      if (command === "ffprobe") {
+        return {
+          stdout: probeStdout({ duration: "60", size: "10" }),
+          stderr: "",
+        };
+      }
+      await writeFile(args[args.length - 1], Buffer.from("fake-mp3"));
+      return { stdout: "", stderr: "" };
+    };
+    const fetchImpl: FetchLike = async (_url, options) => {
+      fetchSignals.push(options?.signal);
+      return streamedFetch([Buffer.from("fake-video")]).fetchImpl(_url, options);
+    };
+
+    await extractRecordingAudioFromStorage({
+      client: fakeStorageClient("https://storage.internal/signed/a.mp4"),
+      bucket: "jy-private",
+      storagePath: "recordings/replay.mp4",
+      runCommand,
+      fetchImpl,
+      tempRoot,
+      signal: controller.signal,
+    });
+
+    expect(fetchSignals).toEqual([controller.signal]);
+    expect(commandSignals).toEqual([controller.signal, controller.signal]);
+  });
+
   it("reports a clear error when the ffmpeg binary is missing", async () => {
     const runCommand: RunCommand = (command) => {
       if (command === "ffprobe") {

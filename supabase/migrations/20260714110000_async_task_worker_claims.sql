@@ -195,8 +195,7 @@ begin
       left join public.async_task_queue_controls queue_controls
         on queue_controls.organization_id = analysis.organization_id
        and queue_controls.task_type = 'recording_ai'
-      where analysis.cancel_requested_at is null
-        and analysis.attempt < analysis.max_attempts
+      where analysis.attempt < analysis.max_attempts
         and analysis.run_after <= p_now
         and coalesce(queue_controls.desired_state, 'running') <> 'paused'
         and (
@@ -251,7 +250,6 @@ begin
         on queue_controls.organization_id = analysis.organization_id
        and queue_controls.task_type = 'recording_ai'
       where analysis.organization_id = v_candidate.organization_id
-        and analysis.cancel_requested_at is null
         and analysis.attempt < analysis.max_attempts
         and analysis.run_after <= p_now
         and coalesce(queue_controls.desired_state, 'running') <> 'paused'
@@ -528,6 +526,7 @@ declare
   v_attempt integer;
   v_stage text;
   v_existing_status text;
+  v_asset_id uuid;
   v_event public.async_task_events%rowtype;
 begin
   if p_task_type not in ('ocr', 'recording_ai', 'settlement_simulation') then
@@ -585,8 +584,8 @@ begin
       return null;
     end if;
   elsif p_task_type = 'recording_ai' then
-    select organization_id, attempt, stage, status
-    into v_organization_id, v_attempt, v_stage, v_existing_status
+    select organization_id, attempt, stage, status, asset_id
+    into v_organization_id, v_attempt, v_stage, v_existing_status, v_asset_id
     from public.recording_ai_analyses
     where id = p_task_id
     for update;
@@ -618,6 +617,51 @@ begin
         claimed_by = null,
         error_code = p_error_code,
         error_summary = p_error_code,
+        provider_name = case
+          when p_metadata ? 'recordingResult'
+            then coalesce(p_metadata->'recordingResult'->>'providerName', provider_name)
+          else provider_name
+        end,
+        summary = case
+          when p_metadata ? 'recordingResult'
+            then coalesce(p_metadata->'recordingResult'->>'summary', summary)
+          else summary
+        end,
+        scorecard = case
+          when p_metadata ? 'recordingResult'
+            then coalesce(p_metadata->'recordingResult'->'scorecard', scorecard)
+          else scorecard
+        end,
+        dimensions = case
+          when p_metadata ? 'recordingResult'
+            then coalesce(p_metadata->'recordingResult'->'dimensions', dimensions)
+          else dimensions
+        end,
+        risk_flags = case
+          when p_metadata ? 'recordingResult'
+            then coalesce(p_metadata->'recordingResult'->'riskFlags', risk_flags)
+          else risk_flags
+        end,
+        recommendations = case
+          when p_metadata ? 'recordingResult'
+            then coalesce(p_metadata->'recordingResult'->'recommendations', recommendations)
+          else recommendations
+        end,
+        transcript_text = case
+          when p_metadata ? 'recordingResult'
+            then p_metadata->'recordingResult'->>'transcriptText'
+          else transcript_text
+        end,
+        transcript_utterances = case
+          when p_metadata ? 'recordingResult'
+            then coalesce(p_metadata->'recordingResult'->'transcriptUtterances', transcript_utterances)
+          else transcript_utterances
+        end,
+        asr_provider = case
+          when p_metadata ? 'recordingResult'
+            then p_metadata->'recordingResult'->>'asrProvider'
+          else asr_provider
+        end,
         updated_at = p_now
     where id = p_task_id
       and status = 'running'
@@ -626,6 +670,44 @@ begin
 
     if not found then
       return null;
+    end if;
+
+    if p_metadata ? 'segments' then
+      insert into public.recording_ai_segments (
+        organization_id,
+        analysis_id,
+        asset_id,
+        segment_kind,
+        start_seconds,
+        end_seconds,
+        title,
+        summary,
+        risk_level,
+        evidence,
+        sort_order
+      )
+      select
+        v_organization_id,
+        p_task_id,
+        v_asset_id,
+        segment.segment_kind,
+        segment.start_seconds,
+        segment.end_seconds,
+        segment.title,
+        segment.summary,
+        segment.risk_level,
+        coalesce(segment.evidence, '{}'::jsonb),
+        segment.sort_order
+      from jsonb_to_recordset(coalesce(p_metadata->'segments', '[]'::jsonb)) as segment(
+        segment_kind text,
+        start_seconds numeric,
+        end_seconds numeric,
+        title text,
+        summary text,
+        risk_level text,
+        evidence jsonb,
+        sort_order integer
+      );
     end if;
   elsif p_task_type = 'settlement_simulation' then
     select organization_id, attempt, stage, status

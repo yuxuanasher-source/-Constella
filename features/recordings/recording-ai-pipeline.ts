@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type {
-  AiActor,
+  AiExecutionActor,
   AiProvider,
   AiProviderName,
 } from "@/features/ai/contracts";
@@ -56,8 +56,16 @@ export type RecordingAiPipelineResult = {
   transcriptUtterances: DoubaoAsrUtterance[];
 };
 
+export type RecordingAiPipelineStage =
+  | "extracting_audio"
+  | "transcribing"
+  | "analyzing"
+  | "generating_report";
+
 export type RecordingAiDraftPipeline = (input: {
   asset: RecordingAssetDto;
+  signal?: AbortSignal;
+  onStage?: (stage: RecordingAiPipelineStage) => Promise<void> | void;
 }) => Promise<RecordingAiPipelineResult | null>;
 
 type LedgerClient = Parameters<typeof recordAiInvocation>[0]["client"];
@@ -137,7 +145,7 @@ export function createRecordingAiAnalysisPipeline({
   recordInvocation = recordAiInvocation,
 }: {
   client: LedgerClient & StorageClient;
-  actor: AiActor;
+  actor: AiExecutionActor;
   env?: Record<string, string | undefined>;
   asr?: DoubaoAsrProvider;
   providers?: AiProvider[];
@@ -168,15 +176,19 @@ export function createRecordingAiAnalysisPipeline({
   const routing = resolveAiProviderRouting(env);
   const bucket = getPrivateStorageBucket(env);
 
-  return async ({ asset }) => {
+  return async ({ asset, signal, onStage }) => {
     const storagePath = resolveStoragePath(asset);
     if (!storagePath) {
       // B 站 / 外部链接没有可下载的原始文件，不代理抓取，静默回退。
       return null;
     }
 
-    const audio = await extractAudio({ client, bucket, storagePath });
+    await onStage?.("extracting_audio");
+    throwIfAborted(signal);
+    const audio = await extractAudio({ client, bucket, storagePath, signal });
+    throwIfAborted(signal);
 
+    await onStage?.("transcribing");
     const transcript = await transcribeExtractedAudio({
       asr: resolvedAsr,
       audioBase64: audio.audioBase64,
@@ -190,6 +202,8 @@ export function createRecordingAiAnalysisPipeline({
       return null;
     }
 
+    throwIfAborted(signal);
+    await onStage?.("analyzing");
     const { draft, providerName } = await buildLlmDraft({
       asset,
       transcript,
@@ -201,6 +215,7 @@ export function createRecordingAiAnalysisPipeline({
       recordInvocation,
     });
 
+    await onStage?.("generating_report");
     return {
       draft,
       providerName,
@@ -209,6 +224,12 @@ export function createRecordingAiAnalysisPipeline({
       transcriptUtterances: transcript.utterances,
     };
   };
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new DOMException("Recording AI analysis was cancelled", "AbortError");
+  }
 }
 
 type TranscriptResult = {
@@ -231,7 +252,7 @@ async function transcribeExtractedAudio({
   format: string;
   asset: RecordingAssetDto;
   client: LedgerClient;
-  actor: AiActor;
+  actor: AiExecutionActor;
   recordInvocation: typeof recordAiInvocation;
 }): Promise<TranscriptResult | null> {
   const result = await asr.recognizeAudio({ audioBase64, format });
@@ -295,7 +316,7 @@ async function buildLlmDraft({
   providers: AiProvider[];
   primaryProvider?: AiProviderName;
   client: LedgerClient;
-  actor: AiActor;
+  actor: AiExecutionActor;
   runGateway: typeof runAiGateway;
   recordInvocation: typeof recordAiInvocation;
 }): Promise<{ draft: RecordingAiAnalysisDraft; providerName: AiProviderName }> {

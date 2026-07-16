@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 
 import {
-  claimAndRunRecordingAiAnalyses,
   runRecordingAiAnalysisOnce,
 } from "@/features/recordings/recording-ai-analysis";
 import { createRecordingAiAnalysisPipeline } from "@/features/recordings/recording-ai-pipeline";
+import { runRecordingAiWorkerIteration } from "@/features/recordings/recording-ai-worker";
 import { resolveRecordingAiRunnerIdentity } from "@/features/recordings/recording-ai-runner-identity";
 
 export async function POST(request: Request) {
@@ -82,11 +82,12 @@ export async function POST(request: Request) {
 
   let result;
   try {
-    result = await claimAndRunRecordingAiAnalyses({
+    result = await runRecordingAiWorkerIteration({
       client: supabase as never,
-      actor,
+      workerId: `recording-ai:internal:${process.pid}`,
       limit,
-      pipeline,
+      leaseSeconds: 120,
+      pipelineFactory: () => pipeline,
     });
   } catch {
     return NextResponse.json(
@@ -104,8 +105,14 @@ export async function POST(request: Request) {
     failures: result.failures.map((failure) => ({
       analysisId: failure.analysisId,
       errorCode: "runner_failed",
-      errorMessage: sanitizeRunnerMessage(failure.errorSummary),
+      errorMessage: sanitizeRunnerMessage(failure.errorMessage),
     })),
+    summary: {
+      claimed: result.claimed,
+      succeeded: result.succeeded,
+      failed: result.failed,
+      cancelled: result.cancelled,
+    },
   });
 }
 

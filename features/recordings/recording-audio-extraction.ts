@@ -39,18 +39,20 @@ export type ExtractedRecordingAudio = {
 export type RunCommand = (
   command: string,
   args: string[],
+  options?: { signal?: AbortSignal },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export type FetchLike = (
   url: string,
+  options?: { signal?: AbortSignal },
 ) => Promise<Pick<Response, "ok" | "status" | "body">>;
 
-const defaultRunCommand: RunCommand = (command, args) =>
+const defaultRunCommand: RunCommand = (command, args, options) =>
   new Promise((resolve, reject) => {
     execFile(
       command,
       args,
-      { maxBuffer: 16 * 1024 * 1024 },
+      { maxBuffer: 16 * 1024 * 1024, signal: options?.signal },
       (error, stdout, stderr) => {
         if (error) {
           reject(error);
@@ -61,7 +63,8 @@ const defaultRunCommand: RunCommand = (command, args) =>
     );
   });
 
-const defaultFetch: FetchLike = (url) => fetch(url);
+const defaultFetch: FetchLike = (url, options) =>
+  fetch(url, { signal: options?.signal });
 
 export function resolveFfmpegPath(
   env: Record<string, string | undefined> = process.env,
@@ -87,6 +90,7 @@ export async function extractRecordingAudioFromStorage({
   maxDurationSeconds = getRecordingMaxDurationMinutes() * 60,
   maxSourceBytes = getRecordingMaxFileBytes(),
   tempRoot = tmpdir(),
+  signal,
 }: {
   client: Pick<SupabaseClient, "storage">;
   bucket: string;
@@ -99,6 +103,7 @@ export async function extractRecordingAudioFromStorage({
   maxDurationSeconds?: number;
   maxSourceBytes?: number;
   tempRoot?: string;
+  signal?: AbortSignal;
 }): Promise<ExtractedRecordingAudio> {
   const normalizedPath = storagePath.trim();
   if (!normalizedPath) {
@@ -124,9 +129,11 @@ export async function extractRecordingAudioFromStorage({
   const outputPath = join(workDir, "audio.mp3");
 
   try {
+    throwIfAborted(signal);
     await mkdir(workDir, { recursive: true });
 
-    const response = await fetchImpl(signed.signedUrl);
+    throwIfAborted(signal);
+    const response = await fetchImpl(signed.signedUrl, { signal });
     if (!response.ok) {
       throw new Error(
         `录屏原始文件下载失败（HTTP ${response.status}），无法解析`,
@@ -138,16 +145,20 @@ export async function extractRecordingAudioFromStorage({
     await pipeline(
       Readable.fromWeb(response.body as unknown as WebReadableStream),
       createWriteStream(inputPath),
+      { signal },
     );
 
+    throwIfAborted(signal);
     await assertSourceWithinLimits({
       runCommand,
       ffprobePath,
       inputPath,
       maxDurationSeconds,
       maxSourceBytes,
+      signal,
     });
 
+    throwIfAborted(signal);
     try {
       await runCommand(ffmpegPath, [
         "-y",
@@ -163,11 +174,12 @@ export async function extractRecordingAudioFromStorage({
         "-f",
         "mp3",
         outputPath,
-      ]);
+      ], { signal });
     } catch (error) {
       throw new Error(ffmpegErrorSummary(error, ffmpegPath));
     }
 
+    throwIfAborted(signal);
     const audioBytes = await readFile(outputPath);
     if (!audioBytes.length) {
       throw new Error("ffmpeg produced an empty audio track");
@@ -196,12 +208,14 @@ async function assertSourceWithinLimits({
   inputPath,
   maxDurationSeconds,
   maxSourceBytes,
+  signal,
 }: {
   runCommand: RunCommand;
   ffprobePath: string;
   inputPath: string;
   maxDurationSeconds: number;
   maxSourceBytes: number;
+  signal?: AbortSignal;
 }): Promise<void> {
   let stdout = "";
   try {
@@ -213,7 +227,7 @@ async function assertSourceWithinLimits({
       "-of",
       "json",
       inputPath,
-    ]));
+    ], { signal }));
   } catch (error) {
     throw new Error(ffprobeErrorSummary(error, ffprobePath));
   }
@@ -228,6 +242,12 @@ async function assertSourceWithinLimits({
     throw new Error(
       `录屏文件超过 ${Math.trunc(maxSourceBytes / (1024 * 1024))}MB 大小上限，无法解析`,
     );
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new DOMException("Recording audio extraction was cancelled", "AbortError");
   }
 }
 

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildRecordingAiAnalysisDraft,
   claimAndRunRecordingAiAnalyses,
+  executeClaimedRecordingAiAnalysis,
   RECORDING_AI_STALE_CLAIM_ERROR_SUMMARY,
   runRecordingAiAnalysisOnce,
   toRecordingAiAnalysisDto,
@@ -256,6 +257,38 @@ describe("recording AI analysis", () => {
     ]);
   });
 
+  it("executes an already claimed platform row without incrementing attempt again", async () => {
+    const client = createRecordingAiClient({
+      analysis: analysisFixture({
+        status: "running",
+        attempt: 2,
+        claimed_by: "recording:test:1",
+      }),
+      asset: assetRowFixture(),
+    });
+
+    const result = await executeClaimedRecordingAiAnalysis({
+      client: client as never,
+      actor,
+      workItem: {
+        ...analysisFixture({
+          status: "running",
+          attempt: 2,
+          claimed_by: "recording:test:1",
+        }),
+        recording_assets: assetRowFixture(),
+      } as never,
+      now: () => new Date("2026-07-01T11:00:00.000Z"),
+      draftBuilder: buildRecordingAiAnalysisDraft,
+      pipeline: () => Promise.resolve(pipelineResultFixture()),
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(client.updates.recording_ai_analyses).toEqual([
+      expect.not.objectContaining({ attempt: 3 }),
+    ]);
+  });
+
   it("falls back to the deterministic draft when the pipeline throws", async () => {
     const client = createRecordingAiClient({
       analysis: analysisFixture({ attempt: 0, max_attempts: 3 }),
@@ -410,6 +443,27 @@ describe("recording AI analysis", () => {
       }),
     ).rejects.toThrow("claimed by another runner");
     expect(client.updates["analysis-1"]).toBeUndefined();
+    expect(client.inserts.recording_ai_segments).toEqual([]);
+  });
+
+  it("refuses a single run when the queued analysis was cancelled", async () => {
+    const client = createRecordingAiClient({
+      analysis: analysisFixture({
+        attempt: 0,
+        max_attempts: 3,
+        cancel_requested_at: "2026-07-01T10:30:00.000Z",
+      }),
+      asset: assetRowFixture(),
+    });
+
+    await expect(
+      runRecordingAiAnalysisOnce({
+        client: client as never,
+        actor,
+        analysisId: "analysis-1",
+      }),
+    ).rejects.toThrow("Recording AI analysis was cancelled");
+    expect(client.updates.recording_ai_analyses).toEqual([]);
     expect(client.inserts.recording_ai_segments).toEqual([]);
   });
 });

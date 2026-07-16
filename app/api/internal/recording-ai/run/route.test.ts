@@ -3,14 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 
 import {
-  claimAndRunRecordingAiAnalyses,
   runRecordingAiAnalysisOnce,
 } from "@/features/recordings/recording-ai-analysis";
+import { runRecordingAiWorkerIteration } from "@/features/recordings/recording-ai-worker";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/recordings/recording-ai-analysis", () => ({
-  claimAndRunRecordingAiAnalyses: vi.fn(),
   runRecordingAiAnalysisOnce: vi.fn(),
+}));
+
+vi.mock("@/features/recordings/recording-ai-worker", () => ({
+  runRecordingAiWorkerIteration: vi.fn(),
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
@@ -51,7 +54,11 @@ describe("/api/internal/recording-ai/run", () => {
       updatedAt: "2026-07-01T10:05:00.000Z",
       completedAt: "2026-07-01T10:05:00.000Z",
     });
-    vi.mocked(claimAndRunRecordingAiAnalyses).mockResolvedValue({
+    vi.mocked(runRecordingAiWorkerIteration).mockResolvedValue({
+      claimed: 0,
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0,
       analyses: [],
       failures: [],
     });
@@ -71,7 +78,7 @@ describe("/api/internal/recording-ai/run", () => {
 
     expect(response.status).toBe(401);
     expect(runRecordingAiAnalysisOnce).not.toHaveBeenCalled();
-    expect(claimAndRunRecordingAiAnalyses).not.toHaveBeenCalled();
+    expect(runRecordingAiWorkerIteration).not.toHaveBeenCalled();
   });
 
   it("rejects invalid runner token without running analysis", async () => {
@@ -85,7 +92,7 @@ describe("/api/internal/recording-ai/run", () => {
 
     expect(response.status).toBe(401);
     expect(runRecordingAiAnalysisOnce).not.toHaveBeenCalled();
-    expect(claimAndRunRecordingAiAnalyses).not.toHaveBeenCalled();
+    expect(runRecordingAiWorkerIteration).not.toHaveBeenCalled();
   });
 
   it("rejects claim mode without a valid runner token", async () => {
@@ -98,7 +105,7 @@ describe("/api/internal/recording-ai/run", () => {
     );
 
     expect(response.status).toBe(401);
-    expect(claimAndRunRecordingAiAnalyses).not.toHaveBeenCalled();
+    expect(runRecordingAiWorkerIteration).not.toHaveBeenCalled();
     expect(runRecordingAiAnalysisOnce).not.toHaveBeenCalled();
   });
 
@@ -118,7 +125,7 @@ describe("/api/internal/recording-ai/run", () => {
       error: "Recording AI runner organization and user are not configured",
     });
     expect(runRecordingAiAnalysisOnce).not.toHaveBeenCalled();
-    expect(claimAndRunRecordingAiAnalyses).not.toHaveBeenCalled();
+    expect(runRecordingAiWorkerIteration).not.toHaveBeenCalled();
   });
 
   it("rejects an explicit but invalid analysis id without falling back to claim mode", async () => {
@@ -137,7 +144,7 @@ describe("/api/internal/recording-ai/run", () => {
       });
     }
     expect(runRecordingAiAnalysisOnce).not.toHaveBeenCalled();
-    expect(claimAndRunRecordingAiAnalyses).not.toHaveBeenCalled();
+    expect(runRecordingAiWorkerIteration).not.toHaveBeenCalled();
   });
 
   it("runs one queued recording analysis with the configured system actor", async () => {
@@ -210,7 +217,11 @@ describe("/api/internal/recording-ai/run", () => {
   });
 
   it("claims and runs queued analyses when the body has no analysis id", async () => {
-    vi.mocked(claimAndRunRecordingAiAnalyses).mockResolvedValue({
+    vi.mocked(runRecordingAiWorkerIteration).mockResolvedValue({
+      claimed: 2,
+      succeeded: 1,
+      failed: 0,
+      cancelled: 0,
       analyses: [
         { id: "analysis-1", status: "succeeded", attempt: 1 },
         { id: "analysis-2", status: "queued", attempt: 2 },
@@ -234,17 +245,14 @@ describe("/api/internal/recording-ai/run", () => {
         { id: "analysis-2", status: "queued", attempt: 2 },
       ],
       failures: [],
+      summary: { claimed: 2, succeeded: 1, failed: 0, cancelled: 0 },
     });
-    expect(claimAndRunRecordingAiAnalyses).toHaveBeenCalledWith({
+    expect(runRecordingAiWorkerIteration).toHaveBeenCalledWith({
       client: supabase,
-      actor: {
-        userId: runnerUserId,
-        name: "Recording AI Runner",
-        role: "ops_manager",
-        organizationId: runnerOrganizationId,
-      },
+      workerId: expect.stringMatching(/^recording-ai:internal:/),
       limit: 5,
-      pipeline: null,
+      leaseSeconds: 120,
+      pipelineFactory: expect.any(Function),
     });
     expect(runRecordingAiAnalysisOnce).not.toHaveBeenCalled();
   });
@@ -262,8 +270,9 @@ describe("/api/internal/recording-ai/run", () => {
       processed: 0,
       analyses: [],
       failures: [],
+      summary: { claimed: 0, succeeded: 0, failed: 0, cancelled: 0 },
     });
-    expect(claimAndRunRecordingAiAnalyses).toHaveBeenCalledWith(
+    expect(runRecordingAiWorkerIteration).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 5 }),
     );
   });
@@ -282,6 +291,7 @@ describe("/api/internal/recording-ai/run", () => {
       processed: 0,
       analyses: [],
       failures: [],
+      summary: { claimed: 0, succeeded: 0, failed: 0, cancelled: 0 },
     });
   });
 
@@ -295,7 +305,7 @@ describe("/api/internal/recording-ai/run", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(claimAndRunRecordingAiAnalyses).toHaveBeenCalledWith(
+    expect(runRecordingAiWorkerIteration).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 10 }),
     );
 
@@ -307,13 +317,13 @@ describe("/api/internal/recording-ai/run", () => {
       }),
     );
 
-    expect(claimAndRunRecordingAiAnalyses).toHaveBeenLastCalledWith(
+    expect(runRecordingAiWorkerIteration).toHaveBeenLastCalledWith(
       expect.objectContaining({ limit: 1 }),
     );
   });
 
   it("returns a safe failure when claiming fails", async () => {
-    vi.mocked(claimAndRunRecordingAiAnalyses).mockRejectedValue(
+    vi.mocked(runRecordingAiWorkerIteration).mockRejectedValue(
       new Error("claim failed for private/path.mp4 with secret=abc123"),
     );
 
@@ -336,12 +346,17 @@ describe("/api/internal/recording-ai/run", () => {
   });
 
   it("sanitizes per-analysis failures in claim mode", async () => {
-    vi.mocked(claimAndRunRecordingAiAnalyses).mockResolvedValue({
+    vi.mocked(runRecordingAiWorkerIteration).mockResolvedValue({
+      claimed: 2,
+      succeeded: 1,
+      failed: 1,
+      cancelled: 0,
       analyses: [{ id: "analysis-1", status: "succeeded", attempt: 1 }],
       failures: [
         {
           analysisId: "analysis-9",
-          errorSummary: "failed private/path.mp4 with secret=abc123",
+          errorCode: "worker_failed",
+          errorMessage: "failed private/path.mp4 with secret=abc123",
         },
       ],
     });
@@ -366,6 +381,7 @@ describe("/api/internal/recording-ai/run", () => {
           errorMessage: "failed [redacted] with secret=[redacted]",
         },
       ],
+      summary: { claimed: 2, succeeded: 1, failed: 1, cancelled: 0 },
     });
     expect(JSON.stringify(body)).not.toContain("private/path.mp4");
     expect(JSON.stringify(body)).not.toContain("secret=abc123");
