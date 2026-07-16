@@ -40,6 +40,11 @@ type LiveReportRow = {
   created_at?: string | null;
 };
 
+type OcrResultRow = {
+  live_report_id?: string | null;
+  raw_result?: unknown;
+};
+
 type ProjectApplicationRow = {
   id: string;
 };
@@ -117,6 +122,17 @@ export async function loadStreamerProjectReviewInput({
   ]);
 
   const applicationIds = applications.map((application) => application.id);
+  const reportIds = reports.map((report) => report.id);
+  const ocrResults = reportIds.length
+    ? await loadList<OcrResultRow>(
+        supabase
+          .from("ocr_results")
+          .select("live_report_id, raw_result")
+          .eq("organization_id", organizationId)
+          .in("live_report_id", reportIds),
+      )
+    : [];
+  const ocrMetricByReportId = mapOcrMetricsByReportId(ocrResults);
   const recordings = applicationIds.length
     ? await loadList<RecordingSubmissionRow>(
         supabase
@@ -139,7 +155,9 @@ export async function loadStreamerProjectReviewInput({
       productType: project.product_name?.trim() || "unknown",
     },
     tasks: tasks.map(toReviewTask),
-    reports: reports.map(toReviewReport),
+    reports: reports.map((report) =>
+      toReviewReport(report, ocrMetricByReportId.get(report.id)),
+    ),
     recordings: recordings.map(toReviewRecording),
   };
 }
@@ -154,7 +172,10 @@ function toReviewTask(row: LiveTaskRow): StreamerProjectReviewTask {
   };
 }
 
-function toReviewReport(row: LiveReportRow): StreamerProjectReviewReport {
+function toReviewReport(
+  row: LiveReportRow,
+  ocrMetrics?: { pcu?: number; acu?: number },
+): StreamerProjectReviewReport {
   return {
     id: row.id,
     taskId: row.live_task_id ?? null,
@@ -162,10 +183,40 @@ function toReviewReport(row: LiveReportRow): StreamerProjectReviewReport {
     settlementDuration: row.settlement_duration ?? null,
     systemDuration: row.system_duration ?? null,
     viewers: row.viewers ?? null,
+    pcu: ocrMetrics?.pcu ?? null,
+    acu: ocrMetrics?.acu ?? null,
     evidenceLevel: row.evidence_level ?? null,
     riskFlags: row.risk_flags ?? [],
     submittedAt: row.created_at ?? null,
   };
+}
+
+function mapOcrMetricsByReportId(
+  rows: OcrResultRow[],
+): Map<string, { pcu?: number; acu?: number }> {
+  const result = new Map<string, { pcu?: number; acu?: number }>();
+  for (const row of rows) {
+    if (!row.live_report_id) continue;
+    const metrics = extractOcrMetrics(row.raw_result);
+    if (metrics.pcu !== undefined || metrics.acu !== undefined) {
+      result.set(row.live_report_id, metrics);
+    }
+  }
+  return result;
+}
+
+function extractOcrMetrics(value: unknown): { pcu?: number; acu?: number } {
+  if (!isRecord(value) || !Array.isArray(value.metricCandidates)) return {};
+  const metrics: { pcu?: number; acu?: number } = {};
+  for (const candidate of value.metricCandidates) {
+    if (!isRecord(candidate)) continue;
+    const key = candidate.key;
+    const metricValue = positiveNumber(candidate.value);
+    if (metricValue === null) continue;
+    if (key === "pcu") metrics.pcu = metricValue;
+    if (key === "acu") metrics.acu = metricValue;
+  }
+  return metrics;
 }
 
 function toReviewRecording(
@@ -185,6 +236,16 @@ function parseDecisionReasons(value: string | null | undefined): string[] {
     .split(/[;；,，、\n]/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function positiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
 }
 
 async function loadSingle<T>(
