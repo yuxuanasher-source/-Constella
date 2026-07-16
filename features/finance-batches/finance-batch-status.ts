@@ -37,7 +37,15 @@ export function nextFinanceBatchStatus(
 export function assertFinanceBatchTransition(
   status: FinanceBatchStatus,
   action: FinanceBatchAction,
+  options: { reason?: string } = {},
 ): void {
+  if (
+    (action === "reopen" || action === "void") &&
+    !options.reason?.trim()
+  ) {
+    throw new Error("Finance batch transition reason is required");
+  }
+
   nextFinanceBatchStatus(status, action);
 }
 

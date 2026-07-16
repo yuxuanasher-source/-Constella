@@ -33,6 +33,26 @@ describe("finance batch status guards", () => {
     );
   });
 
+  it("requires a nonblank reason for reopen and void actions", () => {
+    expect(() =>
+      assertFinanceBatchTransition("locked", "reopen"),
+    ).toThrow("Finance batch transition reason is required");
+    expect(() =>
+      assertFinanceBatchTransition("draft", "void", { reason: "   " }),
+    ).toThrow("Finance batch transition reason is required");
+
+    expect(() =>
+      assertFinanceBatchTransition("locked", "reopen", {
+        reason: "Corrected source data",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertFinanceBatchTransition("rejected", "void", {
+        reason: "Duplicate batch",
+      }),
+    ).not.toThrow();
+  });
+
   it("requires reopen before locked batch adjustment", () => {
     expect(() => assertFinanceBatchAdjustable("locked")).toThrow(
       "Locked finance batches cannot be adjusted",
