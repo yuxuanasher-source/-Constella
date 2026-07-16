@@ -78,6 +78,8 @@ const auth = {
   role: "finance",
   organizationId: "org-1",
 };
+const batchId = "2ba8b258-b9f6-4ac2-bd3e-b55f686ac608";
+const itemId = "9b332f5a-0126-4c4d-a85b-d6096d45a0f3";
 
 describe("finance batch routes", () => {
   beforeEach(() => {
@@ -93,8 +95,8 @@ describe("finance batch routes", () => {
       { id: "batch-1", batchType: "streamer_payable" },
     ]);
     mocks.repo.getFinanceBatchDetail.mockResolvedValue({
-      batch: { id: "batch-1", batchType: "streamer_payable" },
-      items: [{ id: "item-1", financeBatchId: "batch-1" }],
+      batch: { id: batchId, batchType: "streamer_payable" },
+      items: [{ id: itemId, financeBatchId: batchId }],
     });
   });
 
@@ -183,25 +185,38 @@ describe("finance batch routes", () => {
 
   it("loads finance batch detail within the authenticated organization", async () => {
     const response = await getFinanceBatch(new Request("http://localhost"), {
-      params: Promise.resolve({ batchId: "batch-1" }),
+      params: Promise.resolve({ batchId }),
     });
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      batch: { id: "batch-1", batchType: "streamer_payable" },
-      items: [{ id: "item-1", financeBatchId: "batch-1" }],
+      batch: { id: batchId, batchType: "streamer_payable" },
+      items: [{ id: itemId, financeBatchId: batchId }],
     });
     expect(mocks.repo.getFinanceBatchDetail).toHaveBeenCalledWith({
       organizationId: "org-1",
-      financeBatchId: "batch-1",
+      financeBatchId: batchId,
     });
+  });
+
+  it("rejects malformed finance batch detail ids before repository calls", async () => {
+    const response = await getFinanceBatch(new Request("http://localhost"), {
+      params: Promise.resolve({ batchId: "not-a-uuid" }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "batchId must be a valid UUID",
+    });
+    expect(SupabaseFinanceBatchRepository).not.toHaveBeenCalled();
+    expect(mocks.repo.getFinanceBatchDetail).not.toHaveBeenCalled();
   });
 
   it("returns 404 when finance batch detail is missing", async () => {
     mocks.repo.getFinanceBatchDetail.mockResolvedValueOnce(null);
 
     const response = await getFinanceBatch(new Request("http://localhost"), {
-      params: Promise.resolve({ batchId: "missing-batch" }),
+      params: Promise.resolve({ batchId }),
     });
 
     expect(response.status).toBe(404);
@@ -212,14 +227,14 @@ describe("finance batch routes", () => {
 
   it("adds an adjustment after billing allows settlement writes", async () => {
     const response = await addAdjustmentRoute(
-      jsonRequest("http://localhost/api/finance/batches/batch-1/adjustments", {
+      jsonRequest(`http://localhost/api/finance/batches/${batchId}/adjustments`, {
         direction: "increase",
         amount: 10,
         reason: "Late bonus",
-        financeBatchItemId: "item-1",
+        financeBatchItemId: itemId,
         evidenceSnapshot: { note: "approved" },
       }),
-      { params: Promise.resolve({ batchId: "batch-1" }) },
+      { params: Promise.resolve({ batchId }) },
     );
 
     expect(response.status).toBe(201);
@@ -231,8 +246,8 @@ describe("finance batch routes", () => {
       repo: mocks.repo,
       actor: auth,
       input: {
-        financeBatchId: "batch-1",
-        financeBatchItemId: "item-1",
+        financeBatchId: batchId,
+        financeBatchItemId: itemId,
         direction: "increase",
         amount: 10,
         reason: "Late bonus",
@@ -241,33 +256,86 @@ describe("finance batch routes", () => {
     });
   });
 
+  it("rejects malformed adjustment batch ids before billing", async () => {
+    const response = await addAdjustmentRoute(
+      jsonRequest("http://localhost/api/finance/batches/not-a-uuid/adjustments", {
+        direction: "increase",
+        amount: 10,
+        reason: "Late bonus",
+      }),
+      { params: Promise.resolve({ batchId: "not-a-uuid" }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "batchId must be a valid UUID",
+    });
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(addFinanceBatchAdjustment).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed adjustment item ids before billing", async () => {
+    const response = await addAdjustmentRoute(
+      jsonRequest(`http://localhost/api/finance/batches/${batchId}/adjustments`, {
+        direction: "increase",
+        amount: 10,
+        reason: "Late bonus",
+        financeBatchItemId: "not-a-uuid",
+      }),
+      { params: Promise.resolve({ batchId }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "financeBatchItemId must be a valid UUID",
+    });
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(addFinanceBatchAdjustment).not.toHaveBeenCalled();
+  });
+
   it("locks a finance batch with an optional reason", async () => {
     const response = await lockFinanceBatch(
-      jsonRequest("http://localhost/api/finance/batches/batch-1/lock", {
+      jsonRequest(`http://localhost/api/finance/batches/${batchId}/lock`, {
         reason: "Reviewed",
       }),
-      { params: Promise.resolve({ batchId: "batch-1" }) },
+      { params: Promise.resolve({ batchId }) },
     );
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      batch: { id: "batch-1", status: "lock-status" },
+      batch: { id: batchId, status: "lock-status" },
     });
     expect(transitionFinanceBatch).toHaveBeenCalledWith({
       repo: mocks.repo,
       actor: auth,
       input: {
-        financeBatchId: "batch-1",
+        financeBatchId: batchId,
         action: "lock",
         reason: "Reviewed",
       },
     });
   });
 
+  it("rejects malformed lock batch ids before billing", async () => {
+    const response = await lockFinanceBatch(
+      jsonRequest("http://localhost/api/finance/batches/not-a-uuid/lock", {
+        reason: "Reviewed",
+      }),
+      { params: Promise.resolve({ batchId: "not-a-uuid" }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "batchId must be a valid UUID",
+    });
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(transitionFinanceBatch).not.toHaveBeenCalled();
+  });
+
   it("requires a reason before billing when reopening a finance batch", async () => {
     const response = await reopenFinanceBatch(
-      jsonRequest("http://localhost/api/finance/batches/batch-1/reopen", {}),
-      { params: Promise.resolve({ batchId: "batch-1" }) },
+      jsonRequest(`http://localhost/api/finance/batches/${batchId}/reopen`, {}),
+      { params: Promise.resolve({ batchId }) },
     );
 
     expect(response.status).toBe(400);
@@ -275,15 +343,47 @@ describe("finance batch routes", () => {
     expect(transitionFinanceBatch).not.toHaveBeenCalled();
   });
 
-  it("requires a reason before billing when voiding a finance batch", async () => {
-    const response = await voidFinanceBatch(
-      jsonRequest("http://localhost/api/finance/batches/batch-1/void", {
-        reason: "   ",
+  it("rejects malformed reopen batch ids before billing", async () => {
+    const response = await reopenFinanceBatch(
+      jsonRequest("http://localhost/api/finance/batches/not-a-uuid/reopen", {
+        reason: "Need edits",
       }),
-      { params: Promise.resolve({ batchId: "batch-1" }) },
+      { params: Promise.resolve({ batchId: "not-a-uuid" }) },
     );
 
     expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "batchId must be a valid UUID",
+    });
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(transitionFinanceBatch).not.toHaveBeenCalled();
+  });
+
+  it("requires a reason before billing when voiding a finance batch", async () => {
+    const response = await voidFinanceBatch(
+      jsonRequest(`http://localhost/api/finance/batches/${batchId}/void`, {
+        reason: "   ",
+      }),
+      { params: Promise.resolve({ batchId }) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
+    expect(transitionFinanceBatch).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed void batch ids before billing", async () => {
+    const response = await voidFinanceBatch(
+      jsonRequest("http://localhost/api/finance/batches/not-a-uuid/void", {
+        reason: "Duplicate batch",
+      }),
+      { params: Promise.resolve({ batchId: "not-a-uuid" }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "batchId must be a valid UUID",
+    });
     expect(assertBillingWriteAllowed).not.toHaveBeenCalled();
     expect(transitionFinanceBatch).not.toHaveBeenCalled();
   });

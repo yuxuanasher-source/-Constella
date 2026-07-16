@@ -225,7 +225,6 @@ export class SupabaseFinanceBatchRepository
       .select(financeBatchItemSelect)
       .eq("organization_id", input.organizationId)
       .eq("finance_batch_id", input.financeBatchId)
-      .eq("status", "active")
       .order("created_at", { ascending: true })
       .returns<FinanceBatchItemRow[]>();
 

@@ -6,6 +6,7 @@ import { addFinanceBatchAdjustment } from "@/features/finance-batches/finance-ba
 import type { FinanceAdjustmentDirection } from "@/features/finance-batches/finance-batch-types";
 import {
   getSettlementRouteContext,
+  isUuid,
   jsonError,
   optionalString,
   readJsonBody,
@@ -23,11 +24,16 @@ export async function POST(
 ) {
   try {
     const { batchId } = await params;
+    assertUuid(batchId, "batchId");
     const body = await readJsonBody(request);
     const direction = requiredString(body, "direction");
     if (!adjustmentDirections.has(direction)) {
       throw new RouteError("direction must be increase or decrease", 400);
     }
+    const financeBatchItemId = optionalUuid(body, "financeBatchItemId") ?? null;
+    const amount = requiredNumber(body, "amount");
+    const reason = requiredString(body, "reason");
+    const evidenceSnapshot = readEvidenceSnapshot(body.evidenceSnapshot);
 
     const context = await getSettlementRouteContext();
     await assertBillingWriteAllowed({
@@ -42,17 +48,35 @@ export async function POST(
       actor: settlementActorFromContext(context),
       input: {
         financeBatchId: batchId,
-        financeBatchItemId: optionalString(body, "financeBatchItemId") ?? null,
+        financeBatchItemId,
         direction: direction as FinanceAdjustmentDirection,
-        amount: requiredNumber(body, "amount"),
-        reason: requiredString(body, "reason"),
-        evidenceSnapshot: readEvidenceSnapshot(body.evidenceSnapshot),
+        amount,
+        reason,
+        evidenceSnapshot,
       },
     });
 
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
     return jsonError(error);
+  }
+}
+
+function optionalUuid(
+  body: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = optionalString(body, key);
+  if (value && !isUuid(value)) {
+    throw new RouteError(`${key} must be a valid UUID`, 400);
+  }
+
+  return value;
+}
+
+function assertUuid(value: string, key: string): void {
+  if (!isUuid(value)) {
+    throw new RouteError(`${key} must be a valid UUID`, 400);
   }
 }
 

@@ -84,6 +84,7 @@ type MockQuery = {
   lte: ReturnType<typeof vi.fn>;
   order: ReturnType<typeof vi.fn>;
   in: ReturnType<typeof vi.fn>;
+  maybeSingle: ReturnType<typeof vi.fn>;
   returns: ReturnType<typeof vi.fn>;
 };
 
@@ -98,6 +99,7 @@ function createQuery(table: string, data: unknown[]): MockQuery {
       return query;
     }) as never;
   }
+  query.maybeSingle = vi.fn(async () => ({ data: data[0] ?? null, error: null }));
   query.returns = vi.fn(async () => ({ data, error: null }));
   return query;
 }
@@ -294,6 +296,29 @@ describe("SupabaseFinanceBatchRepository RPC writes", () => {
       p_reason: null,
     });
     expect(result.status).toBe("pending_review");
+  });
+});
+
+describe("SupabaseFinanceBatchRepository finance batch detail reads", () => {
+  it("does not filter out voided items from batch detail", async () => {
+    const supabase = createListSourcesClient({
+      finance_batches: [batchRow],
+      finance_batch_items: [{ ...itemRow, status: "voided" }],
+    });
+    const repo = new SupabaseFinanceBatchRepository(supabase.client as never);
+
+    const result = await repo.getFinanceBatchDetail({
+      organizationId: "org-1",
+      financeBatchId: "batch-1",
+    });
+
+    expect(result?.items).toEqual([
+      expect.objectContaining({ id: "item-1", status: "voided" }),
+    ]);
+    expect(supabase.queryFor("finance_batch_items").eq).not.toHaveBeenCalledWith(
+      "status",
+      "active",
+    );
   });
 });
 

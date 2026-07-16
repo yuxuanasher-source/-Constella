@@ -5,9 +5,11 @@ import { SupabaseFinanceBatchRepository } from "@/features/finance-batches/finan
 import { transitionFinanceBatch } from "@/features/finance-batches/finance-batch-service";
 import {
   getSettlementRouteContext,
+  isUuid,
   jsonError,
   optionalString,
   readJsonBody,
+  RouteError,
   settlementActorFromContext,
 } from "@/features/settlements/settlement-route-utils";
 
@@ -17,6 +19,7 @@ export async function POST(
 ) {
   try {
     const { batchId } = await params;
+    assertUuid(batchId, "batchId");
     const body = await readJsonBody(request);
     const context = await getSettlementRouteContext();
     await assertBillingWriteAllowed({
@@ -39,5 +42,11 @@ export async function POST(
     return NextResponse.json({ batch });
   } catch (error) {
     return jsonError(error);
+  }
+}
+
+function assertUuid(value: string, key: string): void {
+  if (!isUuid(value)) {
+    throw new RouteError(`${key} must be a valid UUID`, 400);
   }
 }
