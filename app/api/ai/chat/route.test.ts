@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  createConversationService,
+  type ConversationPersistence,
+} from "@/features/ai/conversation-service";
+
 const createSupabaseServerClientMock = vi.fn();
 const getAuthContextMock = vi.fn();
 const createConfiguredAiProvidersMock = vi.fn();
@@ -791,6 +796,71 @@ describe("POST /api/ai/chat", () => {
     expect(loadRoleHomeDashboardMock).not.toHaveBeenCalled();
     expect(searchKnowledgeDocumentsMock).not.toHaveBeenCalled();
     expect(listLiveReviewDocumentsMock).not.toHaveBeenCalled();
+  });
+
+  it("emits a gateway context that the conversation service can persist", async () => {
+    const transitionTurn = vi.fn().mockResolvedValue(true);
+    const service = createConversationService({
+      transitionTurn,
+    } as unknown as ConversationPersistence);
+    const { executeDashboardAiChat } = await import("./route");
+
+    const response = await executeDashboardAiChat(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "默认分析本月" }],
+        }),
+      }),
+      {
+        onContextReady: async (gatewayContext) => {
+          await service.captureGatewayContext(
+            { organizationId: "org-1", userId: "user-1" },
+            "turn-1",
+            {
+              version: 1,
+              summaryVersion: 0,
+              messageIds: ["message-user-1"],
+              groundingRefs: ["dashboard:role-home"],
+              assembledAt: "2026-07-11T03:00:00.000Z",
+            },
+            gatewayContext,
+          );
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(transitionTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps sanitized attachments out of gateway metadata normalization", async () => {
+    const onContextReady = vi.fn();
+    const { executeDashboardAiChat } = await import("./route");
+
+    const response = await executeDashboardAiChat(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "分析附件" }],
+          attachments: [
+            {
+              name: "brief.txt",
+              mimeType: "text/plain",
+              sizeBytes: 5,
+              text: "hello",
+            },
+          ],
+        }),
+      }),
+      { onContextReady },
+    );
+
+    expect(response.status).toBe(200);
+    const capturedContext = onContextReady.mock.calls[0]?.[0];
+    const gatewayAttachment =
+      runAiGatewayMock.mock.calls[0]?.[0].request.attachments[0];
+    expect(capturedContext.attachments[0]).toBe(gatewayAttachment);
   });
 
   it("emits an SSE error event and records the failure when all providers fail before streaming", async () => {
