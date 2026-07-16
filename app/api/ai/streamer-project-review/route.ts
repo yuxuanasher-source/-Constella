@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { runAiToolQuery } from "@/features/ai/ai-tool-layer";
+import type { KnowledgeClient } from "@/features/ai/knowledge-repository";
+import { loadStreamerProjectMarketReferences } from "@/features/streamers/streamer-project-market-references";
 import { loadStreamerProjectReviewInput } from "@/features/streamers/streamer-project-review-loader";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
@@ -49,9 +51,19 @@ export async function POST(request: Request) {
       projectId,
     });
     const externalReferences = sanitizeExternalReferences(body.externalReferences);
-    const reviewProfileInput =
+    const marketReferences =
       externalReferences.length > 0
-        ? { ...profileInput, externalReferences }
+        ? []
+        : await loadStreamerProjectMarketReferences({
+            client: supabase as unknown as KnowledgeClient,
+            organizationId: auth.organizationId,
+            profileInput,
+          });
+    const mergedExternalReferences =
+      externalReferences.length > 0 ? externalReferences : marketReferences;
+    const reviewProfileInput =
+      mergedExternalReferences.length > 0
+        ? { ...profileInput, externalReferences: mergedExternalReferences }
         : profileInput;
     const result = await runAiToolQuery({
       client: supabase,
