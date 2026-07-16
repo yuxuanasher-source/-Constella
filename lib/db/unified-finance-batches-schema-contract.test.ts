@@ -117,8 +117,12 @@ describe("unified finance batch schema", () => {
       expect(definition).toContain("public.is_mcn_staff(p_organization_id)");
     }
 
-    expect(migration).toContain("if p_created_by <> v_actor_id then");
-    expect(migration).toContain("if p_actor_user_id <> v_actor_id then");
+    expect(migration).toContain("if p_created_by is distinct from v_actor_id then");
+    expect(migration).toContain(
+      "if p_actor_user_id is distinct from v_actor_id then",
+    );
+    expect(migration).not.toContain("if p_created_by <> v_actor_id then");
+    expect(migration).not.toContain("if p_actor_user_id <> v_actor_id then");
     expect(migration).toContain("finance_batch_adjustment_item_scope_mismatch");
 
     for (const signature of [
@@ -137,6 +141,87 @@ describe("unified finance batch schema", () => {
         ),
       );
     }
+  });
+
+  it("computes parent batch totals from item payloads", () => {
+    const functionStart = migration.indexOf(
+      "function public.create_finance_batch",
+    );
+    const functionEnd = migration.indexOf(
+      "create or replace function public.add_finance_batch_adjustment",
+    );
+    const definition = migration.slice(functionStart, functionEnd);
+
+    for (const computedValue of [
+      "v_system_amount numeric(14, 2) := 0",
+      "v_adjustment_amount numeric(14, 2) := 0",
+      "v_final_amount numeric(14, 2) := 0",
+      "v_item_count integer := 0",
+      "v_exception_count integer := 0",
+      "v_has_exceptions boolean := false",
+      "v_system_amount := v_system_amount +",
+      "v_adjustment_amount := v_adjustment_amount +",
+      "v_final_amount := v_final_amount +",
+      "v_item_count := v_item_count + 1",
+      "v_exception_count := v_exception_count + 1",
+      "v_has_exceptions := v_exception_count > 0",
+    ]) {
+      expect(definition).toContain(computedValue);
+    }
+
+    expect(definition).toContain(
+      "jsonb_array_length(v_item_exception_flags) > 0",
+    );
+    expect(definition).toMatch(
+      /insert into public\.finance_batches[\s\S]*system_amount,[\s\S]*adjustment_amount,[\s\S]*final_amount,[\s\S]*item_count,[\s\S]*exception_count,[\s\S]*has_exceptions[\s\S]*values \([\s\S]*v_system_amount,[\s\S]*v_adjustment_amount,[\s\S]*v_final_amount,[\s\S]*v_item_count,[\s\S]*v_exception_count,[\s\S]*v_has_exceptions/,
+    );
+    expect(definition).not.toMatch(
+      /values \([\s\S]*p_system_amount,[\s\S]*p_adjustment_amount,[\s\S]*p_final_amount/,
+    );
+  });
+
+  it("enforces the finance batch sql status transition graph", () => {
+    const functionStart = migration.indexOf(
+      "function public.transition_finance_batch",
+    );
+    const revokeStart = migration.indexOf(
+      "revoke all on function public.transition_finance_batch",
+    );
+    const definition = migration.slice(functionStart, revokeStart);
+
+    expect(definition).toMatch(
+      /select \*[\s\S]*into v_batch[\s\S]*from public\.finance_batches[\s\S]*for update;/,
+    );
+    expect(definition).toContain(
+      "finance_batch_transition_invalid",
+    );
+    expect(definition).toContain(
+      "finance_batch_transition_reason_required",
+    );
+    expect(definition).toContain(
+      "p_next_status in ('reopened', 'voided')",
+    );
+    expect(definition).toContain(
+      "v_batch.status in ('draft', 'reopened') and p_next_status = 'pending_review'",
+    );
+    expect(definition).toContain(
+      "v_batch.status = 'pending_review' and p_next_status in ('confirmed', 'rejected')",
+    );
+    expect(definition).toContain(
+      "v_batch.status = 'confirmed' and p_next_status = 'locked'",
+    );
+    expect(definition).toContain(
+      "v_batch.status = 'locked' and p_next_status in ('exported', 'reopened')",
+    );
+    expect(definition).toContain(
+      "v_batch.status = 'exported' and p_next_status in ('completed', 'reopened')",
+    );
+    expect(definition).toContain(
+      "v_batch.status = 'completed' and p_next_status = 'reopened'",
+    );
+    expect(definition).toContain(
+      "v_batch.status in ('draft', 'pending_review', 'rejected', 'reopened') and p_next_status = 'voided'",
+    );
   });
 
   it("voids child items when a batch is voided", () => {

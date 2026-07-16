@@ -307,12 +307,22 @@ declare
   v_counterparty_type text;
   v_source_type text;
   v_source_id uuid;
+  v_item_system_amount numeric(14, 2);
+  v_item_adjustment_amount numeric(14, 2);
+  v_item_final_amount numeric(14, 2);
+  v_item_exception_flags jsonb;
+  v_system_amount numeric(14, 2) := 0;
+  v_adjustment_amount numeric(14, 2) := 0;
+  v_final_amount numeric(14, 2) := 0;
+  v_item_count integer := 0;
+  v_exception_count integer := 0;
+  v_has_exceptions boolean := false;
 begin
   if v_actor_id is null then
     raise exception 'authentication_required';
   end if;
 
-  if p_created_by <> v_actor_id then
+  if p_created_by is distinct from v_actor_id then
     raise exception 'finance_batch_create_actor_mismatch';
   end if;
 
@@ -325,38 +335,16 @@ begin
     raise exception 'finance_batch_items_invalid';
   end if;
 
-  insert into public.finance_batches (
-    organization_id,
-    batch_type,
-    title,
-    period_start,
-    period_end,
-    system_amount,
-    adjustment_amount,
-    final_amount,
-    item_count,
-    created_by
-  )
-  values (
-    p_organization_id,
-    p_batch_type,
-    p_title,
-    p_period_start,
-    p_period_end,
-    p_system_amount,
-    p_adjustment_amount,
-    p_final_amount,
-    coalesce(jsonb_array_length(coalesce(p_items, '[]'::jsonb)), 0),
-    p_created_by
-  )
-  returning * into v_batch;
-
   for v_item in select * from jsonb_array_elements(coalesce(p_items, '[]'::jsonb))
   loop
     v_project_id := nullif(v_item ->> 'project_id', '')::uuid;
     v_counterparty_type := nullif(v_item ->> 'counterparty_type', '');
     v_source_type := nullif(v_item ->> 'source_type', '');
     v_source_id := nullif(v_item ->> 'source_id', '')::uuid;
+    v_item_system_amount := coalesce((v_item ->> 'system_amount')::numeric, 0);
+    v_item_adjustment_amount := coalesce((v_item ->> 'adjustment_amount')::numeric, 0);
+    v_item_final_amount := coalesce((v_item ->> 'final_amount')::numeric, 0);
+    v_item_exception_flags := coalesce(v_item -> 'exception_flags', '[]'::jsonb);
 
     if v_project_id is null
        or v_counterparty_type is null
@@ -373,6 +361,63 @@ begin
     ) then
       raise exception 'finance_batch_item_project_scope_mismatch';
     end if;
+
+    if jsonb_typeof(v_item_exception_flags) <> 'array' then
+      raise exception 'finance_batch_item_exception_flags_invalid';
+    end if;
+
+    v_system_amount := v_system_amount + v_item_system_amount;
+    v_adjustment_amount := v_adjustment_amount + v_item_adjustment_amount;
+    v_final_amount := v_final_amount + v_item_final_amount;
+    v_item_count := v_item_count + 1;
+
+    if jsonb_array_length(v_item_exception_flags) > 0 then
+      v_exception_count := v_exception_count + 1;
+    end if;
+  end loop;
+
+  v_has_exceptions := v_exception_count > 0;
+
+  insert into public.finance_batches (
+    organization_id,
+    batch_type,
+    title,
+    period_start,
+    period_end,
+    system_amount,
+    adjustment_amount,
+    final_amount,
+    item_count,
+    exception_count,
+    has_exceptions,
+    created_by
+  )
+  values (
+    p_organization_id,
+    p_batch_type,
+    p_title,
+    p_period_start,
+    p_period_end,
+    v_system_amount,
+    v_adjustment_amount,
+    v_final_amount,
+    v_item_count,
+    v_exception_count,
+    v_has_exceptions,
+    p_created_by
+  )
+  returning * into v_batch;
+
+  for v_item in select * from jsonb_array_elements(coalesce(p_items, '[]'::jsonb))
+  loop
+    v_project_id := nullif(v_item ->> 'project_id', '')::uuid;
+    v_counterparty_type := nullif(v_item ->> 'counterparty_type', '');
+    v_source_type := nullif(v_item ->> 'source_type', '');
+    v_source_id := nullif(v_item ->> 'source_id', '')::uuid;
+    v_item_system_amount := coalesce((v_item ->> 'system_amount')::numeric, 0);
+    v_item_adjustment_amount := coalesce((v_item ->> 'adjustment_amount')::numeric, 0);
+    v_item_final_amount := coalesce((v_item ->> 'final_amount')::numeric, 0);
+    v_item_exception_flags := coalesce(v_item -> 'exception_flags', '[]'::jsonb);
 
     insert into public.finance_batch_items (
       organization_id,
@@ -403,12 +448,12 @@ begin
       v_source_type,
       v_source_id,
       coalesce(v_item -> 'source_snapshot', '{}'::jsonb),
-      coalesce((v_item ->> 'system_amount')::numeric, 0),
-      coalesce((v_item ->> 'adjustment_amount')::numeric, 0),
-      coalesce((v_item ->> 'final_amount')::numeric, 0),
+      v_item_system_amount,
+      v_item_adjustment_amount,
+      v_item_final_amount,
       nullif(v_item ->> 'evidence_level', ''),
       coalesce(v_item -> 'evidence_snapshot', '{}'::jsonb),
-      coalesce(v_item -> 'exception_flags', '[]'::jsonb)
+      v_item_exception_flags
     )
     returning * into v_item_row;
 
@@ -450,7 +495,7 @@ begin
     raise exception 'authentication_required';
   end if;
 
-  if p_created_by <> v_actor_id then
+  if p_created_by is distinct from v_actor_id then
     raise exception 'finance_batch_adjustment_actor_mismatch';
   end if;
 
@@ -566,7 +611,7 @@ begin
     raise exception 'authentication_required';
   end if;
 
-  if p_actor_user_id <> v_actor_id then
+  if p_actor_user_id is distinct from v_actor_id then
     raise exception 'finance_batch_transition_actor_mismatch';
   end if;
 
@@ -587,6 +632,34 @@ begin
     'voided'
   ) then
     raise exception 'finance_batch_status_invalid';
+  end if;
+
+  select *
+  into v_batch
+  from public.finance_batches
+  where id = p_finance_batch_id
+    and organization_id = p_organization_id
+  for update;
+
+  if not found then
+    raise exception 'finance_batch_not_found';
+  end if;
+
+  if p_next_status in ('reopened', 'voided')
+     and nullif(trim(coalesce(p_reason, '')), '') is null then
+    raise exception 'finance_batch_transition_reason_required';
+  end if;
+
+  if not (
+    (v_batch.status in ('draft', 'reopened') and p_next_status = 'pending_review')
+    or (v_batch.status = 'pending_review' and p_next_status in ('confirmed', 'rejected'))
+    or (v_batch.status = 'confirmed' and p_next_status = 'locked')
+    or (v_batch.status = 'locked' and p_next_status in ('exported', 'reopened'))
+    or (v_batch.status = 'exported' and p_next_status in ('completed', 'reopened'))
+    or (v_batch.status = 'completed' and p_next_status = 'reopened')
+    or (v_batch.status in ('draft', 'pending_review', 'rejected', 'reopened') and p_next_status = 'voided')
+  ) then
+    raise exception 'finance_batch_transition_invalid';
   end if;
 
   update public.finance_batches
@@ -610,10 +683,6 @@ begin
   where id = p_finance_batch_id
     and organization_id = p_organization_id
   returning * into v_batch;
-
-  if not found then
-    raise exception 'finance_batch_not_found';
-  end if;
 
   return jsonb_build_object('batch', to_jsonb(v_batch));
 end;
