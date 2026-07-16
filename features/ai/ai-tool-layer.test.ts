@@ -317,6 +317,12 @@ describe("runAiToolQuery", () => {
               ],
             },
           },
+          pendingDraft: {
+            draftType: "streamer_project_review",
+            status: "pending",
+            targetStateMachine: "streamer_project_review",
+            targetState: "published",
+          },
           facts: expect.arrayContaining([
             expect.objectContaining({
               sourceTool: "streamer_project_profile",

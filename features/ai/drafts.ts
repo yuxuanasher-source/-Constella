@@ -7,6 +7,7 @@ import {
   type AiTransitionDecision,
 } from "./tiers";
 import type { KnowledgeCitation } from "./knowledge-base";
+import type { StreamerProjectReviewProfile } from "@/features/streamers/streamer-project-review";
 
 export type DraftStatus = "pending" | "confirmed" | "discarded";
 
@@ -187,6 +188,40 @@ export function buildRetrospectiveDraft(input: {
       references: input.references ?? [],
     },
     note: "AI 复盘初稿：数字均带来源，叙述为提示性问题待人工补全。需人工确认后发布。",
+  };
+}
+
+export function buildStreamerProjectReviewDraft(input: {
+  profile: StreamerProjectReviewProfile;
+}): AiDraftEnvelope {
+  const references =
+    input.profile.reviewDraft.externalReference.status === "provided"
+      ? input.profile.reviewDraft.externalReference.references
+      : [];
+
+  return {
+    draftType: "streamer_project_review",
+    status: "pending",
+    targetStateMachine: "streamer_project_review",
+    targetState: "published",
+    payload: {
+      streamerId: input.profile.streamer.id,
+      streamerName: input.profile.streamer.displayName,
+      projectId: input.profile.project.id,
+      projectName: input.profile.project.name,
+      productType: input.profile.project.productType,
+      summary: input.profile.reviewDraft.summary,
+      participation: input.profile.participation,
+      liveMetrics: input.profile.liveMetrics,
+      recordings: input.profile.recordings,
+      reviewDraft: input.profile.reviewDraft,
+      facts: input.profile.facts,
+      findings: input.profile.findings,
+      caveats: input.profile.caveats,
+      recommendations: input.profile.recommendations,
+      references,
+    },
+    note: "AI 主播项目复盘草稿：内部事实来自排班、报数、OCR 和录屏记录；外部参考仅作同类产品/同行表现参照。需人工确认后发布。",
   };
 }
 
