@@ -130,6 +130,23 @@ export type StreamerProjectReviewProfile = {
             retrievedAt: string;
           }>;
         };
+    marketReferenceRequest:
+      | {
+          status: "needed";
+          purpose: string;
+          queries: Array<{
+            channel: "knowledge_base" | "web_search";
+            query: string;
+            reason: string;
+          }>;
+          guardrails: string[];
+        }
+      | {
+          status: "satisfied";
+          purpose: string;
+          sourceIds: string[];
+          guardrails: string[];
+        };
     majorIssues: Array<{
       title: string;
       summary: string;
@@ -420,6 +437,10 @@ function buildReviewDraft(input: {
           status: "not_connected" as const,
           summary: externalReferenceSummary,
         };
+  const marketReferenceRequest = buildMarketReferenceRequest({
+    project: input.project,
+    externalReferences: input.externalReferences,
+  });
   const topReasonText =
     input.recordings.topRejectionReasons.map((item) => item.reason).join("、") ||
     "暂无录屏驳回原因";
@@ -448,6 +469,7 @@ function buildReviewDraft(input: {
     recordingPerformance: `录屏提交 ${input.recordings.submittedCount} 条，通过率 ${formatBps(input.recordings.passRateBps)}，采用率 ${formatBps(input.recordings.adoptionRateBps)}，主要驳回原因：${topReasonText}。`,
     productFit: `当前项目产品类型为 ${input.project.productType}，适配判断基于内部排班、直播报数与录屏记录生成。`,
     externalReference,
+    marketReferenceRequest,
     majorIssues,
     opportunities: majorIssues.length
       ? [
@@ -464,6 +486,51 @@ function buildReviewDraft(input: {
         ],
     actionItems: input.recommendations,
     dataGaps,
+  };
+}
+
+function buildMarketReferenceRequest(input: {
+  project: StreamerProjectReviewProfile["project"];
+  externalReferences: StreamerProjectExternalReference[];
+}): StreamerProjectReviewProfile["reviewDraft"]["marketReferenceRequest"] {
+  const purpose = "补充同类产品表现、同行打法和平台趋势，仅用于复盘参考。";
+  const guardrails = [
+    "外部参考不能覆盖内部排班、报数、录屏和结算事实。",
+    "外部参考不能直接决定主播淘汰、报数审核、录屏审核或结算。",
+    "使用外部参考时必须保留来源、抓取时间和摘要。",
+  ];
+  if (input.externalReferences.length > 0) {
+    return {
+      status: "satisfied",
+      purpose,
+      sourceIds: input.externalReferences.map((reference) => reference.id),
+      guardrails,
+    };
+  }
+
+  const projectName = input.project.name.trim();
+  const productType = (input.project.productType ?? "").trim();
+  const searchSubject =
+    projectName && productType && projectName !== productType
+      ? `${projectName} ${productType}`
+      : projectName || productType || "同类产品";
+
+  return {
+    status: "needed",
+    purpose,
+    queries: [
+      {
+        channel: "knowledge_base",
+        query: `${searchSubject} 直播表现 PCU ACU 录屏采用率`,
+        reason: "优先检索内部沉淀的同类项目复盘和 SOP。",
+      },
+      {
+        channel: "web_search",
+        query: `${projectName || productType || "同类产品"} 直播间 平均在线 录屏 复盘`,
+        reason: "补充公开同行打法、产品类型趋势或平台变化。",
+      },
+    ],
+    guardrails,
   };
 }
 

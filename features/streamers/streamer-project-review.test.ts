@@ -166,6 +166,23 @@ describe("buildStreamerProjectReviewProfile", () => {
         "缺少该主播在此项目的录屏记录。",
       ]),
     );
+    expect(profile.reviewDraft.marketReferenceRequest).toMatchObject({
+      status: "needed",
+      purpose: "补充同类产品表现、同行打法和平台趋势，仅用于复盘参考。",
+      queries: [
+        expect.objectContaining({
+          channel: "knowledge_base",
+          query: "传奇复古 legend 直播表现 PCU ACU 录屏采用率",
+        }),
+        expect.objectContaining({
+          channel: "web_search",
+          query: "传奇复古 直播间 平均在线 录屏 复盘",
+        }),
+      ],
+      guardrails: expect.arrayContaining([
+        "外部参考不能覆盖内部排班、报数、录屏和结算事实。",
+      ]),
+    });
     expect(profile.caveats).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ summary: "缺少该主播在此项目的排班记录。" }),
