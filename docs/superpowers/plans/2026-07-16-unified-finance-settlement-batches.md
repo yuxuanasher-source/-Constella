@@ -1,4 +1,4 @@
-# Unified Finance Settlement Batches Implementation Plan
+﻿# Unified Finance Settlement Batches Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -28,21 +28,21 @@ Do not implement real payment, real collection, real invoicing, or external acco
 
 Create:
 
-- `supabase/migrations/20260716160000_unified_finance_batches.sql`  
+- `supabase/migrations/20260716160000_unified_finance_batches.sql`
   Defines finance batch tables, constraints, RLS policies, duplicate-source indexes, and immutable-lock triggers.
-- `lib/db/unified-finance-batches-schema-contract.test.ts`  
+- `lib/db/unified-finance-batches-schema-contract.test.ts`
   Contract test for migration content.
-- `features/finance-batches/finance-batch-types.ts`  
+- `features/finance-batches/finance-batch-types.ts`
   Shared finance batch enums, DTOs, and input types.
-- `features/finance-batches/finance-batch-money.ts`  
+- `features/finance-batches/finance-batch-money.ts`
   Money helpers and totals calculation.
-- `features/finance-batches/finance-batch-status.ts`  
+- `features/finance-batches/finance-batch-status.ts`
   Status transition and lock guards.
-- `features/finance-batches/finance-batch-repository.ts`  
+- `features/finance-batches/finance-batch-repository.ts`
   Supabase repository for finance batch reads/writes.
-- `features/finance-batches/finance-batch-service.ts`  
+- `features/finance-batches/finance-batch-service.ts`
   Business service for preview, create, adjust, lock, reopen, void.
-- `features/finance-batches/finance-batch-ui-adapters.ts`  
+- `features/finance-batches/finance-batch-ui-adapters.ts`
   Converts repository rows into reference UI DTOs.
 - `features/finance-batches/finance-batch-money.test.ts`
 - `features/finance-batches/finance-batch-status.test.ts`
@@ -60,13 +60,13 @@ Create:
 
 Modify:
 
-- `components/reference-ui/ops-reference.jsx`  
+- `components/reference-ui/ops-reference.jsx`
   Add finance center UI state, actions, new finance center screen, and project-detail finance attribution block.
-- `components/reference-ui/ops-reference.test.jsx`  
+- `components/reference-ui/ops-reference.test.jsx`
   Add focused UI tests for finance batch list, create preview, and project attribution.
-- `app/(ops)/console/projects/page.tsx`  
+- `app/(ops)/console/projects/page.tsx`
   Hydrate finance batch summary data for project pages when needed.
-- `app/(ops)/console/stubs/[module]/page.tsx`  
+- `app/(ops)/console/stubs/[module]/page.tsx`
   Hydrate finance batch list for the settlement/finance module.
 - `README.md` or `docs/product-function-document.md` only if implementation changes user-visible product behavior materially.
 
