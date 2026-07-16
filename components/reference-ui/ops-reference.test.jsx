@@ -1796,6 +1796,40 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.getByText("¥160.00")).toBeInTheDocument();
   });
 
+  it("does not show the full batch total as finance batch attribution", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={taskProjectCards}
+        streamerCards={[]}
+        applicationQueue={[]}
+        liveFinanceBatches={[
+          {
+            id: "finance-batch-no-project-amount",
+            type: "streamer_payable",
+            typeLabel: "主播应付",
+            status: "confirmed",
+            statusLabel: "已确认",
+            statusTone: "blue",
+            title: "无项目金额批次",
+            period: "2026-07-01 -> 2026-07-31",
+            finalAmount: 480,
+            projectIds: ["project-live"],
+            itemCount: 3,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Fixture Project"));
+    fireEvent.click(screen.getByRole("button", { name: "结算" }));
+
+    expect(screen.getByText("财务批次归因")).toBeInTheDocument();
+    const batchRow = screen.getByText("无项目金额批次").closest("tr");
+    expect(within(batchRow).getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText("¥480.00")).not.toBeInTheDocument();
+  });
+
   it("opens the tasks anomaly view with the project filter preset from the detail anomaly stat", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-07T13:12:00.000Z"));

@@ -367,6 +367,51 @@ describe("listOpsFinanceBatches", () => {
     ]);
   });
 
+  it("enriches org-scoped ops reference batches with project summary attribution", async () => {
+    const supabase = createListSourcesClient({
+      finance_batches: [batchRow],
+      finance_batch_project_summary: [
+        {
+          finance_batch_id: "batch-1",
+          project_id: "project-1",
+          streamer_payable_amount: "160.00",
+          receivable_amount: "0.00",
+          project_cost_amount: "0.00",
+          collaboration_share_amount: "0.00",
+        },
+        {
+          finance_batch_id: "batch-1",
+          project_id: "project-2",
+          streamer_payable_amount: "50.00",
+          receivable_amount: "0.00",
+          project_cost_amount: "0.00",
+          collaboration_share_amount: "0.00",
+        },
+      ],
+    });
+
+    const result = await listOpsFinanceBatches(supabase.client as never, {
+      organizationId: "org-1",
+    });
+
+    const summaryQuery = supabase.queryFor("finance_batch_project_summary");
+    expect(summaryQuery.select).toHaveBeenCalledWith(
+      expect.stringContaining("streamer_payable_amount"),
+    );
+    expect(summaryQuery.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(summaryQuery.eq).not.toHaveBeenCalledWith("project_id", "project-1");
+    expect(summaryQuery.in).toHaveBeenCalledWith("finance_batch_id", [
+      "batch-1",
+    ]);
+    expect(result[0]).toEqual(
+      expect.objectContaining({
+        projectIds: ["project-1", "project-2"],
+        projectAmountById: { "project-1": 160, "project-2": 50 },
+      }),
+    );
+    expect(result[0]).not.toHaveProperty("projectAmount");
+  });
+
   it("filters ops reference batches through project summary rows for a project", async () => {
     const supabase = createListSourcesClient({
       finance_batch_project_summary: [

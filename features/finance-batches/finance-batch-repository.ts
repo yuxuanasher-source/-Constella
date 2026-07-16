@@ -565,7 +565,10 @@ export async function listOpsFinanceBatches(
   input: { organizationId: string; projectId?: string },
 ): Promise<OpsReferenceFinanceBatch[]> {
   let financeBatchIds: string[] | null = null;
-  const summaryByBatchId = new Map<string, FinanceBatchProjectSummaryRow>();
+  const summaryRowsByBatchId = new Map<
+    string,
+    FinanceBatchProjectSummaryRow[]
+  >();
 
   if (input.projectId) {
     const { data: summaryRows, error: summaryError } = await client
@@ -587,8 +590,10 @@ export async function listOpsFinanceBatches(
         .filter((id): id is string => Boolean(id)),
     );
     for (const row of summaryRows ?? []) {
-      if (row.finance_batch_id && !summaryByBatchId.has(row.finance_batch_id)) {
-        summaryByBatchId.set(row.finance_batch_id, row);
+      if (row.finance_batch_id) {
+        const current = summaryRowsByBatchId.get(row.finance_batch_id) ?? [];
+        current.push(row);
+        summaryRowsByBatchId.set(row.finance_batch_id, current);
       }
     }
 
@@ -614,28 +619,81 @@ export async function listOpsFinanceBatches(
     throw error;
   }
 
+  if (!input.projectId) {
+    const returnedBatchIds = uniqueStable(
+      (data ?? []).map((row) => row.id).filter(Boolean),
+    );
+    if (returnedBatchIds.length > 0) {
+      const { data: summaryRows, error: summaryError } = await client
+        .from("finance_batch_project_summary")
+        .select(financeBatchProjectSummarySelect)
+        .eq("organization_id", input.organizationId)
+        .in("finance_batch_id", returnedBatchIds)
+        .limit(1000)
+        .returns<FinanceBatchProjectSummaryRow[]>();
+
+      if (summaryError) {
+        throw summaryError;
+      }
+
+      for (const row of summaryRows ?? []) {
+        if (row.finance_batch_id) {
+          const current = summaryRowsByBatchId.get(row.finance_batch_id) ?? [];
+          current.push(row);
+          summaryRowsByBatchId.set(row.finance_batch_id, current);
+        }
+      }
+    }
+  }
+
   return (data ?? [])
     .map((row) => toFinanceBatchRecord(row))
     .map((batch) => {
       const mapped = toOpsReferenceFinanceBatch(batch);
-      const summary = summaryByBatchId.get(batch.id);
-      if (!summary) {
+      const summaryRows = summaryRowsByBatchId.get(batch.id) ?? [];
+      if (summaryRows.length === 0) {
         return mapped;
       }
-      const projectId = summary.project_id ?? input.projectId;
-      if (!projectId) {
+      const projectAmountById = financeBatchProjectAmountById(
+        batch.batchType,
+        summaryRows,
+      );
+      const projectIds = uniqueStable(Object.keys(projectAmountById));
+      if (projectIds.length === 0) {
         return mapped;
       }
-      const projectAmount = financeBatchProjectAmount(batch.batchType, summary);
+      if (!input.projectId) {
+        return {
+          ...mapped,
+          projectIds,
+          projectAmountById,
+        };
+      }
+      const projectId = input.projectId;
+      const projectAmount = projectAmountById[projectId];
       return {
         ...mapped,
         projectId,
-        projectIds: [projectId],
+        projectIds,
         projectAmount,
         finalProjectAmount: projectAmount,
-        projectAmountById: { [projectId]: projectAmount },
+        projectAmountById,
       };
     });
+}
+
+function financeBatchProjectAmountById(
+  batchType: FinanceBatchType,
+  rows: FinanceBatchProjectSummaryRow[],
+): Record<string, number> {
+  const amountById: Record<string, number> = {};
+  for (const row of rows) {
+    if (!row.project_id || row.project_id in amountById) {
+      continue;
+    }
+    amountById[row.project_id] = financeBatchProjectAmount(batchType, row);
+  }
+  return amountById;
 }
 
 function financeBatchProjectAmount(

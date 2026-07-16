@@ -9176,13 +9176,19 @@ function ProjectDetail({ id, go }) {
                   {
                     title: "项目归因金额",
                     align: "right",
-                    render: (batch) => (
-                      <span className="num">
-                        {formatFinanceAmount(
-                          financeBatchProjectAttributionAmount(batch, p.id),
-                        )}
-                      </span>
-                    ),
+                    render: (batch) => {
+                      const amount = financeBatchProjectAttributionAmount(
+                        batch,
+                        p.id,
+                      );
+                      return amount == null ? (
+                        <span style={{ color: "var(--ink-400)" }}>—</span>
+                      ) : (
+                        <span className="num">
+                          {formatFinanceAmount(amount)}
+                        </span>
+                      );
+                    },
                   },
                 ]}
                 rows={projectFinanceBatches}
@@ -19638,8 +19644,7 @@ function financeBatchProjectAttributionAmount(batch, projectId) {
   if (Number.isFinite(projectAmount)) return projectAmount;
   const finalProjectAmount = Number(batch?.finalProjectAmount);
   if (Number.isFinite(finalProjectAmount)) return finalProjectAmount;
-  const finalAmount = Number(batch?.finalAmount);
-  return Number.isFinite(finalAmount) ? finalAmount : 0;
+  return null;
 }
 
 function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
