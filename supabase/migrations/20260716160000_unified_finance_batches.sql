@@ -138,7 +138,9 @@ create index if not exists finance_batch_adjustments_batch_idx
   )
   where voided_at is null;
 
-create or replace view public.finance_batch_project_summary as
+create or replace view public.finance_batch_project_summary
+with (security_invoker = true)
+as
 select
   item.organization_id,
   item.finance_batch_id,

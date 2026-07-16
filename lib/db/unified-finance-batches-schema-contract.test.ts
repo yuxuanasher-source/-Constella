@@ -26,18 +26,38 @@ describe("unified finance batch schema", () => {
 
   it("defines typed batches and status checks", () => {
     expect(migration).toContain("finance_batches_batch_type_check");
-    expect(migration).toContain("streamer_payable");
-    expect(migration).toContain("collaboration_share");
+    for (const batchType of [
+      "receivable",
+      "streamer_payable",
+      "project_cost",
+      "collaboration_share",
+    ]) {
+      expect(migration).toContain(batchType);
+    }
+
     expect(migration).toContain("finance_batches_status_check");
-    expect(migration).toContain("draft");
-    expect(migration).toContain("locked");
-    expect(migration).toContain("voided");
+    for (const status of [
+      "draft",
+      "pending_review",
+      "confirmed",
+      "locked",
+      "exported",
+      "completed",
+      "rejected",
+      "reopened",
+      "voided",
+    ]) {
+      expect(migration).toContain(status);
+    }
   });
 
   it("prevents duplicate active source consumption", () => {
     expect(migration).toContain("finance_batch_items_active_source_uidx");
     expect(migration).toMatch(
       /unique index[\s\S]*finance_batch_items[\s\S]*organization_id[\s\S]*batch_type[\s\S]*source_type[\s\S]*source_id/,
+    );
+    expect(migration).toMatch(
+      /finance_batch_items_active_source_uidx[\s\S]*where status = 'active'/,
     );
   });
 
@@ -46,11 +66,32 @@ describe("unified finance batch schema", () => {
       /project_id uuid not null references public\.projects\(id\)/,
     );
     expect(migration).toContain("finance_batch_project_summary");
+    for (const summaryColumn of [
+      "receivable_amount",
+      "streamer_payable_amount",
+      "project_cost_amount",
+      "collaboration_share_amount",
+      "gross_margin_impact",
+    ]) {
+      expect(migration).toContain(summaryColumn);
+    }
+    expect(migration).toMatch(
+      /create or replace view public\.finance_batch_project_summary\s+with \(security_invoker = true\)\s+as/,
+    );
   });
 
   it("adds staff-scoped rls policies", () => {
     expect(migration).toContain("enable row level security");
-    expect(migration).toContain("finance_batches_staff_read");
-    expect(migration).toContain("public.is_mcn_staff(organization_id)");
+    for (const policy of [
+      ["finance_batches_staff_read", "finance_batches"],
+      ["finance_batch_items_staff_read", "finance_batch_items"],
+      ["finance_batch_adjustments_staff_read", "finance_batch_adjustments"],
+    ]) {
+      expect(migration).toMatch(
+        new RegExp(
+          `create policy ${policy[0]}[\\s\\S]*on public\\.${policy[1]}[\\s\\S]*using \\(public\\.is_mcn_staff\\(organization_id\\)\\)`,
+        ),
+      );
+    }
   });
 });
