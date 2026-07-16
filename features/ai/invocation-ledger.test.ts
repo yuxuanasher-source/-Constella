@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { createWorkerActor } from "@/features/async-tasks/system-actor";
+
 import { recordAiInvocation } from "./invocation-ledger";
 
 function createClient() {
@@ -47,6 +49,7 @@ describe("recordAiInvocation", () => {
       expect.objectContaining({
         id: invocationId,
         organization_id: "org-1",
+        actor_user_id: "user-ops",
         scene: "diagnosis",
         object_type: "live_report",
         object_id: "report-1",
@@ -77,5 +80,37 @@ describe("recordAiInvocation", () => {
         }),
       ]),
     );
+  });
+
+  it("records worker id in invocation metadata and leaves actor_user_id null", async () => {
+    const { client, inserts } = createClient();
+    const systemActor = createWorkerActor({
+      organizationId: "org-1",
+      workerId: "ocr:host-a:1",
+    });
+
+    await recordAiInvocation({
+      client,
+      actor: systemActor,
+      input: {
+        id: "00000000-0000-4000-8000-000000000002",
+        scene: "ocr",
+        status: "queued",
+        metadata: { source: "claim-rpc", workerId: "spoofed" },
+      },
+    });
+
+    expect(inserts.ai_invocations[0]).toMatchObject({
+      actor_user_id: null,
+      metadata: {
+        source: "claim-rpc",
+        workerId: "ocr:host-a:1",
+      },
+    });
+    expect(inserts.audit_logs[0]).toMatchObject({
+      actor_user_id: undefined,
+      actor_name: "Background Worker",
+      actor_role: "ops_manager",
+    });
   });
 });

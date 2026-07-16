@@ -4,7 +4,7 @@ import { writeAuditLog } from "@/lib/audit/audit";
 import { recordUsageEvent } from "@/features/billing/usage-metering";
 
 import type {
-  AiActor,
+  AiExecutionActor,
   AiInvocationStatus,
   AiProviderName,
   AiUsage,
@@ -50,7 +50,7 @@ export async function recordAiInvocation({
   input,
 }: {
   client: AiInvocationLedgerClient;
-  actor: AiActor;
+  actor: AiExecutionActor;
   input: RecordAiInvocationInput;
 }): Promise<string> {
   const invocationId = input.id ?? createAiInvocationId();
@@ -58,11 +58,15 @@ export async function recordAiInvocation({
   const costCents = nonnegativeInt(input.costCents ?? 0);
   const latencyMs =
     input.latencyMs === undefined ? undefined : nonnegativeInt(input.latencyMs);
+  const metadata = mergeExecutionMetadata(actor, input.metadata);
+  const actorUserId = actor.actorKind === "system" ? null : actor.userId;
+  const auditActorUserId =
+    actor.actorKind === "system" ? undefined : actor.userId;
 
   const { error } = await client.from("ai_invocations").insert({
     id: invocationId,
     organization_id: actor.organizationId,
-    actor_user_id: actor.userId,
+    actor_user_id: actorUserId,
     actor_name: actor.name,
     actor_role: actor.role,
     scene: input.scene,
@@ -84,7 +88,7 @@ export async function recordAiInvocation({
     degraded_reason: input.degradedReason,
     error_summary: input.errorSummary,
     raw_response: input.rawResponse ?? {},
-    metadata: input.metadata ?? {},
+    metadata,
     completed_at: ["succeeded", "failed", "degraded"].includes(input.status)
       ? new Date().toISOString()
       : undefined,
@@ -115,7 +119,7 @@ export async function recordAiInvocation({
 
   await writeAuditLog(client as Parameters<typeof writeAuditLog>[0], {
     organizationId: actor.organizationId,
-    actorUserId: actor.userId,
+    actorUserId: auditActorUserId,
     actorName: actor.name,
     actorRole: actor.role,
     action: "create",
@@ -135,6 +139,16 @@ export async function recordAiInvocation({
   });
 
   return invocationId;
+}
+
+function mergeExecutionMetadata(
+  actor: AiExecutionActor,
+  metadata?: Record<string, unknown>,
+): Record<string, unknown> {
+  if (actor.actorKind !== "system") {
+    return metadata ?? {};
+  }
+  return { ...(metadata ?? {}), workerId: actor.workerId };
 }
 
 function normalizeUsage(usage?: AiUsage): AiUsage {

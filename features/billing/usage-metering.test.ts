@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { createWorkerActor } from "@/features/async-tasks/system-actor";
+
 import {
   calculateUsageStatus,
   getUsagePeriodMonth,
@@ -127,6 +129,7 @@ describe("recordUsageEvent", () => {
     expect(inserts.usage_events).toEqual([
       expect.objectContaining({
         organization_id: "org-1",
+        actor_user_id: "user-ops",
         metric: "export",
         quantity: 2,
         period_month: "2026-06-01",
@@ -140,6 +143,53 @@ describe("recordUsageEvent", () => {
         module: "billing",
         object_type: "usage_event",
         changed_fields: ["metric", "quantity"],
+      }),
+    ]);
+  });
+
+  it("records worker id in usage metadata and writes system audit without actor user id", async () => {
+    const inserts: Record<string, unknown[]> = {};
+    const client = {
+      from: vi.fn((table: string) => ({
+        insert: vi.fn(async (payload: unknown) => {
+          inserts[table] = [...(inserts[table] ?? []), payload as unknown[]];
+          return { error: null };
+        }),
+      })),
+    };
+
+    await recordUsageEvent({
+      client,
+      actor: createWorkerActor({
+        organizationId: "org-1",
+        workerId: "ocr:host-a:1",
+      }),
+      input: {
+        metric: "ocr",
+        quantity: 1,
+        source: "ocr_worker",
+        objectType: "background_job",
+        objectId: "job-1",
+        occurredAt: "2026-06-23T18:30:00.000Z",
+        metadata: { provider: "tencent_ocr", workerId: "spoofed" },
+      },
+    });
+
+    expect(inserts.usage_events).toEqual([
+      expect.objectContaining({
+        organization_id: "org-1",
+        actor_user_id: null,
+        metadata: {
+          provider: "tencent_ocr",
+          workerId: "ocr:host-a:1",
+        },
+      }),
+    ]);
+    expect(inserts.audit_logs).toEqual([
+      expect.objectContaining({
+        actor_user_id: undefined,
+        actor_name: "Background Worker",
+        actor_role: "ops_manager",
       }),
     ]);
   });

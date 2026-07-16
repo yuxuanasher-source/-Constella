@@ -1,5 +1,6 @@
 import { writeAuditLog } from "@/lib/audit/audit";
 import type { AuthContext } from "@/lib/auth/context";
+import type { AiExecutionActor } from "@/features/ai/contracts";
 
 export type UsageMetric =
   | "active_streamer"
@@ -41,6 +42,10 @@ type BillingActor = Pick<
   AuthContext,
   "userId" | "name" | "role" | "organizationId"
 >;
+
+type BillingExecutionActor =
+  | (BillingActor & { actorKind?: "human"; workerId?: never })
+  | AiExecutionActor;
 
 export function calculateUsageStatus({
   metric,
@@ -89,7 +94,7 @@ export async function recordUsageEvent({
   input,
 }: {
   client: BillingUsageClient;
-  actor: BillingActor;
+  actor: BillingExecutionActor;
   input: {
     metric: UsageMetric;
     quantity: number;
@@ -106,15 +111,20 @@ export async function recordUsageEvent({
   }
 
   const periodMonth = getUsagePeriodMonth(input.occurredAt ?? new Date());
+  const metadata = mergeExecutionMetadata(actor, input.metadata);
+  const actorUserId = actor.actorKind === "system" ? null : actor.userId;
+  const auditActorUserId =
+    actor.actorKind === "system" ? undefined : actor.userId;
   const { error } = await client.from("usage_events").insert({
     organization_id: actor.organizationId,
+    actor_user_id: actorUserId,
     metric: input.metric,
     quantity,
     period_month: periodMonth,
     source: input.source,
     object_type: input.objectType,
     object_id: input.objectId,
-    metadata: input.metadata ?? {},
+    metadata,
   });
 
   if (error) {
@@ -123,7 +133,7 @@ export async function recordUsageEvent({
 
   await writeAuditLog(client as Parameters<typeof writeAuditLog>[0], {
     organizationId: actor.organizationId,
-    actorUserId: actor.userId,
+    actorUserId: auditActorUserId,
     actorName: actor.name,
     actorRole: actor.role,
     action: "create",
@@ -138,6 +148,16 @@ export async function recordUsageEvent({
     },
     changedFields: ["metric", "quantity"],
   });
+}
+
+function mergeExecutionMetadata(
+  actor: BillingExecutionActor,
+  metadata?: Record<string, unknown>,
+): Record<string, unknown> {
+  if (actor.actorKind !== "system") {
+    return metadata ?? {};
+  }
+  return { ...(metadata ?? {}), workerId: actor.workerId };
 }
 
 function nonnegative(value: number): number {

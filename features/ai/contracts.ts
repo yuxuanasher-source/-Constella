@@ -175,6 +175,17 @@ export type AiActor = Pick<
   "userId" | "name" | "role" | "organizationId"
 >;
 
+export type AiExecutionActor =
+  | (AiActor & { actorKind?: "human"; workerId?: never })
+  | {
+      actorKind: "system";
+      userId?: undefined;
+      name: string;
+      role: "ops_manager";
+      organizationId: string;
+      workerId: string;
+    };
+
 export function scopeAllowsRole(scope: AiToolScope, role: AppRole): boolean {
   if (scope === "mcn_staff") {
     return (
