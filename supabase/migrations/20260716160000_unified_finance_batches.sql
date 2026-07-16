@@ -335,6 +335,10 @@ begin
     raise exception 'finance_batch_items_invalid';
   end if;
 
+  if jsonb_array_length(coalesce(p_items, '[]'::jsonb)) = 0 then
+    raise exception 'finance_batch_items_required';
+  end if;
+
   for v_item in select * from jsonb_array_elements(coalesce(p_items, '[]'::jsonb))
   loop
     v_project_id := nullif(v_item ->> 'project_id', '')::uuid;

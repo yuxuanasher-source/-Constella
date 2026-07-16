@@ -262,6 +262,13 @@ describe("unified finance batch schema", () => {
     }
   });
 
+  it("rejects empty finance batch item payloads in the create rpc", () => {
+    expect(migration).toContain(
+      "jsonb_array_length(coalesce(p_items, '[]'::jsonb)) = 0",
+    );
+    expect(migration).toContain("finance_batch_items_required");
+  });
+
   it("touches updated_at for mutable finance tables", () => {
     for (const trigger of [
       "finance_batches_touch_updated_at",
