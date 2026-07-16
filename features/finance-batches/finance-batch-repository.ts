@@ -133,6 +133,10 @@ type LegacyConsumedSettlementBatchItemReportRow = {
     | null;
 };
 
+type FinanceBatchProjectSummaryRow = {
+  finance_batch_id: string | null;
+};
+
 const financeBatchSelect = `
   id,
   organization_id,
@@ -549,19 +553,21 @@ export async function listOpsFinanceBatches(
   let financeBatchIds: string[] | null = null;
 
   if (input.projectId) {
-    const { data: itemRows, error: itemError } = await client
-      .from("finance_batch_items")
+    const { data: summaryRows, error: summaryError } = await client
+      .from("finance_batch_project_summary")
       .select("finance_batch_id")
       .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
-      .returns<Array<{ finance_batch_id: string | null }>>();
+      .order("updated_at", { ascending: false })
+      .limit(200)
+      .returns<FinanceBatchProjectSummaryRow[]>();
 
-    if (itemError) {
-      throw itemError;
+    if (summaryError) {
+      throw summaryError;
     }
 
     financeBatchIds = uniqueStable(
-      (itemRows ?? [])
+      (summaryRows ?? [])
         .map((row) => row.finance_batch_id)
         .filter((id): id is string => Boolean(id)),
     );

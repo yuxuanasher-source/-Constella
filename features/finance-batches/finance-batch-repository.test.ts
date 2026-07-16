@@ -367,9 +367,9 @@ describe("listOpsFinanceBatches", () => {
     ]);
   });
 
-  it("filters ops reference batches through finance batch items for a project", async () => {
+  it("filters ops reference batches through project summary rows for a project", async () => {
     const supabase = createListSourcesClient({
-      finance_batch_items: [
+      finance_batch_project_summary: [
         { finance_batch_id: "batch-1" },
         { finance_batch_id: "batch-1" },
         { finance_batch_id: "batch-2" },
@@ -383,19 +383,23 @@ describe("listOpsFinanceBatches", () => {
       projectId: "project-1",
     });
 
-    const itemQuery = supabase.queryFor("finance_batch_items");
-    expect(itemQuery.select).toHaveBeenCalledWith("finance_batch_id");
-    expect(itemQuery.eq).toHaveBeenCalledWith("organization_id", "org-1");
-    expect(itemQuery.eq).toHaveBeenCalledWith("project_id", "project-1");
+    const summaryQuery = supabase.queryFor("finance_batch_project_summary");
+    expect(summaryQuery.select).toHaveBeenCalledWith("finance_batch_id");
+    expect(summaryQuery.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(summaryQuery.eq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(summaryQuery.order).toHaveBeenCalledWith("updated_at", {
+      ascending: false,
+    });
+    expect(summaryQuery.limit).toHaveBeenCalledWith(200);
     expect(supabase.queryFor("finance_batches").in).toHaveBeenCalledWith("id", [
       "batch-1",
       "batch-2",
     ]);
   });
 
-  it("returns no ops reference batches when a project has no finance batch items", async () => {
+  it("returns no ops reference batches when a project has no project summary rows", async () => {
     const supabase = createListSourcesClient({
-      finance_batch_items: [],
+      finance_batch_project_summary: [],
       finance_batches: [batchRow],
     });
 

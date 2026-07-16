@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import { listOpsApplicationQueue } from "@/features/applications/application-queries";
+import { listOpsFinanceBatches } from "@/features/finance-batches/finance-batch-repository";
 import { listOpsLiveTaskQueue } from "@/features/live-operations/live-operations-queries";
 import { listProjects } from "@/features/projects/project-queries";
 import {
@@ -43,6 +44,10 @@ vi.mock("@/features/projects/project-queries", () => ({
 
 vi.mock("@/features/applications/application-queries", () => ({
   listOpsApplicationQueue: vi.fn(),
+}));
+
+vi.mock("@/features/finance-batches/finance-batch-repository", () => ({
+  listOpsFinanceBatches: vi.fn(),
 }));
 
 vi.mock("@/features/live-operations/live-operations-queries", () => ({
@@ -112,6 +117,7 @@ describe("console projects route", () => {
       client: "admin-supabase",
     } as never);
     vi.mocked(listOpsApplicationQueue).mockResolvedValue([]);
+    vi.mocked(listOpsFinanceBatches).mockResolvedValue([]);
     vi.mocked(listPartnerCollaborationApplications).mockResolvedValue([]);
     vi.mocked(listPartnerCollaborationProjects).mockResolvedValue([]);
   });
@@ -177,6 +183,9 @@ describe("console projects route", () => {
     );
     expect(listOpsLiveTaskQueue).toHaveBeenCalledWith(supabase, "org-1");
     expect(listOpsApplicationQueue).toHaveBeenCalledWith(supabase, {
+      organizationId: "org-1",
+    });
+    expect(listOpsFinanceBatches).toHaveBeenCalledWith(supabase, {
       organizationId: "org-1",
     });
   });
@@ -256,6 +265,7 @@ describe("console projects route", () => {
     expect(OpsReferenceApp).toHaveBeenCalledWith(
       expect.objectContaining({
         liveBatches: [expect.objectContaining({ id: "batch-real-1" })],
+        liveFinanceBatches: [],
         liveSettlementPool: [expect.objectContaining({ id: "report-real-1" })],
         settlementScope: expect.objectContaining({
           projectId: "project-real",
