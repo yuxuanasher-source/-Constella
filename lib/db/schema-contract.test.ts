@@ -147,6 +147,19 @@ const customSettlementCostReconciliationMigration = readdirSync(
 const normalizedCustomSettlementCostReconciliationMigration = normalizeSql(
   customSettlementCostReconciliationMigration,
 );
+const settlementReconciliationRunAppendInsertMigrationName =
+  "20260714120000_settlement_reconciliation_run_append_insert.sql";
+const settlementReconciliationRunAppendInsertMigration = readdirSync(
+  migrationsDir,
+).includes(settlementReconciliationRunAppendInsertMigrationName)
+  ? readFileSync(
+      join(migrationsDir, settlementReconciliationRunAppendInsertMigrationName),
+      "utf8",
+    )
+  : "";
+const normalizedSettlementReconciliationRunAppendInsertMigration = normalizeSql(
+  settlementReconciliationRunAppendInsertMigration,
+);
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/gu, " ").trim();
@@ -4182,6 +4195,21 @@ describe("Phase 4 custom settlement cost provenance and reconciliation contract"
     );
     expect(normalizedCustomSettlementCostReconciliationMigration).toContain(
       "raise exception 'settlement_reconciliation_run_immutable'",
+    );
+    expect(normalizedSettlementReconciliationRunAppendInsertMigration).toContain(
+      "grant insert on table public.settlement_reconciliation_runs to authenticated",
+    );
+    expect(normalizedSettlementReconciliationRunAppendInsertMigration).toContain(
+      "create policy settlement_reconciliation_runs_staff_insert",
+    );
+    expect(normalizedSettlementReconciliationRunAppendInsertMigration).toContain(
+      "created_by = auth.uid()",
+    );
+    expect(normalizedSettlementReconciliationRunAppendInsertMigration).toContain(
+      "public.is_mcn_staff(organization_id) and public.can_access_project(project_id)",
+    );
+    expect(normalizedSettlementReconciliationRunAppendInsertMigration).not.toMatch(
+      /grant (?:update|delete|all) on table public\.settlement_reconciliation_runs[\s\S]+?to authenticated/u,
     );
   });
 

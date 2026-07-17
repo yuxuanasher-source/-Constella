@@ -167,6 +167,78 @@ await check(
       throw new Error("P1 flow report id is required for P2 flow smoke");
     }
 
+    const receivableBatchBody = await requestJson("/api/settlement-batches", {
+      cookie: opsCookie,
+      method: "POST",
+      expectedStatus: 201,
+      body: {
+        projectId,
+        batchType: "receivable",
+        periodStart: "2026-01-01",
+        periodEnd: "2026-12-31",
+      },
+    });
+    assertObject(receivableBatchBody.batch, "generated receivable batch");
+    assertArray(receivableBatchBody.items, "generated receivable items");
+    assertNonEmpty(receivableBatchBody.items, "generated receivable items");
+    assertEqual(
+      receivableBatchBody.batch.status,
+      "generated",
+      "generated receivable batch status",
+    );
+    assertPositiveNumber(
+      receivableBatchBody.batch.computedAmount,
+      "generated receivable batch computed amount",
+    );
+    const receivableReportItem = receivableBatchBody.items.find(
+      (item) => item.liveReportId === p1Flow.reportId,
+    );
+    assertObject(receivableReportItem, "P1 report receivable item");
+    assertEqual(
+      receivableReportItem.itemType,
+      "live_report_receivable",
+      "P1 report receivable item type",
+    );
+
+    const receivableBatchId = receivableBatchBody.batch.id;
+    const receivableManualBody = await requestJson(
+      `/api/settlement-batches/${receivableBatchId}/manual-items`,
+      {
+        cookie: opsCookie,
+        method: "POST",
+        expectedStatus: 201,
+        body: {
+          itemType: "manual",
+          projectId,
+          streamerId,
+          manualAmount: 200,
+          evidenceLevel: "yellow",
+          reason: "api integration smoke receivable uplift",
+          note: "Receivable side is finalized before payable lock gating",
+        },
+      },
+    );
+    assertObject(receivableManualBody.item, "manual receivable item");
+    assertEqual(
+      receivableManualBody.item.manualAmount,
+      200,
+      "manual receivable carried amount",
+    );
+
+    const lockedReceivableBody = await requestJson(
+      `/api/settlement-batches/${receivableBatchId}/lock`,
+      {
+        cookie: opsCookie,
+        method: "POST",
+        body: { reason: "api integration smoke receivable lock" },
+      },
+    );
+    assertEqual(
+      lockedReceivableBody.batch.status,
+      "locked",
+      "locked receivable batch status",
+    );
+
     const batchBody = await requestJson("/api/settlement-batches", {
       cookie: opsCookie,
       method: "POST",
