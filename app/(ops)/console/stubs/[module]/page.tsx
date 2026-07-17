@@ -6,6 +6,7 @@ import {
   type AuditQueryClient,
 } from "@/features/audit-center/audit-center-queries";
 import { getBillingStatus } from "@/features/billing/billing-status";
+import { listOpsFinanceBatches } from "@/features/finance-batches/finance-batch-repository";
 import {
   listNotificationCenterItems,
   type NotificationQueryClient,
@@ -52,6 +53,7 @@ export default async function StubPage({
     liveReports,
     liveBatches,
     liveBatchDetails,
+    liveFinanceBatches,
     liveSettlementPool,
     settlementScope,
     streamerCards,
@@ -71,6 +73,7 @@ export default async function StubPage({
       liveReports={liveReports}
       liveBatches={liveBatches}
       liveBatchDetails={liveBatchDetails}
+      liveFinanceBatches={liveFinanceBatches}
       liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
       streamerCards={streamerCards}
@@ -112,13 +115,17 @@ async function loadLiveReferenceData(
   }
 
   if (module === "m6") {
-    const [batches, details, settlementScope] = await Promise.all([
-      listOpsSettlementBatches(supabase, auth.organizationId),
-      listOpsSettlementBatchDetails(supabase, {
-        organizationId: auth.organizationId,
-      }),
-      getOpsSettlementDefaultScope(supabase, auth.organizationId),
-    ]);
+    const [batches, details, settlementScope, financeBatches] =
+      await Promise.all([
+        listOpsSettlementBatches(supabase, auth.organizationId),
+        listOpsSettlementBatchDetails(supabase, {
+          organizationId: auth.organizationId,
+        }),
+        getOpsSettlementDefaultScope(supabase, auth.organizationId),
+        listOpsFinanceBatches(supabase, {
+          organizationId: auth.organizationId,
+        }),
+      ]);
     const settlementPool = settlementScope
       ? await listOpsSettlementPool(supabase, {
           organizationId: auth.organizationId,
@@ -145,6 +152,7 @@ async function loadLiveReferenceData(
       liveSettlementPool: settlementPool.map((item) =>
         toOpsReferenceSettlementPoolItem(item),
       ),
+      liveFinanceBatches: financeBatches,
       settlementScope,
       complexCost,
     };

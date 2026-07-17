@@ -1201,6 +1201,7 @@ const OpsLiveDataContext = React.createContext({
   reports: null,
   batches: null,
   batchDetails: null,
+  financeBatches: null,
   settlementPool: null,
   collaborationProjects: null,
   settlementScope: null,
@@ -1251,6 +1252,11 @@ function useOpsReports() {
 function useOpsSettlementBatches() {
   const { batches } = React.useContext(OpsLiveDataContext);
   return Array.isArray(batches) ? batches : BATCHES;
+}
+
+function useOpsFinanceBatches() {
+  const { financeBatches } = React.useContext(OpsLiveDataContext);
+  return Array.isArray(financeBatches) ? financeBatches : [];
 }
 
 function useOpsSettlementBatchDetails() {
@@ -1341,6 +1347,37 @@ function useOpsLiveActions() {
 // Settlement batches ———————————————————————————————————
 const BATCHES = [];
 const SETTLEMENT_POOL = [];
+
+const FINANCE_BATCH_TYPE_LABELS = {
+  receivable: "客户应收",
+  streamer_payable: "主播应付",
+  project_cost: "项目成本",
+  collaboration_share: "协作分账",
+};
+
+const FINANCE_BATCH_STATUS_LABELS = {
+  draft: "草稿",
+  pending_review: "待审核",
+  confirmed: "已确认",
+  locked: "已锁定",
+  exported: "已导出",
+  completed: "已完成",
+  rejected: "已驳回",
+  reopened: "已重开",
+  voided: "已作废",
+};
+
+const FINANCE_BATCH_STATUS_TONES = {
+  draft: "neutral",
+  pending_review: "amber",
+  confirmed: "blue",
+  locked: "violet",
+  exported: "teal",
+  completed: "green",
+  rejected: "red",
+  reopened: "amber",
+  voided: "neutral",
+};
 
 const BATCH_STATUS = {
   draft: { tone: "neutral", label: "草稿" },
@@ -7845,6 +7882,7 @@ function ProjectDetail({ id, go }) {
   const applications = useOpsApplications();
   const tasks = useOpsTasks();
   const settlementBatches = useOpsSettlementBatches();
+  const financeBatches = useOpsFinanceBatches();
   const reports = useOpsReports();
   const auditEntries = useOpsAuditEntries();
   const actions = useOpsLiveActions();
@@ -8105,6 +8143,9 @@ function ProjectDetail({ id, go }) {
   const projectTasks = tasks.filter((task) => taskBelongsToProject(task, p));
   const projectBatches = settlementBatches.filter(
     (batch) => batch.projectId === p.id,
+  );
+  const projectFinanceBatches = financeBatches.filter((batch) =>
+    financeBatchBelongsToProject(batch, p.id),
   );
   const projectReports = reports.filter(
     (r) => r.projectId === p.id || r.project === p.name,
@@ -8972,6 +9013,80 @@ function ProjectDetail({ id, go }) {
               <EmptyHint
                 title="暂无结算批次"
                 hint="该项目尚未生成结算批次，可前往结算中心查看与生成。"
+                actionLabel="前往结算中心"
+                onAction={() => go("settle")}
+              />
+            )}
+          </Card>
+        )}
+
+        {detailTab === "settlement" && (
+          <Card
+            title="财务批次归因"
+            extra={
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {projectFinanceBatches.length > 0 ? (
+                  <Badge tone="violet">{projectFinanceBatches.length}</Badge>
+                ) : null}
+                <Button size="sm" kind="link" onClick={() => go("settle")}>
+                  前往结算中心 →
+                </Button>
+              </div>
+            }
+          >
+            {isPartnerCollaboration ? (
+              <EmptyHint
+                title="协作项目不展示财务批次归因"
+                hint="财务批次与项目金额归因由项目归属方管理，协作方不可见。"
+              />
+            ) : projectFinanceBatches.length ? (
+              <CappedTable
+                onMore={() => go("settle")}
+                columns={[
+                  {
+                    title: "批次",
+                    render: (batch) => (
+                      <span
+                        style={{ fontWeight: 600, color: "var(--ink-900)" }}
+                      >
+                        {batch.title}
+                      </span>
+                    ),
+                  },
+                  { title: "类型", render: (batch) => batch.typeLabel },
+                  {
+                    title: "状态",
+                    render: (batch) => (
+                      <Badge tone={batch.statusTone} dot>
+                        {batch.statusLabel}
+                      </Badge>
+                    ),
+                  },
+                  {
+                    title: "项目归因金额",
+                    align: "right",
+                    render: (batch) => {
+                      const amount = financeBatchProjectAttributionAmount(
+                        batch,
+                        p.id,
+                      );
+                      return amount == null ? (
+                        <span style={{ color: "var(--ink-400)" }}>—</span>
+                      ) : (
+                        <span className="num">
+                          {formatFinanceAmount(amount)}
+                        </span>
+                      );
+                    },
+                  },
+                ]}
+                rows={projectFinanceBatches}
+                onRowClick={() => go("settle")}
+              />
+            ) : (
+              <EmptyHint
+                title="暂无财务批次归因"
+                hint="项目相关财务批次生成后，会在这里展示项目级金额归因。"
                 actionLabel="前往结算中心"
                 onAction={() => go("settle")}
               />
@@ -19423,6 +19538,68 @@ function toReferenceBatchFromApi(batch, items, context = {}) {
   };
 }
 
+function toReferenceFinanceBatchFromApi(batch) {
+  const type = batch.batchType || batch.type || "streamer_payable";
+  const status = batch.status || "draft";
+  const periodStart = batch.periodStart || "";
+  const periodEnd = batch.periodEnd || "";
+  const rawFinalAmount = Number(batch.finalAmount ?? batch.amount ?? 0);
+  const projectAmount = Number(
+    batch.projectAmount ?? batch.finalProjectAmount ?? NaN,
+  );
+
+  return {
+    id: batch.id,
+    type,
+    typeLabel: FINANCE_BATCH_TYPE_LABELS[type] || type,
+    status,
+    statusLabel: FINANCE_BATCH_STATUS_LABELS[status] || status,
+    statusTone: FINANCE_BATCH_STATUS_TONES[status] || "neutral",
+    title:
+      (typeof batch.title === "string" && batch.title.trim()) ||
+      batch.name ||
+      `${FINANCE_BATCH_TYPE_LABELS[type] || type}批次`,
+    period: batch.period || `${periodStart} → ${periodEnd}`,
+    periodStart,
+    periodEnd,
+    finalAmount: Number.isFinite(rawFinalAmount) ? rawFinalAmount : 0,
+    projectId: batch.projectId,
+    projectIds: Array.isArray(batch.projectIds) ? batch.projectIds : undefined,
+    projectAmount: Number.isFinite(projectAmount) ? projectAmount : undefined,
+    finalProjectAmount: Number.isFinite(projectAmount)
+      ? projectAmount
+      : undefined,
+    projectAmountById:
+      batch.projectAmountById && typeof batch.projectAmountById === "object"
+        ? batch.projectAmountById
+        : undefined,
+    itemCount: Number(batch.itemCount ?? batch.items ?? 0),
+  };
+}
+
+function formatFinanceAmount(value) {
+  return formatYuanFromCents(Math.round((Number(value) || 0) * 100));
+}
+
+function financeBatchBelongsToProject(batch, projectId) {
+  if (!batch || !projectId) return false;
+  if (batch.projectId === projectId) return true;
+  return Array.isArray(batch.projectIds) && batch.projectIds.includes(projectId);
+}
+
+function financeBatchProjectAttributionAmount(batch, projectId) {
+  const byProject =
+    batch?.projectAmountById && typeof batch.projectAmountById === "object"
+      ? Number(batch.projectAmountById[projectId])
+      : NaN;
+  if (Number.isFinite(byProject)) return byProject;
+  const projectAmount = Number(batch?.projectAmount);
+  if (Number.isFinite(projectAmount)) return projectAmount;
+  const finalProjectAmount = Number(batch?.finalProjectAmount);
+  if (Number.isFinite(finalProjectAmount)) return finalProjectAmount;
+  return null;
+}
+
 function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
   const snapshot = item.evidenceSnapshot || {};
   const settlementDuration =
@@ -19689,6 +19866,11 @@ function buildExternalCostResolutionValue(draft) {
 function ScreenSettlement({ go }) {
   const projects = useOpsProjects();
   const batches = useOpsSettlementBatches();
+  const financeBatchContext = React.useContext(OpsLiveDataContext);
+  const financeBatchesLoaded = Array.isArray(
+    financeBatchContext.financeBatches,
+  );
+  const financeBatches = useOpsFinanceBatches();
   const batchDetails = useOpsSettlementBatchDetails();
   const settlementPool = useOpsSettlementPool();
   const settlementScope = useOpsSettlementScope();
@@ -19763,6 +19945,7 @@ function ScreenSettlement({ go }) {
   const [costExceptionDrafts, setCostExceptionDrafts] = React.useState({});
   const [costDraft, setCostDraft] = React.useState(() => defaultCostDraft());
   const reconciliationBlockingHeadingRef = React.useRef(null);
+  const financeBatchRefreshRequestedRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!projectOptions.length) return;
@@ -19856,6 +20039,20 @@ function ScreenSettlement({ go }) {
   }, [actions, activeId, batchDetails, busyAction]);
 
   React.useEffect(() => {
+    if (
+      financeBatchesLoaded ||
+      financeBatchRefreshRequestedRef.current ||
+      !actions.refreshFinanceBatches
+    ) {
+      return;
+    }
+    financeBatchRefreshRequestedRef.current = true;
+    actions
+      .refreshFinanceBatches()
+      .catch((error) => warnBackgroundRefreshFailure("finance batches", error));
+  }, [actions, financeBatchesLoaded]);
+
+  React.useEffect(() => {
     setRuleDraft(settlementRuleDraft(selectedProject));
     setFinancialDraft(financialDraftFromProject(selectedProject));
   }, [selectedProject]);
@@ -19899,6 +20096,25 @@ function ScreenSettlement({ go }) {
       marginRate,
     };
   }, [projectBatches]);
+  const financeBatchRows = React.useMemo(
+    () => financeBatches.map(toReferenceFinanceBatchFromApi),
+    [financeBatches],
+  );
+  const financeBatchSummary = React.useMemo(() => {
+    const byType = new Map();
+    financeBatchRows.forEach((batch) => {
+      const current = byType.get(batch.type) || {
+        type: batch.type,
+        label: batch.typeLabel,
+        count: 0,
+        amount: 0,
+      };
+      current.count += 1;
+      current.amount += batch.finalAmount;
+      byType.set(batch.type, current);
+    });
+    return Array.from(byType.values());
+  }, [financeBatchRows]);
 
   const runSettlementAction = async (actionName, fn) => {
     if (busyAction) return;
@@ -19916,6 +20132,24 @@ function ScreenSettlement({ go }) {
       setBusyAction(null);
     }
   };
+
+  const transitionFinanceBatchRow = (batch, action, reason = null) =>
+    runSettlementAction(`finance-${action}:${batch.id}`, async () => {
+      const actionMap = {
+        submit: actions.submitFinanceBatch,
+        confirm: actions.confirmFinanceBatch,
+        lock: actions.lockFinanceBatch,
+        reopen: actions.reopenFinanceBatch,
+        void: actions.voidFinanceBatch,
+      };
+      const handler = actionMap[action];
+      if (!handler) {
+        throw new Error("财务批次状态接口不可用");
+      }
+      await handler(batch.id, reason ? { reason } : {});
+      setSettlementMessage("财务批次状态已更新");
+      return false;
+    });
 
   React.useEffect(() => {
     setBatchDraft((draft) => ({
@@ -20245,6 +20479,28 @@ function ScreenSettlement({ go }) {
     });
   };
 
+  const createStreamerPayableFinanceBatch = () =>
+    runSettlementAction("finance-create", async () => {
+      if (!settlementPeriod.start || !settlementPeriod.end) {
+        setSettlementMessage("请先设置财务批次周期");
+        return false;
+      }
+      await actions.createFinanceBatch?.({
+        batchType: "streamer_payable",
+        periodStart: settlementPeriod.start,
+        periodEnd: settlementPeriod.end,
+        title: `${settlementPeriod.start} → ${settlementPeriod.end} 主播应付`,
+        selection: {
+          ...(selectedProjectId ? { projectIds: [selectedProjectId] } : {}),
+          ...(selectedBatchStreamerIds.length > 0
+            ? { streamerIds: selectedBatchStreamerIds }
+            : {}),
+        },
+      });
+      setSettlementMessage("主播应付财务批次已创建");
+      return false;
+    });
+
   const addManualItem = (event) => {
     event?.preventDefault?.();
     return runSettlementAction("manual", async () => {
@@ -20477,6 +20733,95 @@ function ScreenSettlement({ go }) {
       setSettlementMessage("结算批次导出已生成");
       return false;
     });
+  const financeBatchColumns = [
+    { title: "批次", render: (row) => row.title },
+    { title: "类型", render: (row) => row.typeLabel },
+    {
+      title: "状态",
+      render: (row) => (
+        <Badge tone={row.statusTone} dot>
+          {row.statusLabel}
+        </Badge>
+      ),
+    },
+    { title: "周期", render: (row) => row.period },
+    {
+      title: "最终金额",
+      align: "right",
+      render: (row) => (
+        <span className="num">{formatFinanceAmount(row.finalAmount)}</span>
+      ),
+    },
+    {
+      title: "条目",
+      align: "right",
+      render: (row) => `${row.itemCount} 项`,
+    },
+    {
+      title: "操作",
+      align: "right",
+      render: (row) => (
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+          {row.status === "draft" || row.status === "reopened" ? (
+            <Button
+              size="sm"
+              kind="ghost"
+              onClick={() => transitionFinanceBatchRow(row, "submit")}
+              disabled={!!busyAction}
+            >
+              提交
+            </Button>
+          ) : null}
+          {row.status === "pending_review" ? (
+            <Button
+              size="sm"
+              kind="ghost"
+              onClick={() => transitionFinanceBatchRow(row, "confirm")}
+              disabled={!!busyAction}
+            >
+              确认
+            </Button>
+          ) : null}
+          {row.status === "confirmed" ? (
+            <Button
+              size="sm"
+              kind="ghost"
+              onClick={() => transitionFinanceBatchRow(row, "lock")}
+              disabled={!!busyAction}
+            >
+              锁定
+            </Button>
+          ) : null}
+          {["locked", "exported", "completed"].includes(row.status) ? (
+            <Button
+              size="sm"
+              kind="ghost"
+              onClick={() =>
+                transitionFinanceBatchRow(row, "reopen", "财务批次重开")
+              }
+              disabled={!!busyAction}
+            >
+              重开
+            </Button>
+          ) : null}
+          {["draft", "pending_review", "rejected", "reopened"].includes(
+            row.status,
+          ) ? (
+            <Button
+              size="sm"
+              kind="ghost"
+              onClick={() =>
+                transitionFinanceBatchRow(row, "void", "财务批次作废")
+              }
+              disabled={!!busyAction}
+            >
+              作废
+            </Button>
+          ) : null}
+        </div>
+      ),
+    },
+  ];
 
   return (
     <>
@@ -20527,6 +20872,38 @@ function ScreenSettlement({ go }) {
           gap: 20,
         }}
       >
+        <Card
+          title="财务结算中心"
+          extra={
+            <Button
+              size="sm"
+              icon={<Icon.Plus size={13} />}
+              onClick={createStreamerPayableFinanceBatch}
+              disabled={!!busyAction}
+            >
+              {busyAction === "finance-create" ? "创建中…" : "新建主播应付批次"}
+            </Button>
+          }
+          bodyStyle={{ display: "flex", flexDirection: "column", gap: 12 }}
+        >
+          {financeBatchSummary.length > 0 ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {financeBatchSummary.map((item) => (
+                <Badge key={item.type} tone="blue">
+                  {item.label} {item.count} 个 ·{" "}
+                  {formatFinanceAmount(item.amount)}
+                </Badge>
+              ))}
+            </div>
+          ) : null}
+          <DataTable
+            columns={financeBatchColumns}
+            rows={financeBatchRows}
+            dense
+            emptyText="暂无财务批次"
+          />
+        </Card>
+
         {/* Grouped settlement strip — primary 预估毛利 + compact secondaries */}
         <Card
           padded={false}
@@ -33727,6 +34104,7 @@ function OpsReferenceInner({
   liveReports,
   liveBatches,
   liveBatchDetails,
+  liveFinanceBatches,
   liveSettlementPool,
   settlementScope,
   auditEntries,
@@ -33769,6 +34147,9 @@ function OpsReferenceInner({
   const [batchesState, setBatchesState] = React.useState(liveBatches ?? null);
   const [batchDetailsState, setBatchDetailsState] = React.useState(
     liveBatchDetails ?? null,
+  );
+  const [financeBatchesState, setFinanceBatchesState] = React.useState(
+    liveFinanceBatches ?? null,
   );
   const [settlementPoolState, setSettlementPoolState] = React.useState(
     liveSettlementPool ?? null,
@@ -34003,6 +34384,10 @@ function OpsReferenceInner({
   }, [liveBatchDetails]);
 
   React.useEffect(() => {
+    setFinanceBatchesState(liveFinanceBatches ?? null);
+  }, [liveFinanceBatches]);
+
+  React.useEffect(() => {
     setSettlementPoolState(liveSettlementPool ?? null);
   }, [liveSettlementPool]);
 
@@ -34166,6 +34551,71 @@ function OpsReferenceInner({
           toReferenceBatchDetailFromApi(item, [], index),
         ),
       }));
+    };
+
+    const upsertFinanceBatch = (batch) => {
+      if (!batch?.id) return null;
+      const mapped = toReferenceFinanceBatchFromApi(batch);
+      setFinanceBatchesState((current) => [
+        mapped,
+        ...(Array.isArray(current)
+          ? current.filter((item) => item.id !== mapped.id)
+          : []),
+      ]);
+      return mapped;
+    };
+
+    const refreshFinanceBatches = async () => {
+      const body = await fetchJson(
+        "/api/finance/batches",
+        "refresh finance batches failed",
+      );
+      if (Array.isArray(body.batches)) {
+        setFinanceBatchesState(body.batches.map(toReferenceFinanceBatchFromApi));
+      }
+      return Array.isArray(body.batches) ? body.batches : [];
+    };
+
+    const createFinanceBatch = async (input) => {
+      const body = await fetchJson(
+        "/api/finance/batches",
+        "create finance batch failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
+      upsertFinanceBatch(body.batch);
+      return body;
+    };
+
+    const addFinanceBatchAdjustment = async (batchId, input) => {
+      const body = await fetchJson(
+        `/api/finance/batches/${batchId}/adjustments`,
+        "add finance batch adjustment failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        },
+      );
+      upsertFinanceBatch(body.batch);
+      return body;
+    };
+
+    const transitionFinanceBatch = async (batchId, action, input) => {
+      const body = await fetchJson(
+        `/api/finance/batches/${batchId}/${action}`,
+        `${action} finance batch failed`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input ?? {}),
+        },
+      );
+      upsertFinanceBatch(body.batch);
+      return body.batch;
     };
 
     const refreshAuditEntries = async () => {
@@ -34502,6 +34952,19 @@ function OpsReferenceInner({
       refreshReports,
       refreshSettlementPool,
       refreshSettlementBatchDetail,
+      refreshFinanceBatches,
+      createFinanceBatch,
+      addFinanceBatchAdjustment,
+      submitFinanceBatch: (batchId, input) =>
+        transitionFinanceBatch(batchId, "submit", input),
+      confirmFinanceBatch: (batchId, input) =>
+        transitionFinanceBatch(batchId, "confirm", input),
+      lockFinanceBatch: (batchId, input) =>
+        transitionFinanceBatch(batchId, "lock", input),
+      reopenFinanceBatch: (batchId, input) =>
+        transitionFinanceBatch(batchId, "reopen", input),
+      voidFinanceBatch: (batchId, input) =>
+        transitionFinanceBatch(batchId, "void", input),
       readVendorDeliveryPackage,
       exportAdmissionRecordings,
       requestRecordingAiAnalysis,
@@ -35456,6 +35919,7 @@ function OpsReferenceInner({
         reports: reportsState,
         batches: batchesState,
         batchDetails: batchDetailsState,
+        financeBatches: financeBatchesState,
         settlementPool: settlementPoolState,
         collaborationProjects: collaborationProjectsState,
         settlementScope,
@@ -35788,7 +36252,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; dashboardHomeError?: string | null; currentUser?: any }} props
+ * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveFinanceBatches?: any[]; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; dashboardHomeError?: string | null; currentUser?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -35796,6 +36260,7 @@ export default function OpsReferenceApp({
   liveReports,
   liveBatches,
   liveBatchDetails,
+  liveFinanceBatches,
   liveSettlementPool,
   settlementScope,
   auditEntries,
@@ -35820,6 +36285,7 @@ export default function OpsReferenceApp({
       liveReports={liveReports}
       liveBatches={liveBatches}
       liveBatchDetails={liveBatchDetails}
+      liveFinanceBatches={liveFinanceBatches}
       liveSettlementPool={liveSettlementPool}
       settlementScope={settlementScope}
       auditEntries={auditEntries}

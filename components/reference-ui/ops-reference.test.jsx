@@ -1761,6 +1761,75 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.queryByText("结算规则")).not.toBeInTheDocument();
   });
 
+  it("shows finance batch attribution in the project settlement tab", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={taskProjectCards}
+        streamerCards={[]}
+        applicationQueue={[]}
+        liveFinanceBatches={[
+          {
+            id: "finance-batch-project-a",
+            type: "streamer_payable",
+            typeLabel: "主播应付",
+            status: "confirmed",
+            statusLabel: "已确认",
+            statusTone: "blue",
+            title: "7月项目主播应付批次",
+            period: "2026-07-01 -> 2026-07-31",
+            finalAmount: 480,
+            projectId: "project-live",
+            projectIds: ["project-live"],
+            projectAmount: 160,
+            itemCount: 3,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Fixture Project"));
+    fireEvent.click(screen.getByRole("button", { name: "结算" }));
+
+    expect(screen.getByText("财务批次归因")).toBeInTheDocument();
+    expect(screen.getByText("7月项目主播应付批次")).toBeInTheDocument();
+    expect(screen.getByText("¥160.00")).toBeInTheDocument();
+  });
+
+  it("does not show the full batch total as finance batch attribution", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={taskProjectCards}
+        streamerCards={[]}
+        applicationQueue={[]}
+        liveFinanceBatches={[
+          {
+            id: "finance-batch-no-project-amount",
+            type: "streamer_payable",
+            typeLabel: "主播应付",
+            status: "confirmed",
+            statusLabel: "已确认",
+            statusTone: "blue",
+            title: "无项目金额批次",
+            period: "2026-07-01 -> 2026-07-31",
+            finalAmount: 480,
+            projectIds: ["project-live"],
+            itemCount: 3,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Fixture Project"));
+    fireEvent.click(screen.getByRole("button", { name: "结算" }));
+
+    expect(screen.getByText("财务批次归因")).toBeInTheDocument();
+    const batchRow = screen.getByText("无项目金额批次").closest("tr");
+    expect(within(batchRow).getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText("¥480.00")).not.toBeInTheDocument();
+  });
+
   it("opens the tasks anomaly view with the project filter preset from the detail anomaly stat", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-07T13:12:00.000Z"));
@@ -8236,6 +8305,175 @@ describe("OpsReferenceApp settlement smoke", () => {
     vi.unstubAllEnvs();
   });
 
+  it("shows unified finance batch data in the settlement finance center", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[]}
+        liveFinanceBatches={[
+          {
+            id: "finance-batch-payable-1",
+            batchType: "streamer_payable",
+            title: "七月主播应付统一批次",
+            periodStart: "2026-07-01",
+            periodEnd: "2026-07-31",
+            status: "pending_review",
+            finalAmount: 210,
+            itemCount: 3,
+          },
+        ]}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("财务结算中心")).toBeInTheDocument();
+    expect(screen.getByText("七月主播应付统一批次")).toBeInTheDocument();
+    expect(screen.getAllByText("主播应付").length).toBeGreaterThan(0);
+    expect(screen.getByText("¥210.00")).toBeInTheDocument();
+    expect(screen.getByText("3 项")).toBeInTheDocument();
+  });
+
+  it("exposes submit confirm and lock actions for finance batches", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/finance/batches") {
+        return {
+          ok: true,
+          json: async () => ({
+            batches: [
+              {
+                id: "finance-batch-draft",
+                batchType: "streamer_payable",
+                title: "草稿批次",
+                periodStart: "2026-07-01",
+                periodEnd: "2026-07-31",
+                status: "draft",
+                finalAmount: 100,
+                itemCount: 1,
+              },
+              {
+                id: "finance-batch-review",
+                batchType: "streamer_payable",
+                title: "待审核批次",
+                periodStart: "2026-07-01",
+                periodEnd: "2026-07-31",
+                status: "pending_review",
+                finalAmount: 120,
+                itemCount: 1,
+              },
+              {
+                id: "finance-batch-confirmed",
+                batchType: "streamer_payable",
+                title: "已确认批次",
+                periodStart: "2026-07-01",
+                periodEnd: "2026-07-31",
+                status: "confirmed",
+                finalAmount: 140,
+                itemCount: 1,
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ batch: {} }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[]}
+        liveSettlementPool={[]}
+      />,
+    );
+
+    expect(await screen.findByText("草稿批次")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/finance/batches/finance-batch-draft/submit",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/finance/batches/finance-batch-review/confirm",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "锁定" }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/finance/batches/finance-batch-confirmed/lock",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+  });
+
+  it("loads unified finance batch data when no live prop is provided", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/finance/batches") {
+        return {
+          ok: true,
+          json: async () => ({
+            batches: [
+              {
+                id: "finance-batch-fetch-1",
+                batchType: "streamer_payable",
+                title: "接口返回主播应付批次",
+                periodStart: "2026-07-01",
+                periodEnd: "2026-07-31",
+                status: "draft",
+                finalAmount: 210,
+                itemCount: 2,
+              },
+            ],
+          }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={projectManagementCards}
+        liveBatches={[]}
+        liveSettlementPool={[]}
+        settlementScope={{
+          projectId: "project-alpha",
+          periodStart: "2026-07-01",
+          periodEnd: "2026-07-31",
+          poolCount: 0,
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("接口返回主播应付批次")).toBeInTheDocument();
+    expect(screen.getByText("¥210.00")).toBeInTheDocument();
+    expect(screen.getByText("2 项")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url]) => String(url) === "/api/finance/batches",
+      ),
+    ).toHaveLength(1);
+  });
+
   const renderMobileSettlementLayout = () =>
     render(
       <OpsReferenceApp
@@ -9850,6 +10088,7 @@ describe("OpsReferenceApp settlement smoke", () => {
         initialRoute="settle"
         liveBatches={[]}
         liveBatchDetails={{}}
+        liveFinanceBatches={[]}
         liveSettlementPool={[
           {
             id: "report-ui-smoke-1",
@@ -10263,6 +10502,7 @@ describe("OpsReferenceApp settlement smoke", () => {
           },
         ]}
         liveBatchDetails={{ "batch-ui-smoke-manual": [] }}
+        liveFinanceBatches={[]}
         liveSettlementPool={[]}
         settlementScope={{
           projectId: "project-1",
