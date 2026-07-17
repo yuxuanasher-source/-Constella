@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "../styles/ops/tokens.css";
+@import "../styles/ops/foundations.css";
 
 :root {
   --blue-50: #eef3ff;

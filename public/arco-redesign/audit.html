@@ -1,0 +1,953 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>审计与导出 · 经营舱</title>
+    <script src="https://code.iconify.design/iconify-icon/3.0.0/iconify-icon.min.js"></script>
+    <link rel="stylesheet" href="./operations.css" />
+    <link rel="stylesheet" href="./sidebar.css" />
+    <link rel="stylesheet" href="./typography.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="../brand/ops-mascot-logo.png" alt="经营舱品牌标识" />
+          <div>
+            <div class="brand-title">经营舱</div>
+            <div class="brand-subtitle">MCN Operations Suite</div>
+          </div>
+        </div>
+        <div class="nav-scroll">
+          <nav class="nav-group" aria-label="工作台导航">
+            <div class="nav-title">工作台</div>
+            <a class="nav-item" href="./index.html"
+              ><iconify-icon
+                icon="lucide:layout-dashboard"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>经营总览</span><span class="nav-badge">12</span></a
+            ><a class="nav-item" href="./projects.html"
+              ><iconify-icon
+                icon="lucide:folder-kanban"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>项目管理</span><span class="nav-badge">19</span></a
+            ><a class="nav-item" href="./streamers.html"
+              ><iconify-icon
+                icon="lucide:users"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>主播资源池</span><span class="nav-badge">86</span></a
+            ><a class="nav-item" href="./admissions.html"
+              ><iconify-icon
+                icon="lucide:circle-play"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>选播准入</span><span class="nav-badge">27</span></a
+            ><a class="nav-item" href="./schedules.html"
+              ><iconify-icon
+                icon="lucide:calendar-days"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>排班直播</span><span class="nav-badge">8</span></a
+            >
+          </nav>
+          <nav class="nav-group" aria-label="财务与治理导航">
+            <div class="nav-title">财务与治理</div>
+            <a class="nav-item" href="./reports.html"
+              ><iconify-icon
+                icon="lucide:clipboard-check"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>报数审核</span><span class="nav-badge">35</span></a
+            ><a class="nav-item" href="./settlements.html"
+              ><iconify-icon
+                icon="lucide:wallet-cards"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>结算中心</span><span class="nav-badge">5</span></a
+            ><a class="nav-item active" href="./audit.html" aria-current="page"
+              ><iconify-icon
+                icon="lucide:file-search"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>审计与导出</span><span class="nav-badge">4</span></a
+            ><a class="nav-item" href="./ai-workbench.html"
+              ><iconify-icon
+                icon="lucide:sparkles"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>星耀 AI 作战台</span><span class="nav-badge">AI</span></a
+            >
+            <a class="nav-item" href="./knowledge-base.html"
+              ><iconify-icon
+                icon="lucide:library-big"
+                aria-hidden="true"
+              ></iconify-icon
+              ><span>知识库</span><span class="nav-badge">48</span></a
+            >
+          </nav>
+        </div>
+        <div class="sidebar-footer">
+          <div
+            class="side-note"
+            style="
+              border-left-color: var(--purple);
+              background: var(--purple-soft);
+            "
+          >
+            <strong>审计日志保留 365 天</strong
+            >敏感字段导出将自动脱敏并生成水印。
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="breadcrumb">
+            <span>经营舱</span><span>/</span><b>审计与导出</b>
+          </div>
+          <div class="top-actions">
+            <button class="icon-button" type="button" aria-label="通知">
+              <iconify-icon
+                icon="lucide:bell"
+                aria-hidden="true"
+              ></iconify-icon></button
+            ><button class="icon-button" type="button" aria-label="帮助">
+              <iconify-icon
+                icon="lucide:circle-help"
+                aria-hidden="true"
+              ></iconify-icon></button
+            ><button class="avatar-button" type="button" aria-label="账号菜单">
+              河
+            </button>
+          </div>
+        </header>
+        <div class="content">
+          <section class="page-head">
+            <div class="page-title">
+              <h1>审计与导出</h1>
+              <p>最近数据更新于 14:32。</p>
+            </div>
+            <div class="page-actions">
+              <button class="button" id="policy-button" type="button">
+                <iconify-icon
+                  icon="lucide:shield-check"
+                  aria-hidden="true"
+                ></iconify-icon
+                >字段策略</button
+              ><button class="button" id="verify-button" type="button">
+                <iconify-icon
+                  icon="lucide:badge-check"
+                  aria-hidden="true"
+                ></iconify-icon
+                >日志完整性</button
+              ><button
+                class="button primary"
+                id="new-export-button"
+                type="button"
+              >
+                <iconify-icon
+                  icon="lucide:file-down"
+                  aria-hidden="true"
+                ></iconify-icon
+                >新建导出任务
+              </button>
+            </div>
+          </section>
+
+          <section class="card summary-strip" aria-label="审计概览">
+            <div class="summary-item">
+              <span class="summary-icon"
+                ><iconify-icon
+                  icon="lucide:list-checks"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>今日审计事件</span><strong id="event-total">1,284</strong
+                ><small>条</small>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span class="summary-icon red"
+                ><iconify-icon
+                  icon="lucide:shield-alert"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>高风险事件</span><strong id="risk-total">4</strong
+                ><small>待复核</small>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span class="summary-icon green"
+                ><iconify-icon
+                  icon="lucide:download-cloud"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>今日导出</span><strong id="export-total">12</strong
+                ><small>100% 成功</small>
+              </div>
+            </div>
+            <div class="summary-item">
+              <span class="summary-icon purple"
+                ><iconify-icon
+                  icon="lucide:archive"
+                  aria-hidden="true"
+                ></iconify-icon
+              ></span>
+              <div class="summary-copy">
+                <span>日志保留</span><strong>365</strong><small>天</small>
+              </div>
+            </div>
+          </section>
+
+          <div class="card stage-tabs" role="tablist" aria-label="审计分类">
+            <button
+              class="stage-tab active"
+              data-stage="all"
+              role="tab"
+              aria-selected="true"
+              type="button"
+            >
+              全部事件 <b>1,284</b></button
+            ><button
+              class="stage-tab"
+              data-stage="change"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              数据变更 <b>246</b></button
+            ><button
+              class="stage-tab"
+              data-stage="risk"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              风险事件 <b>4</b></button
+            ><button
+              class="stage-tab"
+              data-stage="export"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              导出任务 <b id="tab-export-count">12</b></button
+            ><button
+              class="stage-tab"
+              data-stage="access"
+              role="tab"
+              aria-selected="false"
+              type="button"
+            >
+              访问记录 <b>88</b>
+            </button>
+          </div>
+
+          <div class="work-layout">
+            <section class="card list-panel">
+              <div class="filter-strip">
+                <div class="filter-group">
+                  <label class="search-control"
+                    ><iconify-icon
+                      icon="lucide:search"
+                      aria-hidden="true"
+                    ></iconify-icon
+                    ><input
+                      class="input"
+                      id="audit-search"
+                      type="search"
+                      aria-label="搜索审计日志"
+                      placeholder="操作人 / 对象 / 事件号" /></label
+                  ><select
+                    class="select"
+                    id="module-filter"
+                    aria-label="模块筛选"
+                  >
+                    <option value="all">全部模块</option>
+                    <option value="报数审核">报数审核</option>
+                    <option value="结算中心">结算中心</option>
+                    <option value="主播资源池">主播资源池</option>
+                    <option value="系统导出">系统导出</option></select
+                  ><select
+                    class="select"
+                    id="risk-filter"
+                    aria-label="风险级别筛选"
+                  >
+                    <option value="all">全部级别</option>
+                    <option value="normal">常规</option>
+                    <option value="high">高风险</option>
+                  </select>
+                </div>
+                <span class="filter-count"
+                  ><b id="result-count">10</b> 条事件</span
+                >
+              </div>
+              <div class="table-wrap" id="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 145px">操作与事件</th>
+                      <th style="width: 100px">操作人</th>
+                      <th style="width: 110px">模块</th>
+                      <th style="width: 150px">对象</th>
+                      <th style="width: 80px">风险</th>
+                      <th style="width: 100px">时间</th>
+                      <th style="width: 78px">状态</th>
+                    </tr>
+                  </thead>
+                  <tbody id="audit-rows"></tbody>
+                </table>
+              </div>
+              <div class="mobile-list" id="mobile-list"></div>
+              <div class="empty-state" id="empty-state">
+                <div>
+                  <iconify-icon
+                    icon="lucide:scroll-text"
+                    aria-hidden="true"
+                  ></iconify-icon
+                  >当前条件下没有审计事件
+                </div>
+              </div>
+            </section>
+            <aside class="card detail-panel" id="detail-panel">
+              <div class="detail-head">
+                <div class="detail-profile">
+                  <div class="detail-avatar" id="detail-avatar">河</div>
+                  <div style="min-width: 0">
+                    <h2 class="detail-name" id="detail-name">锁定结算批次</h2>
+                    <div class="detail-sub">
+                      <span id="detail-id">AUD-1284</span> ·
+                      <span id="detail-time">14:28:36</span>
+                    </div>
+                    <div class="detail-status" id="detail-status"></div>
+                  </div>
+                </div>
+                <button
+                  class="icon-button"
+                  id="copy-event"
+                  type="button"
+                  aria-label="复制事件号"
+                >
+                  <iconify-icon
+                    icon="lucide:copy"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                </button>
+              </div>
+              <section class="detail-section">
+                <h3>
+                  <span>事件上下文</span
+                  ><small id="detail-module">结算中心</small>
+                </h3>
+                <div class="detail-grid">
+                  <div class="detail-item">
+                    <span>操作人</span><b id="detail-actor">星河</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>角色</span><b id="detail-role">组织管理员</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>目标对象</span><b id="detail-target">BAT-0713-A</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>IP 地址</span><b id="detail-ip">10.24.8.16</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>请求 ID</span><b id="detail-request">REQ-8F31A2</b>
+                  </div>
+                  <div class="detail-item">
+                    <span>设备</span><b id="detail-device">Chrome · macOS</b>
+                  </div>
+                </div>
+              </section>
+              <section class="detail-section">
+                <h3>
+                  <span>字段变更</span><small id="change-count">2 个字段</small>
+                </h3>
+                <div class="check-list" id="change-list"></div>
+              </section>
+              <section class="detail-section">
+                <h3><span>完整性链路</span><small>SHA-256 验证</small></h3>
+                <div id="audit-timeline"></div>
+              </section>
+              <section class="detail-section">
+                <h3><span>复核备注</span><small>写入新审计事件</small></h3>
+                <textarea
+                  class="textarea"
+                  id="review-note"
+                  aria-label="审计复核备注"
+                  placeholder="记录风险复核结论"
+                ></textarea>
+              </section>
+              <div class="detail-actions">
+                <button class="button" id="evidence-package" type="button">
+                  证据包</button
+                ><button class="button danger" id="flag-risk" type="button">
+                  标记风险</button
+                ><button
+                  class="button primary"
+                  id="mark-reviewed"
+                  type="button"
+                >
+                  已复核
+                </button>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="export-modal" role="presentation">
+      <form
+        class="modal"
+        id="export-form"
+        aria-labelledby="export-title"
+        novalidate
+      >
+        <div class="modal-head">
+          <h2 id="export-title">新建导出任务</h2>
+          <button
+            class="icon-button"
+            id="close-modal"
+            type="button"
+            aria-label="关闭"
+          >
+            <iconify-icon icon="lucide:x" aria-hidden="true"></iconify-icon>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-field full">
+            <label for="export-name">任务名称</label
+            ><input
+              class="input"
+              id="export-name"
+              required
+              value="7月第一周经营审计包"
+            />
+          </div>
+          <div class="modal-field">
+            <label for="export-scope">导出范围</label
+            ><select class="select" id="export-scope">
+              <option>审计日志</option>
+              <option>报数审核</option>
+              <option>结算对账</option>
+              <option>全量经营数据</option>
+            </select>
+          </div>
+          <div class="modal-field">
+            <label for="export-format">文件格式</label
+            ><select class="select" id="export-format">
+              <option>XLSX + PDF</option>
+              <option>CSV</option>
+              <option>JSONL</option>
+              <option>ZIP 证据包</option>
+            </select>
+          </div>
+          <div class="modal-field">
+            <label for="export-start">开始日期</label
+            ><input
+              class="input"
+              id="export-start"
+              type="date"
+              value="2026-07-07"
+            />
+          </div>
+          <div class="modal-field">
+            <label for="export-end">结束日期</label
+            ><input
+              class="input"
+              id="export-end"
+              type="date"
+              value="2026-07-13"
+            />
+          </div>
+          <div class="modal-field full">
+            <label for="export-policy">敏感字段策略</label
+            ><select class="select" id="export-policy">
+              <option>按组织默认策略脱敏</option>
+              <option>仅保留业务字段</option>
+              <option>管理员完整导出</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="button" id="cancel-modal" type="button">取消</button
+          ><button class="button primary" type="submit">创建导出任务</button>
+        </div>
+      </form>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite">
+      <iconify-icon icon="lucide:circle-check" aria-hidden="true"></iconify-icon
+      ><span id="toast-message">操作成功</span>
+    </div>
+
+    <script>
+      const events = [
+        {
+          id: "AUD-1284",
+          type: "change",
+          action: "锁定结算批次",
+          actor: "星河",
+          role: "组织管理员",
+          module: "结算中心",
+          target: "BAT-0713-A",
+          time: "14:28:36",
+          date: "2026-07-13",
+          ip: "10.24.8.16",
+          request: "REQ-8F31A2",
+          device: "Chrome · macOS",
+          risk: "normal",
+          status: "completed",
+          changes: [
+            ["status", "draft", "locked"],
+            ["locked_by", "--", "星河"],
+          ],
+        },
+        {
+          id: "AUD-1283",
+          type: "risk",
+          action: "修改主播结算单价",
+          actor: "林然",
+          role: "项目运营",
+          module: "结算中心",
+          target: "SET-1040",
+          time: "14:19:08",
+          date: "2026-07-13",
+          ip: "10.24.8.43",
+          request: "REQ-7C421F",
+          device: "Edge · Windows",
+          risk: "high",
+          status: "review",
+          changes: [
+            ["unit_price", "¥75", "¥90"],
+            ["payable", "¥1,050", "¥1,260"],
+          ],
+        },
+        {
+          id: "AUD-1282",
+          type: "change",
+          action: "通过报数审核",
+          actor: "王一宁",
+          role: "审核员",
+          module: "报数审核",
+          target: "REP-2034",
+          time: "14:08:22",
+          date: "2026-07-13",
+          ip: "10.24.9.12",
+          request: "REQ-1A82D0",
+          device: "Chrome · Windows",
+          risk: "normal",
+          status: "completed",
+          changes: [["status", "pending", "approved"]],
+        },
+        {
+          id: "AUD-1281",
+          type: "export",
+          action: "导出结算对账单",
+          actor: "星河",
+          role: "组织管理员",
+          module: "系统导出",
+          target: "EXP-0713-012",
+          time: "13:56:40",
+          date: "2026-07-13",
+          ip: "10.24.8.16",
+          request: "REQ-11D92C",
+          device: "Chrome · macOS",
+          risk: "normal",
+          status: "completed",
+          changes: [
+            ["scope", "--", "BAT-0713-B"],
+            ["format", "--", "XLSX"],
+          ],
+        },
+        {
+          id: "AUD-1280",
+          type: "access",
+          action: "查看主播实名信息",
+          actor: "陈森",
+          role: "项目运营",
+          module: "主播资源池",
+          target: "STR-0086",
+          time: "13:42:17",
+          date: "2026-07-13",
+          ip: "10.24.7.38",
+          request: "REQ-90EC31",
+          device: "Safari · macOS",
+          risk: "high",
+          status: "review",
+          changes: [
+            ["field", "--", "real_name"],
+            ["permission", "--", "temporary"],
+          ],
+        },
+        {
+          id: "AUD-1279",
+          type: "change",
+          action: "驳回弱证据报数",
+          actor: "王一宁",
+          role: "审核员",
+          module: "报数审核",
+          target: "REP-2029",
+          time: "13:31:04",
+          date: "2026-07-13",
+          ip: "10.24.9.12",
+          request: "REQ-A12D3E",
+          device: "Chrome · Windows",
+          risk: "normal",
+          status: "completed",
+          changes: [
+            ["status", "weak", "rejected"],
+            ["reason", "--", "截图时间不足"],
+          ],
+        },
+        {
+          id: "AUD-1278",
+          type: "risk",
+          action: "批量导出主播档案",
+          actor: "外部协作账号",
+          role: "只读协作者",
+          module: "系统导出",
+          target: "EXP-0713-011",
+          time: "12:58:39",
+          date: "2026-07-13",
+          ip: "172.18.2.91",
+          request: "REQ-44B3E9",
+          device: "Chrome · Windows",
+          risk: "high",
+          status: "failed",
+          changes: [
+            ["records", "--", "86"],
+            ["result", "--", "permission_denied"],
+          ],
+        },
+        {
+          id: "AUD-1277",
+          type: "export",
+          action: "生成报数审计证据包",
+          actor: "孙菲",
+          role: "财务复核",
+          module: "系统导出",
+          target: "EXP-0713-010",
+          time: "12:40:18",
+          date: "2026-07-13",
+          ip: "10.24.6.22",
+          request: "REQ-9C1D73",
+          device: "Chrome · macOS",
+          risk: "normal",
+          status: "processing",
+          changes: [
+            ["scope", "--", "REP-2001..2035"],
+            ["format", "--", "ZIP"],
+          ],
+        },
+        {
+          id: "AUD-1276",
+          type: "change",
+          action: "修改组织报数阈值",
+          actor: "星河",
+          role: "组织管理员",
+          module: "组织设置",
+          target: "ORG-001",
+          time: "11:52:02",
+          date: "2026-07-13",
+          ip: "10.24.8.16",
+          request: "REQ-0F129A",
+          device: "Chrome · macOS",
+          risk: "high",
+          status: "review",
+          changes: [
+            ["margin_threshold", "18%", "20%"],
+            ["evidence_level", "medium", "strict"],
+          ],
+        },
+        {
+          id: "AUD-1275",
+          type: "access",
+          action: "查看项目结算规则",
+          actor: "林然",
+          role: "项目运营",
+          module: "结算中心",
+          target: "PRJ-019",
+          time: "11:38:46",
+          date: "2026-07-13",
+          ip: "10.24.8.43",
+          request: "REQ-B8D013",
+          device: "Edge · Windows",
+          risk: "normal",
+          status: "completed",
+          changes: [["field", "--", "settlement_rule"]],
+        },
+      ];
+      const typeNames = {
+        change: "数据变更",
+        risk: "风险事件",
+        export: "导出任务",
+        access: "访问记录",
+      };
+      const statusNames = {
+        completed: "已完成",
+        review: "待复核",
+        processing: "生成中",
+        failed: "已拦截",
+      };
+      let activeStage = "all";
+      let activeId = events[0].id;
+      let toastTimer;
+      const search = document.querySelector("#audit-search");
+      const moduleFilter = document.querySelector("#module-filter");
+      const riskFilter = document.querySelector("#risk-filter");
+      function escapeHtml(value) {
+        const entities = {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#039;",
+        };
+        return String(value).replace(
+          /[&<>"']/g,
+          (character) => entities[character],
+        );
+      }
+      function visibleEvents() {
+        const query = search.value.trim().toLowerCase();
+        return events.filter(
+          (item) =>
+            (!query ||
+              [item.id, item.actor, item.action, item.target]
+                .join(" ")
+                .toLowerCase()
+                .includes(query)) &&
+            (activeStage === "all" || item.type === activeStage) &&
+            (moduleFilter.value === "all" ||
+              item.module === moduleFilter.value) &&
+            (riskFilter.value === "all" ||
+              (riskFilter.value === "high"
+                ? item.risk === "high"
+                : item.risk === "normal")),
+        );
+      }
+      function rowTemplate(item) {
+        return `<tr data-id="${item.id}" class="${item.id === activeId ? "active" : ""}"><td><div class="primary-text">${escapeHtml(item.action)}</div><div class="secondary-text">${item.id}</div></td><td><div class="person"><span class="person-avatar">${escapeHtml(item.actor.slice(0, 1))}</span><div><div class="person-name">${escapeHtml(item.actor)}</div><div class="person-sub">${escapeHtml(item.role)}</div></div></div></td><td><span class="tag gray">${escapeHtml(item.module)}</span></td><td><div class="primary-text">${escapeHtml(item.target)}</div><div class="secondary-text">${typeNames[item.type]}</div></td><td>${item.risk === "high" ? '<span class="risk-pill">高风险</span>' : '<span class="tag green">常规</span>'}</td><td><div>${item.time}</div><div class="secondary-text">${item.date}</div></td><td><span class="status-pill ${item.status}">${statusNames[item.status]}</span></td></tr>`;
+      }
+      function mobileTemplate(item) {
+        return `<article class="mobile-row ${item.id === activeId ? "active" : ""}" data-id="${item.id}" tabindex="0"><div class="mobile-row-head"><div><div class="person-name">${escapeHtml(item.action)}</div><div class="person-sub">${item.id} · ${item.time}</div></div><span class="status-pill ${item.status}">${statusNames[item.status]}</span></div><div class="mobile-row-meta"><span class="tag gray">${escapeHtml(item.module)}</span>${item.risk === "high" ? '<span class="risk-pill">高风险</span>' : '<span class="tag green">常规</span>'}</div><div class="mobile-row-stats"><div><span>操作人</span><b>${escapeHtml(item.actor)}</b></div><div><span>对象</span><b>${escapeHtml(item.target)}</b></div><div><span>类型</span><b>${typeNames[item.type]}</b></div></div></article>`;
+      }
+      function renderDetail() {
+        const item = events.find((event) => event.id === activeId);
+        if (!item) return;
+        const setText = (selector, value) =>
+          (document.querySelector(selector).textContent = value);
+        setText("#detail-avatar", item.actor.slice(0, 1));
+        setText("#detail-name", item.action);
+        setText("#detail-id", item.id);
+        setText("#detail-time", item.time);
+        setText("#detail-module", item.module);
+        setText("#detail-actor", item.actor);
+        setText("#detail-role", item.role);
+        setText("#detail-target", item.target);
+        setText("#detail-ip", item.ip);
+        setText("#detail-request", item.request);
+        setText("#detail-device", item.device);
+        setText("#change-count", `${item.changes.length} 个字段`);
+        document.querySelector("#detail-status").innerHTML =
+          `<span class="status-pill ${item.status}">${statusNames[item.status]}</span> ${item.risk === "high" ? '<span class="risk-pill">高风险</span>' : '<span class="tag green">完整性正常</span>'}`;
+        document.querySelector("#change-list").innerHTML = item.changes
+          .map(
+            ([field, before, after]) =>
+              `<div class="check-item ${item.risk === "high" ? "warn" : ""}"><iconify-icon icon="lucide:${item.risk === "high" ? "triangle-alert" : "git-compare-arrows"}" aria-hidden="true"></iconify-icon><span><b style="color:var(--text-2)">${escapeHtml(field)}</b><br><span style="color:var(--text-3)">${escapeHtml(before)} → ${escapeHtml(after)}</span></span><b>已记录</b></div>`,
+          )
+          .join("");
+        document.querySelector("#audit-timeline").innerHTML = [
+          `请求受理 · ${item.request}`,
+          `权限校验 · ${item.role}`,
+          `操作执行 · ${item.target}`,
+          `日志封存 · ${item.id}`,
+        ]
+          .map(
+            (label, index) =>
+              `<div class="log-line">${label}<time>${item.date} ${item.time} .${index + 1}24</time></div>`,
+          )
+          .join("");
+        document.querySelector("#review-note").value = item.note || "";
+        document.querySelector("#mark-reviewed").disabled =
+          item.status !== "review";
+      }
+      function render() {
+        const visible = visibleEvents();
+        if (!visible.some((item) => item.id === activeId))
+          activeId = visible[0]?.id || "";
+        document.querySelector("#audit-rows").innerHTML = visible
+          .map(rowTemplate)
+          .join("");
+        document.querySelector("#mobile-list").innerHTML = visible
+          .map(mobileTemplate)
+          .join("");
+        document.querySelector("#result-count").textContent = String(
+          visible.length,
+        );
+        document.querySelector("#empty-state").style.display = visible.length
+          ? "none"
+          : "grid";
+        document.querySelector("#table-wrap").hidden = visible.length === 0;
+        document.querySelector("#mobile-list").hidden = visible.length === 0;
+        document.querySelector("#detail-panel").hidden = visible.length === 0;
+        renderDetail();
+        document.querySelector("#risk-total").textContent = String(
+          events.filter(
+            (item) => item.risk === "high" && item.status === "review",
+          ).length,
+        );
+        document.querySelector("#tab-export-count").textContent = String(
+          events.filter((item) => item.type === "export").length + 10,
+        );
+        document.querySelector("#export-total").textContent = String(
+          events.filter((item) => item.type === "export").length + 10,
+        );
+      }
+      function showToast(message) {
+        clearTimeout(toastTimer);
+        document.querySelector("#toast-message").textContent = message;
+        document.querySelector("#toast").classList.add("show");
+        toastTimer = setTimeout(
+          () => document.querySelector("#toast").classList.remove("show"),
+          2200,
+        );
+      }
+      document
+        .querySelector("#audit-rows")
+        .addEventListener("click", (event) => {
+          const row = event.target.closest("[data-id]");
+          if (row) {
+            activeId = row.dataset.id;
+            render();
+          }
+        });
+      document
+        .querySelector("#mobile-list")
+        .addEventListener("click", (event) => {
+          const row = event.target.closest("[data-id]");
+          if (row) {
+            activeId = row.dataset.id;
+            render();
+          }
+        });
+      [search, moduleFilter, riskFilter].forEach((control) =>
+        control.addEventListener("input", render),
+      );
+      document.querySelectorAll(".stage-tab").forEach((tab) =>
+        tab.addEventListener("click", () => {
+          activeStage = tab.dataset.stage;
+          document.querySelectorAll(".stage-tab").forEach((item) => {
+            const active = item === tab;
+            item.classList.toggle("active", active);
+            item.setAttribute("aria-selected", String(active));
+          });
+          render();
+        }),
+      );
+      document
+        .querySelector("#copy-event")
+        .addEventListener("click", () => showToast(`已复制事件号 ${activeId}`));
+      document
+        .querySelector("#evidence-package")
+        .addEventListener("click", () => showToast("该事件的审计证据包已生成"));
+      document.querySelector("#flag-risk").addEventListener("click", () => {
+        const item = events.find((event) => event.id === activeId);
+        item.risk = "high";
+        item.status = "review";
+        render();
+        showToast("已标记为高风险事件");
+      });
+      document.querySelector("#mark-reviewed").addEventListener("click", () => {
+        const item = events.find((event) => event.id === activeId);
+        item.status = "completed";
+        item.note = document.querySelector("#review-note").value.trim();
+        render();
+        showToast("风险事件已完成复核");
+      });
+      document
+        .querySelector("#verify-button")
+        .addEventListener("click", () => showToast("审计链完整性校验通过"));
+      document
+        .querySelector("#policy-button")
+        .addEventListener("click", () => showToast("当前字段策略版本：v4.2"));
+      const modal = document.querySelector("#export-modal");
+      function closeModal() {
+        modal.classList.remove("open");
+        document.body.style.overflow = "";
+      }
+      document
+        .querySelector("#new-export-button")
+        .addEventListener("click", () => {
+          document.querySelector("#export-form").reset();
+          modal.classList.add("open");
+          document.body.style.overflow = "hidden";
+          requestAnimationFrame(() =>
+            document.querySelector("#export-name").focus(),
+          );
+        });
+      document
+        .querySelector("#close-modal")
+        .addEventListener("click", closeModal);
+      document
+        .querySelector("#cancel-modal")
+        .addEventListener("click", closeModal);
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal) closeModal();
+      });
+      document
+        .querySelector("#export-form")
+        .addEventListener("submit", (event) => {
+          event.preventDefault();
+          const name = document.querySelector("#export-name").value.trim();
+          if (!name) {
+            showToast("请填写任务名称");
+            return;
+          }
+          const id = `EXP-0713-${String(events.filter((item) => item.type === "export").length + 13).padStart(3, "0")}`;
+          events.unshift({
+            id,
+            type: "export",
+            action: name,
+            actor: "星河",
+            role: "组织管理员",
+            module: "系统导出",
+            target: id,
+            time: "14:35:10",
+            date: "2026-07-13",
+            ip: "10.24.8.16",
+            request: `REQ-${Date.now().toString(16).slice(-6).toUpperCase()}`,
+            device: "Chrome · macOS",
+            risk: "normal",
+            status: "processing",
+            changes: [
+              ["scope", "--", document.querySelector("#export-scope").value],
+              ["format", "--", document.querySelector("#export-format").value],
+            ],
+          });
+          activeId = id;
+          activeStage = "export";
+          document.querySelectorAll(".stage-tab").forEach((tab) => {
+            const active = tab.dataset.stage === "export";
+            tab.classList.toggle("active", active);
+            tab.setAttribute("aria-selected", String(active));
+          });
+          closeModal();
+          render();
+          showToast("导出任务已创建");
+        });
+      render();
+    </script>
+  </body>
+</html>

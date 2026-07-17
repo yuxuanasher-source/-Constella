@@ -331,15 +331,17 @@ export async function executeDashboardAiChat(
         attachmentCount: attachments.length,
         attachmentNames: attachments.map((attachment) => attachment.name),
       };
-      await options.onContextReady?.({
-        messages,
-        attachments,
-        mode: chatMode,
-        primaryProvider,
-        lastUserMessage,
-        responseMetadata,
-        invocationMetadata,
-      });
+      await options.onContextReady?.(
+        toPersistableConversationGatewayContext({
+          messages,
+          attachments,
+          mode: chatMode,
+          primaryProvider,
+          lastUserMessage,
+          responseMetadata,
+          invocationMetadata,
+        }),
+      );
     }
 
     const reasoning = buildReasoningConfig(chatMode);
@@ -467,6 +469,24 @@ type ChatRequestContext = {
   responseMetadata: ChatResponseMetadata;
   invocationMetadata: Record<string, unknown>;
 };
+
+function toPersistableConversationGatewayContext(
+  context: ConversationGatewayContext,
+): ConversationGatewayContext {
+  // Dashboard metadata can contain undefined optionals or shared references.
+  // Messages and attachments are already sanitized JSON; keeping them outside
+  // this round trip avoids another copy of potentially large attachment data.
+  const metadata = JSON.parse(
+    JSON.stringify({
+      responseMetadata: context.responseMetadata,
+      invocationMetadata: context.invocationMetadata,
+    }),
+  ) as Pick<
+    ConversationGatewayContext,
+    "responseMetadata" | "invocationMetadata"
+  >;
+  return { ...context, ...metadata };
+}
 
 function shouldStreamResponse(request: Request, streamFlag: unknown): boolean {
   if (streamFlag === true) {

@@ -96,6 +96,7 @@ describe("runAiToolQuery", () => {
         "predict_evidence_color",
         "project_review_summary",
         "query_streamer_profile",
+        "streamer_project_review",
         "streamer_diagnosis",
         "xingyao_org_diagnosis",
       ].sort(),
@@ -211,6 +212,172 @@ describe("runAiToolQuery", () => {
         }),
       ]),
     );
+  });
+
+  it("runs streamer project review through the audited read-only AI tool path", async () => {
+    const { client, inserts } = createClient();
+
+    const result = await runAiToolQuery({
+      client,
+      actor: {
+        userId: "user-ops",
+        name: "Ops Manager",
+        role: "ops_manager",
+        organizationId: "org-1",
+      },
+      toolName: "streamer_project_review",
+      input: {
+        profileInput: {
+          streamer: { id: "streamer-1", displayName: "阿星" },
+          project: { id: "project-1", name: "传奇复古", productType: "legend" },
+          tasks: [
+            {
+              id: "task-1",
+              plannedStartAt: "2026-07-01T10:00:00.000Z",
+              plannedEndAt: "2026-07-01T12:00:00.000Z",
+              status: "completed",
+              systemDuration: 120,
+            },
+            {
+              id: "task-2",
+              plannedStartAt: "2026-07-02T10:00:00.000Z",
+              plannedEndAt: "2026-07-02T12:00:00.000Z",
+              status: "completed",
+              systemDuration: 110,
+            },
+          ],
+          reports: [
+            {
+              id: "report-1",
+              taskId: "task-1",
+              status: "approved",
+              settlementDuration: 120,
+              viewers: 2400,
+              pcu: 320,
+              acu: 90,
+              evidenceLevel: "green",
+              riskFlags: [],
+            },
+            {
+              id: "report-2",
+              taskId: "task-2",
+              status: "pending_review",
+              settlementDuration: 110,
+              viewers: 1800,
+              pcu: 260,
+              acu: 70,
+              evidenceLevel: "yellow",
+              riskFlags: ["duration_divergence"],
+            },
+          ],
+          recordings: [
+            {
+              id: "rec-1",
+              status: "approved",
+              adopted: true,
+              rejectionReasons: [],
+              durationSeconds: 1800,
+            },
+          ],
+          externalReferences: [
+            {
+              id: "market-legend-1",
+              title: "传奇复古类直播间强调长线留存和节奏稳定",
+              sourceName: "行业观察",
+              sourceUrl: "https://example.com/legend-live",
+              retrievedAt: "2026-07-16T10:00:00.000Z",
+              summary: "同类产品通常关注平均在线、讲解节奏和录屏可复用性。",
+              productType: "legend",
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      toolName: "streamer_project_review",
+      mode: "deterministic",
+      output: {
+        profile: {
+          participation: {
+            effectiveLiveDays: 2,
+          },
+        },
+        agentOutput: {
+          reviewDraft: {
+            summary: expect.stringContaining("阿星在传奇复古项目已形成 2 个有效直播日"),
+            externalReference: {
+              status: "provided",
+              summary: "已接入 1 条外部参考，仅作为同类产品/同行表现参照。",
+              references: [
+                expect.objectContaining({
+                  id: "market-legend-1",
+                  sourceName: "行业观察",
+                }),
+              ],
+            },
+          },
+          pendingDraft: {
+            draftType: "streamer_project_review",
+            status: "pending",
+            targetStateMachine: "streamer_project_review",
+            targetState: "published",
+          },
+          facts: expect.arrayContaining([
+            expect.objectContaining({
+              sourceTool: "streamer_project_profile",
+            }),
+          ]),
+        },
+      },
+    });
+    expect(inserts.ai_tool_invocations).toEqual([
+      expect.objectContaining({
+        tool_name: "streamer_project_review",
+        read_only: true,
+        allowed: true,
+        status: "succeeded",
+      }),
+    ]);
+  });
+
+  it("returns a market reference request when streamer project review has no external references", async () => {
+    const { client } = createClient();
+
+    const result = await runAiToolQuery({
+      client,
+      actor: {
+        userId: "user-ops",
+        name: "Ops Manager",
+        role: "ops_manager",
+        organizationId: "org-1",
+      },
+      toolName: "streamer_project_review",
+      input: {
+        profileInput: {
+          streamer: { id: "streamer-1", displayName: "阿星" },
+          project: { id: "project-1", name: "传奇复古", productType: "legend" },
+          tasks: [],
+          reports: [],
+          recordings: [],
+        },
+      },
+    });
+
+    expect(result.output.agentOutput).toMatchObject({
+      reviewDraft: {
+        marketReferenceRequest: {
+          status: "needed",
+          queries: [
+            expect.objectContaining({ channel: "knowledge_base" }),
+            expect.objectContaining({ channel: "web_search" }),
+          ],
+          guardrails: expect.arrayContaining([
+            "外部参考不能覆盖内部排班、报数、录屏和结算事实。",
+          ]),
+        },
+      },
+    });
   });
 
   it("filters streamer diagnosis DTOs so streamer AI cannot see MCN finance", async () => {

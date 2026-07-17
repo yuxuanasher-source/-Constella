@@ -1,0 +1,1504 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>知识库 · 经营舱</title>
+    <script src="https://code.iconify.design/iconify-icon/3.0.0/iconify-icon.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+    <link rel="stylesheet" href="./operations.css" />
+    <link rel="stylesheet" href="./sidebar.css" />
+    <link rel="stylesheet" href="./typography.css" />
+  </head>
+  <body class="knowledge-base-page">
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="../brand/ops-mascot-logo.png" alt="经营舱品牌标识" />
+          <div>
+            <div class="brand-title">经营舱</div>
+            <div class="brand-subtitle">MCN Operations Suite</div>
+          </div>
+        </div>
+        <div class="nav-scroll">
+          <nav class="nav-group" aria-label="工作台导航">
+            <div class="nav-title">工作台</div>
+            <a class="nav-item" href="./index.html">
+              <iconify-icon
+                icon="lucide:layout-dashboard"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span>经营总览</span><span class="nav-badge">12</span>
+            </a>
+            <a class="nav-item" href="./projects.html">
+              <iconify-icon
+                icon="lucide:folder-kanban"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span>项目管理</span><span class="nav-badge">19</span>
+            </a>
+            <a class="nav-item" href="./streamers.html">
+              <iconify-icon
+                icon="lucide:users"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span>主播资源池</span><span class="nav-badge">86</span>
+            </a>
+            <a class="nav-item" href="./admissions.html">
+              <iconify-icon
+                icon="lucide:circle-play"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span>选播准入</span><span class="nav-badge">27</span>
+            </a>
+            <a class="nav-item" href="./schedules.html">
+              <iconify-icon
+                icon="lucide:calendar-days"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span>排班直播</span><span class="nav-badge">8</span>
+            </a>
+          </nav>
+          <nav class="nav-group" aria-label="财务与治理导航">
+            <div class="nav-title">财务与治理</div>
+            <a class="nav-item" href="./reports.html">
+              <iconify-icon
+                icon="lucide:clipboard-check"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span>报数审核</span><span class="nav-badge">35</span>
+            </a>
+            <a class="nav-item" href="./settlements.html">
+              <iconify-icon
+                icon="lucide:wallet-cards"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span>结算中心</span><span class="nav-badge">5</span>
+            </a>
+            <a class="nav-item" href="./audit.html">
+              <iconify-icon
+                icon="lucide:file-search"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span>审计与导出</span><span class="nav-badge">4</span>
+            </a>
+            <a class="nav-item" href="./ai-workbench.html">
+              <iconify-icon
+                icon="lucide:sparkles"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span>星耀 AI 作战台</span><span class="nav-badge">AI</span>
+            </a>
+            <a
+              class="nav-item active"
+              href="./knowledge-base.html"
+              aria-current="page"
+            >
+              <iconify-icon
+                icon="lucide:library-big"
+                aria-hidden="true"
+              ></iconify-icon>
+              <span>知识库</span><span class="nav-badge">48</span>
+            </a>
+          </nav>
+        </div>
+        <div class="sidebar-footer">
+          <div class="side-note">
+            <strong>知识权限已同步</strong>
+            42 篇资料可供 AI 安全引用，6 篇仅限人工查阅。
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="breadcrumb">
+            <span>经营舱</span><span>/</span><b>知识库</b>
+          </div>
+          <div class="top-actions">
+            <button class="icon-button" type="button" aria-label="通知">
+              <iconify-icon
+                icon="lucide:bell"
+                aria-hidden="true"
+              ></iconify-icon>
+            </button>
+            <button class="icon-button" type="button" aria-label="帮助">
+              <iconify-icon
+                icon="lucide:circle-help"
+                aria-hidden="true"
+              ></iconify-icon>
+            </button>
+            <button class="avatar-button" type="button" aria-label="账号菜单">
+              河
+            </button>
+          </div>
+        </header>
+
+        <div class="content">
+          <section class="page-head">
+            <div class="page-title">
+              <h1>知识库</h1>
+              <p>最近数据更新于 14:32。</p>
+            </div>
+            <div class="page-actions">
+              <button class="button" id="import-button" type="button">
+                <iconify-icon
+                  icon="lucide:upload"
+                  aria-hidden="true"
+                ></iconify-icon>
+                导入资料
+              </button>
+              <button
+                class="button primary"
+                id="new-document-button"
+                type="button"
+              >
+                <iconify-icon
+                  icon="lucide:plus"
+                  aria-hidden="true"
+                ></iconify-icon>
+                新建文档
+              </button>
+            </div>
+          </section>
+
+          <section
+            class="card document-editor-workspace"
+            id="content-editor"
+            hidden
+          >
+            <header class="document-editor-head">
+              <button
+                class="icon-button"
+                id="exit-content-editor"
+                type="button"
+                aria-label="返回知识库"
+                title="返回知识库"
+              >
+                <iconify-icon
+                  icon="lucide:arrow-left"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <div class="document-title-field">
+                <input
+                  id="content-title"
+                  aria-label="文档标题"
+                  autocomplete="off"
+                />
+                <div>
+                  <span id="content-document-id"></span>
+                  <span class="editor-save-state" id="editor-save-state"
+                    >已保存</span
+                  >
+                </div>
+              </div>
+              <div class="document-editor-actions">
+                <button class="button" id="toggle-preview-button" type="button">
+                  <iconify-icon
+                    icon="lucide:eye"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  预览
+                </button>
+                <button
+                  class="button primary"
+                  id="save-content-button"
+                  type="button"
+                >
+                  <iconify-icon
+                    icon="lucide:save"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  保存文档
+                </button>
+              </div>
+            </header>
+
+            <div
+              class="markdown-toolbar"
+              id="markdown-toolbar"
+              role="toolbar"
+              aria-label="Markdown 格式工具"
+            >
+              <button
+                class="icon-button"
+                data-command="undo"
+                type="button"
+                aria-label="撤销"
+                title="撤销"
+              >
+                <iconify-icon
+                  icon="lucide:undo-2"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <button
+                class="icon-button"
+                data-command="redo"
+                type="button"
+                aria-label="重做"
+                title="重做"
+              >
+                <iconify-icon
+                  icon="lucide:redo-2"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <span class="toolbar-divider" aria-hidden="true"></span>
+              <select
+                class="select block-style-select"
+                id="block-style"
+                aria-label="段落样式"
+              >
+                <option value="">正文</option>
+                <option value="# ">标题 1</option>
+                <option value="## ">标题 2</option>
+                <option value="### ">标题 3</option>
+              </select>
+              <span class="toolbar-divider" aria-hidden="true"></span>
+              <button
+                class="icon-button"
+                data-command="bold"
+                type="button"
+                aria-label="加粗"
+                title="加粗"
+              >
+                <iconify-icon
+                  icon="lucide:bold"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <button
+                class="icon-button"
+                data-command="italic"
+                type="button"
+                aria-label="斜体"
+                title="斜体"
+              >
+                <iconify-icon
+                  icon="lucide:italic"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <button
+                class="icon-button"
+                data-command="strike"
+                type="button"
+                aria-label="删除线"
+                title="删除线"
+              >
+                <iconify-icon
+                  icon="lucide:strikethrough"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <button
+                class="icon-button"
+                data-command="inline-code"
+                type="button"
+                aria-label="行内代码"
+                title="行内代码"
+              >
+                <iconify-icon
+                  icon="lucide:code-2"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <button
+                class="icon-button"
+                data-command="link"
+                type="button"
+                aria-label="插入链接"
+                title="插入链接"
+              >
+                <iconify-icon
+                  icon="lucide:link"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <span class="toolbar-divider" aria-hidden="true"></span>
+              <button
+                class="icon-button"
+                data-command="bullet-list"
+                type="button"
+                aria-label="无序列表"
+                title="无序列表"
+              >
+                <iconify-icon
+                  icon="lucide:list"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <button
+                class="icon-button"
+                data-command="ordered-list"
+                type="button"
+                aria-label="有序列表"
+                title="有序列表"
+              >
+                <iconify-icon
+                  icon="lucide:list-ordered"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <button
+                class="icon-button"
+                data-command="task-list"
+                type="button"
+                aria-label="任务列表"
+                title="任务列表"
+              >
+                <iconify-icon
+                  icon="lucide:list-checks"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <button
+                class="icon-button"
+                data-command="quote"
+                type="button"
+                aria-label="引用"
+                title="引用"
+              >
+                <iconify-icon
+                  icon="lucide:quote"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+              <button
+                class="icon-button"
+                data-command="code-block"
+                type="button"
+                aria-label="代码块"
+                title="代码块"
+              >
+                <iconify-icon
+                  icon="lucide:square-code"
+                  aria-hidden="true"
+                ></iconify-icon>
+              </button>
+            </div>
+
+            <div class="document-editor-body">
+              <aside class="editor-outline-panel">
+                <div class="editor-outline-head">文档大纲</div>
+                <nav id="content-outline" aria-label="文档大纲"></nav>
+              </aside>
+              <div class="editor-page-wrap">
+                <textarea
+                  class="markdown-editor"
+                  id="markdown-editor"
+                  aria-label="Markdown 文档正文"
+                  spellcheck="false"
+                ></textarea>
+                <article
+                  class="markdown-preview"
+                  id="markdown-preview"
+                  hidden
+                ></article>
+              </div>
+            </div>
+
+            <footer class="document-editor-foot">
+              <span>Markdown</span>
+              <span id="editor-statistics">0 字符 · 0 行</span>
+            </footer>
+          </section>
+
+          <div class="knowledge-layout" id="knowledge-layout">
+            <aside class="card library-panel">
+              <div class="section-head">
+                <h2>知识分类</h2>
+                <span>6 个分类</span>
+              </div>
+              <div class="library-list" id="library-list">
+                <button
+                  class="library-item active"
+                  data-category="全部知识"
+                  type="button"
+                >
+                  <iconify-icon
+                    icon="lucide:library"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  <span>全部知识</span><small>48</small>
+                </button>
+                <button
+                  class="library-item"
+                  data-category="项目制度"
+                  type="button"
+                >
+                  <iconify-icon
+                    icon="lucide:folder-kanban"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  <span>项目制度</span><small>12</small>
+                </button>
+                <button
+                  class="library-item"
+                  data-category="主播运营"
+                  type="button"
+                >
+                  <iconify-icon
+                    icon="lucide:radio"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  <span>主播运营</span><small>9</small>
+                </button>
+                <button
+                  class="library-item"
+                  data-category="报数与结算"
+                  type="button"
+                >
+                  <iconify-icon
+                    icon="lucide:receipt-text"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  <span>报数与结算</span><small>14</small>
+                </button>
+                <button
+                  class="library-item"
+                  data-category="排班与准入"
+                  type="button"
+                >
+                  <iconify-icon
+                    icon="lucide:calendar-check"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  <span>排班与准入</span><small>8</small>
+                </button>
+                <button
+                  class="library-item"
+                  data-category="品牌素材"
+                  type="button"
+                >
+                  <iconify-icon
+                    icon="lucide:palette"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  <span>品牌素材</span><small>5</small>
+                </button>
+              </div>
+              <div class="library-usage">
+                <div class="library-usage-head">
+                  <span>存储用量</span><b>6.8 GB</b>
+                </div>
+                <div class="usage-bar"><span></span></div>
+                <p>组织容量 10 GB，近 30 天新增 1.2 GB。</p>
+              </div>
+            </aside>
+
+            <section class="card document-panel">
+              <div class="section-head">
+                <h2 id="document-heading">全部知识</h2>
+                <span id="document-count">8 条匹配</span>
+              </div>
+              <div class="knowledge-toolbar">
+                <label class="search-control">
+                  <iconify-icon
+                    icon="lucide:search"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  <input
+                    class="input"
+                    id="knowledge-search"
+                    type="search"
+                    placeholder="搜索标题、标签或负责人"
+                  />
+                </label>
+                <select class="select" id="type-filter" aria-label="文档类型">
+                  <option value="全部类型">全部类型</option>
+                  <option value="规范">规范</option>
+                  <option value="手册">手册</option>
+                  <option value="模板">模板</option>
+                  <option value="复盘">复盘</option>
+                </select>
+                <select class="select" id="status-filter" aria-label="发布状态">
+                  <option value="全部状态">全部状态</option>
+                  <option value="已发布">已发布</option>
+                  <option value="待复核">待复核</option>
+                  <option value="草稿">草稿</option>
+                </select>
+              </div>
+
+              <div class="table-wrap knowledge-table-wrap">
+                <table class="data-table knowledge-table">
+                  <thead>
+                    <tr>
+                      <th>文档</th>
+                      <th>分类</th>
+                      <th>状态</th>
+                      <th>最近更新</th>
+                      <th>负责人</th>
+                    </tr>
+                  </thead>
+                  <tbody id="knowledge-rows"></tbody>
+                </table>
+              </div>
+              <div
+                class="knowledge-mobile-list"
+                id="knowledge-mobile-list"
+              ></div>
+              <div class="empty-state" id="knowledge-empty">
+                <div>
+                  <iconify-icon
+                    icon="lucide:file-search"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  没有找到符合条件的知识文档
+                </div>
+              </div>
+            </section>
+
+            <aside class="card knowledge-preview" id="knowledge-preview">
+              <div class="preview-head preview-view-part">
+                <div class="preview-heading">
+                  <span class="preview-icon">
+                    <iconify-icon
+                      id="preview-icon"
+                      icon="lucide:book-open-check"
+                      aria-hidden="true"
+                    ></iconify-icon>
+                  </span>
+                  <div>
+                    <h2 id="preview-title"></h2>
+                    <p id="preview-id"></p>
+                  </div>
+                </div>
+                <div class="preview-tags" id="preview-tags"></div>
+                <div class="preview-actions">
+                  <button
+                    class="button primary"
+                    id="reference-button"
+                    type="button"
+                  >
+                    加入 AI 上下文
+                  </button>
+                  <button class="button" id="edit-button" type="button">
+                    编辑
+                  </button>
+                  <button
+                    class="icon-button"
+                    id="more-button"
+                    type="button"
+                    aria-label="更多操作"
+                  >
+                    <iconify-icon
+                      icon="lucide:ellipsis"
+                      aria-hidden="true"
+                    ></iconify-icon>
+                  </button>
+                </div>
+              </div>
+              <div class="preview-section preview-view-part">
+                <h3>文档信息</h3>
+                <div class="preview-meta">
+                  <div><span>版本</span><b id="preview-version"></b></div>
+                  <div><span>负责人</span><b id="preview-owner"></b></div>
+                  <div>
+                    <span>可见范围</span><b id="preview-visibility"></b>
+                  </div>
+                  <div><span>来源</span><b id="preview-source"></b></div>
+                </div>
+              </div>
+              <div class="preview-section preview-view-part">
+                <h3>摘要</h3>
+                <p id="preview-abstract"></p>
+              </div>
+              <div class="preview-section preview-view-part">
+                <h3>目录</h3>
+                <ol class="outline-list" id="preview-outline"></ol>
+              </div>
+              <div class="preview-section preview-view-part">
+                <div class="ai-reference">
+                  <iconify-icon
+                    icon="lucide:sparkles"
+                    aria-hidden="true"
+                  ></iconify-icon>
+                  <div>
+                    <strong>AI 引用状态</strong>
+                    <span id="preview-ai-reference"></span>
+                  </div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <input
+      id="file-input"
+      type="file"
+      accept=".pdf,.doc,.docx,.xls,.xlsx,.md,.txt"
+      hidden
+    />
+
+    <div class="modal-backdrop" id="document-modal" role="presentation">
+      <form
+        class="modal"
+        id="document-form"
+        aria-labelledby="document-modal-title"
+        novalidate
+      >
+        <div class="modal-head">
+          <h2 id="document-modal-title">新建知识文档</h2>
+          <button
+            class="icon-button"
+            id="close-modal-button"
+            type="button"
+            aria-label="关闭"
+          >
+            <iconify-icon icon="lucide:x" aria-hidden="true"></iconify-icon>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="modal-field full">
+            <label for="document-title-input">文档名称</label>
+            <input
+              class="input"
+              id="document-title-input"
+              required
+              placeholder="输入文档名称"
+            />
+          </div>
+          <div class="modal-field">
+            <label for="document-category-input">知识分类</label>
+            <select class="select" id="document-category-input">
+              <option>项目制度</option>
+              <option>主播运营</option>
+              <option>报数与结算</option>
+              <option>排班与准入</option>
+              <option>品牌素材</option>
+            </select>
+          </div>
+          <div class="modal-field">
+            <label for="document-type-input">文档类型</label>
+            <select class="select" id="document-type-input">
+              <option>规范</option>
+              <option>手册</option>
+              <option>模板</option>
+              <option>复盘</option>
+            </select>
+          </div>
+          <div class="modal-field full">
+            <label for="document-abstract-input">摘要</label>
+            <textarea
+              class="textarea"
+              id="document-abstract-input"
+              placeholder="简要概括适用范围和关键内容"
+            ></textarea>
+          </div>
+          <div class="modal-field full">
+            <label>附件</label>
+            <button class="drop-zone" id="modal-upload-button" type="button">
+              <span>
+                <iconify-icon
+                  icon="lucide:cloud-upload"
+                  aria-hidden="true"
+                ></iconify-icon>
+                支持 PDF、Word、Excel、Markdown，单个文件不超过 50 MB
+              </span>
+            </button>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="button" id="cancel-modal-button" type="button">
+            取消
+          </button>
+          <button class="button primary" type="submit">保存为草稿</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite">
+      <iconify-icon
+        icon="lucide:circle-check"
+        aria-hidden="true"
+      ></iconify-icon>
+      <span id="toast-message"></span>
+    </div>
+
+    <script>
+      const documents = [
+        {
+          id: "KB-042",
+          title: "直播项目报数与弱证据处理规范",
+          category: "报数与结算",
+          type: "规范",
+          status: "已发布",
+          version: "v3.2",
+          owner: "林晓",
+          updated: "2026-07-13 14:26",
+          source: "运营制度中心",
+          visibility: "全组织",
+          tags: ["报数", "弱证据", "结算前置"],
+          abstract:
+            "统一直播报数、录屏与平台截图的证据口径，明确弱证据识别、人工复核和结算前置条件。",
+          sections: [
+            "适用范围与角色职责",
+            "有效证据判断标准",
+            "弱证据升级与复核",
+            "通过数据进入结算流程",
+          ],
+          aiRefs: 28,
+        },
+        {
+          id: "KB-039",
+          title: "主播排班冲突处理手册",
+          category: "排班与准入",
+          type: "手册",
+          status: "已发布",
+          version: "v2.4",
+          owner: "顾宁",
+          updated: "2026-07-13 11:08",
+          source: "直播运营组",
+          visibility: "运营与项目组",
+          tags: ["排班", "冲突", "补位"],
+          abstract:
+            "覆盖档期重叠、跨平台冲突、临时缺席与项目补位的判断优先级和操作步骤。",
+          sections: [
+            "冲突等级定义",
+            "项目优先级判定",
+            "主播与项目沟通",
+            "补位与留痕要求",
+          ],
+          aiRefs: 19,
+        },
+        {
+          id: "KB-037",
+          title: "王者荣耀项目选播评分卡",
+          category: "排班与准入",
+          type: "模板",
+          status: "待复核",
+          version: "v1.8",
+          owner: "周屿",
+          updated: "2026-07-12 18:42",
+          source: "选播评审组",
+          visibility: "项目组",
+          tags: ["选播", "评分卡", "王者荣耀"],
+          abstract:
+            "用于王者荣耀代播项目的候选主播初筛，包含画面、表达、操作、品牌安全与设备稳定性评分项。",
+          sections: [
+            "基础准入项",
+            "内容表现评分",
+            "品牌安全检查",
+            "厂家意见记录",
+          ],
+          aiRefs: 7,
+        },
+        {
+          id: "KB-034",
+          title: "项目结算规则配置清单",
+          category: "报数与结算",
+          type: "模板",
+          status: "已发布",
+          version: "v2.1",
+          owner: "秦越",
+          updated: "2026-07-12 15:16",
+          source: "财务运营组",
+          visibility: "财务与项目负责人",
+          tags: ["结算", "规则", "毛利"],
+          abstract:
+            "项目立项阶段使用的结算规则配置模板，覆盖主播单价、厂家计价、异常扣除和毛利预警。",
+          sections: [
+            "基础计价方式",
+            "异常扣除规则",
+            "毛利预警阈值",
+            "审批与生效",
+          ],
+          aiRefs: 22,
+        },
+        {
+          id: "KB-031",
+          title: "主播合作等级与标签规范",
+          category: "主播运营",
+          type: "规范",
+          status: "已发布",
+          version: "v4.0",
+          owner: "叶青",
+          updated: "2026-07-11 16:30",
+          source: "主播运营组",
+          visibility: "全组织",
+          tags: ["主播", "等级", "标签"],
+          abstract:
+            "定义主播合作等级、能力标签、履约表现和风险标记的统一维护口径。",
+          sections: [
+            "合作等级定义",
+            "能力标签维护",
+            "履约分计算",
+            "风险状态更新",
+          ],
+          aiRefs: 31,
+        },
+        {
+          id: "KB-027",
+          title: "项目立项与变更审批制度",
+          category: "项目制度",
+          type: "规范",
+          status: "已发布",
+          version: "v3.6",
+          owner: "沈言",
+          updated: "2026-07-10 10:24",
+          source: "项目管理办公室",
+          visibility: "全组织",
+          tags: ["立项", "审批", "变更"],
+          abstract:
+            "明确项目立项、合同信息、结算规则和执行范围变更时的审批层级与审计要求。",
+          sections: [
+            "立项必填信息",
+            "审批角色与时限",
+            "项目变更范围",
+            "关闭与归档",
+          ],
+          aiRefs: 24,
+        },
+        {
+          id: "KB-019",
+          title: "星耀传媒视觉素材使用手册",
+          category: "品牌素材",
+          type: "手册",
+          status: "已发布",
+          version: "v1.5",
+          owner: "唐梨",
+          updated: "2026-07-09 17:48",
+          source: "品牌中心",
+          visibility: "全组织",
+          tags: ["品牌", "Logo", "物料"],
+          abstract:
+            "包含组织标识、品牌字标、直播间角标和项目分享页素材的使用边界。",
+          sections: ["品牌标识", "色彩与字体", "直播物料", "禁用示例"],
+          aiRefs: 13,
+        },
+        {
+          id: "KB-011",
+          title: "暑期代播项目经营复盘",
+          category: "项目制度",
+          type: "复盘",
+          status: "草稿",
+          version: "v0.7",
+          owner: "星河",
+          updated: "2026-07-08 20:05",
+          source: "项目运营组",
+          visibility: "仅项目组",
+          tags: ["复盘", "履约", "毛利"],
+          abstract:
+            "整理暑期代播项目在主播供给、排班、报数和毛利控制上的阶段性问题与行动项。",
+          sections: [
+            "目标与完成情况",
+            "供给与排班问题",
+            "报数异常分析",
+            "下阶段行动项",
+          ],
+          aiRefs: 0,
+        },
+      ];
+
+      const iconByType = {
+        规范: "lucide:book-open-check",
+        手册: "lucide:notebook-tabs",
+        模板: "lucide:layout-template",
+        复盘: "lucide:file-chart-column",
+      };
+      const statusClass = {
+        已发布: "approved",
+        待复核: "review",
+        草稿: "draft",
+      };
+      let activeCategory = "全部知识";
+      let activeDocumentId = documents[0].id;
+      let toastTimer;
+
+      const rows = document.querySelector("#knowledge-rows");
+      const mobileList = document.querySelector("#knowledge-mobile-list");
+      const emptyState = document.querySelector("#knowledge-empty");
+      const searchInput = document.querySelector("#knowledge-search");
+      const typeFilter = document.querySelector("#type-filter");
+      const statusFilter = document.querySelector("#status-filter");
+      const modal = document.querySelector("#document-modal");
+      const fileInput = document.querySelector("#file-input");
+      const pageHead = document.querySelector(".page-head");
+      const knowledgeLayout = document.querySelector("#knowledge-layout");
+      const contentEditor = document.querySelector("#content-editor");
+      const contentTitle = document.querySelector("#content-title");
+      const markdownEditor = document.querySelector("#markdown-editor");
+      const markdownPreview = document.querySelector("#markdown-preview");
+      const editorSaveState = document.querySelector("#editor-save-state");
+      const contentOutline = document.querySelector("#content-outline");
+      let editorDirty = false;
+      let previewMode = false;
+      let editorHistory = [];
+      let editorHistoryIndex = -1;
+      let savedEditorContent = "";
+      let savedEditorTitle = "";
+
+      function escapeHtml(value) {
+        const entities = {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#039;",
+        };
+        return String(value).replace(
+          /[&<>"']/g,
+          (character) => entities[character],
+        );
+      }
+
+      function showToast(message) {
+        clearTimeout(toastTimer);
+        document.querySelector("#toast-message").textContent = message;
+        document.querySelector("#toast").classList.add("show");
+        toastTimer = setTimeout(
+          () => document.querySelector("#toast").classList.remove("show"),
+          2200,
+        );
+      }
+
+      function filteredDocuments() {
+        const query = searchInput.value.trim().toLowerCase();
+        return documents.filter((documentItem) => {
+          const categoryMatches =
+            activeCategory === "全部知识" ||
+            documentItem.category === activeCategory;
+          const typeMatches =
+            typeFilter.value === "全部类型" ||
+            documentItem.type === typeFilter.value;
+          const statusMatches =
+            statusFilter.value === "全部状态" ||
+            documentItem.status === statusFilter.value;
+          const haystack = [
+            documentItem.title,
+            documentItem.owner,
+            ...documentItem.tags,
+          ]
+            .join(" ")
+            .toLowerCase();
+          return (
+            categoryMatches &&
+            typeMatches &&
+            statusMatches &&
+            haystack.includes(query)
+          );
+        });
+      }
+
+      function documentRow(documentItem) {
+        return `<tr class="${documentItem.id === activeDocumentId ? "active" : ""}" data-doc="${documentItem.id}" tabindex="0">
+          <td><div class="document-name"><span class="document-icon"><iconify-icon icon="${iconByType[documentItem.type]}" aria-hidden="true"></iconify-icon></span><div class="document-copy"><strong>${escapeHtml(documentItem.title)}</strong><span>${documentItem.id} · ${documentItem.version}</span></div></div></td>
+          <td><span class="tag blue">${escapeHtml(documentItem.category)}</span></td>
+          <td><span class="status-pill ${statusClass[documentItem.status]}">${documentItem.status}</span></td>
+          <td><span class="primary-text">${documentItem.updated.slice(5, 16)}</span></td>
+          <td>${escapeHtml(documentItem.owner)}</td>
+        </tr>`;
+      }
+
+      function mobileRow(documentItem) {
+        return `<button class="knowledge-mobile-row ${documentItem.id === activeDocumentId ? "active" : ""}" data-doc="${documentItem.id}" type="button">
+          <div class="document-name"><span class="document-icon"><iconify-icon icon="${iconByType[documentItem.type]}" aria-hidden="true"></iconify-icon></span><div class="document-copy"><strong>${escapeHtml(documentItem.title)}</strong><span>${documentItem.id} · ${documentItem.version} · ${escapeHtml(documentItem.owner)}</span></div></div>
+          <div class="knowledge-mobile-meta"><span class="tag blue">${escapeHtml(documentItem.category)}</span><span class="status-pill ${statusClass[documentItem.status]}">${documentItem.status}</span><span class="secondary-text">${documentItem.updated}</span></div>
+        </button>`;
+      }
+
+      function updatePreview(documentItem) {
+        if (!documentItem) return;
+        document
+          .querySelector("#preview-icon")
+          .setAttribute("icon", iconByType[documentItem.type]);
+        document.querySelector("#preview-title").textContent =
+          documentItem.title;
+        document.querySelector("#preview-id").textContent =
+          `${documentItem.id} · 更新于 ${documentItem.updated}`;
+        document.querySelector("#preview-tags").innerHTML = documentItem.tags
+          .map((tag) => `<span class="tag gray">${escapeHtml(tag)}</span>`)
+          .join("");
+        document.querySelector("#preview-version").textContent =
+          documentItem.version;
+        document.querySelector("#preview-owner").textContent =
+          documentItem.owner;
+        document.querySelector("#preview-visibility").textContent =
+          documentItem.visibility;
+        document.querySelector("#preview-source").textContent =
+          documentItem.source;
+        document.querySelector("#preview-abstract").textContent =
+          documentItem.abstract;
+        document.querySelector("#preview-outline").innerHTML =
+          documentItem.sections
+            .map(
+              (section, index) =>
+                `<li><span>${index + 1}</span>${escapeHtml(section)}</li>`,
+            )
+            .join("");
+        document.querySelector("#preview-ai-reference").textContent =
+          documentItem.status !== "已发布"
+            ? `当前状态为${documentItem.status}，暂未开放给 AI 引用。`
+            : documentItem.aiRefs
+              ? `已被 AI 作战台引用 ${documentItem.aiRefs} 次，引用权限正常。`
+              : "已发布，等待首次 AI 引用。";
+        document.querySelector("#reference-button").disabled =
+          documentItem.status !== "已发布";
+      }
+
+      function defaultMarkdown(documentItem) {
+        const sections = documentItem.sections
+          .map(
+            (section, index) =>
+              `## ${index + 1}. ${section}\n\n请在这里补充本节内容。`,
+          )
+          .join("\n\n");
+        return `# ${documentItem.title}\n\n> ${documentItem.category} · ${documentItem.version} · 负责人：${documentItem.owner}\n\n## 摘要\n\n${documentItem.abstract}\n\n${sections}\n`;
+      }
+
+      function extractHeadings(markdown) {
+        return markdown
+          .split("\n")
+          .map((line, lineIndex) => {
+            const match = /^(#{1,3})\s+(.+)$/.exec(line.trim());
+            return match
+              ? {
+                  level: match[1].length,
+                  text: match[2].replace(/[*_`~]/g, "").trim(),
+                  lineIndex,
+                }
+              : null;
+          })
+          .filter(Boolean);
+      }
+
+      function updateEditorStats() {
+        const content = markdownEditor.value;
+        const lines = content ? content.split("\n").length : 0;
+        document.querySelector("#editor-statistics").textContent =
+          `${content.length} 字符 · ${lines} 行`;
+        const headings = extractHeadings(content);
+        contentOutline.innerHTML = headings.length
+          ? headings
+              .map(
+                (heading) =>
+                  `<button class="outline-button" data-line="${heading.lineIndex}" data-level="${heading.level}" type="button">${escapeHtml(heading.text)}</button>`,
+              )
+              .join("")
+          : '<div class="outline-empty">使用标题样式后，大纲会自动生成。</div>';
+      }
+
+      function syncEditorDirtyState() {
+        editorDirty =
+          markdownEditor.value !== savedEditorContent ||
+          contentTitle.value.trim() !== savedEditorTitle;
+        editorSaveState.textContent = editorDirty ? "未保存" : "已保存";
+        editorSaveState.classList.toggle("dirty", editorDirty);
+      }
+
+      function recordEditorHistory() {
+        const value = markdownEditor.value;
+        if (editorHistory[editorHistoryIndex] === value) return;
+        editorHistory = editorHistory.slice(0, editorHistoryIndex + 1);
+        editorHistory.push(value);
+        if (editorHistory.length > 100) editorHistory.shift();
+        editorHistoryIndex = editorHistory.length - 1;
+      }
+
+      function afterEditorChange(recordHistory = true) {
+        if (recordHistory) recordEditorHistory();
+        syncEditorDirtyState();
+        updateEditorStats();
+      }
+
+      function setPreviewMode(enabled) {
+        previewMode = enabled;
+        contentEditor.classList.toggle("preview-mode", previewMode);
+        markdownEditor.hidden = previewMode;
+        markdownPreview.hidden = !previewMode;
+        const toggleButton = document.querySelector("#toggle-preview-button");
+        if (previewMode) {
+          const source = markdownEditor.value;
+          if (window.marked?.parse && window.DOMPurify?.sanitize) {
+            markdownPreview.classList.remove("raw-markdown");
+            markdownPreview.innerHTML = window.DOMPurify.sanitize(
+              window.marked.parse(source, { breaks: true, gfm: true }),
+              { USE_PROFILES: { html: true } },
+            );
+          } else {
+            markdownPreview.classList.add("raw-markdown");
+            markdownPreview.textContent = source;
+          }
+          toggleButton.innerHTML =
+            '<iconify-icon icon="lucide:pencil-line" aria-hidden="true"></iconify-icon>继续编辑';
+        } else {
+          toggleButton.innerHTML =
+            '<iconify-icon icon="lucide:eye" aria-hidden="true"></iconify-icon>预览';
+          markdownEditor.focus();
+        }
+      }
+
+      function openEditor() {
+        const documentItem = documents.find(
+          (item) => item.id === activeDocumentId,
+        );
+        if (!documentItem) return;
+        if (!documentItem.content)
+          documentItem.content = defaultMarkdown(documentItem);
+        pageHead.hidden = true;
+        knowledgeLayout.hidden = true;
+        contentEditor.hidden = false;
+        contentTitle.value = documentItem.title;
+        markdownEditor.value = documentItem.content;
+        document.querySelector("#content-document-id").textContent =
+          `${documentItem.id} · ${documentItem.version} · ${documentItem.status}`;
+        savedEditorContent = documentItem.content;
+        savedEditorTitle = documentItem.title;
+        editorHistory = [documentItem.content];
+        editorHistoryIndex = 0;
+        setPreviewMode(false);
+        syncEditorDirtyState();
+        updateEditorStats();
+        markdownEditor.focus();
+      }
+
+      function closeEditor() {
+        if (editorDirty) {
+          showToast("存在未保存修改，请先保存文档");
+          return;
+        }
+        setPreviewMode(false);
+        contentEditor.hidden = true;
+        pageHead.hidden = false;
+        knowledgeLayout.hidden = false;
+        render();
+      }
+
+      function replaceEditorSelection(replacement, cursorOffset) {
+        const start = markdownEditor.selectionStart;
+        const end = markdownEditor.selectionEnd;
+        markdownEditor.setRangeText(replacement, start, end, "end");
+        const cursor = start + (cursorOffset ?? replacement.length);
+        markdownEditor.setSelectionRange(cursor, cursor);
+        markdownEditor.focus();
+        afterEditorChange();
+      }
+
+      function wrapEditorSelection(
+        before,
+        after = before,
+        placeholder = "文字",
+      ) {
+        const start = markdownEditor.selectionStart;
+        const end = markdownEditor.selectionEnd;
+        const selected = markdownEditor.value.slice(start, end) || placeholder;
+        const replacement = `${before}${selected}${after}`;
+        markdownEditor.setRangeText(replacement, start, end, "end");
+        markdownEditor.setSelectionRange(
+          start + before.length,
+          start + before.length + selected.length,
+        );
+        markdownEditor.focus();
+        afterEditorChange();
+      }
+
+      function prefixSelectedLines(prefix, ordered = false) {
+        const value = markdownEditor.value;
+        const selectionStart = markdownEditor.selectionStart;
+        const selectionEnd = markdownEditor.selectionEnd;
+        const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;
+        const nextLine = value.indexOf("\n", selectionEnd);
+        const lineEnd = nextLine === -1 ? value.length : nextLine;
+        const lines = value.slice(lineStart, lineEnd).split("\n");
+        const replacement = lines
+          .map((line, index) => `${ordered ? `${index + 1}. ` : prefix}${line}`)
+          .join("\n");
+        markdownEditor.setRangeText(replacement, lineStart, lineEnd, "select");
+        markdownEditor.focus();
+        afterEditorChange();
+      }
+
+      function applyBlockStyle(prefix) {
+        const value = markdownEditor.value;
+        const selectionStart = markdownEditor.selectionStart;
+        const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;
+        const nextLine = value.indexOf("\n", selectionStart);
+        const lineEnd = nextLine === -1 ? value.length : nextLine;
+        const line = value.slice(lineStart, lineEnd).replace(/^#{1,6}\s+/, "");
+        markdownEditor.setRangeText(
+          `${prefix}${line}`,
+          lineStart,
+          lineEnd,
+          "end",
+        );
+        markdownEditor.focus();
+        afterEditorChange();
+      }
+
+      function restoreEditorHistory(nextIndex) {
+        if (nextIndex < 0 || nextIndex >= editorHistory.length) return;
+        editorHistoryIndex = nextIndex;
+        markdownEditor.value = editorHistory[editorHistoryIndex];
+        const cursor = markdownEditor.value.length;
+        markdownEditor.setSelectionRange(cursor, cursor);
+        markdownEditor.focus();
+        afterEditorChange(false);
+      }
+
+      function runEditorCommand(command) {
+        if (command === "undo") {
+          restoreEditorHistory(editorHistoryIndex - 1);
+          return;
+        }
+        if (command === "redo") {
+          restoreEditorHistory(editorHistoryIndex + 1);
+          return;
+        }
+        if (command === "bold") wrapEditorSelection("**", "**", "加粗文字");
+        if (command === "italic") wrapEditorSelection("_", "_", "斜体文字");
+        if (command === "strike") wrapEditorSelection("~~", "~~", "删除文字");
+        if (command === "inline-code") wrapEditorSelection("`", "`", "代码");
+        if (command === "link")
+          wrapEditorSelection("[", "](https://)", "链接文字");
+        if (command === "bullet-list") prefixSelectedLines("- ");
+        if (command === "ordered-list") prefixSelectedLines("", true);
+        if (command === "task-list") prefixSelectedLines("- [ ] ");
+        if (command === "quote") prefixSelectedLines("> ");
+        if (command === "code-block")
+          wrapEditorSelection("```\n", "\n```", "代码");
+      }
+
+      function saveEditorContent() {
+        const title = contentTitle.value.trim();
+        if (!title) {
+          contentTitle.focus();
+          showToast("请输入文档标题");
+          return;
+        }
+        const documentItem = documents.find(
+          (item) => item.id === activeDocumentId,
+        );
+        documentItem.title = title;
+        documentItem.content = markdownEditor.value;
+        documentItem.updated = "2026-07-14 10:28";
+        const sectionHeadings = extractHeadings(documentItem.content)
+          .filter((heading) => heading.level > 1)
+          .map((heading) => heading.text);
+        if (sectionHeadings.length) documentItem.sections = sectionHeadings;
+        savedEditorTitle = documentItem.title;
+        savedEditorContent = documentItem.content;
+        syncEditorDirtyState();
+        document.querySelector("#content-document-id").textContent =
+          `${documentItem.id} · ${documentItem.version} · ${documentItem.status}`;
+        render();
+        showToast("文档内容已保存");
+      }
+
+      function render() {
+        const visibleDocuments = filteredDocuments();
+        document.querySelector("#document-heading").textContent =
+          activeCategory;
+        document.querySelector("#document-count").textContent =
+          `${visibleDocuments.length} 条匹配`;
+        rows.innerHTML = visibleDocuments.map(documentRow).join("");
+        mobileList.innerHTML = visibleDocuments.map(mobileRow).join("");
+        emptyState.style.display = visibleDocuments.length ? "none" : "grid";
+        if (
+          visibleDocuments.length &&
+          !visibleDocuments.some((item) => item.id === activeDocumentId)
+        )
+          activeDocumentId = visibleDocuments[0].id;
+        updatePreview(documents.find((item) => item.id === activeDocumentId));
+      }
+
+      function selectDocument(documentId) {
+        activeDocumentId = documentId;
+        render();
+      }
+
+      document
+        .querySelector("#library-list")
+        .addEventListener("click", (event) => {
+          const button = event.target.closest("[data-category]");
+          if (!button) return;
+          activeCategory = button.dataset.category;
+          document
+            .querySelectorAll(".library-item")
+            .forEach((item) =>
+              item.classList.toggle("active", item === button),
+            );
+          render();
+        });
+
+      document
+        .querySelector(".document-panel")
+        .addEventListener("click", (event) => {
+          const target = event.target.closest("[data-doc]");
+          if (target) selectDocument(target.dataset.doc);
+        });
+
+      rows.addEventListener("keydown", (event) => {
+        const target = event.target.closest("[data-doc]");
+        if (target && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault();
+          selectDocument(target.dataset.doc);
+        }
+      });
+
+      [searchInput, typeFilter, statusFilter].forEach((control) =>
+        control.addEventListener("input", () => {
+          render();
+        }),
+      );
+
+      function openModal() {
+        modal.classList.add("open");
+        document.querySelector("#document-title-input").focus();
+      }
+
+      function closeModal() {
+        modal.classList.remove("open");
+        document.querySelector("#document-form").reset();
+      }
+
+      document
+        .querySelector("#new-document-button")
+        .addEventListener("click", openModal);
+      document
+        .querySelector("#close-modal-button")
+        .addEventListener("click", closeModal);
+      document
+        .querySelector("#cancel-modal-button")
+        .addEventListener("click", closeModal);
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal) closeModal();
+      });
+
+      document
+        .querySelector("#document-form")
+        .addEventListener("submit", (event) => {
+          event.preventDefault();
+          const title = document
+            .querySelector("#document-title-input")
+            .value.trim();
+          if (!title) {
+            document.querySelector("#document-title-input").focus();
+            showToast("请输入文档名称");
+            return;
+          }
+          const category = document.querySelector(
+            "#document-category-input",
+          ).value;
+          const type = document.querySelector("#document-type-input").value;
+          const abstract =
+            document.querySelector("#document-abstract-input").value.trim() ||
+            "尚未填写摘要。";
+          const documentItem = {
+            id: `KB-${String(49 + documents.length).padStart(3, "0")}`,
+            title,
+            category,
+            type,
+            status: "草稿",
+            version: "v0.1",
+            owner: "星河",
+            updated: "2026-07-14 10:12",
+            source: "手动创建",
+            visibility: "仅创建者",
+            tags: [category, type],
+            abstract,
+            sections: ["待补充文档目录"],
+            aiRefs: 0,
+          };
+          documents.unshift(documentItem);
+          activeCategory = "全部知识";
+          activeDocumentId = documentItem.id;
+          document
+            .querySelectorAll(".library-item")
+            .forEach((item) =>
+              item.classList.toggle(
+                "active",
+                item.dataset.category === "全部知识",
+              ),
+            );
+          searchInput.value = "";
+          typeFilter.value = "全部类型";
+          statusFilter.value = "全部状态";
+          closeModal();
+          render();
+          showToast("知识文档已保存为草稿");
+        });
+
+      document
+        .querySelector("#import-button")
+        .addEventListener("click", () => fileInput.click());
+      document
+        .querySelector("#modal-upload-button")
+        .addEventListener("click", () => fileInput.click());
+      fileInput.addEventListener("change", () => {
+        if (fileInput.files.length)
+          showToast(`已选择 ${fileInput.files[0].name}`);
+      });
+      document
+        .querySelector("#reference-button")
+        .addEventListener("click", () =>
+          showToast("已加入星耀 AI 作战台上下文"),
+        );
+      document
+        .querySelector("#edit-button")
+        .addEventListener("click", openEditor);
+      document
+        .querySelector("#exit-content-editor")
+        .addEventListener("click", closeEditor);
+      document
+        .querySelector("#save-content-button")
+        .addEventListener("click", saveEditorContent);
+      document
+        .querySelector("#toggle-preview-button")
+        .addEventListener("click", () => setPreviewMode(!previewMode));
+      markdownEditor.addEventListener("input", () => afterEditorChange());
+      contentTitle.addEventListener("input", syncEditorDirtyState);
+      document
+        .querySelector("#markdown-toolbar")
+        .addEventListener("click", (event) => {
+          const button = event.target.closest("[data-command]");
+          if (button) runEditorCommand(button.dataset.command);
+        });
+      document
+        .querySelector("#block-style")
+        .addEventListener("change", (event) => {
+          applyBlockStyle(event.target.value);
+          event.target.value = "";
+        });
+      contentOutline.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-line]");
+        if (!button) return;
+        if (previewMode) setPreviewMode(false);
+        const lineIndex = Number(button.dataset.line);
+        const position = markdownEditor.value
+          .split("\n")
+          .slice(0, lineIndex)
+          .reduce((total, line) => total + line.length + 1, 0);
+        markdownEditor.setSelectionRange(position, position);
+        markdownEditor.focus();
+      });
+      markdownEditor.addEventListener("keydown", (event) => {
+        const modifier = event.metaKey || event.ctrlKey;
+        if (modifier && event.key.toLowerCase() === "s") {
+          event.preventDefault();
+          saveEditorContent();
+        }
+        if (modifier && event.key.toLowerCase() === "z") {
+          event.preventDefault();
+          restoreEditorHistory(editorHistoryIndex + (event.shiftKey ? 1 : -1));
+        }
+        if (modifier && event.key.toLowerCase() === "y") {
+          event.preventDefault();
+          restoreEditorHistory(editorHistoryIndex + 1);
+        }
+      });
+      document
+        .querySelector("#more-button")
+        .addEventListener("click", () =>
+          showToast("更多操作：复制链接、下载、归档"),
+        );
+
+      render();
+    </script>
+  </body>
+</html>

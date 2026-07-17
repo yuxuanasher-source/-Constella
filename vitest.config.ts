@@ -15,6 +15,7 @@ export default defineConfig({
       "**/.next/**",
       "**/.claude/worktrees/**",
       "**/.worktrees/**",
+      "tests/visual/**",
     ],
     globals: true,
     setupFiles: ["./vitest.setup.ts"],
