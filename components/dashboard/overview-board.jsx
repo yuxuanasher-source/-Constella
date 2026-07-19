@@ -4628,6 +4628,265 @@ function RiskDrawer({ open, risks, onClose, go }) {
   );
 }
 
+function commandPriorityForTone(toneName) {
+  const level = toneToLevel(toneName);
+  if (level === "high") return "高";
+  if (level === "mid") return "中";
+  return toneName === "violet" || toneName === "purple" ? "AI" : "低";
+}
+
+function commandActionLabel(route, sourceKind) {
+  if (route === "reports") return "进入复核队列";
+  if (route === "settle") return "打开差异说明";
+  if (route === "tasks") return "查看排班任务";
+  if (route === "projects" || route === "project") return "进入项目处理";
+  if (sourceKind === "ai") return "审阅草稿";
+  return "查看详情";
+}
+
+function commandOwnerForRoute(route) {
+  if (route === "reports") return "审核运营";
+  if (route === "settle") return "财务";
+  if (route === "tasks") return "排班运营";
+  if (route === "projects" || route === "project") return "项目经理";
+  return "运营";
+}
+
+function commandImpactForRoute(route, sourceKind) {
+  if (route === "reports") return "阻塞报数审核";
+  if (route === "settle") return "影响结算锁定";
+  if (route === "tasks") return "影响今日交付";
+  if (sourceKind === "ai") return "待审阅产物";
+  return "影响经营闭环";
+}
+
+function commandToneStyle(toneName) {
+  const level = toneToLevel(toneName);
+  if (level === "high") return { color: C.dangerDeep, bg: C.dangerBg };
+  if (level === "mid") return { color: C.warn, bg: "#fef5e3" };
+  if (toneName === "violet" || toneName === "purple") {
+    return { color: "#7b54ec", bg: "#efeafe" };
+  }
+  return { color: C.ink4, bg: "#eef0f5" };
+}
+
+function normalizeCommandQueueItem(item, sourceKind) {
+  if (!item) return null;
+  const target = item.target || {};
+  const route = target.route || item.route || "warroom";
+  const toneName = item.tone || item.level || "neutral";
+  const key = item.key || item.id || `${sourceKind}:${route}:${item.title}`;
+  const title = item.title || item.text || item.label || "待处理事项";
+
+  return {
+    key,
+    priority: item.priorityLabel || commandPriorityForTone(toneName),
+    tone: toneName,
+    title,
+    subtitle: item.subtitle || item.hint || "",
+    impact:
+      item.impactLabel ||
+      item.impact ||
+      commandImpactForRoute(route, sourceKind),
+    evidence:
+      item.sourceRef ||
+      item.evidenceSource ||
+      item.sourceId ||
+      `${sourceKind}:${key}`,
+    owner: item.ownerLabel || item.ownerName || commandOwnerForRoute(route),
+    actionLabel: item.actionLabel || commandActionLabel(route, sourceKind),
+    target: { route, id: target.id || item.targetId || item.id },
+  };
+}
+
+function buildCommandQueueItems({
+  dashboard,
+  risks,
+  reports,
+  tasks,
+  batches,
+  projects,
+  aiDraftTodos,
+}) {
+  const items = [];
+  const add = (item) => {
+    if (!item?.key || items.some((existing) => existing.key === item.key)) {
+      return;
+    }
+    items.push(item);
+  };
+
+  for (const item of dashboard?.queue || []) {
+    add(normalizeCommandQueueItem(item, "dashboard.queue"));
+  }
+  for (const item of risks || []) {
+    add(normalizeCommandQueueItem(item, "dashboard.risks"));
+  }
+  for (const report of reports || []) {
+    if (!isPendingReport(report)) continue;
+    add({
+      key: `report:${report.id || report.taskId || report.projectId}`,
+      priority: "高",
+      tone: "red",
+      title: "报数待复核",
+      subtitle: report.projectName || report.streamerName || "待审报数",
+      impact: "阻塞报数审核",
+      evidence: report.id ? `live_reports:${report.id}` : "live_reports",
+      owner: "审核运营",
+      actionLabel: "进入复核队列",
+      target: { route: "reports", id: report.id },
+    });
+  }
+  for (const task of tasks || []) {
+    if (!isAnomaly(task)) continue;
+    add({
+      key: `task:${task.id || task.projectId || task.name}`,
+      priority: "高",
+      tone: "amber",
+      title: task.name || "异常直播任务",
+      subtitle: task.projectName || task.streamerName || "排班任务异常",
+      impact: "影响今日交付",
+      evidence: task.id ? `live_tasks:${task.id}` : "live_tasks",
+      owner: "排班运营",
+      actionLabel: "查看排班任务",
+      target: { route: "tasks", id: task.id },
+    });
+  }
+  for (const batch of batches || []) {
+    if (!["pending_confirm", "needs_review", "reopened"].includes(batch.status)) {
+      continue;
+    }
+    add({
+      key: `batch:${batch.id || batch.code || batch.name}`,
+      priority: batch.status === "pending_confirm" ? "中" : "高",
+      tone: batch.status === "pending_confirm" ? "amber" : "red",
+      title: batch.name || batch.code || "结算批次待确认",
+      subtitle: batch.statusLabel || batch.status || "结算中心",
+      impact: "影响结算锁定",
+      evidence: batch.id ? `settlement_batches:${batch.id}` : "settlement_batches",
+      owner: "财务",
+      actionLabel: "打开差异说明",
+      target: { route: "settle", id: batch.id },
+    });
+  }
+  for (const project of projects || []) {
+    if (project?.risk !== "high") continue;
+    add({
+      key: `project:${project.id || project.name}`,
+      priority: "高",
+      tone: "red",
+      title: project.name || "高风险项目",
+      subtitle: project.status || "项目管理",
+      impact: "影响项目交付",
+      evidence: project.id ? `projects:${project.id}` : "projects",
+      owner: project.leadOps || project.ownerName || "项目经理",
+      actionLabel: "进入项目处理",
+      target: { route: "project", id: project.id },
+    });
+  }
+  for (const todo of aiDraftTodos || []) {
+    add({
+      key: todo.key,
+      priority: "AI",
+      tone: "violet",
+      title: `AI 草稿：${todo.text}`,
+      subtitle: "AI 已生成草稿，待人工确认",
+      impact: "待审阅产物",
+      evidence: todo.draftId ? `ai_drafts:${todo.draftId}` : "ai_drafts",
+      owner: "项目经理",
+      actionLabel: "审阅草稿",
+      target: { route: todo.route || "warroom", id: todo.targetId },
+    });
+  }
+
+  return items.slice(0, 6);
+}
+
+function CommandQueuePanel({ items, updatedLabel, go }) {
+  return (
+    <section
+      role="region"
+      aria-label="今日指挥行动队列"
+      className="ob-command-queue-card"
+    >
+      <div className="ob-command-queue-headline">
+        <div>
+          <h2>今日指挥台</h2>
+          <p>按风险、时限和业务影响排序，敏感动作仍需人工确认。</p>
+        </div>
+        <span>{updatedLabel}</span>
+      </div>
+      <div className="ob-command-queue-table" role="table">
+        <div className="ob-command-queue-row ob-command-queue-head" role="row">
+          <div className="ob-command-queue-cell" role="columnheader">
+            优先级
+          </div>
+          <div className="ob-command-queue-cell" role="columnheader">
+            事项
+          </div>
+          <div className="ob-command-queue-cell" role="columnheader">
+            影响
+          </div>
+          <div className="ob-command-queue-cell" role="columnheader">
+            证据来源
+          </div>
+          <div className="ob-command-queue-cell" role="columnheader">
+            负责人
+          </div>
+          <div className="ob-command-queue-cell" role="columnheader">
+            下一步
+          </div>
+        </div>
+        {items.length ? (
+          items.map((item) => {
+            const chip = commandToneStyle(item.tone);
+            return (
+              <div className="ob-command-queue-row" role="row" key={item.key}>
+                <div className="ob-command-queue-cell" role="cell">
+                  <span
+                    className="ob-command-priority"
+                    style={{ color: chip.color, background: chip.bg }}
+                  >
+                    {item.priority}
+                  </span>
+                </div>
+                <div className="ob-command-queue-cell" role="cell">
+                  <strong>{item.title}</strong>
+                  {item.subtitle ? <small>{item.subtitle}</small> : null}
+                </div>
+                <div className="ob-command-queue-cell" role="cell">
+                  {item.impact}
+                </div>
+                <div className="ob-command-queue-cell mono" role="cell">
+                  {item.evidence}
+                </div>
+                <div className="ob-command-queue-cell" role="cell">
+                  {item.owner}
+                </div>
+                <div className="ob-command-queue-cell" role="cell">
+                  <button
+                    type="button"
+                    className="ob-command-next"
+                    onClick={() =>
+                      go?.(item.target?.route || "warroom", item.target?.id)
+                    }
+                  >
+                    {item.actionLabel}
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div className="ob-command-queue-empty">
+            当前无必须处理事项，可继续关注经营总览和 AI 草稿。
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 // ============================================================
 //  主组件
 // ============================================================
@@ -4931,6 +5190,27 @@ export function OverviewBoard({
     () => mergeAiDraftTodos(basePersonal, aiDraftTodos),
     [basePersonal, aiDraftTodos],
   );
+  const commandItems = React.useMemo(
+    () =>
+      buildCommandQueueItems({
+        dashboard: d,
+        risks,
+        reports: scopedReports,
+        tasks: scopedTasks,
+        batches: scopedBatches,
+        projects: scopedProjects,
+        aiDraftTodos,
+      }),
+    [
+      d,
+      risks,
+      scopedReports,
+      scopedTasks,
+      scopedBatches,
+      scopedProjects,
+      aiDraftTodos,
+    ],
+  );
 
   return (
     <div className="ob-shell ob-command-surface" style={{ minHeight: "100%" }}>
@@ -4953,6 +5233,21 @@ export function OverviewBoard({
         .ob-segmented-button.is-active{background:#ffffff;color:#1e50c8;box-shadow:0 1px 2px rgba(15,23,42,.08),0 0 0 1px rgba(255,255,255,.8)}
         .ob-segmented-button:not(.is-active){background:transparent;color:#66748a}
         .ob-toolbar-pill{background:rgba(255,255,255,.76);border:1px solid var(--ob-panel-border);box-shadow:0 1px 2px rgba(15,23,42,.03),inset 0 1px 0 rgba(255,255,255,.82)}
+        .ob-command-queue-card{background:#fff;border:1px solid #e5e6eb;border-radius:6px;box-shadow:0 1px 2px rgba(29,33,41,.04);overflow:hidden}
+        .ob-command-queue-headline{height:52px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 16px;border-bottom:1px solid #e5e6eb;background:#fff}
+        .ob-command-queue-headline h2{margin:0;font-size:14px;font-weight:650;color:#1d2129;letter-spacing:0}
+        .ob-command-queue-headline p{margin:3px 0 0;font-size:12px;color:#86909c;line-height:1.35}
+        .ob-command-queue-headline span{font-size:12px;color:#86909c;white-space:nowrap}
+        .ob-command-queue-table{display:grid;grid-template-columns:82px minmax(220px,1.3fr) minmax(120px,.8fr) minmax(170px,1fr) 96px 120px;overflow-x:auto}
+        .ob-command-queue-row{display:contents}
+        .ob-command-queue-cell{min-width:0;padding:11px 12px;border-top:1px solid #e5e6eb;font-size:12px;color:#4e5969;line-height:1.45}
+        .ob-command-queue-head .ob-command-queue-cell{border-top:0;background:#fbfcfe;color:#86909c;font-weight:500}
+        .ob-command-queue-cell strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1d2129;font-size:12px;font-weight:650}
+        .ob-command-queue-cell small{display:block;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#86909c;font-size:11px}
+        .ob-command-priority{display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:22px;padding:0 7px;border-radius:4px;font-size:11px;font-weight:700;white-space:nowrap}
+        .ob-command-next{height:26px;border:1px solid #bedaff;border-radius:4px;background:#e8f3ff;color:#0e42d2;font-size:12px;font-weight:600;padding:0 9px;cursor:pointer;white-space:nowrap}
+        .ob-command-queue-empty{grid-column:1 / -1;padding:18px 16px;border-top:1px solid #e5e6eb;color:#86909c;font-size:12px;text-align:center;background:#fff}
+        @container (max-width:840px){.ob-command-queue-table{grid-template-columns:72px minmax(220px,1.4fr) minmax(140px,.8fr) minmax(170px,1fr) 92px 116px}}
         .scl::-webkit-scrollbar{width:8px;height:8px}
         .scl::-webkit-scrollbar-thumb{background:#cfd7e6;border-radius:4px}
         .scl::-webkit-scrollbar-track{background:transparent}
@@ -5101,6 +5396,12 @@ export function OverviewBoard({
               {updatedLabel}
             </div>
           </div>
+
+          <CommandQueuePanel
+            items={commandItems}
+            updatedLabel={updatedLabel}
+            go={go}
+          />
 
           {/* 风险横幅 */}
           {riskCount > 0 ? (

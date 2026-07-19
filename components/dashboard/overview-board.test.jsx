@@ -1267,6 +1267,64 @@ describe("OverviewBoard AI panel", () => {
     );
   });
 
+  it("renders a daily command queue with impact evidence owner and next action", () => {
+    const go = vi.fn();
+
+    render(
+      <OverviewBoard
+        dashboard={{
+          ...dashboard,
+          queue: [
+            {
+              key: "queue-weak-evidence",
+              title: "3 条弱证据即将超时",
+              subtitle: "报数审核 · OCR 置信度低",
+              tone: "red",
+              target: { route: "reports", id: "report-risk" },
+              sourceRef: "live_reports:weak-evidence",
+              ownerLabel: "审核运营",
+              impactLabel: "阻塞结算锁定",
+            },
+          ],
+          risks: [
+            {
+              key: "risk-batch",
+              title: "结算批次金额差异",
+              subtitle: "批次 SET-0719-02",
+              tone: "amber",
+              target: { route: "settle", id: "batch-risk" },
+              sourceRef: "settlement_batches:batch-risk",
+            },
+          ],
+        }}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+        go={go}
+      />,
+    );
+
+    const panel = screen.getByRole("region", { name: "今日指挥行动队列" });
+    expect(within(panel).getByText("今日指挥台")).toBeInTheDocument();
+    expect(within(panel).getByText("3 条弱证据即将超时")).toBeInTheDocument();
+    expect(within(panel).getByText("阻塞结算锁定")).toBeInTheDocument();
+    expect(
+      within(panel).getByText("live_reports:weak-evidence"),
+    ).toBeInTheDocument();
+    expect(within(panel).getByText("审核运营")).toBeInTheDocument();
+    expect(
+      within(panel).getByRole("button", { name: /进入复核队列/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).getByText("settlement_batches:batch-risk"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole("button", { name: /进入复核队列/ }));
+    expect(go).toHaveBeenCalledWith("reports", "report-risk");
+  });
+
   it("applies command-center visual surfaces to the dashboard", () => {
     const { container } = render(
       <OverviewBoard
