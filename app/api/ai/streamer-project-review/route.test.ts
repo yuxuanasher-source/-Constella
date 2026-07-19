@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { POST } from "./route";
 
 import { runAiToolQuery } from "@/features/ai/ai-tool-layer";
+import { createWebSearchProviderFromEnv } from "@/features/ai/web-search-provider";
 import { loadStreamerProjectMarketReferences } from "@/features/streamers/streamer-project-market-references";
 import { loadStreamerProjectReviewInput } from "@/features/streamers/streamer-project-review-loader";
 import { getAuthContext } from "@/lib/auth/context";
@@ -10,6 +11,10 @@ import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/ai/ai-tool-layer", () => ({
   runAiToolQuery: vi.fn(),
+}));
+
+vi.mock("@/features/ai/web-search-provider", () => ({
+  createWebSearchProviderFromEnv: vi.fn(),
 }));
 
 vi.mock("@/features/streamers/streamer-project-review-loader", () => ({
@@ -53,6 +58,7 @@ describe("streamer project review route", () => {
     } as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth);
     vi.mocked(loadStreamerProjectReviewInput).mockResolvedValue(profileInput);
+    vi.mocked(createWebSearchProviderFromEnv).mockReturnValue(null);
     vi.mocked(loadStreamerProjectMarketReferences).mockResolvedValue([]);
     vi.mocked(runAiToolQuery).mockResolvedValue({
       toolName: "streamer_project_review",
@@ -179,6 +185,7 @@ describe("streamer project review route", () => {
       client: { client: "supabase" },
       organizationId: "org-1",
       profileInput,
+      webSearchProvider: null,
     });
     expect(runAiToolQuery).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -200,6 +207,29 @@ describe("streamer project review route", () => {
         },
       }),
     );
+  });
+
+  it("passes the configured web search provider into market reference loading", async () => {
+    const webSearchProvider = { search: vi.fn() };
+    vi.mocked(createWebSearchProviderFromEnv).mockReturnValue(webSearchProvider);
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/streamer-project-review", {
+        method: "POST",
+        body: JSON.stringify({
+          streamerId: "streamer-1",
+          projectId: "project-1",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(loadStreamerProjectMarketReferences).toHaveBeenCalledWith({
+      client: { client: "supabase" },
+      organizationId: "org-1",
+      profileInput,
+      webSearchProvider,
+    });
   });
 
   it("blocks streamers from internal streamer project review", async () => {

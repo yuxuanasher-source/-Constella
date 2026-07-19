@@ -3,6 +3,10 @@ import {
   type KnowledgeClient,
 } from "@/features/ai/knowledge-repository";
 import type { KnowledgePassage } from "@/features/ai/knowledge-base";
+import type {
+  WebSearchProvider,
+  WebSearchResult,
+} from "@/features/ai/web-search-provider";
 
 import {
   buildStreamerProjectReviewProfile,
@@ -16,12 +20,14 @@ export async function loadStreamerProjectMarketReferences({
   profileInput,
   retrievedAt = new Date().toISOString(),
   limit = 3,
+  webSearchProvider = null,
 }: {
   client: KnowledgeClient;
   organizationId: string;
   profileInput: StreamerProjectReviewInput;
   retrievedAt?: string;
   limit?: number;
+  webSearchProvider?: WebSearchProvider | null;
 }): Promise<StreamerProjectExternalReference[]> {
   const profile = buildStreamerProjectReviewProfile(profileInput);
   const request = profile.reviewDraft.marketReferenceRequest;
@@ -44,7 +50,7 @@ export async function loadStreamerProjectMarketReferences({
     );
   }
 
-  return uniquePassages(passages)
+  const knowledgeReferences = uniquePassages(passages)
     .slice(0, limit)
     .map((passage) =>
       knowledgePassageToExternalReference({
@@ -53,6 +59,33 @@ export async function loadStreamerProjectMarketReferences({
         productType: profileInput.project.productType ?? null,
       }),
     );
+  const remaining = limit - knowledgeReferences.length;
+  if (remaining <= 0 || !webSearchProvider) return knowledgeReferences;
+
+  const webQueries = request.queries.filter((query) => query.channel === "web_search");
+  const webResults: WebSearchResult[] = [];
+  for (const query of webQueries) {
+    webResults.push(
+      ...(await webSearchProvider.search({
+        query: query.query,
+        maxResults: remaining,
+      })),
+    );
+    if (webResults.length >= remaining) break;
+  }
+
+  return [
+    ...knowledgeReferences,
+    ...uniqueWebResults(webResults)
+      .slice(0, remaining)
+      .map((result) =>
+        webResultToExternalReference({
+          result,
+          retrievedAt,
+          productType: profileInput.project.productType ?? null,
+        }),
+      ),
+  ];
 }
 
 function uniquePassages(passages: KnowledgePassage[]): KnowledgePassage[] {
@@ -84,6 +117,37 @@ function knowledgePassageToExternalReference({
     sourceUrl: null,
     retrievedAt,
     summary: passage.snippet,
+    productType,
+  };
+}
+
+function uniqueWebResults(results: WebSearchResult[]): WebSearchResult[] {
+  const seen = new Set<string>();
+  const unique: WebSearchResult[] = [];
+  for (const result of results) {
+    if (seen.has(result.url)) continue;
+    seen.add(result.url);
+    unique.push(result);
+  }
+  return unique;
+}
+
+function webResultToExternalReference({
+  result,
+  retrievedAt,
+  productType,
+}: {
+  result: WebSearchResult;
+  retrievedAt: string;
+  productType: string | null;
+}): StreamerProjectExternalReference {
+  return {
+    id: `web:${result.url}`,
+    title: result.title,
+    sourceName: "公网搜索",
+    sourceUrl: result.url,
+    retrievedAt,
+    summary: result.content,
     productType,
   };
 }
