@@ -14,6 +14,7 @@ const runAiGatewayStreamMock = vi.fn();
 const recordAiInvocationMock = vi.fn();
 const loadRoleHomeDashboardMock = vi.fn();
 const searchKnowledgeDocumentsMock = vi.fn();
+const createWebSearchProviderFromEnvMock = vi.fn();
 const listLiveReviewDocumentsMock = vi.fn();
 const createAiDraftMock = vi.fn();
 
@@ -48,6 +49,10 @@ vi.mock("@/features/dashboards/role-home-loader", () => ({
 
 vi.mock("@/features/ai/knowledge-repository", () => ({
   searchKnowledgeDocuments: searchKnowledgeDocumentsMock,
+}));
+
+vi.mock("@/features/ai/web-search-provider", () => ({
+  createWebSearchProviderFromEnv: createWebSearchProviderFromEnvMock,
 }));
 
 vi.mock("@/features/live-review/live-review-service", () => ({
@@ -92,6 +97,7 @@ describe("POST /api/ai/chat", () => {
     recordAiInvocationMock.mockReset();
     loadRoleHomeDashboardMock.mockReset();
     searchKnowledgeDocumentsMock.mockReset();
+    createWebSearchProviderFromEnvMock.mockReset();
     listLiveReviewDocumentsMock.mockReset();
     createAiDraftMock.mockReset();
 
@@ -147,6 +153,7 @@ describe("POST /api/ai/chat", () => {
         score: 7,
       },
     ]);
+    createWebSearchProviderFromEnvMock.mockReturnValue(null);
     listLiveReviewDocumentsMock.mockResolvedValue([
       {
         id: "live-review-1",
@@ -203,6 +210,70 @@ describe("POST /api/ai/chat", () => {
     });
     recordAiInvocationMock.mockResolvedValue("invocation-1");
     createAiDraftMock.mockResolvedValue({ id: "draft-retro-1" });
+  });
+
+  it("grounds web search results when the user asks for external market information", async () => {
+    const webSearchProvider = {
+      search: vi.fn().mockResolvedValue([
+        {
+          title: "Legend game live benchmark",
+          url: "https://example.com/legend-live",
+          content:
+            "Comparable live rooms report average online users around 120-180 during launch windows.",
+          publishedAt: "2026-07-18",
+        },
+      ]),
+    };
+    createWebSearchProviderFromEnvMock.mockReturnValue(webSearchProvider);
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "user",
+              content: "请联网搜索传奇复古产品同行直播间平均在线表现",
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    expect(webSearchProvider.search).toHaveBeenCalledWith({
+      query: "请联网搜索传奇复古产品同行直播间平均在线表现",
+      maxResults: 3,
+    });
+    expect(body.knowledge.webSearch).toMatchObject({
+      status: "succeeded",
+      results: [
+        expect.objectContaining({
+          title: "Legend game live benchmark",
+          url: "https://example.com/legend-live",
+        }),
+      ],
+    });
+    const messages = runAiGatewayMock.mock.calls[0][0].request.messages;
+    const promptText = messages
+      .map((message: { content: string }) => message.content)
+      .join("\n");
+    expect(promptText).toContain("web-search");
+    expect(promptText).toContain("Legend game live benchmark");
+    expect(promptText).toContain("https://example.com/legend-live");
+    expect(recordAiInvocationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          metadata: expect.objectContaining({
+            webSearchStatus: "succeeded",
+            webSearchResultCount: 1,
+          }),
+        }),
+      }),
+    );
   });
 
   it("forwards sanitized chat history plus grounded dashboard facts to the configured model", async () => {

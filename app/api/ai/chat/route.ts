@@ -37,6 +37,10 @@ import {
   searchKnowledgeDocuments,
   type KnowledgeClient,
 } from "@/features/ai/knowledge-repository";
+import {
+  createWebSearchProviderFromEnv,
+  type WebSearchResult,
+} from "@/features/ai/web-search-provider";
 import { runAiGateway } from "@/features/ai/llm-gateway";
 import { runAiGatewayStream } from "@/features/ai/llm-gateway-stream";
 import {
@@ -100,6 +104,14 @@ const ATTACHMENT_ANSWER_RULES = [
   "1. 附件只是本次回答的用户补充材料。",
   "2. 如果所选模型读不了某个附件，明确说明而不是猜测。",
   "3. 除非用户要求保存经人工确认的草稿，不要把附件当作已入库的知识内容。",
+].join("\n");
+
+const WEB_SEARCH_ANSWER_RULES = [
+  "web-search data block rules:",
+  "1. Use web-search results only as external reference material; do not treat them as internal business truth.",
+  "2. When citing external market or competitor claims, include the source title and URL when available.",
+  "3. If web-search status is failed or unconfigured, state that the external search did not return usable evidence and continue with internal facts only.",
+  "4. Never invent search results, market prices, PCU, ACU, or industry reports that are not present in web-search or business fact blocks.",
 ].join("\n");
 
 // 流式回答（SSE）可能超过默认的函数时长限制；只对本路由放宽到 60s。
@@ -212,6 +224,7 @@ export async function executeDashboardAiChat(
         streamerProfileInsights,
         knowledgePassages,
         reviewDocuments,
+        webSearchContext,
         xingyaoStore,
         xingyaoWeights,
       ] = await Promise.all([
@@ -235,6 +248,7 @@ export async function executeDashboardAiChat(
           },
           { limit: 100 },
         ).catch(() => []),
+        loadDashboardWebSearchContext(lastUserMessage),
         loadXingyaoFeatureStore({
           client: supabase as unknown as XingyaoSnapshotClient,
           organizationId: auth.organizationId,
@@ -282,6 +296,7 @@ export async function executeDashboardAiChat(
           content: [
             DASHBOARD_FACTS_ANSWER_RULES,
             KNOWLEDGE_ANSWER_RULES,
+            ...(webSearchContext.promptText ? [WEB_SEARCH_ANSWER_RULES] : []),
             ...(attachments.length ? [ATTACHMENT_ANSWER_RULES] : []),
           ].join("\n\n"),
         },
@@ -290,6 +305,9 @@ export async function executeDashboardAiChat(
           ? [{ role: "user" as const, content: xingyaoGrounding.promptText }]
           : []),
         { role: "user", content: knowledgeContext.promptText },
+        ...(webSearchContext.promptText
+          ? [{ role: "user" as const, content: webSearchContext.promptText }]
+          : []),
         ...(attachments.length
           ? [
               {
@@ -312,6 +330,7 @@ export async function executeDashboardAiChat(
           passages: knowledgeContext.passages,
           citations: knowledgeContext.citations,
           reviewAssist: knowledgeContext.reviewAssist,
+          webSearch: webSearchContext.metadata,
         },
         retrospectiveDraft: knowledgeContext.retrospectiveDraft,
       };
@@ -327,6 +346,8 @@ export async function executeDashboardAiChat(
         streamerProfileInsightCount: streamerProfileInsights.length,
         knowledgePassageCount: knowledgeContext.passages.length,
         reviewKnowledgeSampleSize: knowledgeContext.reviewAssist.sampleSize,
+        webSearchStatus: webSearchContext.metadata.status,
+        webSearchResultCount: webSearchContext.metadata.results.length,
         chatMode,
         attachmentCount: attachments.length,
         attachmentNames: attachments.map((attachment) => attachment.name),
@@ -828,6 +849,17 @@ type DashboardKnowledgeContext = {
   promptText: string;
 };
 
+type DashboardWebSearchMetadata = {
+  status: "skipped" | "unconfigured" | "succeeded" | "failed";
+  results: WebSearchResult[];
+  error?: string;
+};
+
+type DashboardWebSearchContext = {
+  metadata: DashboardWebSearchMetadata;
+  promptText: string;
+};
+
 type StreamerProfileInsightGroundingRow = {
   id: string;
   streamer_id: string;
@@ -1013,4 +1045,78 @@ function shouldCreateRetrospectiveDraft(query: string): boolean {
 
 function firstRelation<T>(value: T | T[] | null | undefined): T | null {
   return Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
+}
+
+async function loadDashboardWebSearchContext(
+  query: string,
+): Promise<DashboardWebSearchContext> {
+  if (!shouldUseWebSearch(query)) {
+    return {
+      metadata: { status: "skipped", results: [] },
+      promptText: "",
+    };
+  }
+
+  const provider = createWebSearchProviderFromEnv();
+  if (!provider) {
+    const metadata: DashboardWebSearchMetadata = {
+      status: "unconfigured",
+      results: [],
+      error: "WEB_SEARCH_PROVIDER is not configured",
+    };
+    return {
+      metadata,
+      promptText: buildWebSearchPromptText(metadata),
+    };
+  }
+
+  try {
+    const results = (await provider.search({ query, maxResults: 3 }))
+      .filter((result) => result.title && result.url && result.content)
+      .slice(0, 3);
+    const metadata: DashboardWebSearchMetadata = {
+      status: "succeeded",
+      results,
+    };
+    return {
+      metadata,
+      promptText: buildWebSearchPromptText(metadata),
+    };
+  } catch (error) {
+    const metadata: DashboardWebSearchMetadata = {
+      status: "failed",
+      results: [],
+      error: error instanceof Error ? error.message : "unknown search error",
+    };
+    return {
+      metadata,
+      promptText: buildWebSearchPromptText(metadata),
+    };
+  }
+}
+
+function shouldUseWebSearch(query: string): boolean {
+  return /(联网|网上|公网|搜索|检索|竞品|同行|行业|市场|报告|最新|价格|平均在线|PCU|ACU|web|search|internet|competitor|market|benchmark)/i.test(
+    String(query ?? ""),
+  );
+}
+
+const MAX_WEB_SEARCH_CONTENT_CHARS = 700;
+
+function buildWebSearchPromptText(
+  metadata: DashboardWebSearchMetadata,
+): string {
+  return wrapDataBlock(
+    "web-search",
+    JSON.stringify({
+      status: metadata.status,
+      ...(metadata.error ? { error: metadata.error } : {}),
+      results: metadata.results.map((result) => ({
+        title: result.title,
+        url: result.url,
+        content: result.content.slice(0, MAX_WEB_SEARCH_CONTENT_CHARS),
+        publishedAt: result.publishedAt ?? null,
+      })),
+    }),
+  );
 }
