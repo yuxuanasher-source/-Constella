@@ -110,10 +110,11 @@ const WEB_SEARCH_ANSWER_RULES = [
   "web-search data block rules:",
   "1. Use web-search results only as external reference material; do not treat them as internal business truth.",
   "2. When citing external market or competitor claims, include the source title and URL when available.",
-  "3. If web-search status is succeeded, never say the system cannot access the internet or cannot perform web search; acknowledge that web search returned sources.",
-  "4. If succeeded sources do not contain a requested number such as average online, PCU, or ACU, say the external sources did not provide a verifiable number instead of saying web search is unavailable.",
-  "5. If web-search status is empty, failed, or unconfigured, state that the external search did not return usable evidence and continue with internal facts only.",
-  "6. Never invent search results, market prices, PCU, ACU, or industry reports that are not present in web-search or business fact blocks.",
+  "3. Use result content, source page excerpts, and snippets as the evidence body; never analyze from source titles alone.",
+  "4. If web-search status is succeeded, never say the system cannot access the internet or cannot perform web search; acknowledge that web search returned sources.",
+  "5. If succeeded sources do not contain a requested number such as average online, PCU, or ACU, say the external sources did not provide a verifiable number instead of saying web search is unavailable.",
+  "6. If web-search status is empty, failed, or unconfigured, state that the external search did not return usable evidence and continue with internal facts only.",
+  "7. Never invent search results, market prices, PCU, ACU, or industry reports that are not present in web-search or business fact blocks.",
 ].join("\n");
 
 // 流式回答（SSE）可能超过默认的函数时长限制；只对本路由放宽到 60s。
@@ -349,6 +350,8 @@ export async function executeDashboardAiChat(
         reviewKnowledgeSampleSize: knowledgeContext.reviewAssist.sampleSize,
         webSearchStatus: webSearchContext.metadata.status,
         webSearchResultCount: webSearchContext.metadata.results.length,
+        webSearchQueryCount: webSearchContext.metadata.queries?.length ?? 0,
+        webSearchWarningCount: webSearchContext.metadata.warnings?.length ?? 0,
         chatMode,
         attachmentCount: attachments.length,
         attachmentNames: attachments.map((attachment) => attachment.name),
@@ -854,6 +857,8 @@ type DashboardKnowledgeContext = {
 type DashboardWebSearchMetadata = {
   status: "skipped" | "unconfigured" | "succeeded" | "empty" | "failed";
   results: WebSearchResult[];
+  queries?: string[];
+  warnings?: string[];
   error?: string;
 };
 
@@ -1075,13 +1080,57 @@ async function loadDashboardWebSearchContext(
     };
   }
 
+  const settings = dashboardWebSearchSettingsFromEnv();
+  const queries = buildDashboardWebSearchQueries({
+    query,
+    targetSites: settings.targetSites,
+    maxQueries: settings.maxQueries,
+  });
+
   try {
-    const results = (await provider.search({ query, maxResults: 3 }))
-      .filter((result) => result.title && result.url && result.content)
-      .slice(0, 3);
+    const attempts = await Promise.allSettled(
+      queries.map(async (searchQuery) => ({
+        query: searchQuery,
+        results: await provider.search({
+          query: searchQuery,
+          maxResults: settings.resultsPerQuery,
+        }),
+      })),
+    );
+    const warnings: string[] = [];
+    const searchedResults: WebSearchResult[] = [];
+    for (const attempt of attempts) {
+      if (attempt.status === "rejected") {
+        warnings.push(
+          attempt.reason instanceof Error
+            ? attempt.reason.message
+            : "unknown search error",
+        );
+        continue;
+      }
+      searchedResults.push(
+        ...attempt.value.results.map((result) => ({
+          ...result,
+          sourceQuery: attempt.value.query,
+        })),
+      );
+    }
+
+    if (!searchedResults.length && warnings.length === attempts.length) {
+      throw new Error(warnings[0] ?? "web search failed");
+    }
+
+    const results = await enrichWebSearchResultsWithPageExcerpts(
+      uniqueWebSearchResults(searchedResults)
+        .filter((result) => result.title && result.url && result.content)
+        .slice(0, settings.maxResults),
+      settings,
+    );
     const metadata: DashboardWebSearchMetadata = {
       status: results.length ? "succeeded" : "empty",
       results,
+      queries,
+      ...(warnings.length ? { warnings: warnings.slice(0, 3) } : {}),
     };
     return {
       metadata,
@@ -1091,6 +1140,7 @@ async function loadDashboardWebSearchContext(
     const metadata: DashboardWebSearchMetadata = {
       status: "failed",
       results: [],
+      queries,
       error: error instanceof Error ? error.message : "unknown search error",
     };
     return {
@@ -1107,6 +1157,266 @@ function shouldUseWebSearch(query: string): boolean {
 }
 
 const MAX_WEB_SEARCH_CONTENT_CHARS = 700;
+const DEFAULT_WEB_SEARCH_TARGET_SITES = [
+  "chanmama.com",
+  "1pk.com",
+  "dataeye.com",
+  "youxituoluo.com",
+];
+const DEFAULT_WEB_SEARCH_MAX_RESULTS = 6;
+const DEFAULT_WEB_SEARCH_RESULTS_PER_QUERY = 3;
+const DEFAULT_WEB_SEARCH_MAX_QUERIES = 5;
+const DEFAULT_WEB_SEARCH_PAGE_FETCH_LIMIT = 3;
+const WEB_SEARCH_PAGE_FETCH_TIMEOUT_MS = 2200;
+
+type DashboardWebSearchSettings = {
+  targetSites: string[];
+  maxResults: number;
+  resultsPerQuery: number;
+  maxQueries: number;
+  fetchPages: boolean;
+  pageFetchLimit: number;
+};
+
+function dashboardWebSearchSettingsFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): DashboardWebSearchSettings {
+  return {
+    targetSites: parseWebSearchTargetSites(env.WEB_SEARCH_TARGET_SITES),
+    maxResults: intFromEnv(
+      env.WEB_SEARCH_MAX_RESULTS,
+      DEFAULT_WEB_SEARCH_MAX_RESULTS,
+      1,
+      10,
+    ),
+    resultsPerQuery: intFromEnv(
+      env.WEB_SEARCH_RESULTS_PER_QUERY,
+      DEFAULT_WEB_SEARCH_RESULTS_PER_QUERY,
+      1,
+      5,
+    ),
+    maxQueries: intFromEnv(
+      env.WEB_SEARCH_MAX_QUERIES,
+      DEFAULT_WEB_SEARCH_MAX_QUERIES,
+      1,
+      8,
+    ),
+    fetchPages: env.WEB_SEARCH_FETCH_PAGES?.trim().toLowerCase() !== "false",
+    pageFetchLimit: intFromEnv(
+      env.WEB_SEARCH_PAGE_FETCH_LIMIT,
+      DEFAULT_WEB_SEARCH_PAGE_FETCH_LIMIT,
+      0,
+      6,
+    ),
+  };
+}
+
+function parseWebSearchTargetSites(value: string | undefined): string[] {
+  const configured = value === undefined ? DEFAULT_WEB_SEARCH_TARGET_SITES : [];
+  const rawSites = value === undefined ? configured : value.split(",");
+  return uniqueStrings(rawSites.map(normalizeSearchTargetSite).filter(Boolean));
+}
+
+function normalizeSearchTargetSite(value: string): string {
+  const text = value.trim().replace(/^site:/i, "");
+  if (!text) return "";
+  const host = text.includes("://")
+    ? safeUrlHost(text)
+    : text.split(/[/?#\s]/)[0] || "";
+  const normalized = host.toLowerCase().replace(/^\.+|\.+$/g, "");
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(normalized) ? normalized : "";
+}
+
+function safeUrlHost(value: string): string {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function buildDashboardWebSearchQueries({
+  query,
+  targetSites,
+  maxQueries,
+}: {
+  query: string;
+  targetSites: string[];
+  maxQueries: number;
+}): string[] {
+  const baseQuery = query.trim().replace(/\s+/g, " ");
+  if (!baseQuery) return [];
+  if (/\bsite:/i.test(baseQuery)) return [baseQuery];
+  return uniqueStrings([
+    baseQuery,
+    ...targetSites.map((site) => `${baseQuery} site:${site}`),
+  ]).slice(0, maxQueries);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    unique.push(normalized);
+  }
+  return unique;
+}
+
+function intFromEnv(
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function uniqueWebSearchResults(results: WebSearchResult[]): WebSearchResult[] {
+  const seen = new Set<string>();
+  const unique: WebSearchResult[] = [];
+  for (const result of results) {
+    const key = canonicalWebSearchUrl(result.url);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(result);
+  }
+  return unique;
+}
+
+function canonicalWebSearchUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return value.trim().replace(/\/$/, "");
+  }
+}
+
+async function enrichWebSearchResultsWithPageExcerpts(
+  results: WebSearchResult[],
+  settings: DashboardWebSearchSettings,
+): Promise<WebSearchResult[]> {
+  if (!settings.fetchPages || settings.pageFetchLimit <= 0) return results;
+  return Promise.all(
+    results.map(async (result, index) => {
+      if (index >= settings.pageFetchLimit) return result;
+      const excerpt = await fetchReadableWebPageExcerpt(result.url).catch(
+        () => "",
+      );
+      if (!excerpt) return result;
+      return {
+        ...result,
+        content: mergeWebSearchContent(result.content, excerpt),
+      };
+    }),
+  );
+}
+
+async function fetchReadableWebPageExcerpt(url: string): Promise<string> {
+  if (!isFetchableWebSearchUrl(url)) return "";
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    WEB_SEARCH_PAGE_FETCH_TIMEOUT_MS,
+  );
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        Accept: "text/html,text/plain;q=0.9,*/*;q=0.4",
+        "User-Agent": "JingyingCabinAI/1.0 (+web-search-grounding)",
+      },
+    });
+    if (!response.ok) return "";
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!/text\/html|text\/plain|application\/xhtml\+xml/i.test(contentType)) {
+      return "";
+    }
+    const body = await response.text();
+    return readableTextFromWebPage(body, contentType).slice(0, 1600);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isFetchableWebSearchUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === "localhost" ||
+      host.endsWith(".localhost") ||
+      host.endsWith(".local") ||
+      host.endsWith(".internal")
+    ) {
+      return false;
+    }
+    if (host.includes(":")) return false;
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) return true;
+    const parts = host.split(".").map((part) => Number.parseInt(part, 10));
+    if (parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255))
+      return false;
+    const [a, b] = parts;
+    return !(
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function readableTextFromWebPage(body: string, contentType: string): string {
+  const rawText = /html|xhtml/i.test(contentType)
+    ? body
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+        .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
+        .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, " ")
+        .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+    : body;
+  return decodeHtmlEntities(rawText).replace(/\s+/g, " ").trim();
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_match, code) => {
+      const parsed = Number.parseInt(code, 10);
+      return Number.isFinite(parsed) && parsed >= 0 && parsed <= 0x10ffff
+        ? String.fromCodePoint(parsed)
+        : "";
+    });
+}
+
+function mergeWebSearchContent(content: string, pageExcerpt: string): string {
+  const snippet = content.trim();
+  const excerpt = pageExcerpt.trim();
+  if (!snippet) return excerpt;
+  if (!excerpt || snippet.includes(excerpt.slice(0, 120))) return snippet;
+  return `${snippet}\n\nsource page excerpt: ${excerpt}`;
+}
 
 function buildWebSearchPromptText(
   metadata: DashboardWebSearchMetadata,
@@ -1116,9 +1426,12 @@ function buildWebSearchPromptText(
     JSON.stringify({
       status: metadata.status,
       ...(metadata.error ? { error: metadata.error } : {}),
+      ...(metadata.queries ? { queries: metadata.queries } : {}),
+      ...(metadata.warnings ? { warnings: metadata.warnings } : {}),
       results: metadata.results.map((result) => ({
         title: result.title,
         url: result.url,
+        sourceQuery: result.sourceQuery,
         content: result.content.slice(0, MAX_WEB_SEARCH_CONTENT_CHARS),
         publishedAt: result.publishedAt ?? null,
       })),

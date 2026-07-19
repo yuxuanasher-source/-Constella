@@ -1838,6 +1838,17 @@ describe("OverviewBoard AI panel", () => {
                 content: "Comparable live rooms mention average online ranges.",
                 publishedAt: "2026-07-18",
               },
+              {
+                title: "Chanmama replay review",
+                url: "https://www.chanmama.com/yunyingquan/article/1872.html",
+                content:
+                  "Source page excerpt says replay review should compare traffic quality and adoption.",
+              },
+              {
+                title: "1PK legend live report",
+                url: "https://www.1pk.com/Archive/View.aspx?id=295",
+                content: "Legend live ecology public report.",
+              },
             ],
           },
         },
@@ -1868,6 +1879,13 @@ describe("OverviewBoard AI panel", () => {
     expect(screen.getByText("Legend launch benchmark")).toBeInTheDocument();
     expect(
       screen.getByText("https://example.com/legend-live"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Chanmama replay review")).toBeInTheDocument();
+    expect(screen.getByText("1PK legend live report")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Source page excerpt says replay review should compare traffic quality and adoption.",
+      ),
     ).toBeInTheDocument();
 
     unmount();

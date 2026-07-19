@@ -311,6 +311,10 @@ function normalizeWebSearchMeta(value) {
           return {
             title: title.slice(0, 140),
             url: url.slice(0, 240),
+            sourceQuery:
+              typeof item?.sourceQuery === "string"
+                ? item.sourceQuery.trim().slice(0, 240)
+                : "",
             content:
               typeof item?.content === "string"
                 ? item.content.trim().slice(0, 220)
@@ -2039,8 +2043,11 @@ function webSearchLabel(status) {
 function AiWebSearchStatusCard({ webSearch }) {
   if (!webSearch) return null;
   const t = webSearchTone(webSearch.status);
+  const sourceCount = Array.isArray(webSearch.results)
+    ? webSearch.results.length
+    : 0;
   const results = Array.isArray(webSearch.results)
-    ? webSearch.results.slice(0, 2)
+    ? webSearch.results.slice(0, 4)
     : [];
 
   return (
@@ -2096,7 +2103,7 @@ function AiWebSearchStatusCard({ webSearch }) {
             lineHeight: 1.4,
           }}
         >
-          {results.length} sources
+          {sourceCount} sources
         </span>
       </div>
       {results.length ? (
@@ -2139,6 +2146,18 @@ function AiWebSearchStatusCard({ webSearch }) {
               >
                 {result.url}
               </a>
+              {result.content ? (
+                <div
+                  style={{
+                    fontSize: 10.8,
+                    lineHeight: 1.45,
+                    color: C.ink4,
+                    overflowWrap: "anywhere",
+                  }}
+                >
+                  {result.content}
+                </div>
+              ) : null}
             </div>
           ))}
         </div>

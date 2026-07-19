@@ -18,6 +18,13 @@ const createWebSearchProviderFromEnvMock = vi.fn();
 const listLiveReviewDocumentsMock = vi.fn();
 const createAiDraftMock = vi.fn();
 
+const ORIGINAL_WEB_SEARCH_ENV = {
+  WEB_SEARCH_TARGET_SITES: process.env.WEB_SEARCH_TARGET_SITES,
+  WEB_SEARCH_MAX_RESULTS: process.env.WEB_SEARCH_MAX_RESULTS,
+  WEB_SEARCH_RESULTS_PER_QUERY: process.env.WEB_SEARCH_RESULTS_PER_QUERY,
+  WEB_SEARCH_FETCH_PAGES: process.env.WEB_SEARCH_FETCH_PAGES,
+};
+
 vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseServerClient: createSupabaseServerClientMock,
 }));
@@ -100,6 +107,15 @@ describe("POST /api/ai/chat", () => {
     createWebSearchProviderFromEnvMock.mockReset();
     listLiveReviewDocumentsMock.mockReset();
     createAiDraftMock.mockReset();
+    vi.unstubAllGlobals();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 404 })),
+    );
+    for (const [key, value] of Object.entries(ORIGINAL_WEB_SEARCH_ENV)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
 
     createSupabaseServerClientMock.mockResolvedValue({ from: vi.fn() });
     getAuthContextMock.mockResolvedValue({
@@ -273,6 +289,123 @@ describe("POST /api/ai/chat", () => {
           metadata: expect.objectContaining({
             webSearchStatus: "succeeded",
             webSearchResultCount: 1,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("fans out web search to configured target sites and sends fetched page excerpts to the model", async () => {
+    process.env.WEB_SEARCH_TARGET_SITES = "chanmama.com,1pk.com";
+    process.env.WEB_SEARCH_MAX_RESULTS = "6";
+    process.env.WEB_SEARCH_RESULTS_PER_QUERY = "2";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "https://www.chanmama.com/yunyingquan/article/1872.html") {
+          return new Response(
+            "<html><head><title>ignore</title></head><body><main>Chanmama article says legend live rooms should compare average online users, traffic source quality, and replay adoption before making a retrospective.</main></body></html>",
+            { status: 200, headers: { "content-type": "text/html" } },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      }),
+    );
+    const webSearchProvider = {
+      search: vi.fn(async ({ query }: { query: string }) => {
+        if (query.includes("site:chanmama.com")) {
+          return [
+            {
+              title: "达人专场直播怎么复盘？",
+              url: "https://www.chanmama.com/yunyingquan/article/1872.html",
+              content: "短摘要只提到复盘步骤。",
+            },
+          ];
+        }
+        if (query.includes("site:1pk.com")) {
+          return [
+            {
+              title: "传奇直播生态爆发",
+              url: "https://www.1pk.com/Archive/View.aspx?id=295",
+              content: "公开报道提到传奇直播生态。",
+            },
+          ];
+        }
+        return [
+          {
+            title: "General legend live benchmark",
+            url: "https://example.com/legend-live",
+            content: "General search snippet.",
+          },
+        ];
+      }),
+    };
+    createWebSearchProviderFromEnvMock.mockReturnValue(webSearchProvider);
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "user",
+              content: "请联网搜索传奇复古产品同行直播间平均在线表现",
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    expect(webSearchProvider.search.mock.calls.map((call) => call[0])).toEqual([
+      {
+        query: "请联网搜索传奇复古产品同行直播间平均在线表现",
+        maxResults: 2,
+      },
+      {
+        query: "请联网搜索传奇复古产品同行直播间平均在线表现 site:chanmama.com",
+        maxResults: 2,
+      },
+      {
+        query: "请联网搜索传奇复古产品同行直播间平均在线表现 site:1pk.com",
+        maxResults: 2,
+      },
+    ]);
+    expect(body.knowledge.webSearch).toMatchObject({
+      status: "succeeded",
+      queries: [
+        "请联网搜索传奇复古产品同行直播间平均在线表现",
+        "请联网搜索传奇复古产品同行直播间平均在线表现 site:chanmama.com",
+        "请联网搜索传奇复古产品同行直播间平均在线表现 site:1pk.com",
+      ],
+      results: expect.arrayContaining([
+        expect.objectContaining({
+          title: "达人专场直播怎么复盘？",
+          sourceQuery:
+            "请联网搜索传奇复古产品同行直播间平均在线表现 site:chanmama.com",
+          content: expect.stringContaining(
+            "Chanmama article says legend live rooms should compare average online users",
+          ),
+        }),
+      ]),
+    });
+    const promptText = runAiGatewayMock.mock.calls[0][0].request.messages
+      .map((message: { content: string }) => message.content)
+      .join("\n");
+    expect(promptText).toContain(
+      "Chanmama article says legend live rooms should compare average online users",
+    );
+    expect(promptText).toContain("sourceQuery");
+    expect(recordAiInvocationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          metadata: expect.objectContaining({
+            webSearchStatus: "succeeded",
+            webSearchResultCount: 3,
+            webSearchQueryCount: 3,
           }),
         }),
       }),

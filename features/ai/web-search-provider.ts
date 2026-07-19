@@ -2,6 +2,7 @@ export type WebSearchResult = {
   title: string;
   url: string;
   content: string;
+  sourceQuery?: string;
   score?: number;
   publishedAt?: string | null;
 };
