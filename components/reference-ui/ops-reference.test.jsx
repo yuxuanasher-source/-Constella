@@ -8236,6 +8236,36 @@ describe("OpsReferenceApp settlement smoke", () => {
     vi.unstubAllEnvs();
   });
 
+  it("loads project options when settlement center is opened without prehydrated project cards", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/projects") {
+        return {
+          ok: true,
+          json: async () => ({ projects: projectManagementCards }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ reports: [], batches: [] }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        projectCards={undefined}
+        liveBatches={[]}
+        settlementScope={null}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/projects", undefined),
+    );
+    expect(await screen.findAllByText("Alpha Launch")).not.toHaveLength(0);
+  });
+
   const renderMobileSettlementLayout = () =>
     render(
       <OpsReferenceApp

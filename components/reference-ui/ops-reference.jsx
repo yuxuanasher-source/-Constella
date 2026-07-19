@@ -19770,6 +19770,8 @@ function buildExternalCostResolutionValue(draft) {
 
 function ScreenSettlement({ go }) {
   const projects = useOpsProjects();
+  const { projects: projectData, settlementPool: settlementPoolData } =
+    React.useContext(OpsLiveDataContext);
   const batches = useOpsSettlementBatches();
   const batchDetails = useOpsSettlementBatchDetails();
   const settlementPool = useOpsSettlementPool();
@@ -19845,6 +19847,20 @@ function ScreenSettlement({ go }) {
   const [costExceptionDrafts, setCostExceptionDrafts] = React.useState({});
   const [costDraft, setCostDraft] = React.useState(() => defaultCostDraft());
   const reconciliationBlockingHeadingRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (
+      projectData == null &&
+      settlementPoolData == null &&
+      actions.refreshProjects
+    ) {
+      actions
+        .refreshProjects()
+        .catch((error) =>
+          warnBackgroundRefreshFailure("settlement projects", error),
+        );
+    }
+  }, [actions, projectData, settlementPoolData]);
 
   React.useEffect(() => {
     if (!projectOptions.length) return;
