@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { runAiToolQuery } from "@/features/ai/ai-tool-layer";
 import type { KnowledgeClient } from "@/features/ai/knowledge-repository";
+import { createWebSearchProviderFromEnv } from "@/features/ai/web-search-provider";
 import { loadStreamerProjectMarketReferences } from "@/features/streamers/streamer-project-market-references";
 import { loadStreamerProjectReviewInput } from "@/features/streamers/streamer-project-review-loader";
 import { getAuthContext } from "@/lib/auth/context";
@@ -58,6 +59,7 @@ export async function POST(request: Request) {
             client: supabase as unknown as KnowledgeClient,
             organizationId: auth.organizationId,
             profileInput,
+            webSearchProvider: createWebSearchProviderFromEnv(),
           });
     const mergedExternalReferences =
       externalReferences.length > 0 ? externalReferences : marketReferences;

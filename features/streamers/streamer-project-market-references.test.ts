@@ -99,4 +99,49 @@ describe("loadStreamerProjectMarketReferences", () => {
     expect(rpc).not.toHaveBeenCalled();
     expect(references).toEqual([]);
   });
+
+  it("uses web search for remaining market reference slots", async () => {
+    const rpc = vi.fn(() => Promise.resolve({ data: [], error: null }));
+    const webSearchProvider = {
+      search: vi.fn(async () => [
+        {
+          title: "传奇复古直播间公开复盘",
+          url: "https://example.com/public-legend",
+          content: "公开案例提到平均在线、主播讲解节奏和素材复用。",
+          publishedAt: "2026-07-01",
+          score: 0.75,
+        },
+      ]),
+    };
+
+    const references = await loadStreamerProjectMarketReferences({
+      client: { rpc, from: vi.fn() },
+      organizationId: "org-1",
+      retrievedAt: "2026-07-16T10:00:00.000Z",
+      webSearchProvider,
+      profileInput: {
+        streamer: { id: "streamer-1", displayName: "阿星" },
+        project: { id: "project-1", name: "传奇复古", productType: "legend" },
+        tasks: [],
+        reports: [],
+        recordings: [],
+      },
+    });
+
+    expect(webSearchProvider.search).toHaveBeenCalledWith({
+      query: "传奇复古 直播间 平均在线 录屏 复盘",
+      maxResults: 3,
+    });
+    expect(references).toEqual([
+      {
+        id: "web:https://example.com/public-legend",
+        title: "传奇复古直播间公开复盘",
+        sourceName: "公网搜索",
+        sourceUrl: "https://example.com/public-legend",
+        retrievedAt: "2026-07-16T10:00:00.000Z",
+        summary: "公开案例提到平均在线、主播讲解节奏和素材复用。",
+        productType: "legend",
+      },
+    ]);
+  });
 });
