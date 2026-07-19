@@ -104,6 +104,172 @@ describe("ops ui migration audit", () => {
     ]);
   });
 
+  it("emits route-map evidence for module-backed routes", () => {
+    const audit = buildMigrationAudit({
+      routes: [
+        {
+          prototype: "projects.html",
+          targetRoute: "/console/projects",
+          module: "m1",
+          routeKey: "projects",
+          status: "ready-to-switch",
+          risk: "high",
+          dataDomains: ["features/projects"],
+          requiredTests: ["app/(ops)/console/projects/page.test.tsx"],
+        },
+      ],
+      moduleRoutes: [
+        {
+          module: "m1",
+          href: "/console/projects",
+          routeKey: "projects",
+          status: "partial",
+        },
+      ],
+      exists: (file) =>
+        [
+          "app/(ops)/console/projects/page.tsx",
+          "app/(ops)/console/projects/page.test.tsx",
+        ].includes(file),
+      readText: (file) =>
+        file.endsWith("page.tsx")
+          ? 'import { OpsShell } from "@/components/layouts/ops-shell";'
+          : "",
+    });
+
+    expect(audit.routes[0]).toEqual(
+      expect.objectContaining({
+        routeMap: {
+          module: "m1",
+          routeKey: "projects",
+          href: "/console/projects",
+          status: "partial",
+        },
+      }),
+    );
+  });
+
+  it("emits route-map mismatches as producer evidence instead of hiding them", () => {
+    const audit = buildMigrationAudit({
+      routes: [
+        {
+          prototype: "settlements.html",
+          targetRoute: "/console/settlements",
+          module: "m6",
+          routeKey: "projects",
+          status: "ready-to-switch",
+          risk: "money-or-evidence",
+          dataDomains: ["features/settlements"],
+          requiredTests: ["features/settlements/settlement-service.test.ts"],
+        },
+      ],
+      moduleRoutes: [
+        {
+          module: "m6",
+          href: "/console/stubs/m6",
+          routeKey: "settle",
+          status: "live",
+        },
+      ],
+      exists: () => true,
+      readText: () =>
+        'import { OpsShell } from "@/components/layouts/ops-shell";',
+    });
+
+    expect(audit.routes[0]).toEqual(
+      expect.objectContaining({
+        routeKey: "projects",
+        routeMap: {
+          module: "m6",
+          routeKey: "settle",
+          href: "/console/stubs/m6",
+          status: "live",
+        },
+      }),
+    );
+  });
+
+  it("emits explicit null route-map evidence when the module map has no match", () => {
+    const audit = buildMigrationAudit({
+      routes: [
+        {
+          prototype: "custom.html",
+          targetRoute: "/console/custom",
+          module: null,
+          routeKey: "projects",
+          status: "legacy-stub",
+          risk: "high",
+          dataDomains: ["features/projects"],
+          requiredTests: ["features/projects/project-queries.test.ts"],
+        },
+        {
+          prototype: "unknown.html",
+          targetRoute: "/console/unknown",
+          module: "m1",
+          routeKey: "projects",
+          status: "legacy-stub",
+          risk: "high",
+          dataDomains: ["features/projects"],
+          requiredTests: ["features/projects/project-queries.test.ts"],
+        },
+      ],
+      moduleRoutes: [],
+      exists: () => false,
+      readText: () => "",
+    });
+
+    expect(audit.routes.map((route) => route.routeMap)).toEqual([null, null]);
+  });
+
+  it("emits sensitive checklist evidence as false by default", () => {
+    const audit = buildMigrationAudit({
+      routes: [
+        {
+          prototype: "settlements.html",
+          targetRoute: "/console/settlements",
+          module: "m6",
+          routeKey: "settle",
+          status: "legacy-stub",
+          risk: "money-or-evidence",
+          dataDomains: ["features/settlements"],
+          requiredTests: ["features/settlements/settlement-service.test.ts"],
+        },
+        {
+          prototype: "audit.html",
+          targetRoute: "/console/audit",
+          module: "m7",
+          routeKey: "audit",
+          status: "ready-to-switch",
+          risk: "money-or-evidence",
+          dataDomains: ["features/audit-center"],
+          requiredTests: ["features/audit-center"],
+          hasSensitiveActionChecklist: true,
+        },
+      ],
+      moduleRoutes: [
+        {
+          module: "m6",
+          href: "/console/stubs/m6",
+          routeKey: "settle",
+          status: "live",
+        },
+        {
+          module: "m7",
+          href: "/console/stubs/m7",
+          routeKey: "audit",
+          status: "live",
+        },
+      ],
+      exists: () => true,
+      readText: () =>
+        'import { OpsShell } from "@/components/layouts/ops-shell";',
+    });
+
+    expect(
+      audit.routes.map((route) => route.hasSensitiveActionChecklist),
+    ).toEqual([false, true]);
+  });
+
   it.each([
     {
       name: "generate-route-skeleton",

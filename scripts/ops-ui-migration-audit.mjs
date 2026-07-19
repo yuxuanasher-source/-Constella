@@ -55,34 +55,13 @@ export async function loadRegistryRoutes({
     "route-migration-registry.ts",
   ),
 } = {}) {
-  const typescriptModule = await import("typescript");
-  const ts = typescriptModule.default ?? typescriptModule;
-  const resolvedRegistryPath = path.isAbsolute(registryPath)
-    ? registryPath
-    : path.join(repoRoot, registryPath);
-  const registrySource = readText(resolvedRegistryPath);
-  const transpiled = ts.transpileModule(registrySource, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022,
-    },
+  const routes = await loadTypescriptExport({
+    repoRoot,
+    readText,
+    sourcePath: registryPath,
+    exportName: "OPS_UI_MIGRATION_ROUTES",
   });
-  const exports = {};
-  const module = { exports };
 
-  vm.runInNewContext(
-    transpiled.outputText,
-    {
-      exports,
-      module,
-    },
-    {
-      filename: resolvedRegistryPath,
-      timeout: 1000,
-    },
-  );
-
-  const routes = module.exports.OPS_UI_MIGRATION_ROUTES;
   if (!Array.isArray(routes)) {
     throw new Error("OPS_UI_MIGRATION_ROUTES must be an array");
   }
@@ -90,7 +69,36 @@ export async function loadRegistryRoutes({
   return routes;
 }
 
-export function buildMigrationAudit({ routes, exists, readText }) {
+export async function loadModuleRoutes({
+  repoRoot = process.cwd(),
+  readText = (file) => fs.readFileSync(file, "utf8"),
+  moduleRouteMapPath = path.join(
+    repoRoot,
+    "features",
+    "ui-route-contracts",
+    "module-route-map.ts",
+  ),
+} = {}) {
+  const moduleRoutes = await loadTypescriptExport({
+    repoRoot,
+    readText,
+    sourcePath: moduleRouteMapPath,
+    exportName: "OPS_MODULE_ROUTES",
+  });
+
+  if (!Array.isArray(moduleRoutes)) {
+    throw new Error("OPS_MODULE_ROUTES must be an array");
+  }
+
+  return moduleRoutes;
+}
+
+export function buildMigrationAudit({
+  routes,
+  moduleRoutes = [],
+  exists,
+  readText,
+}) {
   const generatedAt = new Date().toISOString();
 
   return {
@@ -106,11 +114,15 @@ export function buildMigrationAudit({ routes, exists, readText }) {
 
       return {
         ...route,
+        requiredTests,
         pageFile,
         hasPage,
         usesOpsReference,
         hasShellRoute,
         missingTests,
+        routeMap: getRouteMapEvidence(route, moduleRoutes),
+        hasSensitiveActionChecklist:
+          route.hasSensitiveActionChecklist === true,
         nextAction: getNextAction({
           hasPage,
           usesOpsReference,
@@ -119,6 +131,60 @@ export function buildMigrationAudit({ routes, exists, readText }) {
         }),
       };
     }),
+  };
+}
+
+async function loadTypescriptExport({
+  repoRoot,
+  readText,
+  sourcePath,
+  exportName,
+}) {
+  const typescriptModule = await import("typescript");
+  const ts = typescriptModule.default ?? typescriptModule;
+  const resolvedSourcePath = path.isAbsolute(sourcePath)
+    ? sourcePath
+    : path.join(repoRoot, sourcePath);
+  const source = readText(resolvedSourcePath);
+  const transpiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  });
+  const exports = {};
+  const module = { exports };
+
+  vm.runInNewContext(
+    transpiled.outputText,
+    {
+      exports,
+      module,
+    },
+    {
+      filename: resolvedSourcePath,
+      timeout: 1000,
+    },
+  );
+
+  return module.exports[exportName];
+}
+
+function getRouteMapEvidence(route, moduleRoutes) {
+  if (!route.module) {
+    return null;
+  }
+
+  const moduleRoute = moduleRoutes.find((item) => item.module === route.module);
+  if (!moduleRoute) {
+    return null;
+  }
+
+  return {
+    module: moduleRoute.module,
+    routeKey: moduleRoute.routeKey,
+    href: moduleRoute.href,
+    status: moduleRoute.status,
   };
 }
 
@@ -195,10 +261,14 @@ function escapeMarkdownCell(value) {
 
 async function runCli() {
   const repoRoot = process.cwd();
-  const routes = await loadRegistryRoutes({ repoRoot });
+  const [routes, moduleRoutes] = await Promise.all([
+    loadRegistryRoutes({ repoRoot }),
+    loadModuleRoutes({ repoRoot }),
+  ]);
 
   const audit = buildMigrationAudit({
     routes,
+    moduleRoutes,
     exists: (file) => fs.existsSync(path.join(repoRoot, file)),
     readText: (file) => fs.readFileSync(path.join(repoRoot, file), "utf8"),
   });

@@ -326,11 +326,20 @@ describe("ops ui migration gate", () => {
     );
   });
 
-  it("fails a blocking route when route-map evidence is absent", () => {
-    const { routeMap, ...routeWithoutRouteMapEvidence } = baseRoute;
+  it.each([
+    ["missing", undefined],
+    ["null", null],
+  ])("fails a blocking route when route-map evidence is %s", (_name, value) => {
+    const route =
+      value === undefined
+        ? (() => {
+            const { routeMap, ...routeWithoutRouteMapEvidence } = baseRoute;
+            return routeWithoutRouteMapEvidence;
+          })()
+        : { ...baseRoute, routeMap: value };
 
     const result = evaluateRouteGate({
-      ...routeWithoutRouteMapEvidence,
+      ...route,
       status: "ready-to-switch",
       hasPage: true,
       hasShellRoute: true,
@@ -347,6 +356,33 @@ describe("ops ui migration gate", () => {
     ]);
     expect(result.notes).toEqual([]);
   });
+
+  it.each([
+    ["empty", {}],
+    ["module-only", { module: "m1" }],
+    ["route-key-only", { routeKey: "projects" }],
+  ])(
+    "fails a blocking route when route-map evidence is incomplete: %s",
+    (_name, routeMap) => {
+      const result = evaluateRouteGate({
+        ...baseRoute,
+        status: "ready-to-switch",
+        hasPage: true,
+        hasShellRoute: true,
+        requiredTests: ["app/(ops)/console/projects/page.test.tsx"],
+        missingTests: [],
+        usesOpsReference: false,
+        routeMap,
+      });
+
+      expect(result.passed).toBe(false);
+      expect(result.failures).toEqual([
+        expect.objectContaining({
+          code: "route-map-evidence-incomplete",
+        }),
+      ]);
+    },
+  );
 
   it("fails when included route-map module evidence is misaligned", () => {
     const result = evaluateRouteGate({

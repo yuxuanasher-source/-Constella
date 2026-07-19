@@ -227,6 +227,20 @@ function evaluateRouteMapEvidence(routeAudit, failures) {
   }
 
   if (
+    (typeof routeAudit.module === "string" &&
+      typeof routeMapEvidence.module !== "string") ||
+    (typeof routeAudit.routeKey === "string" &&
+      typeof routeMapEvidence.routeKey !== "string")
+  ) {
+    failures.push({
+      code: "route-map-evidence-incomplete",
+      message:
+        "Route-map evidence must include string module and routeKey fields when the registry route declares them.",
+    });
+    return;
+  }
+
+  if (
     routeMapEvidence.module !== undefined &&
     routeAudit.module !== undefined &&
     routeMapEvidence.module !== routeAudit.module

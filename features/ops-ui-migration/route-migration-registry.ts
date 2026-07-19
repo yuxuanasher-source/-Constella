@@ -21,6 +21,7 @@ export type OpsUiMigrationRoute = {
   risk: OpsMigrationRisk;
   readonly dataDomains: readonly string[];
   readonly requiredTests: readonly string[];
+  hasSensitiveActionChecklist?: boolean;
 };
 
 export const OPS_UI_MIGRATION_ROUTES = [

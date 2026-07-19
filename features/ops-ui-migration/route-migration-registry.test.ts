@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import { OPS_MODULE_ROUTES } from "@/features/ui-route-contracts/module-route-map";
 
 import { OPS_UI_MIGRATION_ROUTES } from "./route-migration-registry";
-import type { OpsMigrationStatus } from "./route-migration-registry";
+import type {
+  OpsMigrationStatus,
+  OpsUiMigrationRoute,
+} from "./route-migration-registry";
 
 const EXPECTED_INITIAL_MIGRATION_INVENTORY = [
   {
@@ -158,5 +161,17 @@ describe("OPS_UI_MIGRATION_ROUTES", () => {
 
     expect(sensitive.length).toBeGreaterThan(0);
     expect(sensitive.every((entry) => isNotMigrated(entry.status))).toBe(true);
+  });
+
+  it("does not checklist-approve money or evidence surfaces by default", () => {
+    const sensitive: readonly OpsUiMigrationRoute[] =
+      OPS_UI_MIGRATION_ROUTES.filter(
+        (entry) => entry.risk === "money-or-evidence",
+      );
+
+    expect(sensitive.length).toBeGreaterThan(0);
+    expect(
+      sensitive.every((entry) => entry.hasSensitiveActionChecklist !== true),
+    ).toBe(true);
   });
 });
