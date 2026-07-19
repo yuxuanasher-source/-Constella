@@ -1325,6 +1325,57 @@ describe("OverviewBoard AI panel", () => {
     expect(go).toHaveBeenCalledWith("reports", "report-risk");
   });
 
+  it("explains command queue ranking and AI safety boundaries", () => {
+    render(
+      <OverviewBoard
+        dashboard={{
+          ...dashboard,
+          queue: [
+            {
+              key: "queue-weak-evidence",
+              title: "3 条弱证据即将超时",
+              subtitle: "报数审核 · OCR 置信度低",
+              tone: "red",
+              target: { route: "reports", id: "report-risk" },
+              sourceRef: "live_reports:weak-evidence",
+              ownerLabel: "审核运营",
+              impactLabel: "阻塞结算锁定",
+            },
+          ],
+          risks: [
+            {
+              key: "risk-batch",
+              title: "结算批次金额差异",
+              subtitle: "批次 SET-0719-02",
+              tone: "amber",
+              target: { route: "settle", id: "batch-risk" },
+              sourceRef: "settlement_batches:batch-risk",
+            },
+          ],
+        }}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    const context = screen.getByRole("region", { name: "AI 排序解释" });
+    expect(within(context).getByText("为什么排第一")).toBeInTheDocument();
+    expect(within(context).getByText("3 条弱证据即将超时")).toBeInTheDocument();
+    expect(within(context).getByText("阻塞结算锁定")).toBeInTheDocument();
+    expect(
+      within(context).getByText("live_reports:weak-evidence"),
+    ).toBeInTheDocument();
+    expect(within(context).getByText("引用范围")).toBeInTheDocument();
+    expect(within(context).getByText("dashboard.queue")).toBeInTheDocument();
+    expect(within(context).getByText("dashboard.risks")).toBeInTheDocument();
+    expect(
+      within(context).getByText("金额、证据、结算和审计动作需人工确认"),
+    ).toBeInTheDocument();
+  });
+
   it("applies command-center visual surfaces to the dashboard", () => {
     const { container } = render(
       <OverviewBoard

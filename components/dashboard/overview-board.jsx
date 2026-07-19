@@ -4680,6 +4680,7 @@ function normalizeCommandQueueItem(item, sourceKind) {
 
   return {
     key,
+    sourceKind,
     priority: item.priorityLabel || commandPriorityForTone(toneName),
     tone: toneName,
     title,
@@ -4732,6 +4733,7 @@ function buildCommandQueueItems({
       subtitle: report.projectName || report.streamerName || "待审报数",
       impact: "阻塞报数审核",
       evidence: report.id ? `live_reports:${report.id}` : "live_reports",
+      sourceKind: "live_reports",
       owner: "审核运营",
       actionLabel: "进入复核队列",
       target: { route: "reports", id: report.id },
@@ -4747,6 +4749,7 @@ function buildCommandQueueItems({
       subtitle: task.projectName || task.streamerName || "排班任务异常",
       impact: "影响今日交付",
       evidence: task.id ? `live_tasks:${task.id}` : "live_tasks",
+      sourceKind: "live_tasks",
       owner: "排班运营",
       actionLabel: "查看排班任务",
       target: { route: "tasks", id: task.id },
@@ -4764,6 +4767,7 @@ function buildCommandQueueItems({
       subtitle: batch.statusLabel || batch.status || "结算中心",
       impact: "影响结算锁定",
       evidence: batch.id ? `settlement_batches:${batch.id}` : "settlement_batches",
+      sourceKind: "settlement_batches",
       owner: "财务",
       actionLabel: "打开差异说明",
       target: { route: "settle", id: batch.id },
@@ -4779,6 +4783,7 @@ function buildCommandQueueItems({
       subtitle: project.status || "项目管理",
       impact: "影响项目交付",
       evidence: project.id ? `projects:${project.id}` : "projects",
+      sourceKind: "projects",
       owner: project.leadOps || project.ownerName || "项目经理",
       actionLabel: "进入项目处理",
       target: { route: "project", id: project.id },
@@ -4793,6 +4798,7 @@ function buildCommandQueueItems({
       subtitle: "AI 已生成草稿，待人工确认",
       impact: "待审阅产物",
       evidence: todo.draftId ? `ai_drafts:${todo.draftId}` : "ai_drafts",
+      sourceKind: "ai_drafts",
       owner: "项目经理",
       actionLabel: "审阅草稿",
       target: { route: todo.route || "warroom", id: todo.targetId },
@@ -4800,6 +4806,62 @@ function buildCommandQueueItems({
   }
 
   return items.slice(0, 6);
+}
+
+function commandContextSources(items) {
+  const sources = [];
+  for (const item of items || []) {
+    const source =
+      item.sourceKind ||
+      (typeof item.evidence === "string" && item.evidence.includes(":")
+        ? item.evidence.split(":")[0]
+        : item.evidence);
+    if (source && !sources.includes(source)) sources.push(source);
+  }
+  return sources.slice(0, 4);
+}
+
+function CommandAiContextPanel({ items }) {
+  const top = items?.[0];
+  const sources = commandContextSources(items);
+
+  return (
+    <section
+      role="region"
+      aria-label="AI 排序解释"
+      className="ob-ai-context-card"
+    >
+      <div className="ob-ai-context-head">
+        <span>AI 排序解释</span>
+        <span className="ob-ai-context-mode">只读</span>
+      </div>
+      {top ? (
+        <>
+          <div className="ob-ai-context-block">
+            <p>为什么排第一</p>
+            <strong>{top.title}</strong>
+            <small>{top.impact}</small>
+            <code>{top.evidence}</code>
+          </div>
+          <div className="ob-ai-context-block">
+            <p>引用范围</p>
+            <div className="ob-ai-context-sources">
+              {sources.map((source) => (
+                <span key={source}>{source}</span>
+              ))}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="ob-ai-context-empty">
+          当前无必须处理事项，AI 仅保留草稿和经营问答入口。
+        </div>
+      )}
+      <div className="ob-ai-context-boundary">
+        金额、证据、结算和审计动作需人工确认
+      </div>
+    </section>
+  );
 }
 
 function CommandQueuePanel({ items, updatedLabel, go }) {
@@ -5247,6 +5309,17 @@ export function OverviewBoard({
         .ob-command-priority{display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:22px;padding:0 7px;border-radius:4px;font-size:11px;font-weight:700;white-space:nowrap}
         .ob-command-next{height:26px;border:1px solid #bedaff;border-radius:4px;background:#e8f3ff;color:#0e42d2;font-size:12px;font-weight:600;padding:0 9px;cursor:pointer;white-space:nowrap}
         .ob-command-queue-empty{grid-column:1 / -1;padding:18px 16px;border-top:1px solid #e5e6eb;color:#86909c;font-size:12px;text-align:center;background:#fff}
+        .ob-ai-context-card{flex:0 0 auto;background:#fff;border:1px solid #e5e6eb;border-radius:6px;box-shadow:0 1px 2px rgba(29,33,41,.04);padding:12px;display:flex;flex-direction:column;gap:10px}
+        .ob-ai-context-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;font-weight:650;color:#1d2129}
+        .ob-ai-context-mode{height:20px;padding:0 7px;border-radius:4px;background:#f2f3f5;color:#86909c;font-size:11px;font-weight:650;line-height:20px}
+        .ob-ai-context-block{display:flex;flex-direction:column;gap:5px;min-width:0}
+        .ob-ai-context-block p{margin:0;color:#86909c;font-size:12px}
+        .ob-ai-context-block strong{color:#1d2129;font-size:12px;font-weight:650;line-height:1.35}
+        .ob-ai-context-block small{color:#4e5969;font-size:12px;line-height:1.35}
+        .ob-ai-context-block code{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid #e5e6eb;border-radius:4px;background:#fbfcfe;padding:5px 7px;color:#4e5969;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}
+        .ob-ai-context-sources{display:flex;flex-wrap:wrap;gap:6px}
+        .ob-ai-context-sources span{height:22px;padding:0 7px;border:1px solid #d8e3ff;border-radius:4px;background:#f2f6ff;color:#165dff;font-size:11px;line-height:20px}
+        .ob-ai-context-boundary,.ob-ai-context-empty{border-top:1px solid #e5e6eb;padding-top:9px;color:#86909c;font-size:12px;line-height:1.4}
         @container (max-width:840px){.ob-command-queue-table{grid-template-columns:72px minmax(220px,1.4fr) minmax(140px,.8fr) minmax(170px,1fr) 92px 116px}}
         .scl::-webkit-scrollbar{width:8px;height:8px}
         .scl::-webkit-scrollbar-thumb{background:#cfd7e6;border-radius:4px}
@@ -5265,7 +5338,7 @@ export function OverviewBoard({
         @container (max-width:760px){.ob-admission-funnel-grid{grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr)}.ob-admission-funnel-head-decision{display:none}.ob-admission-funnel-decision{grid-column:1 / -1}}
         @container (max-width:520px){.ob-admission-funnel-grid{grid-template-columns:1fr}.ob-admission-funnel-head-stage,.ob-admission-funnel-head-decision{display:none}.ob-admission-funnel-segment-wrap,.ob-admission-funnel-decision{grid-column:1 / -1}}
         .ob-personal{min-width:0;display:flex;flex-direction:column;gap:16px}
-        .ob-ai{min-width:0;position:fixed;right:var(--ob-pad-r);top:var(--ob-ai-top);bottom:var(--ob-ai-bottom);width:var(--ob-ai-width);z-index:20;display:flex;flex-direction:column}
+        .ob-ai{min-width:0;position:fixed;right:var(--ob-pad-r);top:var(--ob-ai-top);bottom:var(--ob-ai-bottom);width:var(--ob-ai-width);z-index:20;display:flex;flex-direction:column;gap:12px}
         /* 只有窗口真的被缩窄时才切换为纵向自适应，常见桌面全屏保持完整三栏。 */
         @media(max-width:1180px){.ob-layout{grid-template-columns:1fr;padding:16px 16px 32px}.ob-personal{order:-1}.ob-ai{position:relative;right:auto;top:auto;bottom:auto;width:auto;height:min(620px,calc(100vh - 120px));min-height:520px;z-index:auto}}
         @media(max-width:760px){.ob-layout{padding:14px 12px 28px}.ob-ai{height:540px;min-height:480px}}
@@ -6005,6 +6078,7 @@ export function OverviewBoard({
 
         {/* ===== 右：AI 助手 ===== */}
         <aside className="ob-ai">
+          <CommandAiContextPanel items={commandItems} />
           <AiPanel
             user={currentUser}
             projects={scopedProjects}
