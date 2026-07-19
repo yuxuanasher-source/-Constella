@@ -11,6 +11,40 @@ const DEFAULT_OUTPUT_DIR = path.join(
   ".superpowers",
   "ops-ui-migration",
 );
+const MIGRATION_BATCH_POLICIES = [
+  {
+    name: "foundation-and-shell",
+    commands: ["pnpm ops-ui:migration:audit", "pnpm ops-ui:migration:gate"],
+    routes: ["/console"],
+  },
+  {
+    name: "command-and-ai",
+    commands: ["pnpm vitest run components/dashboard/overview-board.test.jsx"],
+    routes: ["/console/ai", "/console/war-room"],
+  },
+  {
+    name: "supply-and-projects",
+    commands: [
+      'pnpm vitest run "app/(ops)/console/projects/page.test.tsx" components/reference-ui/ops-reference.test.jsx',
+    ],
+    routes: [
+      "/console/projects",
+      "/console/projects/[projectId]",
+      "/console/streamers",
+      "/console/admissions",
+      "/console/schedules",
+    ],
+  },
+  {
+    name: "money-evidence-and-governance",
+    commands: [
+      "pnpm test:permissions",
+      "pnpm test:custom-settlement",
+      "pnpm test:p3-governance",
+    ],
+    risk: "money-or-evidence",
+  },
+];
 
 export function normalizeRouteFilePath(route) {
   if (route !== "/console" && !route.startsWith("/console/")) {
@@ -134,6 +168,32 @@ export function buildMigrationAudit({
   };
 }
 
+export function buildMigrationBatches(routes) {
+  const routesByTarget = new Map();
+  for (const route of routes) {
+    if (!routesByTarget.has(route.targetRoute)) {
+      routesByTarget.set(route.targetRoute, route);
+    }
+  }
+
+  return MIGRATION_BATCH_POLICIES.map((policy) => {
+    const batchRoutes =
+      policy.routes?.filter((targetRoute) => routesByTarget.has(targetRoute)) ??
+      uniqueRouteTargets(
+        routes
+          .filter((route) => route.risk === policy.risk)
+          .map((route) => route.targetRoute),
+      );
+
+    return {
+      name: policy.name,
+      routes: batchRoutes,
+      commands: policy.commands,
+      command: policy.commands.join(" && "),
+    };
+  });
+}
+
 async function loadTypescriptExport({
   repoRoot,
   readText,
@@ -252,11 +312,41 @@ function renderMarkdownReport(audit) {
     );
   }
 
+  lines.push("", "## Recommended Batches", "");
+
+  for (const batch of buildMigrationBatches(audit.routes)) {
+    lines.push(`### ${batch.name}`);
+    lines.push(
+      `- Routes: ${batch.routes.length > 0 ? batch.routes.join(", ") : "none"}`,
+    );
+    lines.push("- Commands:");
+    for (const command of batch.commands) {
+      lines.push(`  - \`${command}\``);
+    }
+    lines.push("");
+  }
+
   return `${lines.join("\n")}\n`;
 }
 
 function escapeMarkdownCell(value) {
   return String(value).replace(/\|/g, "\\|");
+}
+
+function uniqueRouteTargets(targetRoutes) {
+  const seen = new Set();
+  const uniqueRoutes = [];
+
+  for (const targetRoute of targetRoutes) {
+    if (seen.has(targetRoute)) {
+      continue;
+    }
+
+    seen.add(targetRoute);
+    uniqueRoutes.push(targetRoute);
+  }
+
+  return uniqueRoutes;
 }
 
 async function runCli() {

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import {
+  buildMigrationBatches,
   buildMigrationAudit,
   loadRegistryRoutes,
   normalizeRouteFilePath,
+  writeAuditReports,
 } from "./ops-ui-migration-audit.mjs";
 
 describe("ops ui migration audit", () => {
@@ -372,4 +377,155 @@ describe("ops ui migration audit", () => {
       }),
     ).rejects.toThrow("OPS_UI_MIGRATION_ROUTES must be an array");
   });
+
+  it("builds migration batches in the approved deterministic order", () => {
+    const batches = buildMigrationBatches([
+      routeFixture("/console/war-room", "high"),
+      routeFixture("/console/projects", "high"),
+      routeFixture("/console", "high"),
+      routeFixture("/console/ai", "high"),
+    ]);
+
+    expect(batches.map((batch) => batch.name)).toEqual([
+      "foundation-and-shell",
+      "command-and-ai",
+      "supply-and-projects",
+      "money-evidence-and-governance",
+    ]);
+    expect(batches.map((batch) => batch.commands)).toEqual([
+      ["pnpm ops-ui:migration:audit", "pnpm ops-ui:migration:gate"],
+      ["pnpm vitest run components/dashboard/overview-board.test.jsx"],
+      [
+        'pnpm vitest run "app/(ops)/console/projects/page.test.tsx" components/reference-ui/ops-reference.test.jsx',
+      ],
+      [
+        "pnpm test:permissions",
+        "pnpm test:custom-settlement",
+        "pnpm test:p3-governance",
+      ],
+    ]);
+  });
+
+  it("places policy routes into the expected migration batches", () => {
+    const batches = buildMigrationBatches([
+      routeFixture("/console/projects/[projectId]", "high"),
+      routeFixture("/console/streamers", "high"),
+      routeFixture("/console/admissions", "high"),
+      routeFixture("/console/schedules", "high"),
+      routeFixture("/console/projects", "high"),
+      routeFixture("/console/ai", "high"),
+      routeFixture("/console/war-room", "high"),
+      routeFixture("/console", "high"),
+    ]);
+
+    expect(batchRoutes(batches, "foundation-and-shell")).toEqual(["/console"]);
+    expect(batchRoutes(batches, "command-and-ai")).toEqual([
+      "/console/ai",
+      "/console/war-room",
+    ]);
+    expect(batchRoutes(batches, "supply-and-projects")).toEqual([
+      "/console/projects",
+      "/console/projects/[projectId]",
+      "/console/streamers",
+      "/console/admissions",
+      "/console/schedules",
+    ]);
+  });
+
+  it("places every money-or-evidence route into the governance batch once", () => {
+    const batches = buildMigrationBatches([
+      routeFixture("/console/settlements", "money-or-evidence"),
+      routeFixture("/console/projects", "high"),
+      routeFixture("/console/audit", "money-or-evidence"),
+      routeFixture("/console/settlements", "money-or-evidence"),
+    ]);
+
+    expect(batchRoutes(batches, "money-evidence-and-governance")).toEqual([
+      "/console/settlements",
+      "/console/audit",
+    ]);
+  });
+
+  it("preserves batch order when routes are missing", () => {
+    const batches = buildMigrationBatches([]);
+
+    expect(batches.map((batch) => batch.name)).toEqual([
+      "foundation-and-shell",
+      "command-and-ai",
+      "supply-and-projects",
+      "money-evidence-and-governance",
+    ]);
+    expect(batches.map((batch) => batch.routes)).toEqual([[], [], [], []]);
+  });
+
+  it("writes the recommended batches section to markdown in batch order", () => {
+    const outputDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ops-ui-migration-audit-"),
+    );
+    const audit = {
+      generatedAt: "2026-07-20T00:00:00.000Z",
+      routes: [
+        auditRouteFixture("/console", "high"),
+        auditRouteFixture("/console/ai", "high"),
+        auditRouteFixture("/console/projects", "high"),
+        auditRouteFixture("/console/settlements", "money-or-evidence"),
+      ],
+    };
+
+    const { markdownPath } = writeAuditReports(audit, outputDir);
+    const markdown = fs.readFileSync(markdownPath, "utf8");
+
+    expect(markdown).toContain("## Recommended Batches");
+    expect(markdown.indexOf("### foundation-and-shell")).toBeLessThan(
+      markdown.indexOf("### command-and-ai"),
+    );
+    expect(markdown.indexOf("### command-and-ai")).toBeLessThan(
+      markdown.indexOf("### supply-and-projects"),
+    );
+    expect(markdown.indexOf("### supply-and-projects")).toBeLessThan(
+      markdown.indexOf("### money-evidence-and-governance"),
+    );
+    expect(markdown).toContain("- Routes: /console");
+    expect(markdown).toContain("- Routes: /console/settlements");
+    expect(markdown).toContain("- `pnpm ops-ui:migration:audit`");
+    expect(markdown).toContain("- `pnpm ops-ui:migration:gate`");
+    expect(markdown).toContain(
+      '- `pnpm vitest run "app/(ops)/console/projects/page.test.tsx" components/reference-ui/ops-reference.test.jsx`',
+    );
+    expect(markdown).toContain("- `pnpm test:permissions`");
+    expect(markdown).toContain("- `pnpm test:custom-settlement`");
+    expect(markdown).toContain("- `pnpm test:p3-governance`");
+    expect(markdown).not.toContain("&&");
+  });
 });
+
+function routeFixture(targetRoute, risk) {
+  return {
+    prototype: `${targetRoute.replaceAll("/", "-")}.html`,
+    targetRoute,
+    module: "m1",
+    routeKey: "projects",
+    status: "legacy-stub",
+    risk,
+    dataDomains: ["features/projects"],
+    requiredTests: [],
+  };
+}
+
+function auditRouteFixture(targetRoute, risk) {
+  return {
+    ...routeFixture(targetRoute, risk),
+    pageFile: "app/(ops)/console/page.tsx",
+    hasPage: true,
+    usesOpsReference: false,
+    hasShellRoute: true,
+    missingTests: [],
+    routeMap: null,
+    hasSensitiveActionChecklist: false,
+    nextAction: "gate-route-switch",
+  };
+}
+
+function batchRoutes(batches, name) {
+  return batches.find((batch) => batch.name === name)?.routes;
+}
