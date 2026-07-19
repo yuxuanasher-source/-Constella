@@ -155,6 +155,7 @@ export function createConversationTurnStream({
           "dashboard:role-home",
           "xingyao:feature-store",
           "knowledge-base",
+          "web-search",
         ]);
 
         const legacyResponse = await executeLegacyChat(
@@ -221,7 +222,8 @@ export function createConversationTurnStream({
           if (legacyEvent.event === "delta") {
             const delta = stringField(legacyEvent.data.content) ?? "";
             if (!delta) continue;
-            providerName = providerField(legacyEvent.data.providerName) ?? providerName;
+            providerName =
+              providerField(legacyEvent.data.providerName) ?? providerName;
             accumulatedContent += delta;
             send({
               type: "response.delta",
@@ -237,8 +239,10 @@ export function createConversationTurnStream({
             const content =
               messageContent(legacyEvent.data.message) ?? accumulatedContent;
             const metadata = responseMetadata(legacyEvent.data);
-            providerName = providerField(legacyEvent.data.providerName) ?? providerName;
-            invocationId = stringField(legacyEvent.data.invocationId) ?? invocationId;
+            providerName =
+              providerField(legacyEvent.data.providerName) ?? providerName;
+            invocationId =
+              stringField(legacyEvent.data.invocationId) ?? invocationId;
             await service.markValidating(actor, turn.turnId);
             await service.completeTurn(actor, turn.turnId, {
               content,
@@ -262,8 +266,10 @@ export function createConversationTurnStream({
           if (legacyEvent.event === "error") {
             const summary =
               stringField(legacyEvent.data.error) ?? "AI provider failed";
-            providerName = providerField(legacyEvent.data.providerName) ?? providerName;
-            invocationId = stringField(legacyEvent.data.invocationId) ?? invocationId;
+            providerName =
+              providerField(legacyEvent.data.providerName) ?? providerName;
+            invocationId =
+              stringField(legacyEvent.data.invocationId) ?? invocationId;
             await service.failTurn(actor, turn.turnId, {
               content: accumulatedContent,
               providerName,

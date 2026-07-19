@@ -276,6 +276,51 @@ describe("POST /api/ai/chat", () => {
     );
   });
 
+  it("marks web search as empty when the provider returns no usable results", async () => {
+    const webSearchProvider = {
+      search: vi.fn().mockResolvedValue([]),
+    };
+    createWebSearchProviderFromEnvMock.mockReturnValue(webSearchProvider);
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      new Request("http://localhost/api/ai/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [
+            {
+              role: "user",
+              content: "web search competitor market benchmark for legend live",
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    expect(body.knowledge.webSearch).toMatchObject({
+      status: "empty",
+      results: [],
+    });
+    const messages = runAiGatewayMock.mock.calls[0][0].request.messages;
+    const promptText = messages
+      .map((message: { content: string }) => message.content)
+      .join("\n");
+    expect(promptText).toContain('"status":"empty"');
+    expect(recordAiInvocationMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          metadata: expect.objectContaining({
+            webSearchStatus: "empty",
+            webSearchResultCount: 0,
+          }),
+        }),
+      }),
+    );
+  });
+
   it("forwards sanitized chat history plus grounded dashboard facts to the configured model", async () => {
     const { POST } = await import("./route");
 
@@ -336,9 +381,7 @@ describe("POST /api/ai/chat", () => {
             }),
             expect.objectContaining({
               role: "system",
-              content: expect.stringContaining(
-                "不得编造 facts 中不存在的数字",
-              ),
+              content: expect.stringContaining("不得编造 facts 中不存在的数字"),
             }),
             { role: "assistant", content: "上一轮回复" },
             { role: "user", content: "默认分析本月" },
@@ -622,7 +665,8 @@ describe("POST /api/ai/chat", () => {
         }),
       }),
     );
-    const fastMessages = runAiGatewayMock.mock.calls.at(-1)?.[0].request.messages;
+    const fastMessages =
+      runAiGatewayMock.mock.calls.at(-1)?.[0].request.messages;
     const fastPrompt = fastMessages
       .map((message: { content: string }) => message.content)
       .join("\n");
@@ -636,7 +680,8 @@ describe("POST /api/ai/chat", () => {
         }),
       }),
     );
-    const deepMessages = runAiGatewayMock.mock.calls.at(-1)?.[0].request.messages;
+    const deepMessages =
+      runAiGatewayMock.mock.calls.at(-1)?.[0].request.messages;
     const deepPrompt = deepMessages
       .map((message: { content: string }) => message.content)
       .join("\n");
@@ -644,7 +689,9 @@ describe("POST /api/ai/chat", () => {
     expect(fastPrompt).toContain("mode profile: fast");
     expect(fastPrompt).toContain("answer in 3-5 concise bullets");
     expect(deepPrompt).toContain("mode profile: deep");
-    expect(deepPrompt).toContain("evidence, uncertainty, risks, and next actions");
+    expect(deepPrompt).toContain(
+      "evidence, uncertainty, risks, and next actions",
+    );
     expect(deepPrompt).not.toEqual(fastPrompt);
   });
 
@@ -768,10 +815,10 @@ describe("POST /api/ai/chat", () => {
     });
 
     // 流式路径不给 deterministic 兜底 provider 机会（JSON 契约将其视为失败）。
-    const streamProviders =
-      runAiGatewayStreamMock.mock.calls[0][0].providers as Array<{
-        name: string;
-      }>;
+    const streamProviders = runAiGatewayStreamMock.mock.calls[0][0]
+      .providers as Array<{
+      name: string;
+    }>;
     expect(streamProviders.every((p) => p.name !== "deterministic")).toBe(true);
 
     // 流式同样记账（done 时通过 after() 后置执行，但调用发生在流内）。
@@ -840,7 +887,11 @@ describe("POST /api/ai/chat", () => {
       lastUserMessage: "当前重试请求",
       responseMetadata: {
         grounding: { generatedAt: "2026-07-11T03:00:00.000Z", facts: [] },
-        knowledge: { passages: [], citations: [], reviewAssist: { sampleSize: 0 } },
+        knowledge: {
+          passages: [],
+          citations: [],
+          reviewAssist: { sampleSize: 0 },
+        },
         retrospectiveDraft: { draftType: "retrospective", status: "pending" },
       },
       invocationMetadata: {

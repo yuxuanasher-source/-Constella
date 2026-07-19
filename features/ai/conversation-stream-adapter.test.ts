@@ -33,32 +33,34 @@ describe("conversation stream adapter", () => {
   it("maps legacy chat events to typed events and commits before completion", async () => {
     const callOrder: string[] = [];
     const service = serviceDouble({ callOrder });
-    const executeLegacyChat = vi.fn().mockImplementation(async (_request, options) => {
-      await options.onContextReady({
-        messages: [{ role: "user", content: "冻结上下文" }],
-        attachments: [],
-        mode: "deep",
-        primaryProvider: "deepseek",
-      });
-      await options.onGenerationStarted("deepseek");
-      return legacySseResponse([
-        ["delta", { content: "处理", providerName: "deepseek" }],
-        ["delta", { content: "建议", providerName: "deepseek" }],
-        [
-          "done",
-          {
-            message: { role: "assistant", content: "处理建议" },
-            providerName: "deepseek",
-            invocationId: "invocation-1",
-            status: "succeeded",
-            grounding: {
-              projectHealth: { topProjects: [] },
-              suggestedActions: [],
+    const executeLegacyChat = vi
+      .fn()
+      .mockImplementation(async (_request, options) => {
+        await options.onContextReady({
+          messages: [{ role: "user", content: "冻结上下文" }],
+          attachments: [],
+          mode: "deep",
+          primaryProvider: "deepseek",
+        });
+        await options.onGenerationStarted("deepseek");
+        return legacySseResponse([
+          ["delta", { content: "处理", providerName: "deepseek" }],
+          ["delta", { content: "建议", providerName: "deepseek" }],
+          [
+            "done",
+            {
+              message: { role: "assistant", content: "处理建议" },
+              providerName: "deepseek",
+              invocationId: "invocation-1",
+              status: "succeeded",
+              grounding: {
+                projectHealth: { topProjects: [] },
+                suggestedActions: [],
+              },
             },
-          },
-        ],
-      ]);
-    });
+          ],
+        ]);
+      });
 
     const response = createConversationTurnStream({
       request: new Request(
@@ -100,6 +102,16 @@ describe("conversation stream adapter", () => {
       "validating",
       "complete",
     ]);
+    expect(service.prepareTurn).toHaveBeenCalledWith(
+      { organizationId: "org-1", userId: "user-1" },
+      "turn-1",
+      [
+        "dashboard:role-home",
+        "xingyao:feature-store",
+        "knowledge-base",
+        "web-search",
+      ],
+    );
     expect(service.completeTurn).toHaveBeenCalledWith(
       { organizationId: "org-1", userId: "user-1" },
       "turn-1",
@@ -124,11 +136,13 @@ describe("conversation stream adapter", () => {
   it("persists a retryable failed turn before emitting response.failed", async () => {
     const callOrder: string[] = [];
     const service = serviceDouble({ callOrder });
-    const executeLegacyChat = vi.fn().mockResolvedValue(
-      legacySseResponse([
-        ["error", { error: "provider timeout", providerName: "deepseek" }],
-      ]),
-    );
+    const executeLegacyChat = vi
+      .fn()
+      .mockResolvedValue(
+        legacySseResponse([
+          ["error", { error: "provider timeout", providerName: "deepseek" }],
+        ]),
+      );
 
     const response = createConversationTurnStream({
       request: new Request("http://localhost/api/ai/turns"),
@@ -163,7 +177,9 @@ describe("conversation stream adapter", () => {
   it("does not emit a terminal event when terminal persistence fails", async () => {
     const service = serviceDouble({ callOrder: [] });
     service.failTurn.mockRejectedValue(new Error("database unavailable"));
-    const executeLegacyChat = vi.fn().mockRejectedValue(new Error("socket closed"));
+    const executeLegacyChat = vi
+      .fn()
+      .mockRejectedValue(new Error("socket closed"));
 
     const response = createConversationTurnStream({
       request: new Request("http://localhost/api/ai/turns"),
@@ -225,8 +241,7 @@ function legacySseResponse(
   return new Response(
     events
       .map(
-        ([event, data]) =>
-          `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+        ([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
       )
       .join(""),
     { status: 200, headers: { "content-type": "text/event-stream" } },

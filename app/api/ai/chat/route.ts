@@ -110,7 +110,7 @@ const WEB_SEARCH_ANSWER_RULES = [
   "web-search data block rules:",
   "1. Use web-search results only as external reference material; do not treat them as internal business truth.",
   "2. When citing external market or competitor claims, include the source title and URL when available.",
-  "3. If web-search status is failed or unconfigured, state that the external search did not return usable evidence and continue with internal facts only.",
+  "3. If web-search status is empty, failed, or unconfigured, state that the external search did not return usable evidence and continue with internal facts only.",
   "4. Never invent search results, market prices, PCU, ACU, or industry reports that are not present in web-search or business fact blocks.",
 ].join("\n");
 
@@ -211,9 +211,8 @@ export async function executeDashboardAiChat(
       responseMetadata = {
         grounding: trustedGatewayContext.responseMetadata.grounding,
         knowledge: trustedGatewayContext.responseMetadata.knowledge,
-        retrospectiveDraft:
-          trustedGatewayContext.responseMetadata
-            .retrospectiveDraft as DashboardKnowledgeContext["retrospectiveDraft"],
+        retrospectiveDraft: trustedGatewayContext.responseMetadata
+          .retrospectiveDraft as DashboardKnowledgeContext["retrospectiveDraft"],
       };
       invocationMetadata = trustedGatewayContext.invocationMetadata;
     } else {
@@ -668,7 +667,8 @@ function streamChatResponse({
               providerName: result.providerName,
               status: result.status,
               invocationId,
-              streamStarted: event.type === "error" ? event.streamStarted : false,
+              streamStarted:
+                event.type === "error" ? event.streamStarted : false,
             });
           }
           finalEventSent = true;
@@ -850,7 +850,7 @@ type DashboardKnowledgeContext = {
 };
 
 type DashboardWebSearchMetadata = {
-  status: "skipped" | "unconfigured" | "succeeded" | "failed";
+  status: "skipped" | "unconfigured" | "succeeded" | "empty" | "failed";
   results: WebSearchResult[];
   error?: string;
 };
@@ -871,7 +871,10 @@ type StreamerProfileInsightGroundingRow = {
   tags: string[] | null;
   source_ref: string;
   confirmed_at: string | null;
-  streamers?: { display_name: string | null } | { display_name: string | null }[] | null;
+  streamers?:
+    | { display_name: string | null }
+    | { display_name: string | null }[]
+    | null;
 };
 
 async function loadStreamerProfileInsightsForGrounding({
@@ -1075,7 +1078,7 @@ async function loadDashboardWebSearchContext(
       .filter((result) => result.title && result.url && result.content)
       .slice(0, 3);
     const metadata: DashboardWebSearchMetadata = {
-      status: "succeeded",
+      status: results.length ? "succeeded" : "empty",
       results,
     };
     return {

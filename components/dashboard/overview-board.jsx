@@ -168,9 +168,13 @@ function normalizeAiMessageMeta(value) {
   const suggestedActions = normalizeSuggestedActions(
     value?.suggestedActions || value?.grounding?.suggestedActions,
   );
+  const webSearch = normalizeWebSearchMeta(
+    value?.webSearch || value?.knowledge?.webSearch,
+  );
   const meta = {
     ...(projectHealth ? { projectHealth } : {}),
     ...(suggestedActions ? { suggestedActions } : {}),
+    ...(webSearch ? { webSearch } : {}),
   };
   return Object.keys(meta).length ? meta : undefined;
 }
@@ -286,6 +290,61 @@ function normalizeSuggestedActions(value) {
   return actions.length ? actions : null;
 }
 
+function normalizeWebSearchMeta(value) {
+  const status =
+    value?.status === "succeeded" ||
+    value?.status === "empty" ||
+    value?.status === "failed" ||
+    value?.status === "unconfigured"
+      ? value.status
+      : null;
+  if (!status) return null;
+  const results = Array.isArray(value?.results)
+    ? value.results
+        .map((item) => {
+          const title =
+            typeof item?.title === "string" ? item.title.trim() : "";
+          const url = safeWebSearchUrl(
+            typeof item?.url === "string" ? item.url : "",
+          );
+          if (!title || !url) return null;
+          return {
+            title: title.slice(0, 140),
+            url: url.slice(0, 240),
+            content:
+              typeof item?.content === "string"
+                ? item.content.trim().slice(0, 220)
+                : "",
+            publishedAt:
+              typeof item?.publishedAt === "string"
+                ? item.publishedAt.trim().slice(0, 40)
+                : null,
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 3)
+    : [];
+  const error = typeof value?.error === "string" ? value.error.trim() : "";
+  return {
+    status,
+    results,
+    ...(error ? { error: error.slice(0, 220) } : {}),
+  };
+}
+
+function safeWebSearchUrl(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return "";
+  try {
+    const parsed = new URL(text);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? text
+      : "";
+  } catch {
+    return "";
+  }
+}
+
 function normalizeAiTodoDrafts(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -312,7 +371,7 @@ function normalizeAiTodoDraft(value) {
         ? value.id
         : typeof value?.key === "string" && value.key.startsWith("ai-draft:")
           ? value.key.slice("ai-draft:".length)
-        : "";
+          : "";
   if (!title || !id) return null;
   const priority =
     value?.priority === "high" ||
@@ -323,13 +382,17 @@ function normalizeAiTodoDraft(value) {
           value?.count === "medium" ||
           value?.count === "low"
         ? value.count
-      : "medium";
+        : "medium";
   return {
     key: `ai-draft:${id}`,
     text: title.slice(0, 160),
     count: priority,
     tone:
-      priority === "high" ? "danger" : priority === "medium" ? "warn" : "neutral",
+      priority === "high"
+        ? "danger"
+        : priority === "medium"
+          ? "warn"
+          : "neutral",
     route:
       typeof value?.route === "string" && value.route ? value.route : undefined,
     targetId:
@@ -1261,7 +1324,10 @@ function AdmissionFunnelModel({ admission }) {
 
         {stages.map((stage, index) => {
           const value = Math.abs(Number(stage.value) || 0);
-          const pct = Math.min(Math.max(Math.round((value / base) * 100), 6), 100);
+          const pct = Math.min(
+            Math.max(Math.round((value / base) * 100), 6),
+            100,
+          );
           const ofFirst =
             first > 0 ? `${Math.round((value / first) * 100)}%` : "—";
           const next = stages[index + 1];
@@ -1274,14 +1340,12 @@ function AdmissionFunnelModel({ admission }) {
           const tone =
             index === stages.length - 1
               ? {
-                  fill:
-                    "linear-gradient(180deg,var(--violet-600) 0%,var(--blue-800) 100%)",
+                  fill: "linear-gradient(180deg,var(--violet-600) 0%,var(--blue-800) 100%)",
                   metric: "var(--blue-50)",
                   accent: "var(--violet-600)",
                 }
               : {
-                  fill:
-                    "linear-gradient(180deg,var(--blue-500) 0%,var(--violet-600) 100%)",
+                  fill: "linear-gradient(180deg,var(--blue-500) 0%,var(--violet-600) 100%)",
                   metric: "var(--violet-50)",
                   accent: "var(--blue-600)",
                 };
@@ -1959,12 +2023,149 @@ function priorityTone(priority) {
   return tone("ok");
 }
 
+function webSearchTone(status) {
+  if (status === "succeeded") return tone("info");
+  if (status === "failed") return tone("danger");
+  return tone("warn");
+}
+
+function webSearchLabel(status) {
+  if (status === "succeeded") return "Web search succeeded";
+  if (status === "empty") return "Web search returned no usable sources";
+  if (status === "unconfigured") return "Web search is not configured";
+  return "Web search failed";
+}
+
+function AiWebSearchStatusCard({ webSearch }) {
+  if (!webSearch) return null;
+  const t = webSearchTone(webSearch.status);
+  const results = Array.isArray(webSearch.results)
+    ? webSearch.results.slice(0, 2)
+    : [];
+
+  return (
+    <div
+      data-testid="ai-web-search-status-card"
+      style={{
+        border: `1px solid ${C.border}`,
+        borderRadius: 12,
+        background: C.soft,
+        padding: "9px 10px",
+        display: "grid",
+        gap: 7,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          minWidth: 0,
+        }}
+      >
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: 999,
+            background: t.solid,
+            flexShrink: 0,
+          }}
+        />
+        <span
+          style={{
+            minWidth: 0,
+            flex: 1,
+            fontSize: 12,
+            fontWeight: 730,
+            color: C.ink,
+            overflowWrap: "anywhere",
+          }}
+        >
+          {webSearchLabel(webSearch.status)}
+        </span>
+        <span
+          style={{
+            flexShrink: 0,
+            color: t.color,
+            background: t.bg,
+            borderRadius: 999,
+            padding: "2px 7px",
+            fontSize: 10.5,
+            fontWeight: 720,
+            lineHeight: 1.4,
+          }}
+        >
+          {results.length} sources
+        </span>
+      </div>
+      {results.length ? (
+        <div
+          style={{
+            display: "grid",
+            gap: 6,
+            paddingTop: 2,
+            borderTop: `1px solid ${C.divider}`,
+          }}
+        >
+          {results.map((result) => (
+            <div key={result.url} style={{ display: "grid", gap: 2 }}>
+              <a
+                href={result.url}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  fontSize: 11.5,
+                  lineHeight: 1.45,
+                  color: C.primaryDeep,
+                  fontWeight: 700,
+                  overflowWrap: "anywhere",
+                  textDecoration: "none",
+                }}
+              >
+                {result.title}
+              </a>
+              <a
+                href={result.url}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  fontSize: 10.5,
+                  lineHeight: 1.45,
+                  color: C.muted,
+                  overflowWrap: "anywhere",
+                  textDecoration: "none",
+                }}
+              >
+                {result.url}
+              </a>
+            </div>
+          ))}
+        </div>
+      ) : webSearch.error ? (
+        <div
+          style={{
+            fontSize: 11.5,
+            lineHeight: 1.5,
+            color: C.ink3,
+            overflowWrap: "anywhere",
+          }}
+        >
+          {webSearch.error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function AiProjectHealthCard({ projectHealth }) {
   const project = projectHealth?.topProjects?.[0];
   if (!project) return null;
 
   const t = priorityTone(project.priority);
-  const reasons = Array.isArray(project.reasons) ? project.reasons.slice(0, 3) : [];
+  const reasons = Array.isArray(project.reasons)
+    ? project.reasons.slice(0, 3)
+    : [];
   const evidence = Array.isArray(project.evidence)
     ? project.evidence.slice(0, 2)
     : [];
@@ -2563,9 +2764,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           ? payload.conversation.id
           : "";
       if (!nextId) {
-        throw new Error(
-          payload?.error || "星耀 AI 会话协议不可用，请稍后重试",
-        );
+        throw new Error(payload?.error || "星耀 AI 会话协议不可用，请稍后重试");
       }
 
       conversationIdRef.current = nextId;
@@ -2651,7 +2850,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         if (!delta) return;
         streamedText += delta;
         activeTurnId = payload?.turnId || activeTurnId;
-        activeAssistantMessageId = payload?.messageId || activeAssistantMessageId;
+        activeAssistantMessageId =
+          payload?.messageId || activeAssistantMessageId;
         onAssistantMessageId?.(activeAssistantMessageId);
         upsertAiMessage({
           id: activeAssistantMessageId,
@@ -2665,11 +2865,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       if (eventName === "response.completed") {
         sawTerminalEvent = true;
         activeTurnId = payload?.turnId || activeTurnId;
-        activeAssistantMessageId = payload?.messageId || activeAssistantMessageId;
+        activeAssistantMessageId =
+          payload?.messageId || activeAssistantMessageId;
         onAssistantMessageId?.(activeAssistantMessageId);
-        const completedMeta = normalizeAiMessageMeta(
-          payload?.meta || payload,
-        );
+        const completedMeta = normalizeAiMessageMeta(payload?.meta || payload);
         upsertAiMessage({
           id: activeAssistantMessageId,
           role: "ai",
@@ -2712,10 +2911,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       if (!dataLines.length) return;
       try {
         const payload = JSON.parse(dataLines.join("\n"));
-        if (
-          payload?.type === eventName &&
-          isConversationStreamEvent(payload)
-        ) {
+        if (payload?.type === eventName && isConversationStreamEvent(payload)) {
           handleEvent(eventName, payload);
         }
       } catch {
@@ -2861,8 +3057,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         // review / risk → 真实经营诊断代理（只传 projectId，明细由服务端取数）
         const projectId = (projects || [])[0]?.id;
         if (!projectId) {
-          text =
-            "当前范围内暂无可诊断的项目，请先创建项目或调整周期后再试。";
+          text = "当前范围内暂无可诊断的项目，请先创建项目或调整周期后再试。";
         } else {
           const res = await fetch("/api/ai/project-reviews", {
             method: "POST",
@@ -2974,14 +3169,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
                 turnId: replacementTurnId,
                 text: item.text
                   ? `${item.text}\n\n⚠ 回复中断：${
-                      error instanceof Error
-                        ? error.message
-                        : "AI 会话恢复失败"
+                      error instanceof Error ? error.message : "AI 会话恢复失败"
                     }`
                   : `⚠ ${
-                      error instanceof Error
-                        ? error.message
-                        : "AI 会话恢复失败"
+                      error instanceof Error ? error.message : "AI 会话恢复失败"
                     }`,
               }
             : item,
@@ -2999,7 +3190,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       body: JSON.stringify({ action }),
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json?.error || "Failed to create AI todo draft");
+    if (!res.ok)
+      throw new Error(json?.error || "Failed to create AI todo draft");
     if (json?.todo) onTodoDraftCreated?.(json.todo);
     return json?.todo;
   }
@@ -3413,6 +3605,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
               {m.role === "ai" ? (
                 <div style={{ display: "grid", gap: 9 }}>
                   <AiMessageContent text={m.text} />
+                  <AiWebSearchStatusCard webSearch={m.meta?.webSearch} />
                   <AiProjectHealthCard projectHealth={m.meta?.projectHealth} />
                   <AiSuggestedActionCard
                     actions={m.meta?.suggestedActions}
@@ -5659,7 +5852,6 @@ export function OverviewBoard({
                 ) : null}
               </div>
               <AdmissionFunnelModel admission={admission} />
-
             </div>
           ) : null}
 

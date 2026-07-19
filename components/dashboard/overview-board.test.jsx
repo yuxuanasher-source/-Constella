@@ -33,8 +33,9 @@ describe("OverviewBoard AI panel", () => {
     });
     vi.stubGlobal(
       "fetch",
-      vi.fn((url, options) =>
-        protocolFetch(url, options) || defaultFetchResponse(url),
+      vi.fn(
+        (url, options) =>
+          protocolFetch(url, options) || defaultFetchResponse(url),
       ),
     );
   });
@@ -175,7 +176,9 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.change(input, { target: { value: "分析风险" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
-    expect(await screen.findByText("⚠ 星耀 AI 会话协议不可用")).toBeInTheDocument();
+    expect(
+      await screen.findByText("⚠ 星耀 AI 会话协议不可用"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("分析风险")).not.toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith("/api/ai/chat", expect.anything());
   });
@@ -214,7 +217,9 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.change(input, { target: { value: "新问题" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
-    expect(await screen.findByText("fresh conversation reply")).toBeInTheDocument();
+    expect(
+      await screen.findByText("fresh conversation reply"),
+    ).toBeInTheDocument();
     expect(
       fetch.mock.calls.some(
         ([url]) => url === "/api/ai/conversations/conversation-fresh/turns",
@@ -387,7 +392,9 @@ describe("OverviewBoard AI panel", () => {
     const retryPayload = JSON.parse(retryCall[1].body);
     expect(Object.keys(retryPayload)).toEqual(["clientRequestId"]);
     expect(screen.getAllByText("分析风险")).toHaveLength(1);
-    expect(screen.queryByText("重试", { selector: "div" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("重试", { selector: "div" }),
+    ).not.toBeInTheDocument();
   });
 
   it("marks the replacement assistant message failed when a retry stream disconnects", async () => {
@@ -397,7 +404,8 @@ describe("OverviewBoard AI panel", () => {
         return Promise.resolve({
           ok: true,
           status: 201,
-          json: () => Promise.resolve({ conversation: { id: "conversation-1" } }),
+          json: () =>
+            Promise.resolve({ conversation: { id: "conversation-1" } }),
         });
       }
       if (url === "/api/ai/conversations") {
@@ -556,8 +564,9 @@ describe("OverviewBoard AI panel", () => {
       content: "流式回复完成",
       chunks: ["流式", "回复"],
     });
-    fetch.mockImplementation((url, options) =>
-      protocolFetch(url, options) || defaultFetchResponse(url),
+    fetch.mockImplementation(
+      (url, options) =>
+        protocolFetch(url, options) || defaultFetchResponse(url),
     );
 
     const { container } = render(
@@ -602,7 +611,9 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
     await waitFor(() =>
-      expect(fetch.mock.calls.some(([url]) => url.endsWith("/turns"))).toBe(true),
+      expect(fetch.mock.calls.some(([url]) => url.endsWith("/turns"))).toBe(
+        true,
+      ),
     );
     const turnCall = fetch.mock.calls.find(([url]) => url.endsWith("/turns"));
     const payload = JSON.parse(turnCall[1].body);
@@ -642,7 +653,9 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
     await waitFor(() =>
-      expect(fetch.mock.calls.some(([url]) => url.endsWith("/turns"))).toBe(true),
+      expect(fetch.mock.calls.some(([url]) => url.endsWith("/turns"))).toBe(
+        true,
+      ),
     );
     const turnCall = fetch.mock.calls.find(([url]) => url.endsWith("/turns"));
     const payload = JSON.parse(turnCall[1].body);
@@ -704,7 +717,9 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.click(screen.getByText("生成复盘报告"));
 
     await waitFor(() =>
-      expect(fetch.mock.calls.some(([url]) => url.endsWith("/turns"))).toBe(true),
+      expect(fetch.mock.calls.some(([url]) => url.endsWith("/turns"))).toBe(
+        true,
+      ),
     );
     expect(fetch).not.toHaveBeenCalledWith(
       "/api/ai/project-reviews",
@@ -770,9 +785,7 @@ describe("OverviewBoard AI panel", () => {
     expect(JSON.parse(reviewCall[1].body)).toEqual({
       projectId: "3f5a1f9c-8f61-4f7a-9a44-2b6d8f0c1e57",
     });
-    expect(
-      await screen.findByText(/项目经营诊断已生成。/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/项目经营诊断已生成。/)).toBeInTheDocument();
   });
 
   it("hints instead of calling project-reviews when no project is loaded", async () => {
@@ -882,7 +895,9 @@ describe("OverviewBoard AI panel", () => {
       await screen.findByText("经营健康判断已基于当前角色看板生成。"),
     ).toBeInTheDocument();
     expect(screen.getByText("毛利率：30%")).toBeInTheDocument();
-    expect(screen.getByText("先复核高风险项目和毛利拖累项。")).toBeInTheDocument();
+    expect(
+      screen.getByText("先复核高风险项目和毛利拖累项。"),
+    ).toBeInTheDocument();
     expect(screen.getByText("需人工确认")).toBeInTheDocument();
   });
 
@@ -1425,7 +1440,9 @@ describe("OverviewBoard AI panel", () => {
 
     expect(container.querySelector(".ob-kpi-grid")).toBeTruthy();
     expect(styleText).toContain("@container (max-width:860px)");
-    expect(styleText).toContain("grid-template-columns:repeat(2,minmax(0,1fr))");
+    expect(styleText).toContain(
+      "grid-template-columns:repeat(2,minmax(0,1fr))",
+    );
     expect(labels).toHaveLength(8);
     for (const label of labels) {
       expect(label).toHaveStyle({
@@ -1807,6 +1824,124 @@ describe("OverviewBoard AI panel", () => {
     expect(screen.getAllByText("Nova Launch").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("renders web search status and source links returned by the AI chat API", async () => {
+    mockConversationProtocol({
+      content: "AI summary with external evidence",
+      meta: {
+        knowledge: {
+          webSearch: {
+            status: "succeeded",
+            results: [
+              {
+                title: "Legend launch benchmark",
+                url: "https://example.com/legend-live",
+                content: "Comparable live rooms mention average online ranges.",
+                publishedAt: "2026-07-18",
+              },
+            ],
+          },
+        },
+      },
+    });
+    const { container, unmount } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-web-search", name: "123", role: "owner" }}
+      />,
+    );
+
+    const input = container.querySelector("input");
+    fireEvent.change(input, {
+      target: { value: "web search competitor market benchmark" },
+    });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(
+      await screen.findByText("AI summary with external evidence"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("ai-web-search-status-card")).toBeInTheDocument();
+    expect(screen.getByText("Web search succeeded")).toBeInTheDocument();
+    expect(screen.getByText("Legend launch benchmark")).toBeInTheDocument();
+    expect(
+      screen.getByText("https://example.com/legend-live"),
+    ).toBeInTheDocument();
+
+    unmount();
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-web-search", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(
+      await screen.findByText("AI summary with external evidence"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("ai-web-search-status-card")).toBeInTheDocument();
+  });
+
+  it("does not render unsafe web search source URLs from stored metadata", async () => {
+    mockConversationProtocol({
+      content: "AI summary with sanitized external evidence",
+      meta: {
+        knowledge: {
+          webSearch: {
+            status: "succeeded",
+            results: [
+              {
+                title: "Unsafe script URL",
+                url: "javascript:alert(1)",
+                content: "This source should be dropped.",
+              },
+              {
+                title: "Safe source",
+                url: "https://example.com/safe-source",
+                content: "This source should remain visible.",
+              },
+            ],
+          },
+        },
+      },
+    });
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{
+          id: "user-web-search-safe-url",
+          name: "123",
+          role: "owner",
+        }}
+      />,
+    );
+
+    const input = container.querySelector("input");
+    fireEvent.change(input, {
+      target: { value: "web search competitor market benchmark" },
+    });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(
+      await screen.findByText("AI summary with sanitized external evidence"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Unsafe script URL")).not.toBeInTheDocument();
+    expect(screen.getByText("Safe source")).toBeInTheDocument();
+    expect(
+      screen.getByText("https://example.com/safe-source"),
+    ).toBeInTheDocument();
+  });
+
   it("creates a pending todo draft from an AI suggested action", async () => {
     const protocolFetch = createConversationProtocolFetch({
       content: "AI summary",
@@ -1876,7 +2011,9 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.change(input, { target: { value: "What should we fix first?" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
-    fireEvent.click(await screen.findByRole("button", { name: "创建待办草稿" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "创建待办草稿" }),
+    );
 
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
@@ -1976,8 +2113,7 @@ describe("OverviewBoard AI panel", () => {
 function protocolSse(events) {
   return events
     .map(
-      ([event, data]) =>
-        `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+      ([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
     )
     .join("");
 }
@@ -2029,7 +2165,9 @@ function createConversationProtocolFetch({
         ok: true,
         status: 201,
         json: () =>
-          Promise.resolve({ conversation: { id: conversationId, title: "新会话" } }),
+          Promise.resolve({
+            conversation: { id: conversationId, title: "新会话" },
+          }),
       });
     }
     if (url === "/api/ai/conversations") {
@@ -2038,7 +2176,9 @@ function createConversationProtocolFetch({
         status: 200,
         json: () =>
           Promise.resolve({
-            conversations: created ? [{ id: conversationId, title: "新会话" }] : [],
+            conversations: created
+              ? [{ id: conversationId, title: "新会话" }]
+              : [],
           }),
       });
     }
@@ -2122,8 +2262,9 @@ function createConversationProtocolFetch({
 
 function mockConversationProtocol(options) {
   const protocolFetch = createConversationProtocolFetch(options);
-  fetch.mockImplementation((url, requestOptions) =>
-    protocolFetch(url, requestOptions) || defaultFetchResponse(url),
+  fetch.mockImplementation(
+    (url, requestOptions) =>
+      protocolFetch(url, requestOptions) || defaultFetchResponse(url),
   );
 }
 
