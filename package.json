@@ -29,6 +29,7 @@
     "test:ui-smoke": "vitest run components/reference-ui/ops-reference.test.jsx components/reference-ui/ops-reference-org-members.test.jsx components/reference-ui/streamer-mobile-reference.test.jsx",
     "ops-ui:migration:audit": "node scripts/ops-ui-migration-audit.mjs",
     "ops-ui:migration:skeletons": "node scripts/ops-ui-generate-route-skeletons.mjs",
+    "ops-ui:migration:gate": "node scripts/ops-ui-migration-gate.mjs",
     "audit:security": "pnpm audit --audit-level moderate",
     "test:watch": "vitest",
     "format": "prettier --write .",
