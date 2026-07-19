@@ -264,6 +264,9 @@ describe("POST /api/ai/chat", () => {
     expect(promptText).toContain("web-search");
     expect(promptText).toContain("Legend game live benchmark");
     expect(promptText).toContain("https://example.com/legend-live");
+    expect(promptText).toContain(
+      "If web-search status is succeeded, never say the system cannot access the internet",
+    );
     expect(recordAiInvocationMock).toHaveBeenCalledWith(
       expect.objectContaining({
         input: expect.objectContaining({

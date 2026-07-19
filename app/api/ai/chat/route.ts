@@ -110,8 +110,10 @@ const WEB_SEARCH_ANSWER_RULES = [
   "web-search data block rules:",
   "1. Use web-search results only as external reference material; do not treat them as internal business truth.",
   "2. When citing external market or competitor claims, include the source title and URL when available.",
-  "3. If web-search status is empty, failed, or unconfigured, state that the external search did not return usable evidence and continue with internal facts only.",
-  "4. Never invent search results, market prices, PCU, ACU, or industry reports that are not present in web-search or business fact blocks.",
+  "3. If web-search status is succeeded, never say the system cannot access the internet or cannot perform web search; acknowledge that web search returned sources.",
+  "4. If succeeded sources do not contain a requested number such as average online, PCU, or ACU, say the external sources did not provide a verifiable number instead of saying web search is unavailable.",
+  "5. If web-search status is empty, failed, or unconfigured, state that the external search did not return usable evidence and continue with internal facts only.",
+  "6. Never invent search results, market prices, PCU, ACU, or industry reports that are not present in web-search or business fact blocks.",
 ].join("\n");
 
 // 流式回答（SSE）可能超过默认的函数时长限制；只对本路由放宽到 60s。
