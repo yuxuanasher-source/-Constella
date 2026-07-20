@@ -29,6 +29,7 @@ describe("recording production feedback schema", () => {
   it("keeps streamer access scoped to own project/application rows", () => {
     expect(migration).toContain("project_recording_guides_streamer_read_visible");
     expect(migration).toContain("current_streamer_id");
+    expect(migration).toContain("p.is_public_to_streamers = true");
     expect(migration).toContain("project_recording_guides_staff_access");
   });
 });

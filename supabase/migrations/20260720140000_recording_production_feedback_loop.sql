@@ -120,6 +120,7 @@ using (
     where p.id = project_recording_guides.project_id
       and p.organization_id = project_recording_guides.organization_id
       and p.open_signup = true
+      and p.is_public_to_streamers = true
       and p.status in ('recruiting', 'pending_start', 'active', 'paused')
   )
   and public.current_streamer_id(organization_id) is not null
