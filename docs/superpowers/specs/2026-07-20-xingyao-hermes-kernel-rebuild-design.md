@@ -26,7 +26,7 @@ API 仍然存在，但它只是星耀产品调用自有 Hermes Fork 的传输入
 - 旧星耀 AI 的诊断、归因、风险雷达、grounding、deep-thinking 编排和回答口径全部下线，不包装成 Hermes skill，也不在新链路中调用。
 - Hermes 可以读取当前用户有权读取的数据，但没有任何业务操作权限。
 - 组织隔离和角色权限由星耀业务系统签发的不可伪造执行上下文决定，模型参数不得决定权限。
-- 星耀业务 Skills 使用 Hermes 官方 Skills 机制，但生产 Skills 是只读发布物，Hermes 不得自行创建或修改。
+- 星耀业务 Skills 使用 Hermes 官方 Skills 机制，并允许通过星耀 Skill 中心受控安装；生产 Skills 是经过扫描、审批、签名和版本锁定的只读发布物，运行中的 Hermes 不得自行安装、创建、更新或删除。
 - 首期禁用 Hermes Memory；星耀会话仍由产品会话系统持久化。后续只有在完成组织和用户命名空间隔离后才评估 Memory。
 - 当前产品已有的认证、业务领域服务、只读 DTO、会话、附件净化、调用账本和审计属于平台基础设施，可以保留；旧 AI 推理和分析逻辑不保留。
 
@@ -39,6 +39,8 @@ API 仍然存在，但它只是星耀产品调用自有 Hermes Fork 的传输入
 - [Tools Runtime](https://hermes-agent.nousresearch.com/docs/developer-guide/tools-runtime)
 - [Toolsets Reference](https://hermes-agent.nousresearch.com/docs/reference/toolsets-reference)
 - [Build a Hermes Plugin](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins)
+- [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills/)
+- [Working with Skills](https://hermes-agent.nousresearch.com/docs/guides/work-with-skills/)
 
 官方默认 `hermes-api-server` toolset 保留文件、终端、浏览器、代码执行、定时任务、委派、Memory 和 Skills 管理等大部分能力，不能直接作为星耀生产配置。官方 `skills` toolset 也包含 `skill_manage`，不能原样开放。
 
@@ -61,7 +63,7 @@ xingyao-hermes-agent/
 ```text
 xingyao-hermes-agent/
   xingyao/                         # 星耀执行上下文、策略、数据客户端
-  plugins/xingyao/                 # 星耀原生只读工具和固定 Skills
+  plugins/xingyao/                 # 星耀原生只读工具和内置核心 Skills
   gateway/platforms/xingyao_api/   # 星耀专用服务端入口
   tests/xingyao/                   # 星耀安全与集成测试
 ```
@@ -88,7 +90,7 @@ xingyao-hermes-agent/
           -> 验证服务身份和 ActorAssertion
           -> 创建不可变 XingyaoExecutionContext
           -> 官方 AIAgent.run_conversation(...)
-              -> 固定星耀 Skills
+              -> XingyaoSkillPolicy 解析当前组织、角色允许的已签名 Skills
               -> xingyao-readonly 原生工具集
                   -> 星耀内部 Read API
                       -> 现有业务领域服务与安全 DTO
@@ -135,6 +137,8 @@ organizationId
 role
 conversationId
 allowedReadScopes
+enabledSkillVersions
+skillGrantsHash
 pageContext
 jti
 iat
@@ -145,8 +149,9 @@ exp
 
 - 有效期不超过 5 分钟，每个用户回合重新签发。
 - `role` 必须属于现有 `owner`、`ops_manager`、`operator_business`、`finance`、`streamer` 枚举。
+- `enabledSkillVersions` 只能由服务端根据当前组织、角色和已批准 Registry 解析，条目只包含不可变 `skillId + version`；`skillGrantsHash` 是其规范化摘要。
 - `pageContext` 只包含经过校验的对象 ID 和页面类型，不携带客户端自报权限。
-- 请求正文中的 `organizationId`、`role`、`allowedReadScopes` 一律不可信；出现冲突时拒绝请求。
+- 请求正文中的 `organizationId`、`role`、`allowedReadScopes`、`enabledSkillVersions` 或 `skillGrantsHash` 一律不可信；出现冲突时拒绝请求。
 - 原始断言、服务密钥和下游访问凭证永不进入模型消息、tool schema、日志正文或错误输出。
 
 Fork 新增不可变 `XingyaoExecutionContext`，并显式沿以下链路传递：
@@ -271,12 +276,12 @@ Hermes 不定义新的业务权限矩阵，也不拥有超级角色。`allowedRe
 缓存、会话、证据和幂等键必须至少包含：
 
 ```text
-organizationId + userId + role + scopesHash + conversationId + profileVersion
+organizationId + userId + role + scopesHash + skillGrantsHash + conversationId + profileVersion
 ```
 
 任何仅以 `conversationId`、`sessionId` 或自然语言名称作为隔离键的实现都不合格。
 
-每个回合都重新从当前服务端认证状态计算 actor fingerprint。恢复 Hermes session 前必须与会话保存的 fingerprint 比较；组织、角色或 scopes 任一发生变化时，立即终止旧 Hermes session 并创建新 session，旧工具结果不得重新注入新权限上下文。产品若支持切换组织，也必须先在服务端重新验证该用户的有效 membership，不能直接接受客户端选择值。
+每个回合都重新从当前服务端认证状态计算 actor fingerprint。恢复 Hermes session 前必须与会话保存的 fingerprint 比较；组织、角色、scopes、Skill grants 或 profile version 任一发生变化时，立即终止旧 Hermes session 并创建新 session，旧工具结果和旧 Skill 内容不得重新注入新权限上下文。产品若支持切换组织，也必须先在服务端重新验证该用户的有效 membership，不能直接接受客户端选择值。
 
 ## 10. 无操作权限
 
@@ -302,9 +307,18 @@ Hermes 工具表中不得存在以下能力：
 
 这些写入由 Next.js 产品代码执行，不是 Hermes 工具权限，也不能改变业务状态。任何草稿进入正式业务流程仍需用户在现有业务界面中明确确认。
 
-## 11. Skills 策略
+## 11. Skills 与 Skill 中心
 
-星耀 Skills 作为 `plugins/xingyao` 的固定发布物随 Fork 镜像发布，并通过官方 `ctx.register_skill()` 或当前版本等价机制注册。
+### 11.1 保留官方 Skills 内核
+
+保留 Hermes 官方 Skills 的渐进披露、`skills_list`、`skill_view`、Skill metadata、引用文件和模板加载能力。星耀不重新实现 Skill 格式或加载协议。
+
+Skills 分为两类：
+
+1. 内置核心 Skills：随 `xingyao-hermes-agent` 版本发布，承载星耀基础业务语义和统一输出规范。
+2. 受控安装 Skills：来自 Hermes 官方目录、批准的 GitHub 仓库或其他白名单来源，经星耀 Skill 中心审核后独立发布，不要求重建 Hermes 镜像。
+
+首批内置核心 Skills：
 
 ```text
 plugins/xingyao/skills/
@@ -323,7 +337,68 @@ plugins/xingyao/skills/
 - 禁止动作和人工确认边界。
 - 输出结构和敏感字段规则。
 
-生产环境只开放 `skills_list` 和 `skill_view` 的等价只读能力，不开放 `skill_manage`。Skills 目录在容器中只读挂载，更新必须经过代码审查、测试、版本号和镜像发布。
+### 11.2 安装与发布链路
+
+星耀允许安装 Skill，但安装是平台控制面操作，不是 Hermes runtime 工具调用：
+
+```text
+Hermes 官方目录 / 白名单 GitHub / 批准 URL
+  -> 隔离下载区
+  -> 官方包解析与完整 bundle 扫描
+  -> 星耀能力清单和安全策略校验
+  -> 平台管理员人工审批
+  -> 签名的不可变 Skill Registry
+  -> 组织所有者按组织和角色启用
+  -> Hermes 只读加载当前 actor 获准的版本
+```
+
+Fork 应复用官方 Hermes 的 Skill 下载、引用文件收集、隔离扫描和 lock metadata 代码，但这些模块只能运行在独立构建 worker 或 Skill 中心服务中。生产 Agent 容器不提供公网 Hub 安装入口，也不持有 Skill Registry 写凭证。
+
+每次发布必须固定并记录：
+
+- `skillId`、语义版本和发布状态。
+- 来源类型、来源 URL、仓库 commit 或上游版本。
+- 完整 bundle 内容哈希、扫描器版本、扫描结果和审批人。
+- 包签名、发布时间、撤销状态和可回滚的上一版本。
+- 所需 `toolsets`、具体工具、读取 scopes、允许角色和数据分类。
+- 是否需要网络、环境变量、可执行脚本或业务写入。
+
+首版策略固定为：
+
+- `requiredToolsets` 和 `requiredTools` 必须是 `hermes-xingyao` 当前只读 allowlist 的子集。
+- `businessWrites` 必须为 `false`。
+- Skill 不得声明公网网络访问或 Skill 专属密钥、环境变量。
+- `scripts/` 和其他可执行内容拒绝发布；`references/`、`templates/`、`examples/` 和静态 `assets/` 可在扫描后发布。
+- 扫描告警不能使用 `--force` 绕过；策略不通过时只能修订 bundle 后重新审核。
+- 更新产生新不可变版本，不得原地覆盖已发布内容。
+
+### 11.3 组织与角色授权
+
+Skill 安装、批准、启用和使用是不同权限：
+
+- 平台管理员可以提交来源、审核并发布全平台可用版本。
+- 组织所有者只能从已批准 Registry 中为自己的组织和指定角色启用或停用版本，不能修改 Skill 内容或扩大其能力清单。
+- 普通业务用户只能使用当前组织、当前角色和当前读取 scopes 允许的 Skills。
+- Hermes 可以生成“建议安装或改进某个 Skill”的文本草稿，但不能调用 Skill 中心 API、提交审批、发布版本或改变组织启用状态。
+
+Skill 中心写接口不得出现在 Hermes tool schema、Read API 或 `hermes-xingyao` toolset 中。所有安装、审批和启用动作都由已认证用户在独立管理界面明确执行并进入管理审计。
+
+Fork 新增 `XingyaoSkillPolicy`。它从隐藏的 `XingyaoExecutionContext` 和服务端下发的 Skill grants 计算可见集合，并在以下位置重复校验：
+
+1. system prompt 的 Skill 索引。
+2. `skills_list` 返回结果。
+3. `skill_view` 和引用文件加载。
+4. 显式 Skill 名称、slash command 或 bundle 解析。
+
+不能只隐藏列表；任何直接按名称加载未授权 Skill 的请求也必须返回 `permission_denied`。组织 A 启用的 Skill、版本或配置不能被组织 B 发现或加载。
+
+actor fingerprint 增加已启用 Skill grants 的稳定哈希，至少覆盖 `skillId + version + organizationId + allowedRoles + requiredReadScopes`。Skill 被升级、停用或撤销时，旧 Hermes session 立即失效，旧 Skill 内容不得继续留在新回合上下文中。
+
+### 11.4 生产运行时边界
+
+生产环境只开放 `skills_list` 和 `skill_view` 的等价只读能力，不开放 `skill_manage`、`/learn`、Hub install/update/uninstall/publish 或自动 self-improvement。Skills 以只读目录或只读 Registry snapshot 提供，加载前验证签名、哈希、状态和 actor grant。
+
+内置 Skills 更新必须经过代码审查、测试和镜像发布；受控安装 Skills 更新必须经过隔离扫描、人工审批、版本发布和组织重新授权。两类 Skills 都不得绕过工具策略，也不能通过说明文字恢复已禁用的 terminal、file、browser、code execution、Memory 或业务写能力。
 
 ## 12. 会话与 Memory
 
@@ -335,7 +410,7 @@ plugins/xingyao/skills/
 
 - Hermes 持久化 Memory tool。
 - 跨会话自动学习业务事实。
-- 自动创建或修改 Skills。
+- 自动安装、创建、修改或发布 Skills。
 - session search 跨用户或跨组织检索。
 
 后续若启用 Memory，必须先实现 `organizationId + userId + profile` 命名空间、数据分类、用户删除、过期策略和越权回归测试。
@@ -346,9 +421,10 @@ plugins/xingyao/skills/
 
 - 保留“星耀 AI”入口和现有会话 UI。
 - 在服务端通过 `getAuthContext()` 解析真实 actor。
-- 计算只读 scopes 并签发 ActorAssertion。
+- 计算只读 scopes、已批准 Skill grants 并签发 ActorAssertion。
 - 调用 `xingyao-hermes-agent` 专用入口并映射 SSE 事件。
 - 提供固定、内网、只读的 Hermes Read API。
+- 提供独立的 Skill 中心管理界面、审核控制面和按组织/角色启用策略；这些写接口不对 Hermes 开放。
 - 保存会话、调用、工具、证据和安全审计记录。
 - 在切换完成后删除旧星耀 AI 运行链路。
 
@@ -383,6 +459,7 @@ MCP 不作为首期星耀核心数据访问方案。核心业务数据通过 For
 - 不挂载产品源码、生产文件目录或用户主目录。
 - 不安装通用 shell 工作流所需凭证。
 - 网络出站只允许模型 provider、星耀 Read API 和必要可观测性端点。
+- Agent runtime 不允许访问公网 Skills Hub、GitHub 或 Skill 中心写接口；只有隔离的 Skill 构建 worker 可以按来源白名单出站。
 - 数据库网段对 Hermes 容器不可达。
 - 专用入口只在内网暴露，配置速率限制、请求大小限制和并发上限。
 - 日志默认脱敏，不记录 ActorAssertion、附件全文、收款信息和完整业务数据。
@@ -398,6 +475,8 @@ MCP 不作为首期星耀核心数据访问方案。核心业务数据通过 For
 - 数据不足：返回 `missingData`，不得编造内部事实。
 - 模型或 Hermes 超时：结束当前 run，记录错误，不回退旧星耀 AI。
 - Skills 加载失败：只允许无 Skill 的受限回答或直接失败，不临时启用通用工具集。
+- Skill 签名、哈希、发布状态或 actor grant 校验失败：拒绝加载并记录安全事件；不得回退到未审核版本。
+- Skill 被撤销或组织停用：新回合立即拒绝加载，并通过 fingerprint 失效旧 session。
 - 上游升级导致安全测试失败：禁止发布，继续使用上一已验证镜像。
 
 回滚只允许回滚到上一版 `xingyao-hermes-agent` 镜像，不允许回退到旧星耀 AI 内核。
@@ -414,7 +493,11 @@ MCP 不作为首期星耀核心数据访问方案。核心业务数据通过 For
 - `terminal`、`file`、`browser`、`code_execution`、`cronjob`、`delegation`、`memory`、`skill_manage` 不可见且不可执行。
 - 所有星耀工具都拒绝缺失 execution context 的调用。
 - 工具输出中的提示注入文本不能改变系统政策。
-- Skills 只能读取，运行时无法新增、修改或删除。
+- Skills 只能读取，运行时无法安装、新增、修改、更新、发布或删除。
+- 未授权 Skill 在 prompt index、`skills_list`、`skill_view`、slash command 和 bundle 路径中均不可见且不可加载。
+- Skill 声明写工具、额外网络、环境变量或可执行脚本时无法通过发布策略。
+- Skill 签名、哈希、状态或版本不匹配时拒绝加载。
+- Skill grants 变化后旧 session fingerprint 失效。
 
 ### 17.2 Next.js 产品
 
@@ -425,12 +508,14 @@ MCP 不作为首期星耀核心数据访问方案。核心业务数据通过 For
 - Read API 不存在业务写路由或通用查询入口。
 - `/api/ai/chat` 新路径不再调用旧 grounding、旧 Xingyao 模块或旧 provider gateway。
 - SSE、取消、超时、会话恢复、调用账本和 evidence refs 可完整闭环。
+- Skill 中心安装、审批、发布和组织启用接口要求独立管理权限，且不出现在 Hermes 可调用工具中。
 
 ### 17.3 端到端安全用例
 
 - 组织 A 用户无法通过提示词、对象 ID、缓存键或 session ID 读取组织 B 数据。
 - 主播角色不能读取其他主播、组织财务、内部风险备注或供应商敏感字段。
 - 财务角色不能因为 Hermes 获得其业务权限之外的数据。
+- 组织 A 启用的 Skill 及其内容、版本和配置不能被组织 B 发现或加载。
 - 用户要求“直接修改、确认、结算、付款、发布”时，Hermes 只能解释或给草稿，不产生工具调用。
 - 删除旧星耀模块后，新聊天仍能完成一次带来源的只读业务回答。
 
@@ -464,9 +549,12 @@ MCP 不作为首期星耀核心数据访问方案。核心业务数据通过 For
 - 删除旧星耀回答、grounding、risk、attribution 和 provider 调用路径。
 - 不设置旧内核 fallback。
 
-### 阶段 5：发布固定 Skills 和生产加固
+### 阶段 5：建设 Skill 中心和生产加固
 
-- 发布首批星耀 Skills。
+- 发布首批内置核心 Skills。
+- 建设隔离下载、扫描、能力清单校验、人工审批、签名 Registry、版本撤销和回滚链路。
+- 实现 `XingyaoSkillPolicy` 及按组织、角色、读取 scopes 的 Skill grants。
+- 提供独立管理界面，由平台管理员发布、组织所有者启用，Hermes runtime 不拥有管理入口。
 - 完成只读容器、网络隔离、密钥轮换和可观测性。
 - 完成全链路安全验收后再进入生产。
 
@@ -475,7 +563,9 @@ MCP 不作为首期星耀核心数据访问方案。核心业务数据通过 For
 - 运行的是官方 Hermes Agent 源码 Fork，而不是自研内核或未修改黑盒服务。
 - 用户仍只看到“星耀 AI”。
 - 每个回合都绑定经过签名的组织、用户、角色、会话和只读 scopes。
-- Hermes 只能看到固定 Skills 和星耀原生只读工具。
+- Hermes 只能看到当前组织、角色和读取 scopes 获准的已签名 Skills，以及星耀原生只读工具。
+- Skill 可通过受控 Skill 中心安装和升级，但生产 Hermes 不能自行安装、修改、发布或启用 Skill。
+- Skill 版本可审计、可撤销、可回滚，组织间的 Skill 发现和加载严格隔离。
 - Hermes 不持有 Supabase 密钥，不能访问生产数据库，不能调用业务写接口。
 - 同组织不同角色和不同组织之间的读取隔离有自动化测试证明。
 - 新聊天路径不调用任何旧星耀 AI 分析逻辑，旧内核不可回退。
@@ -490,5 +580,5 @@ MCP 不作为首期星耀核心数据访问方案。核心业务数据通过 For
 - 不让 Hermes 直接连接 Supabase 或持有 `service-role`。
 - 不保留旧星耀 AI 功能、回答口径或 fallback。
 - 不开放通用终端、文件、浏览器、代码执行、定时任务、委派或业务 mutation。
-- 首期不开放 Hermes Memory、自动学习、自动改写 Skills 或动态 MCP。
+- 首期不开放 Hermes Memory、自动学习、Skill 自主安装或改写、可执行 Skill 脚本或动态 MCP。
 - 不向用户展示隐藏思维链。
