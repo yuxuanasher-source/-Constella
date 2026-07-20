@@ -1,7 +1,40 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import StreamerMobileReferenceApp from "./streamer-mobile-reference";
+
+const recordingScoreLabels = [
+  "产品理解与卖点展示自评分",
+  "主播表达与控场能力自评分",
+  "内容结构与吸引力自评分",
+  "互动能力自评分",
+  "商业任务执行自评分",
+  "技术质量与合规自评分",
+];
+
+const expectedRecordingSelfCheck = {
+  readConfirmed: true,
+  dimensionScores: {
+    product_understanding: 22,
+    expression_control: 18,
+    content_structure: 13,
+    interaction_design: 12,
+    commercial_task: 11,
+    technical_compliance: 8,
+  },
+  keyMoments: [
+    { key: "best_performance", startSeconds: 12, endSeconds: 35 },
+    { key: "selling_point", startSeconds: 48, endSeconds: 73 },
+    { key: "commercial_task", startSeconds: 90, endSeconds: 118 },
+  ],
+  note: "自查通过，卖点已覆盖。",
+};
 
 describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
   afterEach(() => {
@@ -1321,12 +1354,14 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
     const postCall = fetchMock.mock.calls.find(
       ([, init]) => init?.method === "POST",
     );
-    expect(JSON.parse(postCall[1].body)).toEqual({
+    const payload = JSON.parse(postCall[1].body);
+    expect(payload).toEqual({
       product: "Game Beta",
       category: "SLG",
       link: "https://videos.example.com/game-beta",
       month: "2026-06",
     });
+    expect(payload).not.toHaveProperty("selfCheck");
   });
 
   it("renders public project announcements with download link and review status", () => {
@@ -1540,6 +1575,7 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
               decisionReason: null,
               reviewStatusLabel: "待投递",
               canSubmitRecording: true,
+              recordingGuide: recordingGuideFixture(),
             },
           }),
         };
@@ -1620,6 +1656,7 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
             decisionReason: null,
             reviewStatusLabel: "待投递",
             canSubmitRecording: true,
+            recordingGuide: recordingGuideFixture(),
           },
         ]}
       />,
@@ -1630,10 +1667,20 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
     expect(
       screen.getAllByText("Streamer-facing summary").length,
     ).toBeGreaterThan(0);
+    expect(screen.getByText("项目任务卡")).toBeInTheDocument();
+    expect(screen.getByText("星海测试服")).toBeInTheDocument();
+    expect(screen.getByText("新版本拉新")).toBeInTheDocument();
+    expect(screen.getByText("新职业")).toBeInTheDocument();
+    expect(screen.getByText("开场说明今天测试新职业。")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看示例" })).toHaveAttribute(
+      "href",
+      "https://example.com/demo",
+    );
 
     fireEvent.change(screen.getByLabelText("录屏链接"), {
       target: { value: "https://videos.example.com/project-1" },
     });
+    fillProjectRecordingSelfCheck();
     fireEvent.click(screen.getByRole("button", { name: "提交项目录屏" }));
 
     await waitFor(() => {
@@ -1647,6 +1694,7 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
       expect.objectContaining({
         projectId: "project-1",
         link: "https://videos.example.com/project-1",
+        selfCheck: expectedRecordingSelfCheck,
       }),
     );
   });
@@ -1680,6 +1728,7 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
               decisionReason: null,
               reviewStatusLabel: "待投递",
               canSubmitRecording: true,
+              recordingGuide: recordingGuideFixture(),
             },
           }),
         };
@@ -1748,6 +1797,7 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
             decisionReason: null,
             reviewStatusLabel: "待投递",
             canSubmitRecording: true,
+            recordingGuide: recordingGuideFixture(),
           },
         ]}
       />,
@@ -1755,6 +1805,7 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
     await screen.findByText("项目详情");
+    fillProjectRecordingSelfCheck();
     fireEvent.change(screen.getByLabelText("上传原始录屏"), {
       target: { files: [recordingFile] },
     });
@@ -1794,6 +1845,133 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
       expect.objectContaining({
         projectId: "project-upload",
         storagePath: "org-1/recordings/project-upload/demo.mp4",
+        selfCheck: expectedRecordingSelfCheck,
+      }),
+    );
+  });
+
+  it("submits low mobile self scores without blocking project recording", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (String(url) === "/api/streamer/project-announcements/project-low") {
+        return {
+          ok: true,
+          json: async () => ({
+            project: {
+              id: "project-low",
+              code: "PUB-L",
+              name: "Low Score Project",
+              status: "recruiting",
+              vendor: "Vendor A",
+              product: "Game A",
+              publicSummary: "Low score project summary",
+              gameDownloadUrl: null,
+              openSignup: true,
+              forceRecording: true,
+              applicationId: null,
+              applicationStatus: null,
+              latestRecordingStatus: null,
+              latestRecordingVersion: null,
+              decisionReason: null,
+              reviewStatusLabel: "待投递",
+              canSubmitRecording: true,
+              recordingGuide: recordingGuideFixture(),
+            },
+          }),
+        };
+      }
+      if (
+        String(url) === "/api/streamer/recordings" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            projectRecording: {
+              applicationId: "application-low",
+              projectId: "project-low",
+              recording: {
+                id: "recording-low",
+                applicationId: "application-low",
+                version: 1,
+                status: "submitted",
+              },
+              reviewStatusLabel: "审核中",
+            },
+          }),
+        };
+      }
+      if (String(url) === "/api/streamer/project-announcements") {
+        return { ok: true, json: async () => ({ announcements: [] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[
+          {
+            id: "project-low",
+            code: "PUB-L",
+            name: "Low Score Project",
+            status: "recruiting",
+            vendor: "Vendor A",
+            product: "Game A",
+            publicSummary: "Low score project summary",
+            gameDownloadUrl: null,
+            openSignup: true,
+            forceRecording: true,
+            applicationId: null,
+            applicationStatus: null,
+            latestRecordingStatus: null,
+            latestRecordingVersion: null,
+            decisionReason: null,
+            reviewStatusLabel: "待投递",
+            canSubmitRecording: true,
+            recordingGuide: recordingGuideFixture(),
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    await screen.findByText("项目详情");
+    fireEvent.change(screen.getByLabelText("录屏链接"), {
+      target: { value: "https://videos.example.com/project-low" },
+    });
+    fillProjectRecordingSelfCheck({
+      scores: [0, 0, 0, 0, 0, 0],
+      note: "自评分较低，但如实提交表现证据。",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交项目录屏" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/streamer/recordings",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const submitCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/streamer/recordings" && init?.method === "POST",
+    );
+    expect(JSON.parse(submitCall[1].body)).toEqual(
+      expect.objectContaining({
+        projectId: "project-low",
+        selfCheck: {
+          ...expectedRecordingSelfCheck,
+          dimensionScores: {
+            product_understanding: 0,
+            expression_control: 0,
+            content_structure: 0,
+            interaction_design: 0,
+            commercial_task: 0,
+            technical_compliance: 0,
+          },
+          note: "自评分较低，但如实提交表现证据。",
+        },
       }),
     );
   });
@@ -1884,6 +2062,59 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
     );
   });
 });
+
+function recordingGuideFixture() {
+  return {
+    gameName: "星海测试服",
+    gameVersion: "1.2",
+    serverRegion: "安卓一区",
+    promotionGoal: "新版本拉新",
+    targetAudience: "新手玩家",
+    requiredContent: ["新职业", "活动入口"],
+    requiredTalkingPoints: ["福利领取方式"],
+    forbiddenContent: ["虚假保底"],
+    commercialActions: ["展示预约福利入口"],
+    technicalStandard: {
+      minDurationMinutes: 10,
+      orientation: "landscape",
+    },
+    templateText: "开场说明今天测试新职业。",
+    exampleUrl: "https://example.com/demo",
+  };
+}
+
+function fillProjectRecordingSelfCheck(options = {}) {
+  const { scores = [22, 18, 13, 12, 11, 8], note = "自查通过，卖点已覆盖。" } =
+    options;
+
+  fireEvent.click(screen.getByLabelText("我已阅读并理解本次录屏要求"));
+  recordingScoreLabels.forEach((label, index) => {
+    fireEvent.change(screen.getByLabelText(label), {
+      target: { value: String(scores[index]) },
+    });
+  });
+  fireEvent.change(screen.getByLabelText("最佳表现片段开始时间"), {
+    target: { value: "12" },
+  });
+  fireEvent.change(screen.getByLabelText("最佳表现片段结束时间"), {
+    target: { value: "35" },
+  });
+  fireEvent.change(screen.getByLabelText("核心卖点展示片段开始时间"), {
+    target: { value: "48" },
+  });
+  fireEvent.change(screen.getByLabelText("核心卖点展示片段结束时间"), {
+    target: { value: "73" },
+  });
+  fireEvent.change(screen.getByLabelText("商业任务完成片段开始时间"), {
+    target: { value: "90" },
+  });
+  fireEvent.change(screen.getByLabelText("商业任务完成片段结束时间"), {
+    target: { value: "118" },
+  });
+  fireEvent.change(screen.getByLabelText("自查备注"), {
+    target: { value: note },
+  });
+}
 
 describe("StreamerMobileReferenceApp profile actions smoke", () => {
   afterEach(() => {
@@ -2030,9 +2261,7 @@ describe("StreamerMobileReferenceApp profile actions smoke", () => {
     expect(within(region).getByText("有效时长")).toBeInTheDocument();
     expect(within(region).getByText("¥240")).toBeInTheDocument();
     expect(region).toHaveTextContent("来源报数 1 条");
-    expect(
-      within(region).getByText(/最终应付 ¥1,040/),
-    ).toBeInTheDocument();
+    expect(within(region).getByText(/最终应付 ¥1,040/)).toBeInTheDocument();
     expect(region).not.toHaveTextContent(
       /formula|AST|毛利|税|外部成本|其他主播|风险阈值|评审意见/i,
     );
@@ -2266,9 +2495,13 @@ describe("StreamerMobileReferenceApp project signup smoke", () => {
     );
 
     expect(
-      await screen.findByText("报名成功：已提交「Open Signup Project」，等待运营审核。"),
+      await screen.findByText(
+        "报名成功：已提交「Open Signup Project」，等待运营审核。",
+      ),
     ).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "已报名" })).toBeDisabled();
+    expect(
+      await screen.findByRole("button", { name: "已报名" }),
+    ).toBeDisabled();
     expect(
       screen.queryByRole("button", { name: "立即报名" }),
     ).not.toBeInTheDocument();

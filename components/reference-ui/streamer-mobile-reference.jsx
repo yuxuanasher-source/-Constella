@@ -737,6 +737,53 @@ const STATUS_MAP = {
   completed: { tone: "green", label: "已完成" },
 };
 
+const PROJECT_RECORDING_SELF_CHECK_ERROR = "请先完成录屏自查信息。";
+
+const PROJECT_RECORDING_SELF_CHECK_DIMENSIONS = [
+  {
+    key: "product_understanding",
+    label: "产品理解与卖点展示",
+    inputLabel: "产品理解与卖点展示自评分",
+    max: 25,
+  },
+  {
+    key: "expression_control",
+    label: "主播表达与控场能力",
+    inputLabel: "主播表达与控场能力自评分",
+    max: 20,
+  },
+  {
+    key: "content_structure",
+    label: "内容结构与吸引力",
+    inputLabel: "内容结构与吸引力自评分",
+    max: 15,
+  },
+  {
+    key: "interaction_design",
+    label: "互动能力",
+    inputLabel: "互动能力自评分",
+    max: 15,
+  },
+  {
+    key: "commercial_task",
+    label: "商业任务执行",
+    inputLabel: "商业任务执行自评分",
+    max: 15,
+  },
+  {
+    key: "technical_compliance",
+    label: "技术质量与合规",
+    inputLabel: "技术质量与合规自评分",
+    max: 10,
+  },
+];
+
+const PROJECT_RECORDING_KEY_MOMENTS = [
+  { key: "best_performance", label: "最佳表现片段" },
+  { key: "selling_point", label: "核心卖点展示片段" },
+  { key: "commercial_task", label: "商业任务完成片段" },
+];
+
 const StreamerLiveDataContext = React.createContext({
   profile: null,
   tasks: null,
@@ -4908,9 +4955,7 @@ function EarningsTab({ earnings }) {
                                 color: "var(--ink-900)",
                               }}
                             >
-                              {formatMobileYuanFromCents(
-                                component.amountCents,
-                              )}
+                              {formatMobileYuanFromCents(component.amountCents)}
                             </div>
                           </div>
                         ))}
@@ -4924,8 +4969,8 @@ function EarningsTab({ earnings }) {
                         }}
                       >
                         来源报数{" "}
-                        {item.explanation.evidenceFacts.sourceReportCount} 条
-                        · 时间来源 {item.explanation.evidenceFacts.timeSource}
+                        {item.explanation.evidenceFacts.sourceReportCount} 条 ·
+                        时间来源 {item.explanation.evidenceFacts.timeSource}
                       </div>
                       <div
                         style={{
@@ -5089,10 +5134,9 @@ function VideosTab({
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState("");
   const [selectedProject, setSelectedProject] = React.useState(null);
-  const [projectForm, setProjectForm] = React.useState({
-    link: "",
-    file: null,
-  });
+  const [projectForm, setProjectForm] = React.useState(() =>
+    createProjectRecordingForm(),
+  );
   const [projectSubmitting, setProjectSubmitting] = React.useState(false);
   const [projectError, setProjectError] = React.useState("");
   const [detailLoading, setDetailLoading] = React.useState(false);
@@ -5120,7 +5164,7 @@ function VideosTab({
 
   const closeProjectDetail = () => {
     setSelectedProject(null);
-    setProjectForm({ link: "", file: null });
+    setProjectForm(createProjectRecordingForm());
     setProjectError("");
   };
 
@@ -5154,24 +5198,41 @@ function VideosTab({
     setProjectForm((current) => ({ ...current, [key]: value }));
   };
 
+  const updateProjectSelfCheck = (type, key, field, value) => {
+    setProjectError("");
+    setProjectForm((current) => ({
+      ...current,
+      selfCheck: updateProjectRecordingSelfCheckState(
+        current.selfCheck,
+        type,
+        key,
+        field,
+        value,
+      ),
+    }));
+  };
+
   const submitProjectRecording = async (event) => {
     event.preventDefault();
     if (!selectedProject) {
+      return;
+    }
+    if (!isProjectRecordingSelfCheckComplete(projectForm.selfCheck)) {
+      setProjectError(PROJECT_RECORDING_SELF_CHECK_ERROR);
       return;
     }
 
     setProjectSubmitting(true);
     setProjectError("");
     try {
+      const storagePath = projectForm.file
+        ? await uploadProjectRecordingFile(selectedProject.id, projectForm.file)
+        : undefined;
       const result = await actions.submitRecordingLink?.({
         projectId: selectedProject.id,
         link: projectForm.link,
-        storagePath: projectForm.file
-          ? await uploadProjectRecordingFile(
-              selectedProject.id,
-              projectForm.file,
-            )
-          : undefined,
+        storagePath,
+        selfCheck: buildProjectRecordingSelfCheckPayload(projectForm.selfCheck),
       });
       const reviewStatusLabel = result?.reviewStatusLabel || "审核中";
       setSelectedProject((current) =>
@@ -5188,7 +5249,7 @@ function VideosTab({
             }
           : current,
       );
-      setProjectForm({ link: "", file: null });
+      setProjectForm(createProjectRecordingForm());
     } catch (submitError) {
       setProjectError(recordingLinkErrorMessage(submitError));
     } finally {
@@ -5256,6 +5317,7 @@ function VideosTab({
           loading={detailLoading}
           submitting={projectSubmitting}
           onChange={updateProjectForm}
+          onSelfCheckChange={updateProjectSelfCheck}
           onSubmit={submitProjectRecording}
           onClose={closeProjectDetail}
         />
@@ -5460,6 +5522,7 @@ function ProjectAnnouncementDetail({
   loading,
   submitting,
   onChange,
+  onSelfCheckChange,
   onSubmit,
   onClose,
 }) {
@@ -5560,6 +5623,11 @@ function ProjectAnnouncementDetail({
             ) : null}
           </div>
           <form onSubmit={onSubmit} style={{ display: "grid", gap: 10 }}>
+            <MobileProjectRecordingGuide project={project} />
+            <MobileProjectRecordingSelfCheck
+              selfCheck={form.selfCheck}
+              onChange={onSelfCheckChange}
+            />
             <MobileRecordingField
               label="录屏链接"
               value={form.link}
@@ -5622,6 +5690,285 @@ function ProjectAnnouncementDetail({
         </div>
       </MCard>
     </MSection>
+  );
+}
+
+function MobileProjectRecordingGuide({ project }) {
+  const guide = project.recordingGuide || {};
+  const requiredContent = listRecordingGuideItems(guide.requiredContent);
+  const talkingPoints = listRecordingGuideItems(guide.requiredTalkingPoints);
+  const commercialActions = listRecordingGuideItems(guide.commercialActions);
+  const forbiddenContent = listRecordingGuideItems(guide.forbiddenContent);
+  const standard = guide.technicalStandard || {};
+  const minDuration = Number(standard.minDurationMinutes);
+  const orientation =
+    standard.orientation === "portrait"
+      ? "竖屏"
+      : standard.orientation === "landscape"
+        ? "横屏"
+        : "";
+
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <div
+        style={{
+          border: "1px solid var(--line)",
+          borderRadius: 10,
+          background: "var(--bg-soft)",
+          padding: 12,
+          display: "grid",
+          gap: 8,
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--ink-500)", fontWeight: 700 }}>
+          项目任务卡
+        </div>
+        <div style={{ fontSize: 15, color: "var(--ink-900)", fontWeight: 800 }}>
+          {guide.gameName || project.product || project.name}
+        </div>
+        <div
+          style={{ fontSize: 12, color: "var(--ink-500)", lineHeight: 1.55 }}
+        >
+          {[guide.gameVersion, guide.serverRegion, guide.targetAudience]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+        {guide.promotionGoal || project.publicSummary ? (
+          <div
+            style={{ fontSize: 13, color: "var(--ink-700)", lineHeight: 1.6 }}
+          >
+            {guide.promotionGoal || project.publicSummary}
+          </div>
+        ) : null}
+        <MobileRecordingGuideBadgeRow
+          title="内容覆盖"
+          items={requiredContent}
+        />
+        <MobileRecordingGuideBadgeRow title="表达要点" items={talkingPoints} />
+        <MobileRecordingGuideBadgeRow
+          title="商业动作"
+          items={commercialActions}
+        />
+        <MobileRecordingGuideBadgeRow
+          title="避开内容"
+          items={forbiddenContent}
+        />
+        {Number.isFinite(minDuration) && minDuration > 0 ? (
+          <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+            建议时长：{minDuration} 分钟{orientation ? ` · ${orientation}` : ""}
+          </div>
+        ) : orientation ? (
+          <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
+            画面方向：{orientation}
+          </div>
+        ) : null}
+      </div>
+      <div
+        style={{
+          border: "1px solid var(--line)",
+          borderRadius: 10,
+          padding: 12,
+          display: "grid",
+          gap: 8,
+        }}
+      >
+        <div style={{ fontSize: 12, color: "var(--ink-500)", fontWeight: 700 }}>
+          录屏模板 / 示例
+        </div>
+        <div
+          style={{ fontSize: 13, color: "var(--ink-700)", lineHeight: 1.65 }}
+        >
+          {guide.templateText ||
+            "开场说明本场目标；过程围绕目标展示玩法、卖点和互动；结尾总结体验结果。"}
+        </div>
+        {guide.exampleUrl ? (
+          <a
+            href={guide.exampleUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              color: "var(--blue-700)",
+              fontSize: 12,
+              fontWeight: 700,
+              textDecoration: "none",
+              wordBreak: "break-all",
+            }}
+          >
+            查看示例
+          </a>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function MobileRecordingGuideBadgeRow({ title, items }) {
+  if (!items.length) return null;
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <div style={{ fontSize: 12, color: "var(--ink-500)" }}>{title}</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {items.map((item) => (
+          <MBadge key={`${title}-${item}`} tone="blue">
+            {item}
+          </MBadge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MobileProjectRecordingSelfCheck({ selfCheck, onChange }) {
+  const current = normalizeProjectRecordingSelfCheckState(selfCheck);
+  return (
+    <div
+      style={{
+        border: "1px solid var(--line)",
+        borderRadius: 10,
+        padding: 12,
+        display: "grid",
+        gap: 12,
+      }}
+    >
+      <div style={{ display: "grid", gap: 4 }}>
+        <div style={{ fontSize: 12, color: "var(--ink-500)", fontWeight: 700 }}>
+          录屏提交自查
+        </div>
+        <div
+          style={{ fontSize: 12, color: "var(--ink-500)", lineHeight: 1.55 }}
+        >
+          自评分用于补充提交证据，低分仍可提交。
+        </div>
+      </div>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 8,
+          fontSize: 13,
+          color: "var(--ink-700)",
+          lineHeight: 1.5,
+        }}
+      >
+        <input
+          aria-label="我已阅读并理解本次录屏要求"
+          type="checkbox"
+          checked={current.readConfirmed}
+          onChange={(event) =>
+            onChange("readConfirmed", null, null, event.target.checked)
+          }
+          style={{ marginTop: 3 }}
+        />
+        <span>我已阅读并理解本次录屏要求</span>
+      </label>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        {PROJECT_RECORDING_SELF_CHECK_DIMENSIONS.map((dimension) => (
+          <label key={dimension.key} style={{ display: "grid", gap: 5 }}>
+            <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+              {dimension.inputLabel}
+            </span>
+            <input
+              aria-label={dimension.inputLabel}
+              type="number"
+              min="0"
+              max={dimension.max}
+              step="1"
+              value={current.dimensionScores[dimension.key]}
+              placeholder={`0-${dimension.max}`}
+              onChange={(event) =>
+                onChange(
+                  "dimensionScore",
+                  dimension.key,
+                  null,
+                  event.target.value,
+                )
+              }
+              style={{
+                height: 36,
+                border: "1px solid var(--line-strong)",
+                borderRadius: 8,
+                padding: "0 10px",
+                fontSize: 13,
+                color: "var(--ink-900)",
+                outline: "none",
+              }}
+            />
+          </label>
+        ))}
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        {PROJECT_RECORDING_KEY_MOMENTS.map((moment) => (
+          <div
+            key={moment.key}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 8,
+            }}
+          >
+            <MobileProjectSelfCheckInput
+              label={`${moment.label}开始时间`}
+              value={current.keyMoments[moment.key].startSeconds}
+              placeholder="例如 12"
+              onChange={(value) =>
+                onChange("keyMoment", moment.key, "startSeconds", value)
+              }
+            />
+            <MobileProjectSelfCheckInput
+              label={`${moment.label}结束时间`}
+              value={current.keyMoments[moment.key].endSeconds}
+              placeholder="例如 35"
+              onChange={(value) =>
+                onChange("keyMoment", moment.key, "endSeconds", value)
+              }
+            />
+          </div>
+        ))}
+      </div>
+      <label style={{ display: "grid", gap: 6 }}>
+        <span style={{ fontSize: 12, color: "var(--ink-500)" }}>自查备注</span>
+        <textarea
+          aria-label="自查备注"
+          value={current.note}
+          placeholder="可补充说明表现亮点、遗憾点或希望运营关注的片段"
+          onChange={(event) => onChange("note", null, null, event.target.value)}
+          rows={3}
+          style={{
+            border: "1px solid var(--line-strong)",
+            borderRadius: 8,
+            padding: 10,
+            fontSize: 13,
+            lineHeight: 1.5,
+            color: "var(--ink-900)",
+            outline: "none",
+            resize: "vertical",
+          }}
+        />
+      </label>
+    </div>
+  );
+}
+
+function MobileProjectSelfCheckInput({ label, value, placeholder, onChange }) {
+  return (
+    <label style={{ display: "grid", gap: 5 }}>
+      <span style={{ fontSize: 12, color: "var(--ink-500)" }}>{label}</span>
+      <input
+        aria-label={label}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+        style={{
+          height: 36,
+          border: "1px solid var(--line-strong)",
+          borderRadius: 8,
+          padding: "0 10px",
+          fontSize: 13,
+          color: "var(--ink-900)",
+          outline: "none",
+        }}
+      />
+    </label>
   );
 }
 
@@ -6209,6 +6556,170 @@ function currentMonthLabel() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function createEmptyProjectRecordingSelfCheck() {
+  return {
+    readConfirmed: false,
+    dimensionScores: PROJECT_RECORDING_SELF_CHECK_DIMENSIONS.reduce(
+      (scores, dimension) => ({ ...scores, [dimension.key]: "" }),
+      {},
+    ),
+    keyMoments: PROJECT_RECORDING_KEY_MOMENTS.reduce(
+      (moments, moment) => ({
+        ...moments,
+        [moment.key]: { startSeconds: "", endSeconds: "" },
+      }),
+      {},
+    ),
+    note: "",
+  };
+}
+
+function createProjectRecordingForm() {
+  return {
+    link: "",
+    file: null,
+    selfCheck: createEmptyProjectRecordingSelfCheck(),
+  };
+}
+
+function normalizeProjectRecordingSelfCheckState(selfCheck) {
+  const empty = createEmptyProjectRecordingSelfCheck();
+  const keyMoments = { ...empty.keyMoments };
+  for (const moment of PROJECT_RECORDING_KEY_MOMENTS) {
+    keyMoments[moment.key] = {
+      ...empty.keyMoments[moment.key],
+      ...(selfCheck?.keyMoments?.[moment.key] || {}),
+    };
+  }
+
+  return {
+    ...empty,
+    ...(selfCheck || {}),
+    dimensionScores: {
+      ...empty.dimensionScores,
+      ...(selfCheck?.dimensionScores || {}),
+    },
+    keyMoments,
+  };
+}
+
+function updateProjectRecordingSelfCheckState(
+  selfCheck,
+  type,
+  key,
+  field,
+  value,
+) {
+  const current = normalizeProjectRecordingSelfCheckState(selfCheck);
+  if (type === "readConfirmed") {
+    return { ...current, readConfirmed: Boolean(value) };
+  }
+  if (type === "dimensionScore") {
+    return {
+      ...current,
+      dimensionScores: { ...current.dimensionScores, [key]: value },
+    };
+  }
+  if (type === "keyMoment") {
+    return {
+      ...current,
+      keyMoments: {
+        ...current.keyMoments,
+        [key]: { ...current.keyMoments[key], [field]: value },
+      },
+    };
+  }
+  if (type === "note") {
+    return { ...current, note: value };
+  }
+  return current;
+}
+
+function parseSelfCheckNumber(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseKeyMomentSeconds(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  if (text.includes(":")) {
+    const parts = text.split(":").map((part) => Number(part));
+    if (parts.some((part) => !Number.isFinite(part))) return null;
+    return parts.reduce((total, part) => total * 60 + part, 0);
+  }
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function clampSelfCheckScore(value, max) {
+  return Math.max(0, Math.min(max, Math.trunc(value)));
+}
+
+function isProjectRecordingSelfCheckComplete(selfCheck) {
+  const current = normalizeProjectRecordingSelfCheckState(selfCheck);
+  if (!current.readConfirmed) return false;
+
+  for (const dimension of PROJECT_RECORDING_SELF_CHECK_DIMENSIONS) {
+    if (parseSelfCheckNumber(current.dimensionScores[dimension.key]) === null) {
+      return false;
+    }
+  }
+
+  for (const moment of PROJECT_RECORDING_KEY_MOMENTS) {
+    const currentMoment = current.keyMoments[moment.key] || {};
+    const startSeconds = parseKeyMomentSeconds(currentMoment.startSeconds);
+    const endSeconds = parseKeyMomentSeconds(currentMoment.endSeconds);
+    if (
+      startSeconds === null ||
+      endSeconds === null ||
+      endSeconds <= startSeconds
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function buildProjectRecordingSelfCheckPayload(selfCheck) {
+  const current = normalizeProjectRecordingSelfCheckState(selfCheck);
+  return {
+    readConfirmed: current.readConfirmed === true,
+    dimensionScores: PROJECT_RECORDING_SELF_CHECK_DIMENSIONS.reduce(
+      (scores, dimension) => ({
+        ...scores,
+        [dimension.key]: clampSelfCheckScore(
+          parseSelfCheckNumber(current.dimensionScores[dimension.key]) ?? 0,
+          dimension.max,
+        ),
+      }),
+      {},
+    ),
+    keyMoments: PROJECT_RECORDING_KEY_MOMENTS.map((moment) => {
+      const currentMoment = current.keyMoments[moment.key] || {};
+      return {
+        key: moment.key,
+        startSeconds: Math.max(
+          0,
+          Math.trunc(parseKeyMomentSeconds(currentMoment.startSeconds) ?? 0),
+        ),
+        endSeconds: Math.max(
+          0,
+          Math.trunc(parseKeyMomentSeconds(currentMoment.endSeconds) ?? 0),
+        ),
+      };
+    }),
+    note: current.note || "",
+  };
+}
+
+function listRecordingGuideItems(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
 // ===== src-streamer\app.jsx =====
 // ——— Streamer app entry ————————————————————————
 
@@ -6430,7 +6941,10 @@ function StreamerMobileReferenceInner({
         );
         if (body.projectRecording) {
           // 提交项目录屏后同时刷新资产列表，新上传的原始视频立即可见/可播。
-          await Promise.all([refreshProjectAnnouncements(), refreshRecordings()]);
+          await Promise.all([
+            refreshProjectAnnouncements(),
+            refreshRecordings(),
+          ]);
           return body.projectRecording;
         }
         if (body.recording) {
