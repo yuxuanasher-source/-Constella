@@ -54,13 +54,10 @@ export const OPS_UI_MIGRATION_ROUTES = [
     targetRoute: "/console/projects",
     module: "m1",
     routeKey: "projects",
-    status: "shell-route",
+    status: "ops-reference-route",
     risk: "high",
     dataDomains: ["features/projects", "/api/projects"],
-    requiredTests: [
-      "app/(ops)/console/projects/page.test.tsx",
-      "components/console/projects-workbench.test.tsx",
-    ],
+    requiredTests: ["app/(ops)/console/projects/page.test.tsx"],
   },
   {
     prototype: "project-detail.html",
