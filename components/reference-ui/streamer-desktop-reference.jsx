@@ -3920,9 +3920,11 @@ function ScreenVideos({
   const [projectForm, setProjectForm] = React.useState(() =>
     createProjectRecordingForm(),
   );
+  const [projectFormResetKey, setProjectFormResetKey] = React.useState(0);
   const [projectSubmitting, setProjectSubmitting] = React.useState(false);
   const [projectError, setProjectError] = React.useState("");
   const [detailLoading, setDetailLoading] = React.useState(false);
+  const detailRequestSeqRef = React.useRef(0);
   const announcementRows = Array.isArray(projectAnnouncements)
     ? projectAnnouncements
     : [];
@@ -3943,27 +3945,43 @@ function ScreenVideos({
     setForm((current) => ({ ...current, [key]: value }));
   };
 
-  const openProjectDetail = async (project) => {
-    setProjectError("");
+  const resetProjectRecordingForm = () => {
     setProjectForm(createProjectRecordingForm());
+    setProjectFormResetKey((current) => current + 1);
+  };
+
+  const openProjectDetail = async (project) => {
+    const requestSeq = detailRequestSeqRef.current + 1;
+    detailRequestSeqRef.current = requestSeq;
+    const projectId = project.id;
+    setProjectError("");
+    resetProjectRecordingForm();
     setDetailLoading(true);
     setSelectedProject(project);
     try {
-      const detail = await actions.getProjectAnnouncement?.(project.id);
-      if (detail) {
-        setSelectedProject(detail);
+      const detail = await actions.getProjectAnnouncement?.(projectId);
+      if (detail && detailRequestSeqRef.current === requestSeq) {
+        setSelectedProject((current) =>
+          current?.id === projectId ? detail : current,
+        );
       }
     } catch (detailError) {
-      setProjectError(recordingLinkErrorMessage(detailError));
+      if (detailRequestSeqRef.current === requestSeq) {
+        setProjectError(recordingLinkErrorMessage(detailError));
+      }
     } finally {
-      setDetailLoading(false);
+      if (detailRequestSeqRef.current === requestSeq) {
+        setDetailLoading(false);
+      }
     }
   };
 
   const closeProjectDetail = () => {
+    detailRequestSeqRef.current += 1;
     setSelectedProject(null);
-    setProjectForm(createProjectRecordingForm());
+    resetProjectRecordingForm();
     setProjectError("");
+    setDetailLoading(false);
   };
 
   const updateProjectForm = (key, value) => {
@@ -3971,6 +3989,7 @@ function ScreenVideos({
     // 超过 300MB 的录屏在选中时就地报错，不带入表单、不发起上传。
     if (key === "file" && value && value.size > RECORDING_MAX_UPLOAD_BYTES) {
       setProjectForm((current) => ({ ...current, file: null }));
+      setProjectFormResetKey((current) => current + 1);
       setProjectError(RECORDING_UPLOAD_TOO_LARGE_MESSAGE);
       return;
     }
@@ -4047,7 +4066,7 @@ function ScreenVideos({
             }
           : current,
       );
-      setProjectForm(createProjectRecordingForm());
+      resetProjectRecordingForm();
     } catch (submitError) {
       setProjectError(recordingLinkErrorMessage(submitError));
     } finally {
@@ -4135,6 +4154,7 @@ function ScreenVideos({
           <DesktopProjectAnnouncementDetail
             project={selectedProject}
             form={projectForm}
+            formResetKey={projectFormResetKey}
             error={projectError}
             loading={detailLoading}
             submitting={projectSubmitting}
@@ -4420,6 +4440,7 @@ function DesktopProjectAnnouncementCard({ project, onOpen }) {
 function DesktopProjectAnnouncementDetail({
   project,
   form,
+  formResetKey,
   error,
   loading,
   submitting,
@@ -4526,6 +4547,7 @@ function DesktopProjectAnnouncementDetail({
               上传原始录屏
             </span>
             <input
+              key={`${project.id}-${formResetKey}`}
               aria-label="上传原始录屏"
               type="file"
               accept="video/*"

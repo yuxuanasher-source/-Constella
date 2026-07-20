@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import StreamerDesktopReferenceApp from "./streamer-desktop-reference";
@@ -1394,11 +1394,12 @@ describe("StreamerDesktopReferenceApp recording library", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "查看详情" })[0]);
     await screen.findByText("项目详情");
+    const firstFileInput = screen.getByLabelText("上传原始录屏");
     fireEvent.change(screen.getByLabelText("录屏链接"), {
       target: { value: "https://videos.example.com/project-a" },
     });
     fillProjectRecordingSelfCheck();
-    fireEvent.change(screen.getByLabelText("上传原始录屏"), {
+    fireEvent.change(firstFileInput, {
       target: { files: [carryFile] },
     });
     expect(
@@ -1417,6 +1418,92 @@ describe("StreamerDesktopReferenceApp recording library", () => {
     ).not.toBeChecked();
     expect(screen.getByLabelText("产品理解与卖点展示自评分")).toHaveValue(null);
     expect(screen.queryByText("已选择：carry.mp4")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("上传原始录屏")).not.toBe(firstFileInput);
+  });
+
+  it("keeps the desktop project detail on the latest project when an earlier detail response resolves late", async () => {
+    let resolveProjectA;
+    let resolveProjectAJsonRead;
+    const projectADetailGate = new Promise((resolve) => {
+      resolveProjectA = resolve;
+    });
+    const projectAJsonRead = new Promise((resolve) => {
+      resolveProjectAJsonRead = resolve;
+    });
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/streamer/project-announcements/project-a") {
+        await projectADetailGate;
+        return {
+          ok: true,
+          json: async () => {
+            resolveProjectAJsonRead();
+            return {
+              project: projectAnnouncementFixture({
+                id: "project-a",
+                code: "PUB-A",
+                name: "Late Detail Project A",
+                publicSummary: "Late A detail summary",
+              }),
+            };
+          },
+        };
+      }
+      if (String(url) === "/api/streamer/project-announcements/project-b") {
+        return {
+          ok: true,
+          json: async () => ({
+            project: projectAnnouncementFixture({
+              id: "project-b",
+              code: "PUB-B",
+              name: "Current Detail Project B",
+              publicSummary: "Fresh B detail summary",
+            }),
+          }),
+        };
+      }
+      if (String(url) === "/api/streamer/recordings") {
+        return { ok: true, json: async () => ({ recordings: [] }) };
+      }
+      if (String(url) === "/api/streamer/project-announcements") {
+        return { ok: true, json: async () => ({ announcements: [] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerDesktopReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[
+          projectAnnouncementFixture({
+            id: "project-a",
+            code: "PUB-A",
+            name: "Reset Project A",
+            publicSummary: "Project A card summary",
+          }),
+          projectAnnouncementFixture({
+            id: "project-b",
+            code: "PUB-B",
+            name: "Reset Project B",
+            publicSummary: "Project B card summary",
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "查看详情" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "查看详情" })[1]);
+    await screen.findByText("Fresh B detail summary");
+
+    await act(async () => {
+      resolveProjectA();
+      await projectAJsonRead;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Fresh B detail summary")).toBeInTheDocument();
+    expect(screen.queryByText("Late A detail summary")).not.toBeInTheDocument();
   });
 
   it.each([
