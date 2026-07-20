@@ -124,6 +124,34 @@ describe("streamer project announcements", () => {
     });
   });
 
+  it("accepts object-shaped recording guide joins", () => {
+    const dto = toStreamerProjectAnnouncementCard(
+      projectRowWithGuide(recordingGuideRow()),
+      null,
+      null,
+    );
+
+    expect(dto.recordingGuide).toMatchObject({
+      gameName: "星海测试服",
+      requiredContent: ["新职业", "活动入口"],
+      commercialActions: ["展示预约福利入口"],
+    });
+  });
+
+  it("falls back to the public project card when guide data is null", () => {
+    const dto = toStreamerProjectAnnouncementCard(
+      projectRowWithGuide(null),
+      null,
+      null,
+    );
+
+    expect(dto.recordingGuide).toMatchObject({
+      gameName: "星海",
+      requiredContent: ["Streamer-facing summary"],
+      exampleUrl: null,
+    });
+  });
+
   it("excludes draft and finished project statuses from streamer announcements", () => {
     expect(isProjectAnnouncementVisibleStatus("draft")).toBe(false);
     expect(isProjectAnnouncementVisibleStatus("ended")).toBe(false);
@@ -152,25 +180,7 @@ function mockSupabaseWithGuide() {
             game_download_url: "https://download.example.com/game-a",
             published_at: "2026-06-01T00:00:00.000Z",
             created_at: "2026-06-01T00:00:00.000Z",
-            project_recording_guides: [
-              {
-                game_name: "星海测试服",
-                game_version: "1.2",
-                server_region: "安卓一区",
-                promotion_goal: "新版本拉新",
-                target_audience: "新手玩家",
-                required_content: ["新职业", "活动入口"],
-                required_talking_points: ["福利领取方式"],
-                forbidden_content: ["虚假保底", "攻击竞品"],
-                commercial_actions: ["展示预约福利入口"],
-                technical_standard: {
-                  minDurationMinutes: 10,
-                  orientation: "landscape",
-                },
-                template_text: "开场说明今天测试新职业。",
-                example_url: "https://example.com/demo",
-              },
-            ],
+            project_recording_guides: [recordingGuideRow()],
           },
         ]);
       }
@@ -198,4 +208,47 @@ function queryResult(data: unknown[]) {
     ) => Promise.resolve(result).then(resolve, reject),
   };
   return query;
+}
+
+function projectRowWithGuide(
+  projectRecordingGuides:
+    | ReturnType<typeof recordingGuideRow>
+    | ReturnType<typeof recordingGuideRow>[]
+    | null,
+) {
+  return {
+    id: "project-1",
+    code: "PUB-1",
+    name: "Public Project",
+    status: "recruiting",
+    vendor_name: "Vendor A",
+    product_name: "星海",
+    open_signup: true,
+    force_recording: true,
+    public_summary: "Streamer-facing summary",
+    game_download_url: "https://download.example.com/game-a",
+    published_at: "2026-06-01T00:00:00.000Z",
+    created_at: "2026-06-01T00:00:00.000Z",
+    project_recording_guides: projectRecordingGuides,
+  };
+}
+
+function recordingGuideRow() {
+  return {
+    game_name: "星海测试服",
+    game_version: "1.2",
+    server_region: "安卓一区",
+    promotion_goal: "新版本拉新",
+    target_audience: "新手玩家",
+    required_content: ["新职业", "活动入口"],
+    required_talking_points: ["福利领取方式"],
+    forbidden_content: ["虚假保底", "攻击竞品"],
+    commercial_actions: ["展示预约福利入口"],
+    technical_standard: {
+      minDurationMinutes: 10,
+      orientation: "landscape",
+    },
+    template_text: "开场说明今天测试新职业。",
+    example_url: "https://example.com/demo",
+  };
 }

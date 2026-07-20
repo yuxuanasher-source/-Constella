@@ -28,7 +28,7 @@ export type StreamerProjectAnnouncementProjectRow = {
   game_download_url: string | null;
   published_at: string | null;
   created_at: string;
-  project_recording_guides?: RecordingGuideRow[] | null;
+  project_recording_guides?: RecordingGuideRow | RecordingGuideRow[] | null;
 };
 
 export type StreamerProjectAnnouncementApplicationRow = {
@@ -218,12 +218,7 @@ export function toStreamerProjectAnnouncementCard(
   rejectionFeedback?: StructuredRejectionFeedback | null,
 ): StreamerProjectAnnouncementCard {
   const applicationStatus = application?.status ?? null;
-  const guideRow = Array.isArray(
-    (project as { project_recording_guides?: unknown }).project_recording_guides,
-  )
-    ? ((project as { project_recording_guides?: RecordingGuideRow[] })
-        .project_recording_guides?.[0] ?? null)
-    : null;
+  const guideRow = firstRecordingGuideRow(project.project_recording_guides);
   const recordingGuide =
     normalizeRecordingGuideRow(guideRow) ??
     defaultRecordingProductionGuide({
@@ -344,4 +339,11 @@ function reviewStatusLabel(
   if (latestRecording?.status === "rejected") return "未通过";
   if (latestRecording?.status === "approved") return "已通过，待确认加入";
   return "待投递";
+}
+
+function firstRecordingGuideRow(
+  guide: RecordingGuideRow | RecordingGuideRow[] | null | undefined,
+): RecordingGuideRow | null {
+  if (!guide) return null;
+  return Array.isArray(guide) ? (guide[0] ?? null) : guide;
 }

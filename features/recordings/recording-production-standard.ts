@@ -101,7 +101,7 @@ export function normalizeRecordingSelfCheck(
   let totalScore = 0;
   for (const dimension of RECORDING_PRODUCTION_DIMENSIONS) {
     const raw = input.dimensionScores[dimension.key];
-    if (!Number.isFinite(raw)) {
+    if (typeof raw !== "number" || !Number.isFinite(raw)) {
       throw new Error(`Missing recording self-check score: ${dimension.key}`);
     }
     const score = Math.max(0, Math.min(dimension.weight, Math.trunc(raw)));
