@@ -54,7 +54,7 @@ export const OPS_UI_MIGRATION_ROUTES = [
     targetRoute: "/console/projects",
     module: "m1",
     routeKey: "projects",
-    status: "ready-to-switch",
+    status: "shell-route",
     risk: "high",
     dataDomains: ["features/projects", "/api/projects"],
     requiredTests: [
