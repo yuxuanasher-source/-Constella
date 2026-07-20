@@ -301,6 +301,60 @@ describe("submitProjectRecording", () => {
     expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
   });
 
+  it("rejects self-check payloads missing one score with a controlled error", async () => {
+    const repo = baseRepo();
+    const dimensionScores: Record<string, number> = {
+      ...completeSelfCheck.dimensionScores,
+    };
+    delete dimensionScores.product_understanding;
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/missing-score",
+          selfCheck: {
+            ...completeSelfCheck,
+            dimensionScores,
+          },
+        },
+      }),
+    ).rejects.toThrow("Recording self-check is required");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
+  it("rejects self-check payloads missing one key moment with a controlled error", async () => {
+    const repo = baseRepo();
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/missing-key-moment",
+          selfCheck: {
+            ...completeSelfCheck,
+            keyMoments: completeSelfCheck.keyMoments.filter(
+              (moment) => moment.key !== "selling_point",
+            ),
+          },
+        },
+      }),
+    ).rejects.toThrow("Recording self-check is required");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
   it("rejects when the task card has not been confirmed", async () => {
     const repo = baseRepo();
 

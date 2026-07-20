@@ -197,9 +197,10 @@ function parseDimensionScores(
   const dimensionScores: RecordingSelfCheckInput["dimensionScores"] = {};
   for (const dimension of RECORDING_PRODUCTION_DIMENSIONS) {
     const value = input[dimension.key];
-    if (typeof value === "number") {
-      dimensionScores[dimension.key] = value;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return null;
     }
+    dimensionScores[dimension.key] = value;
   }
 
   return dimensionScores;
@@ -211,16 +212,20 @@ function parseKeyMoments(input: unknown): RecordingKeyMomentInput[] | null {
   }
 
   const keyMoments: RecordingKeyMomentInput[] = [];
+  const seenKeys = new Set<RecordingKeyMomentKey>();
   for (const item of input) {
     if (!isRecord(item) || !isRecordingKeyMomentKey(item.key)) {
       return null;
     }
     if (
       typeof item.startSeconds !== "number" ||
-      typeof item.endSeconds !== "number"
+      !Number.isFinite(item.startSeconds) ||
+      typeof item.endSeconds !== "number" ||
+      !Number.isFinite(item.endSeconds)
     ) {
       return null;
     }
+    seenKeys.add(item.key);
 
     keyMoments.push({
       key: item.key,
@@ -228,6 +233,12 @@ function parseKeyMoments(input: unknown): RecordingKeyMomentInput[] | null {
       endSeconds: item.endSeconds,
       note: typeof item.note === "string" ? item.note : undefined,
     });
+  }
+
+  for (const key of KEY_MOMENT_KEYS) {
+    if (!seenKeys.has(key)) {
+      return null;
+    }
   }
 
   return keyMoments;
