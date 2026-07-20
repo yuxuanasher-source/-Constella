@@ -1,0 +1,46 @@
+{
+  "version": "actor-assertion-v1",
+  "protectedHeader": {
+    "alg": "RS256",
+    "typ": "JWT",
+    "kid": "xingyao-test-key-1"
+  },
+  "claims": {
+    "iss": "xingyao-product",
+    "aud": "xingyao-hermes-agent",
+    "sub": "11111111-1111-4111-8111-111111111111",
+    "organizationId": "22222222-2222-4222-8222-222222222222",
+    "role": "owner",
+    "conversationId": "33333333-3333-4333-8333-333333333333",
+    "invocationId": "44444444-4444-4444-8444-444444444444",
+    "allowedReadScopes": ["context.read", "projects.summary"],
+    "enabledSkillVersions": [
+      {
+        "skillId": "project-review",
+        "version": "1.0.0",
+        "bundleSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "skillId": "report-precheck",
+        "version": "2.0.0",
+        "bundleSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ],
+    "skillGrantsHash": "458147f2ca44ee9d33b9c01dfdf8b678ff903b27b7c0a6aa8b92ced3c644c310",
+    "profileVersion": "hermes-xingyao-v1",
+    "pageContext": {
+      "pageType": "project",
+      "objectIds": ["66666666-6666-4666-8666-666666666666"]
+    },
+    "jti": "55555555-5555-4555-8555-555555555555",
+    "iat": 1784505600,
+    "exp": 1784505900
+  },
+  "expected": {
+    "skillGrantsHash": "458147f2ca44ee9d33b9c01dfdf8b678ff903b27b7c0a6aa8b92ced3c644c310",
+    "scopesHash": "403df7d55bd3bc46d8ad6b7ee4b1bdcc49fe92e8871fc7ff0a54d66f48b7c435",
+    "actorFingerprint": "a12e34f34379aed20cd1b6b4a17048cfda73851c89a60adea51e7af278eeac0f"
+  },
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAv+bVJdjRi7UV+bQRLn3b\n9P+AsT8Yjz+N022GlVsjG30liHZ3d4XhMzYrsOQnkzPCC6is4baBe5wSkmgt0WeE\n9n1NXxoer52Qv7bBTwi8Erkcp6JkMuwh+zYGaAKqYOeTODwwXhh9IVqhT0bGaUcG\ncEdwd8jHcZwHj4N1INaFcW0+BLBcZbY2vNRoCMGqFMTYHOHVTur+AB+CZxd0nW7I\noVaULRO2pUrpOXbICT/BMg8c98t2VO9JKjJhAUKoBdfSv9QdAJZZSFqv7yROyiSW\nwrBreaTKSsb4ootjS2CwFz7U+L2SJdRtxhJeXtp/NnOJssCEM5Bq0wkeN/k61RTh\n6wIDAQAB\n-----END PUBLIC KEY-----\n",
+  "token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Inhpbmd5YW8tdGVzdC1rZXktMSJ9.eyJpc3MiOiJ4aW5neWFvLXByb2R1Y3QiLCJhdWQiOiJ4aW5neWFvLWhlcm1lcy1hZ2VudCIsInN1YiI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsIm9yZ2FuaXphdGlvbklkIjoiMjIyMjIyMjItMjIyMi00MjIyLTgyMjItMjIyMjIyMjIyMjIyIiwicm9sZSI6Im93bmVyIiwiY29udmVyc2F0aW9uSWQiOiIzMzMzMzMzMy0zMzMzLTQzMzMtODMzMy0zMzMzMzMzMzMzMzMiLCJpbnZvY2F0aW9uSWQiOiI0NDQ0NDQ0NC00NDQ0LTQ0NDQtODQ0NC00NDQ0NDQ0NDQ0NDQiLCJhbGxvd2VkUmVhZFNjb3BlcyI6WyJjb250ZXh0LnJlYWQiLCJwcm9qZWN0cy5zdW1tYXJ5Il0sImVuYWJsZWRTa2lsbFZlcnNpb25zIjpbeyJza2lsbElkIjoicHJvamVjdC1yZXZpZXciLCJ2ZXJzaW9uIjoiMS4wLjAiLCJidW5kbGVTaGEyNTYiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIn0seyJza2lsbElkIjoicmVwb3J0LXByZWNoZWNrIiwidmVyc2lvbiI6IjIuMC4wIiwiYnVuZGxlU2hhMjU2IjoiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYiJ9XSwic2tpbGxHcmFudHNIYXNoIjoiNDU4MTQ3ZjJjYTQ0ZWU5ZDMzYjljMDFkZmRmOGI2NzhmZjkwM2IyN2I3YzBhNmFhOGI5MmNlZDNjNjQ0YzMxMCIsInByb2ZpbGVWZXJzaW9uIjoiaGVybWVzLXhpbmd5YW8tdjEiLCJwYWdlQ29udGV4dCI6eyJwYWdlVHlwZSI6InByb2plY3QiLCJvYmplY3RJZHMiOlsiNjY2NjY2NjYtNjY2Ni00NjY2LTg2NjYtNjY2NjY2NjY2NjY2Il19LCJqdGkiOiI1NTU1NTU1NS01NTU1LTQ1NTUtODU1NS01NTU1NTU1NTU1NTUiLCJpYXQiOjE3ODQ1MDU2MDAsImV4cCI6MTc4NDUwNTkwMH0.OGjBjFuphIJ235oD_B68lUvZ7ORyM8gTuWl2zkDCPpyOw9VhzUEJ2jZU2-Kj5a_0wuZ8dyzVlTUanlJ-3VAnzDoDu5SFuVE4ficDExExIn4mylUHmUuNUbOVbdHLhZmnODqlVj3iQnPEI5Z2Atbf519gBoJ3YaBSUyK2TPIz1I-WZisFSGK0YtOENwDl3FfjJconsO9eApIia845LyHxMEPsBROubc83Mi3LR2G7Nnog1LtECb3ZDfPlxdGSzpmau551L6koJxGYPuTD0-OCDEBoOxqhF-op4KPW-Yqdg0BstmrHnTkCzlBXKdTfUFRblCaPLjpDtQWBgN-h0EduVA"
+}
