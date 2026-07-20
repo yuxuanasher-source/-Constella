@@ -65,6 +65,12 @@ export async function POST(request: Request) {
             typeof body.durationSeconds === "number"
               ? body.durationSeconds
               : undefined,
+          selfCheck:
+            body.selfCheck &&
+            typeof body.selfCheck === "object" &&
+            !Array.isArray(body.selfCheck)
+              ? (body.selfCheck as never)
+              : undefined,
         },
       });
 

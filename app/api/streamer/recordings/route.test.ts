@@ -69,6 +69,24 @@ const context = {
   },
 };
 
+const projectSelfCheck = {
+  readConfirmed: true,
+  dimensionScores: {
+    product_understanding: 20,
+    expression_control: 18,
+    content_structure: 12,
+    interaction_design: 12,
+    commercial_task: 12,
+    technical_compliance: 9,
+  },
+  keyMoments: [
+    { key: "best_performance", startSeconds: 30, endSeconds: 80 },
+    { key: "selling_point", startSeconds: 120, endSeconds: 180 },
+    { key: "commercial_task", startSeconds: 240, endSeconds: 300 },
+  ],
+  note: "Ready for project review.",
+};
+
 describe("streamer recordings route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -214,6 +232,7 @@ describe("streamer recordings route", () => {
           projectId: "project-1",
           link: "https://videos.example.com/project-1",
           durationSeconds: 600,
+          selfCheck: projectSelfCheck,
         }),
       }),
     );
@@ -238,7 +257,9 @@ describe("streamer recordings route", () => {
           projectId: "project-1",
           streamerId: "streamer-1",
           link: "https://videos.example.com/project-1",
+          storagePath: undefined,
           durationSeconds: 600,
+          selfCheck: projectSelfCheck,
         },
       }),
     );
@@ -253,6 +274,7 @@ describe("streamer recordings route", () => {
           projectId: "project-1",
           storagePath: "org-1/recordings/project-1/demo.mp4",
           durationSeconds: 900,
+          selfCheck: projectSelfCheck,
         }),
       }),
     );
@@ -266,6 +288,7 @@ describe("streamer recordings route", () => {
           link: undefined,
           storagePath: "org-1/recordings/project-1/demo.mp4",
           durationSeconds: 900,
+          selfCheck: projectSelfCheck,
         },
       }),
     );
