@@ -15,7 +15,6 @@ import type { AuthContext } from "@/lib/auth/context";
 import { cn } from "@/lib/utils";
 
 const OPS_EXTENSION_ROUTES = [
-  { label: "智能作战台", href: "/console/ai" },
   { label: "账号库", href: "/console/account-library" },
 ] as const;
 

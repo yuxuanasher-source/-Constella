@@ -46,10 +46,6 @@ outputs/
 /.obsidian/
 /.github/hooks/
 /.github/skills/
-.superpowers/ops-ui-migration/*.json
-.superpowers/ops-ui-migration/*.md
-.superpowers/ops-ui-migration/generated/
-!.superpowers/ops-ui-migration/.gitkeep
 
 # env files (can opt-in for committing if needed)
 .env*

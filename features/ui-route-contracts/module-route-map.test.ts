@@ -28,10 +28,7 @@ describe("OPS_MODULE_ROUTES", () => {
 
   it("routes M11 to billing instead of warroom", () => {
     expect(routeForOpsModule("m10")?.routeKey).toBe("warroom");
+    expect(routeForOpsModule("m10")?.href).toBe("/console/stubs/m10");
     expect(routeForOpsModule("m11")?.routeKey).toBe("billing");
-  });
-
-  it("routes the M10 war room module through the new AI workbench shell", () => {
-    expect(routeForOpsModule("m10")?.href).toBe("/console/ai");
   });
 });
