@@ -43,6 +43,21 @@ create table if not exists public.project_recording_guides (
   )
 );
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'project_recording_guides_project_scope_fkey'
+      and conrelid = 'public.project_recording_guides'::regclass
+  ) then
+    alter table public.project_recording_guides
+      add constraint project_recording_guides_project_scope_fkey
+      foreign key (project_id, organization_id)
+      references public.projects(id, organization_id)
+      on delete cascade;
+  end if;
+end $$;
+
 alter table public.recording_submissions
   add column if not exists task_card_read_confirmed_at timestamptz,
   add column if not exists self_check jsonb not null default '{}'::jsonb,
@@ -56,6 +71,7 @@ begin
   if not exists (
     select 1 from pg_constraint
     where conname = 'recording_submissions_self_score_range'
+      and conrelid = 'public.recording_submissions'::regclass
   ) then
     alter table public.recording_submissions
       add constraint recording_submissions_self_score_range
@@ -65,6 +81,7 @@ begin
   if not exists (
     select 1 from pg_constraint
     where conname = 'recording_submissions_self_assessment_level'
+      and conrelid = 'public.recording_submissions'::regclass
   ) then
     alter table public.recording_submissions
       add constraint recording_submissions_self_assessment_level
@@ -77,6 +94,7 @@ begin
   if not exists (
     select 1 from pg_constraint
     where conname = 'recording_submissions_self_check_object'
+      and conrelid = 'public.recording_submissions'::regclass
   ) then
     alter table public.recording_submissions
       add constraint recording_submissions_self_check_object
@@ -86,6 +104,7 @@ begin
   if not exists (
     select 1 from pg_constraint
     where conname = 'recording_submissions_key_moments_array'
+      and conrelid = 'public.recording_submissions'::regclass
   ) then
     alter table public.recording_submissions
       add constraint recording_submissions_key_moments_array

@@ -18,6 +18,13 @@ describe("recording production feedback schema", () => {
     expect(migration).toContain(
       "constraint project_recording_guides_project_scope_fkey foreign key (project_id, organization_id) references public.projects(id, organization_id) on delete cascade",
     );
+    expect(migration).toContain("alter table public.project_recording_guides");
+    expect(migration).toContain(
+      "add constraint project_recording_guides_project_scope_fkey",
+    );
+    expect(migration).toContain(
+      "conrelid = 'public.project_recording_guides'::regclass",
+    );
   });
 
   it("adds advisory self-check metadata to recording submissions", () => {
@@ -27,6 +34,7 @@ describe("recording production feedback schema", () => {
     expect(migration).toContain("add column if not exists self_score_total integer");
     expect(migration).toContain("add column if not exists self_assessment_level text");
     expect(migration).toContain("recording_submissions_self_score_range");
+    expect(migration).toContain("conrelid = 'public.recording_submissions'::regclass");
   });
 
   it("makes replayable trigger and policy definitions", () => {
