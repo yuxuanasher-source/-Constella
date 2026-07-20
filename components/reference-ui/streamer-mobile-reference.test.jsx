@@ -1976,6 +1976,155 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
     );
   });
 
+  it("resets the mobile project recording form when switching project details", async () => {
+    const carryFile = new File(["carry"], "carry.mp4", { type: "video/mp4" });
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/streamer/project-announcements/project-a") {
+        return {
+          ok: true,
+          json: async () => ({
+            project: projectAnnouncementFixture({
+              id: "project-a",
+              code: "PUB-A",
+              name: "Reset Project A",
+              publicSummary: "Project A summary",
+            }),
+          }),
+        };
+      }
+      if (String(url) === "/api/streamer/project-announcements/project-b") {
+        return {
+          ok: true,
+          json: async () => ({
+            project: projectAnnouncementFixture({
+              id: "project-b",
+              code: "PUB-B",
+              name: "Reset Project B",
+              publicSummary: "Project B summary",
+            }),
+          }),
+        };
+      }
+      if (String(url) === "/api/streamer/recordings") {
+        return { ok: true, json: async () => ({ recordings: [] }) };
+      }
+      if (String(url) === "/api/streamer/project-announcements") {
+        return { ok: true, json: async () => ({ announcements: [] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[
+          projectAnnouncementFixture({
+            id: "project-a",
+            code: "PUB-A",
+            name: "Reset Project A",
+            publicSummary: "Project A summary",
+          }),
+          projectAnnouncementFixture({
+            id: "project-b",
+            code: "PUB-B",
+            name: "Reset Project B",
+            publicSummary: "Project B summary",
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "查看详情" })[0]);
+    await screen.findByText("项目详情");
+    fireEvent.change(screen.getByLabelText("录屏链接"), {
+      target: { value: "https://videos.example.com/project-a" },
+    });
+    fillProjectRecordingSelfCheck();
+    fireEvent.change(screen.getByLabelText("上传原始录屏"), {
+      target: { files: [carryFile] },
+    });
+    expect(
+      screen.getByDisplayValue("https://videos.example.com/project-a"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("我已阅读并理解本次录屏要求")).toBeChecked();
+    expect(screen.getByText("已选择：carry.mp4")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "查看详情" })[1]);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("录屏链接")).toHaveValue(""),
+    );
+    expect(
+      screen.getByLabelText("我已阅读并理解本次录屏要求"),
+    ).not.toBeChecked();
+    expect(screen.getByLabelText("产品理解与卖点展示自评分")).toHaveValue(null);
+    expect(screen.queryByText("已选择：carry.mp4")).not.toBeInTheDocument();
+  });
+
+  it("blocks mobile project recording submit when a key moment timestamp is malformed", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/streamer/project-announcements/project-time") {
+        return {
+          ok: true,
+          json: async () => ({
+            project: projectAnnouncementFixture({
+              id: "project-time",
+              code: "PUB-T",
+              name: "Timestamp Project",
+              publicSummary: "Timestamp project summary",
+            }),
+          }),
+        };
+      }
+      if (String(url) === "/api/streamer/recordings") {
+        return { ok: true, json: async () => ({ recordings: [] }) };
+      }
+      if (String(url) === "/api/streamer/project-announcements") {
+        return { ok: true, json: async () => ({ announcements: [] }) };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StreamerMobileReferenceApp
+        initialRoute="videos"
+        recordings={[]}
+        projectAnnouncements={[
+          projectAnnouncementFixture({
+            id: "project-time",
+            code: "PUB-T",
+            name: "Timestamp Project",
+            publicSummary: "Timestamp project summary",
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
+    await screen.findByText("项目详情");
+    fireEvent.change(screen.getByLabelText("录屏链接"), {
+      target: { value: "https://videos.example.com/project-time" },
+    });
+    fillProjectRecordingSelfCheck();
+    fireEvent.change(screen.getByLabelText("最佳表现片段结束时间"), {
+      target: { value: ":35" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交项目录屏" }));
+
+    expect(
+      await screen.findByText("请先完成录屏自查信息。"),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url) === "/api/streamer/recordings" && init?.method === "POST",
+      ),
+    ).toBe(false);
+  });
+
   it("rejects oversized recording files inline without starting an upload", async () => {
     const oversizedFile = new File(["stub"], "huge.mp4", {
       type: "video/mp4",
@@ -2062,6 +2211,30 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
     );
   });
 });
+
+function projectAnnouncementFixture(overrides = {}) {
+  return {
+    id: "project-fixture",
+    code: "PUB-F",
+    name: "Fixture Project",
+    status: "recruiting",
+    vendor: "Vendor A",
+    product: "Game A",
+    publicSummary: "Fixture project summary",
+    gameDownloadUrl: null,
+    openSignup: true,
+    forceRecording: true,
+    applicationId: null,
+    applicationStatus: null,
+    latestRecordingStatus: null,
+    latestRecordingVersion: null,
+    decisionReason: null,
+    reviewStatusLabel: "待投递",
+    canSubmitRecording: true,
+    recordingGuide: recordingGuideFixture(),
+    ...overrides,
+  };
+}
 
 function recordingGuideFixture() {
   return {

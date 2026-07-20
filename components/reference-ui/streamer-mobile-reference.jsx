@@ -5148,6 +5148,7 @@ function VideosTab({
 
   const openProjectDetail = async (project) => {
     setProjectError("");
+    setProjectForm(createProjectRecordingForm());
     setDetailLoading(true);
     setSelectedProject(project);
     try {
@@ -6646,12 +6647,18 @@ function parseKeyMomentSeconds(value) {
   const text = String(value ?? "").trim();
   if (!text) return null;
   if (text.includes(":")) {
-    const parts = text.split(":").map((part) => Number(part));
-    if (parts.some((part) => !Number.isFinite(part))) return null;
-    return parts.reduce((total, part) => total * 60 + part, 0);
+    const parts = text.split(":").map((part) => part.trim());
+    if (
+      parts.length > 3 ||
+      parts.some((part) => !part || !/^\d+$/.test(part))
+    ) {
+      return null;
+    }
+    return parts
+      .map((part) => Number(part))
+      .reduce((total, part) => total * 60 + part, 0);
   }
-  const parsed = Number(text);
-  return Number.isFinite(parsed) ? parsed : null;
+  return /^\d+$/.test(text) ? Number(text) : null;
 }
 
 function clampSelfCheckScore(value, max) {
