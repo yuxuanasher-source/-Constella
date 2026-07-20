@@ -5,7 +5,13 @@ import {
   type RecordingGuideRow,
   type RecordingProductionGuide,
 } from "@/features/recordings/recording-production-guide";
-import type { NormalizedRecordingSelfCheck } from "@/features/recordings/recording-production-standard";
+import {
+  KEY_MOMENT_KEYS,
+  RECORDING_PRODUCTION_DIMENSIONS,
+  type NormalizedRecordingSelfCheck,
+  type RecordingKeyMomentInput,
+  type RecordingKeyMomentKey,
+} from "@/features/recordings/recording-production-standard";
 
 import type { AdmissionReviewClient } from "./evaluation-service";
 import { resolveAdmissionRubric } from "./evaluation-service";
@@ -299,29 +305,106 @@ async function loadProjectRecordingGuides({
 function selfCheckFromSubmission(
   row: SubmissionRow,
 ): NormalizedRecordingSelfCheck | null {
+  const dimensionScores = normalizeStoredDimensionScores(row.self_check);
+  const keyMoments = normalizeStoredKeyMoments(row.key_moments);
   if (
     !row.task_card_read_confirmed_at ||
-    row.self_score_total === null ||
-    !isSelfAssessmentLevel(row.self_assessment_level)
+    !isValidTotalScore(row.self_score_total) ||
+    !isSelfAssessmentLevel(row.self_assessment_level) ||
+    !dimensionScores ||
+    !keyMoments
   ) {
     return null;
   }
 
   return {
     readConfirmed: true,
-    dimensionScores: isRecord(row.self_check)
-      ? (row.self_check as NormalizedRecordingSelfCheck["dimensionScores"])
-      : ({} as NormalizedRecordingSelfCheck["dimensionScores"]),
+    dimensionScores,
     totalScore: row.self_score_total,
     selfLevel: row.self_assessment_level,
-    keyMoments: Array.isArray(row.key_moments)
-      ? (row.key_moments as NormalizedRecordingSelfCheck["keyMoments"])
-      : [],
+    keyMoments,
     note:
       typeof row.submitter_note === "string"
         ? row.submitter_note.trim() || null
         : null,
   };
+}
+
+function normalizeStoredDimensionScores(
+  input: unknown,
+): NormalizedRecordingSelfCheck["dimensionScores"] | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+
+  const scores = {} as NormalizedRecordingSelfCheck["dimensionScores"];
+  for (const dimension of RECORDING_PRODUCTION_DIMENSIONS) {
+    const value = input[dimension.key];
+    if (
+      typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      value < 0 ||
+      value > dimension.weight
+    ) {
+      return null;
+    }
+    scores[dimension.key] = value;
+  }
+  return scores;
+}
+
+function normalizeStoredKeyMoments(
+  input: unknown,
+): RecordingKeyMomentInput[] | null {
+  if (!Array.isArray(input)) {
+    return null;
+  }
+
+  const byKey = new Map<RecordingKeyMomentKey, RecordingKeyMomentInput>();
+  for (const item of input) {
+    if (!isRecord(item) || !isRecordingKeyMomentKey(item.key)) {
+      return null;
+    }
+    if (byKey.has(item.key)) {
+      return null;
+    }
+
+    const { startSeconds, endSeconds, note } = item;
+    if (
+      typeof startSeconds !== "number" ||
+      !Number.isInteger(startSeconds) ||
+      startSeconds < 0 ||
+      typeof endSeconds !== "number" ||
+      !Number.isInteger(endSeconds) ||
+      endSeconds <= startSeconds ||
+      (note !== undefined && typeof note !== "string")
+    ) {
+      return null;
+    }
+
+    byKey.set(item.key, {
+      key: item.key,
+      startSeconds,
+      endSeconds,
+      note: note?.trim() || undefined,
+    });
+  }
+
+  for (const key of KEY_MOMENT_KEYS) {
+    if (!byKey.has(key)) {
+      return null;
+    }
+  }
+  return KEY_MOMENT_KEYS.map((key) => byKey.get(key)!);
+}
+
+function isValidTotalScore(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 100
+  );
 }
 
 function isSelfAssessmentLevel(
@@ -334,6 +417,12 @@ function isSelfAssessmentLevel(
     value === "L3" ||
     value === "L4"
   );
+}
+
+function isRecordingKeyMomentKey(
+  value: unknown,
+): value is RecordingKeyMomentKey {
+  return KEY_MOMENT_KEYS.some((key) => key === value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -38,9 +38,18 @@ import {
 // 预审结果只是草稿，一审仍由人工提交；人工提交时自动产生 ai_vs_mcn 对齐信号。
 
 export const PRE_REVIEW_SCENE = "admission.pre_review";
-export const PRE_REVIEW_PROMPT_VERSION = 1;
+export const PRE_REVIEW_PROMPT_VERSION = 2;
 const TRANSCRIPT_HEAD_CHARS = 8_000;
 const TRANSCRIPT_TAIL_CHARS = 2_000;
+const PROMPT_SHORT_FIELD_CHARS = 80;
+const PROMPT_LONG_FIELD_CHARS = 80;
+const PROMPT_URL_CHARS = 120;
+const PROMPT_LIST_MAX_ITEMS = 4;
+const PROMPT_LIST_ITEM_CHARS = 42;
+const PROMPT_TECHNICAL_MAX_ENTRIES = 3;
+const PROMPT_TECHNICAL_KEY_CHARS = 24;
+const PROMPT_TECHNICAL_VALUE_CHARS = 36;
+const PROMPT_KEY_MOMENT_NOTE_CHARS = 36;
 
 export type AdmissionPreReviewSubmission = {
   organizationId: string;
@@ -557,22 +566,24 @@ function buildProjectGuidePromptLines(
 
   return [
     "【项目任务卡】",
-    `游戏: ${projectGuide.gameName || "未知"}`,
+    `游戏: ${formatPromptField(projectGuide.gameName)}`,
     `版本/区服: ${joinNonEmpty([
-      projectGuide.gameVersion,
-      projectGuide.serverRegion,
+      compactText(projectGuide.gameVersion, PROMPT_SHORT_FIELD_CHARS),
+      compactText(projectGuide.serverRegion, PROMPT_SHORT_FIELD_CHARS),
     ]) || "未知"}`,
-    `推广目标: ${projectGuide.promotionGoal || "未知"}`,
-    `目标用户: ${projectGuide.targetAudience || "未知"}`,
+    `推广目标: ${formatPromptField(projectGuide.promotionGoal)}`,
+    `目标用户: ${formatPromptField(projectGuide.targetAudience)}`,
     `必须展示: ${formatTextList(projectGuide.requiredContent)}`,
     `必须讲解: ${formatTextList(projectGuide.requiredTalkingPoints)}`,
     `商业动作: ${formatTextList(projectGuide.commercialActions)}`,
     `禁止内容: ${formatTextList(projectGuide.forbiddenContent)}`,
     formatTechnicalStandard(projectGuide.technicalStandard),
     projectGuide.templateText
-      ? `任务模板: ${projectGuide.templateText}`
+      ? `任务模板: ${compactText(projectGuide.templateText, PROMPT_LONG_FIELD_CHARS)}`
       : "",
-    projectGuide.exampleUrl ? `参考视频: ${projectGuide.exampleUrl}` : "",
+    projectGuide.exampleUrl
+      ? `参考视频: ${compactText(projectGuide.exampleUrl, PROMPT_URL_CHARS)}`
+      : "",
     "",
   ].filter(Boolean);
 }
@@ -589,7 +600,9 @@ function buildSelfCheckPromptLines(
         .map(
           (item) =>
             `${item.key}=${item.startSeconds}-${item.endSeconds}s${
-              item.note ? `(${item.note})` : ""
+              item.note
+                ? `(${compactText(item.note, PROMPT_KEY_MOMENT_NOTE_CHARS)})`
+                : ""
             }`,
         )
         .join("；")
@@ -600,14 +613,26 @@ function buildSelfCheckPromptLines(
     `主播自评总分: ${selfCheck.totalScore}`,
     `主播自评等级: ${selfCheck.selfLevel}`,
     `关键时间点: ${keyMoments || "无"}`,
-    selfCheck.note ? `主播备注: ${selfCheck.note}` : "",
+    selfCheck.note
+      ? `主播备注: ${compactText(selfCheck.note, PROMPT_LONG_FIELD_CHARS)}`
+      : "",
     "",
   ].filter(Boolean);
 }
 
 function formatTextList(values: string[] | null | undefined): string {
-  const normalized = (values ?? []).map((value) => value.trim()).filter(Boolean);
-  return normalized.length ? normalized.join("；") : "无";
+  const normalized = (values ?? [])
+    .map((value) => compactText(value, PROMPT_LIST_ITEM_CHARS))
+    .filter(Boolean);
+  if (!normalized.length) {
+    return "无";
+  }
+
+  const visible = normalized.slice(0, PROMPT_LIST_MAX_ITEMS);
+  const remaining = normalized.length - visible.length;
+  return remaining > 0
+    ? `${visible.join("；")}；另${remaining}项`
+    : visible.join("；");
 }
 
 function joinNonEmpty(values: Array<string | null | undefined>): string {
@@ -622,9 +647,55 @@ function formatTechnicalStandard(
   }
 
   const entries = Object.entries(standard)
-    .map(([key, value]) => `${key}=${String(value)}`)
-    .join("；");
-  return `技术标准: ${entries || "无"}`;
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(
+      ([key, value]) =>
+        `${compactText(key, PROMPT_TECHNICAL_KEY_CHARS)}=${compactText(
+          stringifyPromptValue(value),
+          PROMPT_TECHNICAL_VALUE_CHARS,
+        )}`,
+    );
+  const visible = entries.slice(0, PROMPT_TECHNICAL_MAX_ENTRIES);
+  const remaining = entries.length - visible.length;
+  return `技术标准: ${
+    visible.length
+      ? remaining > 0
+        ? `${visible.join("；")}；另${remaining}项`
+        : visible.join("；")
+      : "无"
+  }`;
+}
+
+function formatPromptField(value: string | null | undefined): string {
+  return compactText(value, PROMPT_SHORT_FIELD_CHARS) || "未知";
+}
+
+function compactText(
+  value: string | null | undefined,
+  maxChars: number,
+): string {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length <= maxChars) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function stringifyPromptValue(value: unknown): string {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function truncateTranscript(text: string): string {

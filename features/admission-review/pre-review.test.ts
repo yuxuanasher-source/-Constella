@@ -11,6 +11,7 @@ import type { AdmissionReviewClient } from "./evaluation-service";
 import {
   findTranscriptForSubmission,
   generateAdmissionPreReview,
+  PRE_REVIEW_PROMPT_VERSION,
 } from "./pre-review";
 
 const actor = {
@@ -240,6 +241,7 @@ describe("generateAdmissionPreReview", () => {
       scene: "admission.pre_review",
       providerName: "deepseek",
       status: "succeeded",
+      promptVersion: 2,
     });
   });
 
@@ -299,6 +301,8 @@ describe("generateAdmissionPreReview", () => {
       request.request.messages.find((message) => message.role === "user")
         ?.content ?? "";
 
+    expect(request.request).toMatchObject({ promptVersion: 2 });
+    expect(PRE_REVIEW_PROMPT_VERSION).toBe(2);
     expect(systemPrompt).toContain("建议补录指定片段");
     expect(systemPrompt).toContain("建议整段重录");
     expect(systemPrompt).not.toContain("必须重录");
@@ -325,6 +329,102 @@ describe("generateAdmissionPreReview", () => {
         },
       },
     );
+  });
+
+  it("bounds non-transcript task-card and self-check prompt context", async () => {
+    const client = createEvaluationClient();
+    const requests: unknown[] = [];
+    const repeated = "超长说明".repeat(80);
+    const longGuide: RecordingProductionGuide = {
+      ...projectGuide,
+      gameName: repeated,
+      gameVersion: repeated,
+      serverRegion: repeated,
+      promotionGoal: repeated,
+      targetAudience: repeated,
+      requiredContent: Array.from({ length: 10 }, (_, index) =>
+        `必看内容${index}-${repeated}`,
+      ),
+      requiredTalkingPoints: Array.from({ length: 10 }, (_, index) =>
+        `讲解点${index}-${repeated}`,
+      ),
+      forbiddenContent: Array.from({ length: 10 }, (_, index) =>
+        `禁用项${index}-${repeated}`,
+      ),
+      commercialActions: Array.from({ length: 10 }, (_, index) =>
+        `商业动作${index}-${repeated}`,
+      ),
+      technicalStandard: {
+        zLong: repeated,
+        aNested: { text: repeated },
+        bArray: [repeated, repeated],
+        cExtra: repeated,
+        dExtra: repeated,
+      },
+      templateText: repeated,
+      exampleUrl: `https://example.com/${"x".repeat(400)}`,
+    };
+    const longSelfCheck: NormalizedRecordingSelfCheck = {
+      ...selfCheck,
+      keyMoments: selfCheck.keyMoments.map((moment) => ({
+        ...moment,
+        note: repeated,
+      })),
+      note: repeated,
+    };
+    const runGateway = ((input: unknown) => {
+      requests.push(input);
+      return Promise.resolve({
+        status: "succeeded",
+        providerName: "deepseek",
+        fallbackUsed: false,
+        structuredOutput: {
+          decision: "needs_changes",
+          confidence: "medium",
+          noteDraft: "预审意见",
+          checkpoints: [
+            {
+              key: "script_fit",
+              verdict: "pass",
+              confidence: 0.8,
+              evidence: "先讲玩法再抽福利",
+            },
+          ],
+        },
+        usage: { promptTokens: 1500, completionTokens: 400, totalTokens: 1900 },
+        latencyMs: 1200,
+        costCents: 3,
+      });
+    }) as unknown as typeof runAiGateway;
+
+    await generateAdmissionPreReview({
+      client: client as never,
+      actor,
+      submission,
+      transcript,
+      rubric: defaultAdmissionRubric(),
+      projectGuide: longGuide,
+      selfCheck: longSelfCheck,
+      providers: llmProviders,
+      runGateway,
+      recordInvocation: collectInvocations([]),
+    });
+
+    const request = requests[0] as {
+      request: {
+        messages: Array<{ role: string; content: string }>;
+      };
+    };
+    const userPrompt =
+      request.request.messages.find((message) => message.role === "user")
+        ?.content ?? "";
+    const contextPrompt = userPrompt.split("【转写全文】")[0] ?? userPrompt;
+
+    expect(contextPrompt).not.toContain("超长说明".repeat(20));
+    expect(contextPrompt.length).toBeLessThanOrEqual(2400);
+    for (const line of contextPrompt.split("\n").filter(Boolean)) {
+      expect(line.length).toBeLessThanOrEqual(260);
+    }
   });
 
   it("downgrades approved to manual_review when a hard block failed", async () => {

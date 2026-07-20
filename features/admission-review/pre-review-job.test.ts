@@ -238,6 +238,58 @@ describe("runAdmissionPreReviews", () => {
     });
   });
 
+  it("ignores malformed stored self-check context", async () => {
+    const generated: Array<Record<string, unknown>> = [];
+    const generate = (async (input: Record<string, unknown>) => {
+      generated.push(input);
+      return {
+        evaluation: { id: "evaluation-1" },
+        decision: "needs_changes",
+        confidence: "medium",
+        noteDraft: "预审意见",
+        checkpointResults: [],
+        providerName: "deepseek",
+      };
+    }) as unknown as typeof generateAdmissionPreReview;
+
+    await runAdmissionPreReviews({
+      client: createJobClient({
+        submissions: [
+          submissionRow({
+            self_check: {
+              product_understanding: "18",
+              expression_control: 14,
+              content_structure: 12,
+              interaction_design: 10,
+              commercial_task: 10,
+              technical_compliance: 8,
+            },
+            key_moments: [
+              {
+                key: "unknown_moment",
+                startSeconds: "12",
+                endSeconds: 46,
+                note: 123,
+              },
+            ],
+            self_score_total: 72,
+            self_assessment_level: "L2",
+            task_card_read_confirmed_at: "2026-07-03T09:02:00.000Z",
+            submitter_note: "这行本身合法，但整体自检结构不合法。",
+          }),
+        ],
+      }),
+      actor,
+      generate,
+      findTranscript: transcriptStub,
+    });
+
+    expect(generated[0]).toMatchObject({
+      submission: { submissionId: "submission-1" },
+      selfCheck: null,
+    });
+  });
+
   it("skips submissions that already have a pre-review", async () => {
     const result = await runAdmissionPreReviews({
       client: createJobClient({ preReviewedSubmissionIds: ["submission-1"] }),
