@@ -647,6 +647,70 @@ describe("application service", () => {
     );
   });
 
+  it("forwards checkpoint structured feedback as evidence without changing the human decision", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_reviewing",
+      }),
+    });
+    const recordEvaluation = vi.fn().mockResolvedValue(undefined);
+
+    await reviewRecordingSubmission({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: operatorActor,
+      input: {
+        applicationId: "app-1",
+        decision: "needs_changes",
+        note: "人工建议补充",
+        reasonCodes: ["script_fit"],
+        checkpointResults: [
+          {
+            checkpointKey: "script_fit",
+            verdict: "fail",
+            note: "缺少开服冲榜卖点",
+            evidence: {
+              structuredFeedback: {
+                issue: "卖点没说清",
+                howToImprove: "补充福利入口和预约动作",
+                rerecordSuggestion: "clip",
+                advisoryOnly: true,
+              },
+            },
+          },
+        ],
+      },
+      recordEvaluation,
+    });
+
+    expect(repo.updateApplicationStatus).toHaveBeenCalledWith(
+      "app-1",
+      expect.objectContaining({ status: "recording_required" }),
+    );
+    expect(recordEvaluation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: "needs_changes",
+        checkpointResults: [
+          {
+            checkpointKey: "script_fit",
+            verdict: "fail",
+            note: "缺少开服冲榜卖点",
+            evidence: {
+              structuredFeedback: {
+                issue: "卖点没说清",
+                howToImprove: "补充福利入口和预约动作",
+                rerecordSuggestion: "clip",
+                advisoryOnly: true,
+              },
+            },
+          },
+        ],
+      }),
+    );
+  });
+
   it("marks legacy note-only rejections for later classification", async () => {
     const repo = makeRepo({
       getApplicationById: vi.fn().mockResolvedValue({

@@ -1427,6 +1427,26 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
             latestRecordingVersion: 1,
             decisionReason: "Please add gameplay intro.",
             recordingFeedback: "Please add gameplay intro.",
+            rejectionReasons: [
+              {
+                key: "script_fit",
+                label: "话术贴合项目卖点",
+                note: "缺少卖点",
+                issue: "卖点没有讲清楚",
+                howToImprove: "补充福利入口和预约动作",
+                rerecordSuggestion: "clip",
+                advisoryOnly: true,
+              },
+              {
+                key: "duration_ok",
+                label: "录屏时长满足要求",
+                note: "整体需要重看",
+                issue: "录屏结构断裂",
+                howToImprove: "按模板重新组织开场到收尾",
+                rerecordSuggestion: "full",
+                advisoryOnly: true,
+              },
+            ],
             reviewStatusLabel: "需修改",
             canSubmitRecording: true,
           },
@@ -1437,6 +1457,13 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
 
     expect(screen.getByText("Please add gameplay intro.")).toBeInTheDocument();
+    expect(screen.getByText("哪里不合格：卖点没有讲清楚")).toBeInTheDocument();
+    expect(
+      screen.getByText("怎么改：补充福利入口和预约动作"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("建议：补录指定片段")).toBeInTheDocument();
+    expect(screen.getByText("建议：整段重录")).toBeInTheDocument();
+    expect(screen.queryByText(/系统判定|必须重录|自动驳回|自动通过/)).toBeNull();
     expect(screen.getByRole("button", { name: "提交项目录屏" })).toBeEnabled();
   });
 

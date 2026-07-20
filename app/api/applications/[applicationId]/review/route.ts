@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  type AdmissionCheckpointResultInput,
   normalizeReasonCodes,
   type AdmissionCheckpointVerdict,
 } from "@/features/admission-review/contracts";
@@ -23,6 +24,7 @@ import { reviewRecordingSubmission } from "@/features/applications/application-s
 
 const reviewDecisions = new Set(["approved", "rejected", "needs_changes"]);
 const checkpointVerdicts = new Set(["pass", "fail", "not_applicable"]);
+const structuredFeedbackTextLimit = 1000;
 
 export async function PATCH(
   request: Request,
@@ -81,6 +83,7 @@ export async function PATCH(
               checkpointKey: result.checkpointKey,
               verdict: result.verdict,
               note: result.note,
+              ...(result.evidence ? { evidence: result.evidence } : {}),
             })),
           },
         });
@@ -118,13 +121,9 @@ function readStringArray(
   });
 }
 
-function readCheckpointResults(body: Record<string, unknown>):
-  | Array<{
-      checkpointKey: string;
-      verdict: AdmissionCheckpointVerdict;
-      note?: string;
-    }>
-  | undefined {
+function readCheckpointResults(
+  body: Record<string, unknown>,
+): AdmissionCheckpointResultInput[] | undefined {
   const value = body.checkpointResults;
   if (value === undefined || value === null) {
     return undefined;
@@ -150,6 +149,7 @@ function readCheckpointResults(body: Record<string, unknown>):
         400,
       );
     }
+    const evidence = readCheckpointEvidence(record);
     return {
       checkpointKey,
       verdict: verdict as AdmissionCheckpointVerdict,
@@ -157,6 +157,49 @@ function readCheckpointResults(body: Record<string, unknown>):
         typeof record.note === "string" && record.note.trim()
           ? record.note.trim()
           : undefined,
+      ...(evidence ? { evidence } : {}),
     };
   });
+}
+
+function readCheckpointEvidence(
+  record: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const evidence =
+    record.evidence && typeof record.evidence === "object"
+      ? (record.evidence as Record<string, unknown>)
+      : null;
+  const structuredFeedback =
+    evidence?.structuredFeedback &&
+    typeof evidence.structuredFeedback === "object"
+      ? (evidence.structuredFeedback as Record<string, unknown>)
+      : null;
+  if (!structuredFeedback) {
+    return undefined;
+  }
+
+  return {
+    structuredFeedback: {
+      issue: readStructuredFeedbackText(structuredFeedback.issue),
+      howToImprove: readStructuredFeedbackText(
+        structuredFeedback.howToImprove,
+      ),
+      rerecordSuggestion: readRerecordSuggestion(
+        structuredFeedback.rerecordSuggestion,
+      ),
+      advisoryOnly: true,
+    },
+  };
+}
+
+function readStructuredFeedbackText(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  return text ? text.slice(0, structuredFeedbackTextLimit) : null;
+}
+
+function readRerecordSuggestion(value: unknown): "none" | "clip" | "full" {
+  return value === "clip" || value === "full" ? value : "none";
 }

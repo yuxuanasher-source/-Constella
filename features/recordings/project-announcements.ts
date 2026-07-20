@@ -67,7 +67,7 @@ export type StreamerProjectAnnouncementCard = {
   recordingFeedback: string | null;
   recordingGuide: RecordingProductionGuide;
   // 结构化驳回理由（卡点名称 + 单项备注），来自 admission_review 评估。
-  rejectionReasons: Array<{ key: string; label: string; note: string | null }>;
+  rejectionReasons: StructuredRejectionFeedback["reasons"];
   reviewStatusLabel: string;
   canSubmitRecording: boolean;
 };

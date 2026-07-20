@@ -15,6 +15,10 @@ export type StructuredRejectionReason = {
   key: string;
   label: string;
   note: string | null;
+  issue: string | null;
+  howToImprove: string | null;
+  rerecordSuggestion: "none" | "clip" | "full";
+  advisoryOnly: true;
 };
 
 export type StructuredRejectionFeedback = {
@@ -39,6 +43,7 @@ type ResultRow = {
   checkpoint_key: string;
   verdict: string;
   note: string | null;
+  evidence: Record<string, unknown> | null;
 };
 
 type RejectionFeedbackDb = {
@@ -125,7 +130,7 @@ export async function listLatestRejectionFeedback({
   const evaluationIds = [...latestByApplication.values()].map((row) => row.id);
   const { data: results, error: resultsError } = await db
     .from("admission_review_checkpoint_results")
-    .select("evaluation_id, checkpoint_key, verdict, note")
+    .select("evaluation_id, checkpoint_key, verdict, note, evidence")
     .in("evaluation_id", evaluationIds)
     .eq("verdict", "fail");
 
@@ -151,6 +156,7 @@ export async function listLatestRejectionFeedback({
         key: row.checkpoint_key,
         label: checkpointLabel(rubric, row.checkpoint_key),
         note: row.note,
+        ...readStructuredFeedback(row.evidence),
       })),
     });
   }
@@ -160,4 +166,33 @@ export async function listLatestRejectionFeedback({
 
 function checkpointLabel(rubric: AdmissionRubric, key: string): string {
   return findCheckpoint(rubric, key)?.label ?? key;
+}
+
+export function readStructuredFeedback(evidence: unknown): Pick<
+  StructuredRejectionReason,
+  "issue" | "howToImprove" | "rerecordSuggestion" | "advisoryOnly"
+> {
+  const structuredFeedback =
+    evidence && typeof evidence === "object"
+      ? (evidence as Record<string, unknown>).structuredFeedback
+      : null;
+  const record =
+    structuredFeedback && typeof structuredFeedback === "object"
+      ? (structuredFeedback as Record<string, unknown>)
+      : {};
+  const rerecordSuggestion = record.rerecordSuggestion;
+
+  return {
+    issue: readFeedbackText(record.issue),
+    howToImprove: readFeedbackText(record.howToImprove),
+    rerecordSuggestion:
+      rerecordSuggestion === "clip" || rerecordSuggestion === "full"
+        ? rerecordSuggestion
+        : "none",
+    advisoryOnly: true,
+  };
+}
+
+function readFeedbackText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

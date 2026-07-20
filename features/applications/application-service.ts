@@ -1,6 +1,7 @@
 import type { AuditLogInput } from "@/lib/audit/audit";
 import type { NotificationInput } from "@/lib/notify/notify";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
+import type { AdmissionCheckpointResultInput } from "@/features/admission-review/contracts";
 import type {
   NormalizedRecordingSelfCheck,
   RecordingSelfAssessmentLevel,
@@ -446,11 +447,7 @@ export type AdmissionEvaluationRecorder = (input: {
   note?: string;
   noteSource: "human" | "needs_classification";
   reasonCodes: string[];
-  checkpointResults?: Array<{
-    checkpointKey: string;
-    verdict: "pass" | "fail" | "not_applicable";
-    note?: string;
-  }>;
+  checkpointResults?: AdmissionCheckpointResultInput[];
 }) => Promise<void>;
 
 export async function reviewRecordingSubmission({
@@ -473,11 +470,7 @@ export async function reviewRecordingSubmission({
     >;
     note?: string;
     reasonCodes?: string[];
-    checkpointResults?: Array<{
-      checkpointKey: string;
-      verdict: "pass" | "fail" | "not_applicable";
-      note?: string;
-    }>;
+    checkpointResults?: AdmissionCheckpointResultInput[];
   };
   recordEvaluation?: AdmissionEvaluationRecorder;
 }): Promise<ApplicationRecord> {

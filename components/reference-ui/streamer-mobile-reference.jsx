@@ -5627,6 +5627,7 @@ function ProjectAnnouncementDetail({
                 {project.recordingFeedback}
               </div>
             ) : null}
+            <MobileProjectStructuredFeedback project={project} />
             {project.gameDownloadUrl ? (
               <a
                 href={project.gameDownloadUrl}
@@ -5714,6 +5715,63 @@ function ProjectAnnouncementDetail({
       </MCard>
     </MSection>
   );
+}
+
+function MobileProjectStructuredFeedback({ project }) {
+  const rows = projectStructuredFeedbackRows(project);
+  if (!rows.length) {
+    return null;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 5 }}>
+      {rows.map((row) => (
+        <div
+          key={row.key}
+          style={{
+            fontSize: 12,
+            color: "var(--warn-600)",
+            lineHeight: 1.55,
+          }}
+        >
+          {row.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function projectStructuredFeedbackRows(project) {
+  const reasons = Array.isArray(project?.rejectionReasons)
+    ? project.rejectionReasons
+    : [];
+  return reasons.flatMap((reason, index) => {
+    const key = reason?.key || `reason-${index}`;
+    const rows = [];
+    const issue = structuredFeedbackText(reason?.issue);
+    const howToImprove = structuredFeedbackText(reason?.howToImprove);
+    const suggestion = rerecordSuggestionLabel(reason?.rerecordSuggestion);
+    if (issue) {
+      rows.push({ key: `${key}:issue`, text: `哪里不合格：${issue}` });
+    }
+    if (howToImprove) {
+      rows.push({ key: `${key}:how`, text: `怎么改：${howToImprove}` });
+    }
+    if (suggestion) {
+      rows.push({ key: `${key}:suggestion`, text: `建议：${suggestion}` });
+    }
+    return rows;
+  });
+}
+
+function structuredFeedbackText(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function rerecordSuggestionLabel(value) {
+  if (value === "clip") return "补录指定片段";
+  if (value === "full") return "整段重录";
+  return "";
 }
 
 function MobileProjectRecordingGuide({ project }) {

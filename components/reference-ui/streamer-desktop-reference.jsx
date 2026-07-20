@@ -4522,6 +4522,7 @@ function DesktopProjectAnnouncementDetail({
             {project.recordingFeedback}
           </div>
         ) : null}
+        <DesktopProjectStructuredFeedback project={project} />
         <form
           onSubmit={onSubmit}
           style={{
@@ -4588,6 +4589,63 @@ function DesktopProjectAnnouncementDetail({
       </div>
     </Card>
   );
+}
+
+function DesktopProjectStructuredFeedback({ project }) {
+  const rows = projectStructuredFeedbackRows(project);
+  if (!rows.length) {
+    return null;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 5 }}>
+      {rows.map((row) => (
+        <div
+          key={row.key}
+          style={{
+            color: "var(--warn-600)",
+            fontSize: 13,
+            lineHeight: 1.6,
+          }}
+        >
+          {row.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function projectStructuredFeedbackRows(project) {
+  const reasons = Array.isArray(project?.rejectionReasons)
+    ? project.rejectionReasons
+    : [];
+  return reasons.flatMap((reason, index) => {
+    const key = reason?.key || `reason-${index}`;
+    const rows = [];
+    const issue = structuredFeedbackText(reason?.issue);
+    const howToImprove = structuredFeedbackText(reason?.howToImprove);
+    const suggestion = rerecordSuggestionLabel(reason?.rerecordSuggestion);
+    if (issue) {
+      rows.push({ key: `${key}:issue`, text: `哪里不合格：${issue}` });
+    }
+    if (howToImprove) {
+      rows.push({ key: `${key}:how`, text: `怎么改：${howToImprove}` });
+    }
+    if (suggestion) {
+      rows.push({ key: `${key}:suggestion`, text: `建议：${suggestion}` });
+    }
+    return rows;
+  });
+}
+
+function structuredFeedbackText(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function rerecordSuggestionLabel(value) {
+  if (value === "clip") return "补录指定片段";
+  if (value === "full") return "整段重录";
+  return "";
 }
 
 function DesktopProjectRecordingGuide({ project }) {

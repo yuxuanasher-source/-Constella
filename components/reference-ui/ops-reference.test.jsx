@@ -5726,6 +5726,169 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(reviewBody.note).toContain("AI建议：补录互动片段 - 补录 30 秒评论区回应，再进入厂家复核。");
   });
 
+  it("sends advisory structured feedback on negative human recording review", async () => {
+    const admissionApplications = [
+      {
+        id: "app-structured-feedback",
+        status: "recording_reviewing",
+        source: "signup",
+        submittedAt: "2026-06-07T01:00:00.000Z",
+        project: {
+          id: "project-structured",
+          code: "P-SF",
+          name: "Structured Feedback Project",
+        },
+        streamer: {
+          id: "streamer-structured",
+          displayName: "Structured Streamer",
+          accountLabel: "Douyin / structured-live",
+        },
+        latestRecording: {
+          id: "rec-structured",
+          assetId: "asset-structured",
+          version: 1,
+          status: "reviewing",
+          url: "https://video.example/structured",
+          aiAnalysis: null,
+        },
+        vendorReview: null,
+      },
+    ];
+    const promptMock = vi
+      .fn()
+      .mockReturnValueOnce("1")
+      .mockReturnValueOnce("卖点没有讲清楚")
+      .mockReturnValueOnce("补充福利入口和预约动作")
+      .mockReturnValueOnce("clip");
+    vi.stubGlobal("prompt", promptMock);
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target === "/api/applications/admission-board") {
+        return {
+          ok: true,
+          json: async () => ({
+            projects: [
+              {
+                project: {
+                  id: "project-structured",
+                  code: "P-SF",
+                  name: "Structured Feedback Project",
+                  vendor: "Vendor A",
+                  product: "Game A",
+                },
+                counts: {
+                  totalApplications: 1,
+                  recordingCount: 1,
+                  mcnPendingReview: 1,
+                  mcnApproved: 0,
+                  mcnRejected: 0,
+                  needsChanges: 0,
+                  vendorPending: 1,
+                  vendorSelected: 0,
+                  vendorBackup: 0,
+                  vendorRejected: 0,
+                  vendorNeedsChanges: 0,
+                  pendingFinalConfirm: 0,
+                },
+                share: {
+                  id: null,
+                  status: "unshared",
+                  expiresAt: null,
+                  lastSubmittedAt: null,
+                },
+                lastActivityAt: "2026-06-07T01:00:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      if (target === "/api/admission-review/rubric?stage=mcn_first") {
+        return {
+          ok: true,
+          json: async () => ({
+            checkpoints: [
+              {
+                key: "content_quality",
+                label: "内容质量达标",
+                stage: "mcn_first",
+              },
+              { key: "duration_ok", label: "时长达标", stage: "mcn_first" },
+            ],
+          }),
+        };
+      }
+      if (
+        target === "/api/applications/app-structured-feedback/review" &&
+        init?.method === "PATCH"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            application: {
+              ...admissionApplications[0],
+              status: "recording_required",
+            },
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={admissionApplications}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
+    const row = screen.getByText("Structured Streamer").closest("tr");
+    fireEvent.click(within(row).getByRole("button", { name: "需补充" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/app-structured-feedback/review",
+        expect.objectContaining({ method: "PATCH" }),
+      ),
+    );
+    expect(promptMock).toHaveBeenCalledWith(
+      expect.stringContaining("需补充理由"),
+      "",
+    );
+    expect(promptMock).toHaveBeenCalledWith("哪里不合格", "");
+    expect(promptMock).toHaveBeenCalledWith("怎么改", "");
+    expect(promptMock).toHaveBeenCalledWith(
+      expect.stringContaining("建议"),
+      "none",
+    );
+    const reviewCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/applications/app-structured-feedback/review" &&
+        init?.method === "PATCH",
+    );
+    expect(JSON.parse(reviewCall[1].body)).toEqual({
+      decision: "needs_changes",
+      note: "经营端选播准入审核",
+      reasonCodes: ["content_quality"],
+      checkpointResults: [
+        {
+          checkpointKey: "content_quality",
+          verdict: "fail",
+          note: "经营端选播准入审核",
+          evidence: {
+            structuredFeedback: {
+              issue: "卖点没有讲清楚",
+              howToImprove: "补充福利入口和预约动作",
+              rerecordSuggestion: "clip",
+              advisoryOnly: true,
+            },
+          },
+        },
+      ],
+    });
+  });
+
   it("creates a project-level share board when server board rows have recordings but the local queue is stale", async () => {
     const staleApplications = [
       {
