@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { AiProvider } from "@/features/ai/contracts";
 import type { recordAiInvocation } from "@/features/ai/invocation-ledger";
 import type { runAiGateway } from "@/features/ai/llm-gateway";
+import type { RecordingProductionGuide } from "@/features/recordings/recording-production-guide";
+import type { NormalizedRecordingSelfCheck } from "@/features/recordings/recording-production-standard";
 
 import { defaultAdmissionRubric } from "./contracts";
 import type { AdmissionReviewClient } from "./evaluation-service";
@@ -39,6 +41,56 @@ const llmProviders = [
     capabilities: ["text", "structured", "shadow"],
   } as unknown as AiProvider,
 ];
+
+const projectGuide: RecordingProductionGuide = {
+  gameName: "星海远征",
+  gameVersion: "1.2.0",
+  serverRegion: "国服",
+  promotionGoal: "首播引导预约并突出福利节奏",
+  targetAudience: "策略游戏新手",
+  requiredContent: ["展示新手十连福利", "演示主线副本"],
+  requiredTalkingPoints: ["福利领取入口", "首日养成路线"],
+  forbiddenContent: ["承诺百分百中奖"],
+  commercialActions: ["引导点击下载入口"],
+  technicalStandard: { minDurationMinutes: 10 },
+  templateText: "开场讲目标，中段展示玩法，结尾引导预约。",
+  exampleUrl: "https://example.com/demo.mp4",
+};
+
+const selfCheck: NormalizedRecordingSelfCheck = {
+  readConfirmed: true,
+  dimensionScores: {
+    product_understanding: 18,
+    expression_control: 14,
+    content_structure: 12,
+    interaction_design: 10,
+    commercial_task: 10,
+    technical_compliance: 8,
+  },
+  totalScore: 72,
+  selfLevel: "L2",
+  keyMoments: [
+    {
+      key: "best_performance",
+      startSeconds: 12,
+      endSeconds: 46,
+      note: "开场承接较完整",
+    },
+    {
+      key: "selling_point",
+      startSeconds: 130,
+      endSeconds: 168,
+      note: "福利讲解",
+    },
+    {
+      key: "commercial_task",
+      startSeconds: 500,
+      endSeconds: 530,
+      note: "下载入口",
+    },
+  ],
+  note: "互动节奏还需要加强。",
+};
 
 function createEvaluationClient() {
   const inserts = {
@@ -172,7 +224,16 @@ describe("generateAdmissionPreReview", () => {
         checkpoint_key: "script_fit",
         verdict: "pass",
         confidence: 0.85,
-        evidence: { source: "asr_transcript", quote: "先讲玩法再抽福利" },
+        evidence: {
+          source: "asr_transcript",
+          quote: "先讲玩法再抽福利",
+          structuredFeedback: {
+            issue: null,
+            howToImprove: null,
+            rerecordSuggestion: "none",
+            advisoryOnly: true,
+          },
+        },
       },
     );
     expect(invocations[0]).toMatchObject({
@@ -180,6 +241,90 @@ describe("generateAdmissionPreReview", () => {
       providerName: "deepseek",
       status: "succeeded",
     });
+  });
+
+  it("includes guide and self-check context and records advisory structured feedback", async () => {
+    const client = createEvaluationClient();
+    const requests: unknown[] = [];
+    const runGateway = ((input: unknown) => {
+      requests.push(input);
+      return Promise.resolve({
+        status: "succeeded",
+        providerName: "deepseek",
+        fallbackUsed: false,
+        structuredOutput: {
+          decision: "needs_changes",
+          confidence: "medium",
+          noteDraft: "卖点覆盖不足，建议审核员重点复核福利讲解。",
+          checkpoints: [
+            {
+              key: "script_fit",
+              verdict: "fail",
+              confidence: 0.76,
+              evidence: "先讲玩法再抽福利",
+              issue: "没有明确展示新手十连福利。",
+              howToImprove: "补充福利领取入口与首日养成路线。",
+              rerecordSuggestion: "clip",
+            },
+          ],
+        },
+        usage: { promptTokens: 1500, completionTokens: 400, totalTokens: 1900 },
+        latencyMs: 1200,
+        costCents: 3,
+      });
+    }) as unknown as typeof runAiGateway;
+
+    await generateAdmissionPreReview({
+      client: client as never,
+      actor,
+      submission,
+      transcript,
+      rubric: defaultAdmissionRubric(),
+      projectGuide,
+      selfCheck,
+      providers: llmProviders,
+      runGateway,
+      recordInvocation: collectInvocations([]),
+    });
+
+    const request = requests[0] as {
+      request: {
+        messages: Array<{ role: string; content: string }>;
+      };
+    };
+    const systemPrompt =
+      request.request.messages.find((message) => message.role === "system")
+        ?.content ?? "";
+    const userPrompt =
+      request.request.messages.find((message) => message.role === "user")
+        ?.content ?? "";
+
+    expect(systemPrompt).toContain("建议补录指定片段");
+    expect(systemPrompt).toContain("建议整段重录");
+    expect(systemPrompt).not.toContain("必须重录");
+    expect(userPrompt).toContain("【项目任务卡】");
+    expect(userPrompt).toContain("推广目标: 首播引导预约并突出福利节奏");
+    expect(userPrompt).toContain("必须展示: 展示新手十连福利；演示主线副本");
+    expect(userPrompt).toContain("【主播自检】");
+    expect(userPrompt).toContain("主播自评总分: 72");
+    expect(userPrompt).toContain("主播自评等级: L2");
+    expect(userPrompt).toContain("best_performance=12-46s");
+
+    expect(client.inserts.admission_review_checkpoint_results[0]).toMatchObject(
+      {
+        checkpoint_key: "script_fit",
+        evidence: {
+          source: "asr_transcript",
+          quote: "先讲玩法再抽福利",
+          structuredFeedback: {
+            issue: "没有明确展示新手十连福利。",
+            howToImprove: "补充福利领取入口与首日养成路线。",
+            rerecordSuggestion: "clip",
+            advisoryOnly: true,
+          },
+        },
+      },
+    );
   });
 
   it("downgrades approved to manual_review when a hard block failed", async () => {
