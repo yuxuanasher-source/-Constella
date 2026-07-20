@@ -1425,24 +1425,26 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
             applicationStatus: "recording_required",
             latestRecordingStatus: "needs_changes",
             latestRecordingVersion: 1,
-            decisionReason: "Please add gameplay intro.",
-            recordingFeedback: "Please add gameplay intro.",
+            decisionReason:
+              "技术自动检查：文件大小、音轨、时长、画面只说明能否进入解析，不替代人工审核。",
+            recordingFeedback:
+              "技术自动检查：文件大小、音轨、时长、画面只说明能否进入解析，不替代人工审核。",
             rejectionReasons: [
               {
-                key: "script_fit",
-                label: "话术贴合项目卖点",
-                note: "缺少卖点",
-                issue: "卖点没有讲清楚",
-                howToImprove: "补充福利入口和预约动作",
+                key: "file_size_ok",
+                label: "文件大小",
+                note: "文件需要处理",
+                issue: "文件大小超过解析上限",
+                howToImprove: "压缩后重新上传，等待人工复审",
                 rerecordSuggestion: "clip",
                 advisoryOnly: true,
               },
               {
-                key: "duration_ok",
-                label: "录屏时长满足要求",
-                note: "整体需要重看",
-                issue: "录屏结构断裂",
-                howToImprove: "按模板重新组织开场到收尾",
+                key: "media_integrity",
+                label: "音轨 / 时长 / 画面",
+                note: "媒体完整性待复核",
+                issue: "音轨缺失，时长和画面需要人工复核",
+                howToImprove: "补充带声音的完整画面录屏",
                 rerecordSuggestion: "full",
                 advisoryOnly: true,
               },
@@ -1456,14 +1458,21 @@ describe("StreamerMobileReferenceApp recording smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
 
-    expect(screen.getByText("Please add gameplay intro.")).toBeInTheDocument();
-    expect(screen.getByText("哪里不合格：卖点没有讲清楚")).toBeInTheDocument();
+    expect(screen.getAllByText(/技术自动检查/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/文件大小/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/音轨|时长|画面/).length).toBeGreaterThan(0);
+    expect(screen.getByText("哪里不合格：文件大小超过解析上限")).toBeInTheDocument();
     expect(
-      screen.getByText("怎么改：补充福利入口和预约动作"),
+      screen.getByText("哪里不合格：音轨缺失，时长和画面需要人工复核"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("怎么改：压缩后重新上传，等待人工复审"),
     ).toBeInTheDocument();
     expect(screen.getByText("建议：补录指定片段")).toBeInTheDocument();
     expect(screen.getByText("建议：整段重录")).toBeInTheDocument();
-    expect(screen.queryByText(/系统判定|必须重录|自动驳回|自动通过/)).toBeNull();
+    expect(
+      screen.queryByText(/系统判定|必须重录|自动驳回|自动通过|技术检查通过即入项/),
+    ).toBeNull();
     expect(screen.getByRole("button", { name: "提交项目录屏" })).toBeEnabled();
   });
 

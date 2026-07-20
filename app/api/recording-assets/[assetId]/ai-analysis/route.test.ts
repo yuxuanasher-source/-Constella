@@ -134,7 +134,7 @@ describe("recording asset AI analysis route", () => {
     });
   });
 
-  it("rejects analysis when the primary storage object exceeds the size limit", async () => {
+  it("blocks analysis startup when the primary storage object exceeds the size limit", async () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue(
       fakeSizeGateClient({ size: 314572801 }) as never,
     );
@@ -147,9 +147,12 @@ describe("recording asset AI analysis route", () => {
     );
 
     expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({
+    const payload = await response.json();
+    expect(payload).toEqual({
       error: "录屏文件超过解析大小上限",
     });
+    expect(payload.error).toMatch(/解析/);
+    expect(payload.error).not.toMatch(/拒绝|驳回|入项|准入失败/);
     expect(requestRecordingAiAnalysis).not.toHaveBeenCalled();
   });
 

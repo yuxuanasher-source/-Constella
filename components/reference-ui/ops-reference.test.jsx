@@ -5813,6 +5813,16 @@ describe("OpsReferenceApp admission smoke", () => {
                 stage: "mcn_first",
               },
               { key: "duration_ok", label: "时长达标", stage: "mcn_first" },
+              {
+                key: "file_size_ok",
+                label: "技术自动检查 · 文件大小",
+                stage: "mcn_first",
+              },
+              {
+                key: "stream_clarity",
+                label: "技术自动检查 · 音轨 / 时长 / 画面",
+                stage: "mcn_first",
+              },
             ],
           }),
         };
@@ -6455,6 +6465,12 @@ describe("OpsReferenceApp admission smoke", () => {
   const workspaceRubricCheckpoints = [
     { key: "content_quality", label: "内容质量达标", stage: "mcn_first" },
     { key: "duration_ok", label: "时长达标", stage: "mcn_first" },
+    { key: "file_size_ok", label: "技术自动检查 · 文件大小", stage: "mcn_first" },
+    {
+      key: "stream_clarity",
+      label: "技术自动检查 · 音轨 / 时长 / 画面",
+      stage: "mcn_first",
+    },
   ];
 
   const workspacePreReviewResponses = {
@@ -6466,6 +6482,7 @@ describe("OpsReferenceApp admission smoke", () => {
           checkpoints: [
             { key: "content_quality", verdict: "pass" },
             { key: "duration_ok", verdict: "fail" },
+            { key: "file_size_ok", verdict: "pass" },
             { key: "stream_clarity", verdict: "not_applicable" },
           ],
         },
@@ -6854,12 +6871,17 @@ describe("OpsReferenceApp admission smoke", () => {
 
     // AI 预审：快速通道徽标 + 逐卡点 verdict（label 走 rubric 映射，缺省回退 key）。
     expect(await screen.findByText("快速通道候选")).toBeInTheDocument();
-    expect(screen.getByText("通过")).toBeInTheDocument();
+    expect(screen.getAllByText("通过").length).toBeGreaterThan(0);
     expect(screen.getByText("未通过")).toBeInTheDocument();
     expect(screen.getByText("不适用")).toBeInTheDocument();
     expect(screen.getByText("内容质量达标")).toBeInTheDocument();
     expect(screen.getByText("时长达标")).toBeInTheDocument();
-    expect(screen.getByText("stream_clarity")).toBeInTheDocument();
+    expect(screen.getAllByText(/技术自动检查/).length).toBeGreaterThan(0);
+    expect(screen.getByText("技术自动检查 · 文件大小")).toBeInTheDocument();
+    expect(
+      screen.getByText("技术自动检查 · 音轨 / 时长 / 画面"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/技术检查通过即入项/)).not.toBeInTheDocument();
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/admission-review/pre-review?submissionId=sub-priv",
@@ -12676,6 +12698,16 @@ describe("OpsReferenceApp recording transcript panel", () => {
             checkpoints: [
               { key: "content_quality", label: "内容质量达标", stage: "mcn_first" },
               { key: "duration_ok", label: "时长达标", stage: "mcn_first" },
+              {
+                key: "file_size_ok",
+                label: "技术自动检查 · 文件大小",
+                stage: "mcn_first",
+              },
+              {
+                key: "stream_clarity",
+                label: "技术自动检查 · 音轨 / 时长 / 画面",
+                stage: "mcn_first",
+              },
             ],
           }),
         };
