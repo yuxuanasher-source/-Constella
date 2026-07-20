@@ -22,7 +22,7 @@ const EXPECTED_INITIAL_MIGRATION_INVENTORY = [
     targetRoute: "/console/ai",
     module: "m10",
     routeKey: "warroom",
-    status: "legacy-stub",
+    status: "shell-route",
     risk: "high",
   },
   {
