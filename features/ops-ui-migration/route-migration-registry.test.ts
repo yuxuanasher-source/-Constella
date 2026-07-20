@@ -30,7 +30,7 @@ const EXPECTED_INITIAL_MIGRATION_INVENTORY = [
     targetRoute: "/console/projects",
     module: "m1",
     routeKey: "projects",
-    status: "ops-reference-route",
+    status: "shell-route",
     risk: "high",
   },
   {

@@ -25,7 +25,7 @@ const MIGRATION_BATCH_POLICIES = [
   {
     name: "supply-and-projects",
     commands: [
-      'pnpm vitest run "app/(ops)/console/projects/page.test.tsx" components/reference-ui/ops-reference.test.jsx',
+      'pnpm vitest run "app/(ops)/console/projects/page.test.tsx" components/console/projects-workbench.test.tsx',
     ],
     routes: [
       "/console/projects",

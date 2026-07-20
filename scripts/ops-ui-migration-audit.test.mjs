@@ -396,7 +396,7 @@ describe("ops ui migration audit", () => {
       ["pnpm ops-ui:migration:audit", "pnpm ops-ui:migration:gate"],
       ["pnpm vitest run components/dashboard/overview-board.test.jsx"],
       [
-        'pnpm vitest run "app/(ops)/console/projects/page.test.tsx" components/reference-ui/ops-reference.test.jsx',
+        'pnpm vitest run "app/(ops)/console/projects/page.test.tsx" components/console/projects-workbench.test.tsx',
       ],
       [
         "pnpm test:permissions",
@@ -490,7 +490,7 @@ describe("ops ui migration audit", () => {
     expect(markdown).toContain("- `pnpm ops-ui:migration:audit`");
     expect(markdown).toContain("- `pnpm ops-ui:migration:gate`");
     expect(markdown).toContain(
-      '- `pnpm vitest run "app/(ops)/console/projects/page.test.tsx" components/reference-ui/ops-reference.test.jsx`',
+      '- `pnpm vitest run "app/(ops)/console/projects/page.test.tsx" components/console/projects-workbench.test.tsx`',
     );
     expect(markdown).toContain("- `pnpm test:permissions`");
     expect(markdown).toContain("- `pnpm test:custom-settlement`");
