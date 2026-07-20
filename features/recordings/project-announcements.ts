@@ -8,6 +8,12 @@ import type {
   ApplicationStatus,
   RecordingReviewStatus,
 } from "@/features/applications/application-state";
+import {
+  defaultRecordingProductionGuide,
+  normalizeRecordingGuideRow,
+  type RecordingGuideRow,
+  type RecordingProductionGuide,
+} from "@/features/recordings/recording-production-guide";
 
 export type StreamerProjectAnnouncementProjectRow = {
   id: string;
@@ -22,6 +28,7 @@ export type StreamerProjectAnnouncementProjectRow = {
   game_download_url: string | null;
   published_at: string | null;
   created_at: string;
+  project_recording_guides?: RecordingGuideRow[] | null;
 };
 
 export type StreamerProjectAnnouncementApplicationRow = {
@@ -58,6 +65,7 @@ export type StreamerProjectAnnouncementCard = {
   latestRecordingVersion: number | null;
   decisionReason: string | null;
   recordingFeedback: string | null;
+  recordingGuide: RecordingProductionGuide;
   // 结构化驳回理由（卡点名称 + 单项备注），来自 admission_review 评估。
   rejectionReasons: Array<{ key: string; label: string; note: string | null }>;
   reviewStatusLabel: string;
@@ -89,7 +97,7 @@ export async function listStreamerProjectAnnouncements(
   const { data, error } = await supabase
     .from("streamer_public_project_announcements")
     .select(
-      "id, code, name, status, vendor_name, product_name, open_signup, force_recording, public_summary, game_download_url, published_at, created_at",
+      "id, code, name, status, vendor_name, product_name, open_signup, force_recording, public_summary, game_download_url, published_at, created_at, project_recording_guides(game_name, game_version, server_region, promotion_goal, target_audience, required_content, required_talking_points, forbidden_content, commercial_actions, technical_standard, template_text, example_url)",
     )
     .eq("organization_id", input.organizationId)
     .in("status", visibleProjectStatuses)
@@ -145,7 +153,7 @@ export async function getStreamerProjectAnnouncement(
   const { data, error } = await supabase
     .from("streamer_public_project_announcements")
     .select(
-      "id, code, name, status, vendor_name, product_name, open_signup, force_recording, public_summary, game_download_url, published_at, created_at",
+      "id, code, name, status, vendor_name, product_name, open_signup, force_recording, public_summary, game_download_url, published_at, created_at, project_recording_guides(game_name, game_version, server_region, promotion_goal, target_audience, required_content, required_talking_points, forbidden_content, commercial_actions, technical_standard, template_text, example_url)",
     )
     .eq("organization_id", input.organizationId)
     .eq("id", input.projectId)
@@ -210,6 +218,19 @@ export function toStreamerProjectAnnouncementCard(
   rejectionFeedback?: StructuredRejectionFeedback | null,
 ): StreamerProjectAnnouncementCard {
   const applicationStatus = application?.status ?? null;
+  const guideRow = Array.isArray(
+    (project as { project_recording_guides?: unknown }).project_recording_guides,
+  )
+    ? ((project as { project_recording_guides?: RecordingGuideRow[] })
+        .project_recording_guides?.[0] ?? null)
+    : null;
+  const recordingGuide =
+    normalizeRecordingGuideRow(guideRow) ??
+    defaultRecordingProductionGuide({
+      product: project.product_name?.trim() || project.name,
+      publicSummary: project.public_summary?.trim() || "",
+      forceRecording: project.force_recording,
+    });
 
   return {
     id: project.id,
@@ -228,6 +249,7 @@ export function toStreamerProjectAnnouncementCard(
     latestRecordingVersion: latestRecording?.version ?? null,
     decisionReason: application?.decision_reason ?? null,
     recordingFeedback: application?.decision_reason?.trim() || null,
+    recordingGuide,
     rejectionReasons: rejectionFeedback?.reasons ?? [],
     reviewStatusLabel: reviewStatusLabel(applicationStatus, latestRecording),
     canSubmitRecording:

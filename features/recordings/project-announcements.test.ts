@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   isProjectAnnouncementVisibleStatus,
+  listStreamerProjectAnnouncements,
   toStreamerProjectAnnouncementCard,
 } from "./project-announcements";
 
@@ -58,6 +59,10 @@ describe("streamer project announcements", () => {
       latestRecordingVersion: 2,
       decisionReason: null,
       recordingFeedback: null,
+      recordingGuide: expect.objectContaining({
+        gameName: "Game A",
+        requiredContent: ["Streamer-facing summary"],
+      }),
       rejectionReasons: [],
       reviewStatusLabel: "审核中",
       canSubmitRecording: false,
@@ -106,6 +111,19 @@ describe("streamer project announcements", () => {
     expect(dto.canSubmitRecording).toBe(true);
   });
 
+  it("includes the recording production guide on streamer project cards", async () => {
+    const cards = await listStreamerProjectAnnouncements(mockSupabaseWithGuide(), {
+      organizationId: "org-1",
+      streamerId: "streamer-1",
+    });
+
+    expect(cards[0].recordingGuide).toMatchObject({
+      gameName: "星海测试服",
+      requiredContent: ["新职业", "活动入口"],
+      commercialActions: ["展示预约福利入口"],
+    });
+  });
+
   it("excludes draft and finished project statuses from streamer announcements", () => {
     expect(isProjectAnnouncementVisibleStatus("draft")).toBe(false);
     expect(isProjectAnnouncementVisibleStatus("ended")).toBe(false);
@@ -115,3 +133,69 @@ describe("streamer project announcements", () => {
     expect(isProjectAnnouncementVisibleStatus("active")).toBe(true);
   });
 });
+
+function mockSupabaseWithGuide() {
+  return {
+    from(table: string) {
+      if (table === "streamer_public_project_announcements") {
+        return queryResult([
+          {
+            id: "project-1",
+            code: "PUB-1",
+            name: "Public Project",
+            status: "recruiting",
+            vendor_name: "Vendor A",
+            product_name: "星海",
+            open_signup: true,
+            force_recording: true,
+            public_summary: "Streamer-facing summary",
+            game_download_url: "https://download.example.com/game-a",
+            published_at: "2026-06-01T00:00:00.000Z",
+            created_at: "2026-06-01T00:00:00.000Z",
+            project_recording_guides: [
+              {
+                game_name: "星海测试服",
+                game_version: "1.2",
+                server_region: "安卓一区",
+                promotion_goal: "新版本拉新",
+                target_audience: "新手玩家",
+                required_content: ["新职业", "活动入口"],
+                required_talking_points: ["福利领取方式"],
+                forbidden_content: ["虚假保底", "攻击竞品"],
+                commercial_actions: ["展示预约福利入口"],
+                technical_standard: {
+                  minDurationMinutes: 10,
+                  orientation: "landscape",
+                },
+                template_text: "开场说明今天测试新职业。",
+                example_url: "https://example.com/demo",
+              },
+            ],
+          },
+        ]);
+      }
+      if (table === "project_applications") {
+        return queryResult([]);
+      }
+      return queryResult([]);
+    },
+  } as never;
+}
+
+function queryResult(data: unknown[]) {
+  const result = {
+    data,
+    error: null,
+  };
+  const query = {
+    select: () => query,
+    eq: () => query,
+    in: () => query,
+    order: () => query,
+    then: (
+      resolve: (value: typeof result) => unknown,
+      reject?: (reason: unknown) => unknown,
+    ) => Promise.resolve(result).then(resolve, reject),
+  };
+  return query;
+}
