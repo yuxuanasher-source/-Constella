@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 
 import {
+  checkpointsForStage,
   type AdmissionCheckpointResultInput,
+  type AdmissionRubric,
   normalizeReasonCodes,
   type AdmissionCheckpointVerdict,
 } from "@/features/admission-review/contracts";
@@ -52,6 +54,7 @@ export async function PATCH(
       readStringArray(body, "reasonCodes"),
     );
     const checkpointResults = readCheckpointResults(body);
+    validateCheckpointResultsAgainstRubric(rubric, checkpointResults);
 
     const application = await reviewRecordingSubmission({
       repo: context.repo,
@@ -160,6 +163,26 @@ function readCheckpointResults(
       ...(evidence ? { evidence } : {}),
     };
   });
+}
+
+function validateCheckpointResultsAgainstRubric(
+  rubric: AdmissionRubric,
+  checkpointResults: AdmissionCheckpointResultInput[] | undefined,
+): void {
+  if (!checkpointResults?.length) {
+    return;
+  }
+  const allowedKeys = new Set(
+    checkpointsForStage(rubric, "mcn_first").map((checkpoint) => checkpoint.key),
+  );
+  for (const result of checkpointResults) {
+    if (!allowedKeys.has(result.checkpointKey)) {
+      throw new RouteError(
+        `Unknown admission checkpoint key: ${result.checkpointKey}`,
+        400,
+      );
+    }
+  }
 }
 
 function readCheckpointEvidence(

@@ -178,4 +178,37 @@ describe("PATCH /api/applications/[applicationId]/review", () => {
         .checkpointResults?.[0],
     ).not.toHaveProperty("decision");
   });
+
+  it("rejects unknown checkpoint result keys before mutating review state", async () => {
+    const response = await PATCH(
+      jsonRequest({
+        decision: "needs_changes",
+        note: "人工要求补充",
+        reasonCodes: ["script_fit"],
+        checkpointResults: [
+          {
+            checkpointKey: "unknown_checkpoint",
+            verdict: "fail",
+            note: "未知卡点",
+            evidence: {
+              structuredFeedback: {
+                issue: "  卖点没说清  ",
+                howToImprove: "补充福利入口和预约动作",
+                rerecordSuggestion: "clip",
+                advisoryOnly: false,
+              },
+            },
+          },
+        ],
+      }),
+      { params: Promise.resolve({ applicationId: "app-1" }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Unknown admission checkpoint key: unknown_checkpoint",
+    });
+    expect(reviewRecordingSubmission).not.toHaveBeenCalled();
+    expect(recordAdmissionEvaluation).not.toHaveBeenCalled();
+  });
 });
