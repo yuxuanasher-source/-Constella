@@ -6,6 +6,7 @@ import { Menu as MenuIcon, X as XIcon } from "lucide-react";
 
 import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
+import HermesSkillCenter from "@/components/ai/hermes-skill-center";
 import { MarketplaceBoard } from "@/components/marketplace/marketplace-board";
 import { USAGE_TUTORIAL_MD } from "./usage-tutorial-md";
 import { rankReportQueue } from "@/features/ai/bounded-actions";
@@ -31933,6 +31934,7 @@ function ScreenAiUsage() {
   return (
     <>
       <PageHeader title="AI 用量与成本" />
+      <HermesSkillCenter />
       <AiUsageDashboard />
     </>
   );

@@ -1,25 +1,47 @@
 import { createHash } from "node:crypto";
 
-import type { HermesActorProfile } from "./contracts";
+import type { HermesActorProfile, HermesSkillGrant } from "./contracts";
 
 export function createHermesActorFingerprint(
   profile: HermesActorProfile,
 ): string {
-  return createHash("sha256")
-    .update(canonicalJson(canonicalActorProfile(profile)))
-    .digest("hex");
+  return sha256Json({
+    organizationId: profile.organizationId,
+    userId: profile.userId,
+    role: profile.role,
+    scopesHash: computeHermesScopesHash(profile.allowedReadScopes),
+    skillGrantsHash: profile.skillGrantsHash,
+    conversationId: profile.conversationId,
+    profileVersion: profile.profileVersion,
+  });
 }
 
-function canonicalActorProfile(profile: HermesActorProfile) {
-  return {
-    userId: profile.userId,
-    organizationId: profile.organizationId,
-    role: profile.role,
-    conversationId: profile.conversationId,
-    allowedReadScopes: [...profile.allowedReadScopes].sort(),
-    skillGrantsHash: profile.skillGrantsHash,
-    profileVersion: profile.profileVersion,
-  };
+export function computeHermesSkillGrantsHash(
+  grants: readonly HermesSkillGrant[],
+): string {
+  return sha256Json(
+    [...grants]
+      .sort((left, right) =>
+        [
+          compareAscii(left.skillId, right.skillId),
+          compareAscii(left.version, right.version),
+          compareAscii(left.bundleSha256, right.bundleSha256),
+        ].find((value) => value !== 0) ?? 0,
+      )
+      .map((grant) => ({
+        skillId: grant.skillId,
+        version: grant.version,
+        bundleSha256: grant.bundleSha256,
+      })),
+  );
+}
+
+export function computeHermesScopesHash(scopes: readonly string[]): string {
+  return sha256Json([...scopes].sort());
+}
+
+function sha256Json(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
 function canonicalJson(value: unknown): string {
@@ -37,4 +59,10 @@ function canonicalJson(value: unknown): string {
       return `${JSON.stringify(key)}:${canonicalJson(record[key])}`;
     })
     .join(",")}}`;
+}
+
+function compareAscii(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }

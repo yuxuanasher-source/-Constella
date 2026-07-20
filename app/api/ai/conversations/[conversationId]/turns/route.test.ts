@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getRouteContextMock = vi.fn();
 const createConversationTurnStreamMock = vi.fn();
+const executeNativeHermesAssistantMock = vi.fn();
 
 vi.mock("@/app/api/ai/conversation-route-context", () => ({
   getAiConversationRouteContext: getRouteContextMock,
@@ -16,8 +17,8 @@ vi.mock("@/features/ai/conversation-stream-adapter", () => ({
   createConversationTurnStream: createConversationTurnStreamMock,
 }));
 
-vi.mock("@/app/api/ai/chat/route", () => ({
-  executeDashboardAiChat: vi.fn(),
+vi.mock("@/features/ai/native-assistant/executor", () => ({
+  executeNativeHermesAssistant: executeNativeHermesAssistantMock,
 }));
 
 describe("POST /api/ai/conversations/:conversationId/turns", () => {
@@ -25,6 +26,7 @@ describe("POST /api/ai/conversations/:conversationId/turns", () => {
     vi.resetModules();
     getRouteContextMock.mockReset();
     createConversationTurnStreamMock.mockReset();
+    executeNativeHermesAssistantMock.mockReset();
   });
 
   it("accepts one idempotent user turn and starts the protocol stream", async () => {
@@ -76,7 +78,13 @@ describe("POST /api/ai/conversations/:conversationId/turns", () => {
       },
     );
     expect(createConversationTurnStreamMock).toHaveBeenCalledWith(
-      expect.objectContaining({ request, turn, attachments: [], service }),
+      expect.objectContaining({
+        request,
+        turn,
+        attachments: [],
+        service,
+        executeLegacyChat: executeNativeHermesAssistantMock,
+      }),
     );
     expect(response.headers.get("content-type")).toContain("text/event-stream");
   });

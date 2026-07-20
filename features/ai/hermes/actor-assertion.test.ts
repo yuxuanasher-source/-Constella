@@ -24,6 +24,8 @@ describe("Hermes actor assertion", () => {
       }),
     ).resolves.toMatchObject({
       actor: PROFILE,
+      actorFingerprint:
+        "e81c5a662616209a2e5e22da39bfc791bf822dd51314fab8918615e895bc41a4",
       header: { alg: "RS256", kid: "test-key-1" },
     });
   });
@@ -82,9 +84,29 @@ const PROFILE: HermesActorProfile = {
   organizationId: "22222222-2222-4222-8222-222222222222",
   role: "owner",
   conversationId: "33333333-3333-4333-8333-333333333333",
-  allowedReadScopes: ["context.read", "projects.search"],
-  skillGrantsHash: "grants-v1",
-  profileVersion: "hermes-xingyao-v1",
+  invocationId: "44444444-4444-4444-8444-444444444444",
+  allowedReadScopes: ["context.read", "projects.summary"],
+  enabledSkillVersions: [
+    {
+      skillId: "project-review",
+      version: "1.0.0",
+      bundleSha256:
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    },
+    {
+      skillId: "report-precheck",
+      version: "2.0.0",
+      bundleSha256:
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    },
+  ],
+  skillGrantsHash:
+    "458147f2ca44ee9d33b9c01dfdf8b678ff903b27b7c0a6aa8b92ced3c644c310",
+  profileVersion: "hermes-xingyao-v1+skills.c1755ec71e802748",
+  pageContext: {
+    pageType: "project",
+    objectIds: ["66666666-6666-4666-8666-666666666666"],
+  },
 };
 
 const HS256_TOKEN = [

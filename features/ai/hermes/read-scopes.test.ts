@@ -37,7 +37,7 @@ describe("Hermes read scope baseline", () => {
       "knowledge.search",
       "settlements.summary",
     ]);
-    expect(getAllowedReadScopesForRole("streamer")).toEqual(HERMES_READ_SCOPES);
+    expect(getAllowedReadScopesForRole("streamer")).toEqual(["context.read"]);
     expect(getAllowedReadScopesForRole("admin")).toEqual([]);
   });
 });

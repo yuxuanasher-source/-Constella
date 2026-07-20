@@ -67,6 +67,16 @@ type LegacyEvent = {
   data: Record<string, unknown>;
 };
 
+type ConversationTurnExecutorOptions = {
+  trustedGatewayContext?: ConversationGatewayContext;
+  onContextReady?: (context: ConversationGatewayContext) => Promise<void> | void;
+  onGenerationStarted?: (providerName: AiProviderName) => Promise<void> | void;
+  nativeAssistant?: {
+    conversationId: string;
+    invocationId: string;
+  };
+};
+
 export function createConversationTurnStream({
   request,
   actor,
@@ -82,15 +92,7 @@ export function createConversationTurnStream({
   service: ConversationTurnStreamService;
   executeLegacyChat: (
     request: Request,
-    options?: {
-      trustedGatewayContext?: ConversationGatewayContext;
-      onContextReady?: (
-        context: ConversationGatewayContext,
-      ) => Promise<void> | void;
-      onGenerationStarted?: (
-        providerName: AiProviderName,
-      ) => Promise<void> | void;
-    },
+    options?: ConversationTurnExecutorOptions,
   ) => Promise<Response>;
 }): Response {
   if (turn.duplicate) {
@@ -183,6 +185,10 @@ export function createConversationTurnStream({
                 turn.turnId,
                 selectedProvider,
               );
+            },
+            nativeAssistant: {
+              conversationId: turn.conversationId,
+              invocationId: turn.turnId,
             },
           },
         );
@@ -446,6 +452,7 @@ function providerField(value: unknown): AiProviderName | undefined {
   return value === "openai" ||
     value === "hunyuan" ||
     value === "deepseek" ||
+    value === "hermes" ||
     value === "deterministic"
     ? value
     : undefined;

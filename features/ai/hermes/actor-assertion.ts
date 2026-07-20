@@ -13,6 +13,10 @@ import {
   isHermesActorProfile,
   type HermesActorProfile,
 } from "./contracts";
+import {
+  computeHermesSkillGrantsHash,
+  createHermesActorFingerprint,
+} from "./actor-fingerprint";
 
 type SignOptions = {
   privateKeyPem: string;
@@ -31,7 +35,10 @@ export async function signHermesActorAssertion(
   actor: HermesActorProfile,
   options: SignOptions,
 ): Promise<string> {
-  if (!isHermesActorProfile(actor)) {
+  if (
+    !isHermesActorProfile(actor) ||
+    actor.skillGrantsHash !== computeHermesSkillGrantsHash(actor.enabledSkillVersions)
+  ) {
     throw new Error("invalid Hermes actor profile");
   }
   if (!options.privateKeyPem?.trim()) {
@@ -51,15 +58,25 @@ export async function signHermesActorAssertion(
   const issuedAt = Math.floor((options.now ?? new Date()).getTime() / 1000);
   const privateKey = await importPKCS8(options.privateKeyPem, "RS256");
   const payload = {
-    actor,
     iss: XINGYAO_PRODUCT_ISSUER,
     aud: HERMES_AUDIENCE,
+    sub: actor.userId,
+    organizationId: actor.organizationId,
+    role: actor.role,
+    conversationId: actor.conversationId,
+    invocationId: actor.invocationId,
+    allowedReadScopes: actor.allowedReadScopes,
+    enabledSkillVersions: actor.enabledSkillVersions,
+    skillGrantsHash: actor.skillGrantsHash,
+    profileVersion: actor.profileVersion,
+    pageContext: actor.pageContext,
+    jti: actor.invocationId,
     iat: issuedAt,
     exp: issuedAt + ttlSeconds,
   };
 
   return new CompactSign(toRuntimeUint8Array(JSON.stringify(payload)))
-    .setProtectedHeader({ alg: "RS256", kid: options.kid })
+    .setProtectedHeader({ alg: "RS256", kid: options.kid, typ: "JWT" })
     .sign(privateKey);
 }
 
@@ -68,6 +85,7 @@ export async function verifyHermesActorAssertion(
   options: VerifyOptions,
 ): Promise<{
   actor: HermesActorProfile;
+  actorFingerprint: string;
   header: { alg: "RS256"; kid?: string };
 }> {
   const header = decodeProtectedHeader(token);
@@ -88,7 +106,6 @@ export async function verifyHermesActorAssertion(
       Buffer.from(verified.payload).toString("utf8"),
     ) as Record<string, unknown>;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     throw error;
   }
 
@@ -101,28 +118,35 @@ export async function verifyHermesActorAssertion(
   if (!isNumber(payload.exp)) {
     throw new Error("Hermes actor assertion expiration is required");
   }
+  if (!isNumber(payload.iat)) {
+    throw new Error("Hermes actor assertion issued-at is required");
+  }
   const nowSeconds = Math.floor((options.now ?? new Date()).getTime() / 1000);
   if (payload.exp <= nowSeconds) {
     throw new Error("Hermes actor assertion expired");
   }
+  if (payload.exp <= payload.iat || payload.exp - payload.iat > 300) {
+    throw new Error("Hermes actor assertion lifetime is invalid");
+  }
 
-  if (
-    !hasOnlyAssertionClaims(payload) ||
-    !isHermesActorProfile(payload.actor)
-  ) {
+  const actor = actorProfileFromClaims(payload);
+  if (!hasOnlyAssertionClaims(payload) || !actor) {
     throw new Error("invalid Hermes actor assertion actor profile");
   }
 
   return {
-    actor: payload.actor,
+    actor,
+    actorFingerprint: createHermesActorFingerprint(actor),
     header: { alg: "RS256", kid: header.kid },
   };
 }
 
 function hasOnlyAssertionClaims(payload: Record<string, unknown>): boolean {
-  return Object.keys(payload)
-    .sort()
-    .every((key) => ["actor", "aud", "exp", "iat", "iss"].includes(key));
+  const keys = Object.keys(payload).sort();
+  return (
+    keys.length === ASSERTION_CLAIM_KEYS.length &&
+    keys.every((key, index) => key === ASSERTION_CLAIM_KEYS[index])
+  );
 }
 
 function isNumber(value: unknown): value is number {
@@ -134,3 +158,44 @@ function toRuntimeUint8Array(value: string): Uint8Array {
 }
 
 export const HERMES_ASSERTION_PROFILE_VERSION = HERMES_PROFILE_VERSION;
+
+const ASSERTION_CLAIM_KEYS = [
+  "allowedReadScopes",
+  "aud",
+  "conversationId",
+  "enabledSkillVersions",
+  "exp",
+  "iat",
+  "iss",
+  "jti",
+  "organizationId",
+  "pageContext",
+  "profileVersion",
+  "role",
+  "skillGrantsHash",
+  "sub",
+  "invocationId",
+].sort();
+
+function actorProfileFromClaims(
+  payload: Record<string, unknown>,
+): HermesActorProfile | null {
+  const actor = {
+    userId: payload.sub,
+    organizationId: payload.organizationId,
+    role: payload.role,
+    conversationId: payload.conversationId,
+    invocationId: payload.jti,
+    allowedReadScopes: payload.allowedReadScopes,
+    enabledSkillVersions: payload.enabledSkillVersions,
+    skillGrantsHash: payload.skillGrantsHash,
+    profileVersion: payload.profileVersion,
+    pageContext: payload.pageContext,
+  };
+
+  return isHermesActorProfile(actor) &&
+    payload.invocationId === actor.invocationId &&
+    actor.skillGrantsHash === computeHermesSkillGrantsHash(actor.enabledSkillVersions)
+    ? actor
+    : null;
+}

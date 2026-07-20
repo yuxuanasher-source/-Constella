@@ -31,7 +31,7 @@ const ROLE_SCOPE_BASELINE: Record<HermesAuthRole, readonly HermesReadScope[]> =
       "knowledge.search",
       "settlements.summary",
     ],
-    streamer: HERMES_READ_SCOPES,
+    streamer: ["context.read"],
   };
 
 export function getAllowedReadScopesForRole(role: unknown): HermesReadScope[] {

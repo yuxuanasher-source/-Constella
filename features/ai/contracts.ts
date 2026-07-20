@@ -74,6 +74,7 @@ export type AiProviderName =
   | "openai"
   | "hunyuan"
   | "deepseek"
+  | "hermes"
   | "deterministic";
 
 export type AiUsage = {

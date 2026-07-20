@@ -1,4 +1,4 @@
-import { HERMES_KERNEL_ID, type HermesReadScope } from "../hermes/contracts";
+import { HERMES_KERNEL_ID, type HermesActorProfile } from "../hermes/contracts";
 import {
   sanitizeHermesPageContext,
   type HermesPageContext,
@@ -58,15 +58,7 @@ export function parseNativeAssistantClientRequest(
   };
 }
 
-export type NativeAssistantActorContext = {
-  userId: string;
-  organizationId: string;
-  role: string;
-  conversationId: string;
-  allowedReadScopes: HermesReadScope[];
-  skillGrantsHash: string;
-  profileVersion: string;
-};
+export type NativeAssistantActorContext = HermesActorProfile;
 
 function sanitizeAttachmentIds(value: unknown): string[] | null {
   if (value == null) {
