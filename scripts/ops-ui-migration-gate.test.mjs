@@ -24,6 +24,7 @@ const baseRoute = {
   routeMap: {
     module: "m1",
     routeKey: "projects",
+    href: "/console/projects",
   },
   nextAction: "generate-route-skeleton",
 };
@@ -263,6 +264,10 @@ describe("ops ui migration gate", () => {
       hasShellRoute: false,
       missingTests: [],
       hasSensitiveActionChecklist: true,
+      routeMap: {
+        ...baseRoute.routeMap,
+        href: "/console/settlements",
+      },
     });
 
     expect(result.passed).toBe(false);
@@ -294,6 +299,10 @@ describe("ops ui migration gate", () => {
         requiredTests: ["features/settlements/settlement-service.test.ts"],
         missingTests: [],
         usesOpsReference: false,
+        routeMap: {
+          ...baseRoute.routeMap,
+          href: "/console/settlements",
+        },
       });
 
       expect(result.passed).toBe(false);
@@ -361,6 +370,7 @@ describe("ops ui migration gate", () => {
     ["empty", {}],
     ["module-only", { module: "m1" }],
     ["route-key-only", { routeKey: "projects" }],
+    ["href-missing", { module: "m1", routeKey: "projects" }],
   ])(
     "fails a blocking route when route-map evidence is incomplete: %s",
     (_name, routeMap) => {
@@ -396,6 +406,7 @@ describe("ops ui migration gate", () => {
       routeMap: {
         module: "m2",
         routeKey: "projects",
+        href: "/console/projects",
       },
     });
 
@@ -419,6 +430,7 @@ describe("ops ui migration gate", () => {
       routeMap: {
         module: "m1",
         routeKey: "settle",
+        href: "/console/projects",
       },
     });
 
@@ -426,6 +438,55 @@ describe("ops ui migration gate", () => {
     expect(result.failures).toEqual([
       expect.objectContaining({
         code: "route-map-route-key-mismatch",
+      }),
+    ]);
+  });
+
+  it("fails when included route-map href evidence is not the target route", () => {
+    const result = evaluateRouteGate({
+      ...baseRoute,
+      status: "ready-to-switch",
+      hasPage: true,
+      hasShellRoute: true,
+      requiredTests: ["app/(ops)/console/projects/page.test.tsx"],
+      missingTests: [],
+      usesOpsReference: false,
+      routeMap: {
+        module: "m1",
+        routeKey: "projects",
+        href: "/console/other",
+      },
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        code: "route-map-href-mismatch",
+      }),
+    ]);
+  });
+
+  it("fails when a blocking route still points at a console stub href", () => {
+    const result = evaluateRouteGate({
+      ...baseRoute,
+      targetRoute: "/console/stubs/m1",
+      status: "ready-to-switch",
+      hasPage: true,
+      hasShellRoute: true,
+      requiredTests: ["app/(ops)/console/projects/page.test.tsx"],
+      missingTests: [],
+      usesOpsReference: false,
+      routeMap: {
+        module: "m1",
+        routeKey: "projects",
+        href: "/console/stubs/m1",
+      },
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        code: "route-map-stub-href",
       }),
     ]);
   });

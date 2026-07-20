@@ -230,12 +230,14 @@ function evaluateRouteMapEvidence(routeAudit, failures) {
     (typeof routeAudit.module === "string" &&
       typeof routeMapEvidence.module !== "string") ||
     (typeof routeAudit.routeKey === "string" &&
-      typeof routeMapEvidence.routeKey !== "string")
+      typeof routeMapEvidence.routeKey !== "string") ||
+    (typeof routeAudit.targetRoute === "string" &&
+      typeof routeMapEvidence.href !== "string")
   ) {
     failures.push({
       code: "route-map-evidence-incomplete",
       message:
-        "Route-map evidence must include string module and routeKey fields when the registry route declares them.",
+        "Route-map evidence must include string module, routeKey, and href fields when the registry route declares them.",
     });
     return;
   }
@@ -267,6 +269,36 @@ function evaluateRouteMapEvidence(routeAudit, failures) {
       evidence: {
         registryRouteKey: routeAudit.routeKey,
         routeMapRouteKey: routeMapEvidence.routeKey,
+      },
+    });
+  }
+
+  if (
+    routeMapEvidence.href !== undefined &&
+    routeAudit.targetRoute !== undefined &&
+    routeMapEvidence.href !== routeAudit.targetRoute
+  ) {
+    failures.push({
+      code: "route-map-href-mismatch",
+      message:
+        "Audit route-map href evidence must point at the registry targetRoute.",
+      evidence: {
+        targetRoute: routeAudit.targetRoute,
+        routeMapHref: routeMapEvidence.href,
+      },
+    });
+  }
+
+  if (
+    typeof routeMapEvidence.href === "string" &&
+    routeMapEvidence.href.startsWith("/console/stubs/")
+  ) {
+    failures.push({
+      code: "route-map-stub-href",
+      message:
+        "Routes marked ready-to-switch or migrated must not point module route-map evidence at a console stub.",
+      evidence: {
+        routeMapHref: routeMapEvidence.href,
       },
     });
   }

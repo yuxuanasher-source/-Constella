@@ -108,7 +108,7 @@ export const OPS_MODULE_ROUTES: OpsModuleRoute[] = [
   {
     module: "m10",
     label: "M10 作战台",
-    href: "/console/stubs/m10",
+    href: "/console/ai",
     routeKey: "warroom",
     status: "partial",
   },

@@ -40,7 +40,7 @@ export const OPS_UI_MIGRATION_ROUTES = [
     targetRoute: "/console/ai",
     module: "m10",
     routeKey: "warroom",
-    status: "shell-route",
+    status: "ready-to-switch",
     risk: "high",
     dataDomains: ["features/ai", "features/war-room", "/api/ai/**"],
     requiredTests: [
