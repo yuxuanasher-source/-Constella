@@ -15,6 +15,9 @@ describe("recording production feedback schema", () => {
     expect(migration).toContain("required_content jsonb not null default '[]'::jsonb");
     expect(migration).toContain("commercial_actions jsonb not null default '[]'::jsonb");
     expect(migration).toContain("unique (organization_id, project_id)");
+    expect(migration).toContain(
+      "constraint project_recording_guides_project_scope_fkey foreign key (project_id, organization_id) references public.projects(id, organization_id) on delete cascade",
+    );
   });
 
   it("adds advisory self-check metadata to recording submissions", () => {
@@ -26,10 +29,26 @@ describe("recording production feedback schema", () => {
     expect(migration).toContain("recording_submissions_self_score_range");
   });
 
-  it("keeps streamer access scoped to own project/application rows", () => {
+  it("makes replayable trigger and policy definitions", () => {
+    expect(migration).toContain(
+      "drop trigger if exists project_recording_guides_touch_updated_at on public.project_recording_guides",
+    );
+    expect(migration).toContain(
+      "drop policy if exists project_recording_guides_staff_access on public.project_recording_guides",
+    );
+    expect(migration).toContain(
+      "drop policy if exists project_recording_guides_streamer_read_visible on public.project_recording_guides",
+    );
+  });
+
+  it("keeps staff access project-scoped", () => {
+    expect(migration).toContain("project_recording_guides_staff_access");
+    expect(migration).toContain("public.can_access_project(project_id)");
+  });
+
+  it("allows streamer reads for public streamer-visible project guides", () => {
     expect(migration).toContain("project_recording_guides_streamer_read_visible");
     expect(migration).toContain("current_streamer_id");
     expect(migration).toContain("p.is_public_to_streamers = true");
-    expect(migration).toContain("project_recording_guides_staff_access");
   });
 });

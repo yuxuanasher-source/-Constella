@@ -5,7 +5,7 @@
 create table if not exists public.project_recording_guides (
   id uuid primary key default extensions.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
-  project_id uuid not null references public.projects(id) on delete cascade,
+  project_id uuid not null,
   game_name text not null default '',
   game_version text not null default '',
   server_region text not null default '',
@@ -22,6 +22,7 @@ create table if not exists public.project_recording_guides (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (organization_id, project_id),
+  constraint project_recording_guides_project_scope_fkey foreign key (project_id, organization_id) references public.projects(id, organization_id) on delete cascade,
   constraint project_recording_guides_example_url_http check (
     example_url is null or example_url ~* '^https?://'
   ),
@@ -98,17 +99,31 @@ on public.project_recording_guides (project_id);
 create index if not exists recording_submissions_self_level_idx
 on public.recording_submissions (organization_id, self_assessment_level, submitted_at desc);
 
+drop trigger if exists project_recording_guides_touch_updated_at on public.project_recording_guides;
+
 create trigger project_recording_guides_touch_updated_at
 before update on public.project_recording_guides
 for each row execute function public.touch_updated_at();
 
 alter table public.project_recording_guides enable row level security;
 
+drop policy if exists project_recording_guides_staff_access on public.project_recording_guides;
+
 create policy project_recording_guides_staff_access
 on public.project_recording_guides
 for all
-using (public.is_org_member(organization_id) and public.is_mcn_staff(organization_id))
-with check (public.is_org_member(organization_id) and public.is_mcn_staff(organization_id));
+using (
+  public.is_org_member(organization_id)
+  and public.is_mcn_staff(organization_id)
+  and public.can_access_project(project_id)
+)
+with check (
+  public.is_org_member(organization_id)
+  and public.is_mcn_staff(organization_id)
+  and public.can_access_project(project_id)
+);
+
+drop policy if exists project_recording_guides_streamer_read_visible on public.project_recording_guides;
 
 create policy project_recording_guides_streamer_read_visible
 on public.project_recording_guides
