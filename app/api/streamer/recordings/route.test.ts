@@ -294,6 +294,25 @@ describe("streamer recordings route", () => {
     );
   });
 
+  it("rejects malformed project recording self-check payloads with a controlled error", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/streamer/recordings", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId: "project-1",
+          link: "https://videos.example.com/project-1",
+          selfCheck: {},
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Recording self-check is required",
+    });
+    expect(submitProjectRecording).not.toHaveBeenCalled();
+  });
+
   it("rejects non-streamer users", async () => {
     vi.mocked(getLiveOperationsRouteContext).mockResolvedValue({
       ...context,

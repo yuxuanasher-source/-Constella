@@ -277,6 +277,30 @@ describe("submitProjectRecording", () => {
     expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed self-check objects before normalization throws raw runtime errors", async () => {
+    const repo = baseRepo();
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/malformed-self-check",
+          selfCheck: {
+            readConfirmed: true,
+            dimensionScores: completeSelfCheck.dimensionScores,
+          } as never,
+        },
+      }),
+    ).rejects.toThrow("Recording self-check is required");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
   it("rejects when the task card has not been confirmed", async () => {
     const repo = baseRepo();
 

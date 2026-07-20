@@ -90,6 +90,31 @@ export const KEY_MOMENT_KEYS: RecordingKeyMomentKey[] = [
   "commercial_task",
 ];
 
+export function parseRecordingSelfCheckInput(
+  input: unknown,
+): RecordingSelfCheckInput {
+  if (!isRecord(input)) {
+    throw new Error("Recording self-check is required");
+  }
+
+  const dimensionScores = parseDimensionScores(input.dimensionScores);
+  const keyMoments = parseKeyMoments(input.keyMoments);
+  if (
+    typeof input.readConfirmed !== "boolean" ||
+    !dimensionScores ||
+    !keyMoments
+  ) {
+    throw new Error("Recording self-check is required");
+  }
+
+  return {
+    readConfirmed: input.readConfirmed,
+    dimensionScores,
+    keyMoments,
+    note: typeof input.note === "string" ? input.note : undefined,
+  };
+}
+
 export function normalizeRecordingSelfCheck(
   input: RecordingSelfCheckInput,
 ): NormalizedRecordingSelfCheck {
@@ -160,4 +185,60 @@ function normalizeKeyMoments(
   }
 
   return KEY_MOMENT_KEYS.map((key) => byKey.get(key)!);
+}
+
+function parseDimensionScores(
+  input: unknown,
+): RecordingSelfCheckInput["dimensionScores"] | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+
+  const dimensionScores: RecordingSelfCheckInput["dimensionScores"] = {};
+  for (const dimension of RECORDING_PRODUCTION_DIMENSIONS) {
+    const value = input[dimension.key];
+    if (typeof value === "number") {
+      dimensionScores[dimension.key] = value;
+    }
+  }
+
+  return dimensionScores;
+}
+
+function parseKeyMoments(input: unknown): RecordingKeyMomentInput[] | null {
+  if (!Array.isArray(input)) {
+    return null;
+  }
+
+  const keyMoments: RecordingKeyMomentInput[] = [];
+  for (const item of input) {
+    if (!isRecord(item) || !isRecordingKeyMomentKey(item.key)) {
+      return null;
+    }
+    if (
+      typeof item.startSeconds !== "number" ||
+      typeof item.endSeconds !== "number"
+    ) {
+      return null;
+    }
+
+    keyMoments.push({
+      key: item.key,
+      startSeconds: item.startSeconds,
+      endSeconds: item.endSeconds,
+      note: typeof item.note === "string" ? item.note : undefined,
+    });
+  }
+
+  return keyMoments;
+}
+
+function isRecordingKeyMomentKey(
+  value: unknown,
+): value is RecordingKeyMomentKey {
+  return KEY_MOMENT_KEYS.some((key) => key === value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

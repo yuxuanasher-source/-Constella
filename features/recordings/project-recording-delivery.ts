@@ -9,7 +9,7 @@ import type {
 import { submitRecording } from "@/features/applications/application-service";
 import {
   normalizeRecordingSelfCheck,
-  type RecordingSelfCheckInput,
+  parseRecordingSelfCheckInput,
 } from "./recording-production-standard";
 
 export type PublicProjectForRecording = {
@@ -61,7 +61,7 @@ export async function submitProjectRecording({
     link?: unknown;
     storagePath?: unknown;
     durationSeconds?: number;
-    selfCheck?: RecordingSelfCheckInput;
+    selfCheck?: unknown;
   };
 }): Promise<ProjectRecordingDeliveryResult> {
   if (actor.role !== "streamer") {
@@ -125,19 +125,13 @@ function normalizeProjectRecordingInput(input: {
   link?: unknown;
   storagePath?: unknown;
   durationSeconds?: number;
-  selfCheck?: RecordingSelfCheckInput;
+  selfCheck?: unknown;
 }) {
   if (typeof input.projectId !== "string" || !input.projectId.trim()) {
     throw new Error("projectId is required");
   }
 
-  if (
-    !input.selfCheck ||
-    typeof input.selfCheck !== "object" ||
-    Array.isArray(input.selfCheck)
-  ) {
-    throw new Error("Recording self-check is required");
-  }
+  const selfCheck = parseRecordingSelfCheckInput(input.selfCheck);
 
   const link =
     typeof input.link === "string" && input.link.trim()
@@ -169,6 +163,6 @@ function normalizeProjectRecordingInput(input: {
     link,
     storagePath,
     durationSeconds: input.durationSeconds,
-    selfCheck: input.selfCheck,
+    selfCheck,
   };
 }
