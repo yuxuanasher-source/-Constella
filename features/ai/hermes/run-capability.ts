@@ -10,7 +10,10 @@ import {
   type HermesMode,
   type HermesReadScope,
 } from "./contracts";
-import { type HermesStateRepository } from "./hermes-state-repository";
+import {
+  HermesStateRepositoryError,
+  type HermesStateRepository,
+} from "./hermes-state-repository";
 import {
   computeHermesSkillGrantsHash,
   createHermesActorFingerprint,
@@ -333,7 +336,7 @@ export async function deriveHermesChildRunCapability({
       capability: capabilitySecret(token),
       expiresAt: issued.expiresAt,
     };
-  } catch {
+  } catch (error) {
     try {
       await dependencies.markChildInvocationFailed?.({
         actor: parent.actor,
@@ -341,6 +344,12 @@ export async function deriveHermesChildRunCapability({
       });
     } catch {
       // Preserve the stable issuance failure even when best-effort cleanup fails.
+    }
+    if (
+      error instanceof HermesRunCapabilityError &&
+      error.code === "parallel_limit"
+    ) {
+      throw error;
     }
     throw new HermesRunCapabilityError("persistence_failed");
   }
@@ -450,7 +459,13 @@ async function issuePersistedCapability(
       input.binding,
       input.expiresAt,
     );
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof HermesStateRepositoryError &&
+      error.code === "parallel_limit"
+    ) {
+      throw new HermesRunCapabilityError("parallel_limit");
+    }
     throw new HermesRunCapabilityError("persistence_failed");
   }
 

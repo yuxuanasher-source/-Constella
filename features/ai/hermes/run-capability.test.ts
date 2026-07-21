@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createHermesActorFingerprint } from "./actor-fingerprint";
 import { HERMES_PROFILE_VERSION, type HermesActorProfile } from "./contracts";
+import { HermesStateRepositoryError } from "./hermes-state-repository";
 import {
   deriveHermesChildRunCapability,
   issueHermesRootRunCapability,
@@ -273,6 +274,41 @@ describe("Hermes run capabilities", () => {
       "p".repeat(43),
     );
   });
+
+  it.each([
+    ["parallel_limit", "parallel_limit"],
+    ["state_conflict", "persistence_failed"],
+  ] as const)(
+    "maps repository %s after best-effort child cleanup to %s",
+    async (repositoryCode, expectedCode) => {
+      const parent = parentCapability({ mode: "deep" });
+      const dependencies = derivationDependencies(parent, 0);
+      const markChildInvocationFailed = vi.fn(async () => {
+        throw new Error("cleanup unavailable");
+      });
+      dependencies.markChildInvocationFailed = markChildInvocationFailed;
+      dependencies.repository.issueRunCapability.mockRejectedValue(
+        new HermesStateRepositoryError(repositoryCode),
+      );
+
+      await expect(
+        deriveHermesChildRunCapability({
+          parentCapabilityToken: "p".repeat(43),
+          request: {
+            ...derivationRequest(),
+            childInvocationId: CHILD_INVOCATION_ID,
+          },
+          dependencies,
+          now: NOW,
+        }),
+      ).rejects.toMatchObject({ code: expectedCode });
+      expect(dependencies.createChildInvocation).toHaveBeenCalledOnce();
+      expect(markChildInvocationFailed).toHaveBeenCalledWith({
+        actor: parent.actor,
+        childInvocationId: CHILD_INVOCATION_ID,
+      });
+    },
+  );
 
   it.each([
     ["fast", 1, 0, "parallel_limit"],

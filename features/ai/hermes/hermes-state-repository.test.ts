@@ -924,6 +924,7 @@ describe("Hermes state repository", () => {
     ["turn_lease_invalid", "lease_expired"],
     ["hermes_state_conflict", "state_conflict"],
     ["memory_revision_invalid", "invalid_input"],
+    ["capability_parallel_limit_extra", "state_conflict"],
     ["relation public.ai_hermes_memories does not exist", "state_conflict"],
   ] as const)("maps %s to stable error %s", async (message, code) => {
     const { client } = rpcClient({ data: null, error: { message } });
@@ -941,7 +942,7 @@ describe("Hermes state repository", () => {
     expect(String(error)).not.toContain(message);
   });
 
-  it("maps an atomic capability parallel-limit rejection to state_conflict", async () => {
+  it("maps only an atomic capability parallel-limit rejection to parallel_limit", async () => {
     const { client } = rpcClient({
       data: null,
       error: { code: "P0001", message: "capability_parallel_limit" },
@@ -960,7 +961,7 @@ describe("Hermes state repository", () => {
       );
 
     expect(error).toBeInstanceOf(HermesStateRepositoryError);
-    expect(error).toMatchObject({ code: "state_conflict" });
+    expect(error).toMatchObject({ code: "parallel_limit" });
     expect(String(error)).not.toContain("capability_parallel_limit");
   });
 
