@@ -1,4 +1,9 @@
-import { HERMES_KERNEL_ID, type HermesActorProfile } from "../hermes/contracts";
+import {
+  HERMES_KERNEL_ID,
+  isHermesMode,
+  type HermesActorProfile,
+  type HermesMode,
+} from "../hermes/contracts";
 import {
   sanitizeHermesPageContext,
   type HermesPageContext,
@@ -11,6 +16,7 @@ export const NATIVE_XINGYAO_ASSISTANT = {
 
 export type NativeAssistantClientRequest = {
   message: string;
+  mode: HermesMode;
   pageContext?: HermesPageContext;
   attachmentIds: string[];
 };
@@ -18,6 +24,7 @@ export type NativeAssistantClientRequest = {
 const CLIENT_REQUEST_KEYS = [
   "attachmentIds",
   "message",
+  "mode",
   "pageContext",
 ] as const;
 
@@ -38,6 +45,11 @@ export function parseNativeAssistantClientRequest(
     return null;
   }
 
+  const mode = value.mode == null ? "fast" : value.mode;
+  if (!isHermesMode(mode)) {
+    return null;
+  }
+
   const pageContext =
     value.pageContext == null
       ? undefined
@@ -53,6 +65,7 @@ export function parseNativeAssistantClientRequest(
 
   return {
     message,
+    mode,
     ...(pageContext ? { pageContext } : {}),
     attachmentIds,
   };

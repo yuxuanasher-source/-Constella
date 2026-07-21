@@ -1,12 +1,48 @@
-export const HERMES_KERNEL_ID = "hermes-agent-fork";
+export const HERMES_KERNEL_ID = "hermes-agent-official-gateway";
+export const HERMES_PROTOCOL_VERSION = "xingyao-hermes-gateway-v2";
+export const HERMES_PROFILE_VERSION = "hermes-xingyao-v2";
+export const HERMES_UPSTREAM_TAG = "v2026.7.20";
+export const HERMES_UPSTREAM_COMMIT =
+  "3ef6bbd201263d354fd83ec55b3c306ded2eb72a";
 export const HERMES_BUILTIN_SKILLS_SHA256 =
   "c1755ec71e802748d518c2a27c81d429c95f8e31b1b82ab77d966e60469c9239";
-export const HERMES_PROFILE_VERSION = `hermes-xingyao-v1+skills.${HERMES_BUILTIN_SKILLS_SHA256.slice(
-  0,
-  16,
-)}`;
 export const XINGYAO_PRODUCT_ISSUER = "xingyao-product";
 export const HERMES_AUDIENCE = "xingyao-hermes-agent";
+
+export const HERMES_MODES = ["fast", "deep"] as const;
+export type HermesMode = (typeof HERMES_MODES)[number];
+
+export type HermesModeBudget = {
+  maxIterations: number;
+  wallClockMs: number;
+  maxParallelSubagents: number;
+  maxSubagentDepth: number;
+};
+
+export const HERMES_MODE_BUDGETS = {
+  fast: {
+    maxIterations: 24,
+    wallClockMs: 90_000,
+    maxParallelSubagents: 1,
+    maxSubagentDepth: 1,
+  },
+  deep: {
+    maxIterations: 90,
+    wallClockMs: 300_000,
+    maxParallelSubagents: 3,
+    maxSubagentDepth: 2,
+  },
+} as const satisfies Record<HermesMode, HermesModeBudget>;
+
+export const HERMES_OUTCOMES = [
+  "complete",
+  "partial",
+  "blocked",
+  "failed",
+  "cancelled",
+] as const;
+
+export type HermesOutcome = (typeof HERMES_OUTCOMES)[number];
 
 export const HERMES_AUTH_ROLES = [
   "owner",
@@ -119,6 +155,19 @@ export function isHermesReadScope(value: unknown): value is HermesReadScope {
   );
 }
 
+export function isHermesMode(value: unknown): value is HermesMode {
+  return (
+    typeof value === "string" && HERMES_MODES.includes(value as HermesMode)
+  );
+}
+
+export function isHermesOutcome(value: unknown): value is HermesOutcome {
+  return (
+    typeof value === "string" &&
+    HERMES_OUTCOMES.includes(value as HermesOutcome)
+  );
+}
+
 export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
 }
@@ -200,7 +249,7 @@ function isHermesActorPageContext(
   return true;
 }
 
-function isSha256(value: unknown): value is string {
+export function isSha256(value: unknown): value is string {
   return typeof value === "string" && SHA256_PATTERN.test(value);
 }
 

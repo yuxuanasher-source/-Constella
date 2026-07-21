@@ -9,22 +9,35 @@ describe("native Xingyao assistant contract", () => {
   it("keeps the public display name while pinning Hermes to an internal kernel", () => {
     expect(NATIVE_XINGYAO_ASSISTANT).toEqual({
       displayName: "星耀 AI",
-      kernelId: "hermes-agent-fork",
+      kernelId: "hermes-agent-official-gateway",
     });
   });
 
-  it("accepts only message, pageContext, and attachmentIds from the client", () => {
+  it("accepts only product input and a mode, never model routing", () => {
     expect(
       parseNativeAssistantClientRequest({
         message: "  总结当前项目风险  ",
+        mode: "deep",
         pageContext: { pageType: "project", objectIds: [UUID_A] },
         attachmentIds: [" attachment-1 ", "attachment-2"],
       }),
     ).toEqual({
       message: "总结当前项目风险",
+      mode: "deep",
       pageContext: { pageType: "project", objectIds: [UUID_A] },
       attachmentIds: ["attachment-1", "attachment-2"],
     });
+
+    expect(
+      parseNativeAssistantClientRequest({ message: "use the default mode" }),
+    ).toEqual({
+      message: "use the default mode",
+      mode: "fast",
+      attachmentIds: [],
+    });
+    expect(
+      parseNativeAssistantClientRequest({ message: "hello", mode: "turbo" }),
+    ).toBeNull();
 
     for (const forbiddenKey of [
       "organizationId",
@@ -33,6 +46,12 @@ describe("native Xingyao assistant contract", () => {
       "allowedReadScopes",
       "enabledSkillVersions",
       "skillGrantsHash",
+      "provider",
+      "model",
+      "fallbackModel",
+      "fallbackProviders",
+      "reasoningEffort",
+      "maxIterations",
     ]) {
       expect(
         parseNativeAssistantClientRequest({
