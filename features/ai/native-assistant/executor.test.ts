@@ -1,10 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const buildNativeAssistantContextMock = vi.fn();
-const createActorAssertionMock = vi.fn();
-const createSupabaseServerClientMock = vi.fn();
-const getAuthContextMock = vi.fn();
-const resolveHermesRuntimeConfigMock = vi.fn();
+const {
+  buildNativeAssistantContextMock,
+  createActorAssertionMock,
+  createSupabaseServerClientMock,
+  getAuthContextMock,
+  resolveHermesRuntimeConfigMock,
+} = vi.hoisted(() => ({
+  buildNativeAssistantContextMock: vi.fn(),
+  createActorAssertionMock: vi.fn(),
+  createSupabaseServerClientMock: vi.fn(),
+  getAuthContextMock: vi.fn(),
+  resolveHermesRuntimeConfigMock: vi.fn(),
+}));
 
 vi.mock("./context-engine", () => ({
   buildNativeAssistantContext: buildNativeAssistantContextMock,
