@@ -5,24 +5,6 @@ alter table public.ai_chat_turns
   add column if not exists outcome text,
   add column if not exists cancel_requested_at timestamptz;
 
-alter table public.ai_invocations
-  add constraint ai_invocations_identity_key unique (id, organization_id, actor_user_id);
-
-alter table public.ai_chat_turns
-  add constraint ai_chat_turns_identity_key unique (id, organization_id, owner_user_id, conversation_id, ai_invocation_id);
-
-alter table public.ai_chat_turns
-  add constraint ai_chat_turns_ai_invocation_tenant_fkey
-    foreign key (ai_invocation_id, organization_id, owner_user_id)
-    references public.ai_invocations(id, organization_id, actor_user_id)
-    not valid;
-
-alter table public.ai_chat_messages
-  add constraint ai_chat_messages_ai_invocation_tenant_fkey
-    foreign key (ai_invocation_id, organization_id, owner_user_id)
-    references public.ai_invocations(id, organization_id, actor_user_id)
-    not valid;
-
 alter table public.ai_chat_turns
   add constraint ai_chat_turns_outcome_check check (
     outcome is null or outcome in (
@@ -113,6 +95,8 @@ $$;
 create table public.ai_hermes_memories (
   id uuid primary key default extensions.gen_random_uuid(),
   memory_key uuid not null default extensions.gen_random_uuid(),
+  requested_memory_key uuid,
+  requested_expected_revision integer not null,
   idempotency_key text not null,
   organization_id uuid not null references public.organizations(id) on delete cascade,
   owner_user_id uuid not null references public.profiles(id) on delete cascade,
@@ -123,9 +107,9 @@ create table public.ai_hermes_memories (
   active boolean not null default true,
   source_conversation_id uuid not null,
   source_message_id uuid not null,
-  source_invocation_id uuid not null,
+  source_invocation_id uuid not null references public.ai_invocations(id),
   deactivated_at timestamptz,
-  deactivated_by_invocation_id uuid,
+  deactivated_by_invocation_id uuid references public.ai_invocations(id),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint ai_hermes_memories_conversation_owner_fkey
@@ -144,12 +128,6 @@ create table public.ai_hermes_memories (
       organization_id,
       owner_user_id
     ),
-  constraint ai_hermes_memories_source_invocation_tenant_fkey
-    foreign key (source_invocation_id, organization_id, owner_user_id)
-    references public.ai_invocations(id, organization_id, actor_user_id),
-  constraint ai_hermes_memories_deactivation_invocation_tenant_fkey
-    foreign key (deactivated_by_invocation_id, organization_id, owner_user_id)
-    references public.ai_invocations(id, organization_id, actor_user_id),
   constraint ai_hermes_memories_revision_key
     unique (organization_id, owner_user_id, memory_key, revision),
   constraint ai_hermes_memories_idempotency_key
@@ -173,6 +151,11 @@ create table public.ai_hermes_memories (
     content_hash ~ '^[0-9a-f]{64}$'
   ),
   constraint ai_hermes_memories_revision_check check (revision > 0),
+  constraint ai_hermes_memories_requested_revision_check check (
+    requested_expected_revision >= 0
+    and revision = requested_expected_revision + 1
+    and (requested_memory_key is null or requested_memory_key = memory_key)
+  ),
   constraint ai_hermes_memories_deactivation_check check (
     (active and deactivated_at is null)
     or (not active and deactivated_at is not null)
@@ -202,7 +185,7 @@ create table public.ai_hermes_skill_drafts (
   bundle_sha256 text not null,
   status text not null default 'draft',
   source_conversation_id uuid not null,
-  source_invocation_id uuid not null,
+  source_invocation_id uuid not null references public.ai_invocations(id),
   reviewed_by uuid references public.profiles(id),
   reviewed_at timestamptz,
   review_note text,
@@ -214,9 +197,6 @@ create table public.ai_hermes_skill_drafts (
     foreign key (source_conversation_id, organization_id, owner_user_id)
     references public.ai_conversations(id, organization_id, owner_user_id)
     on delete cascade,
-  constraint ai_hermes_skill_drafts_source_invocation_tenant_fkey
-    foreign key (source_invocation_id, organization_id, owner_user_id)
-    references public.ai_invocations(id, organization_id, actor_user_id),
   constraint ai_hermes_skill_drafts_version_key
     unique (organization_id, owner_user_id, skill_id, version),
   constraint ai_hermes_skill_drafts_source_bundle_key
@@ -266,11 +246,11 @@ create table public.ai_hermes_run_capabilities (
   organization_id uuid not null references public.organizations(id) on delete cascade,
   owner_user_id uuid not null references public.profiles(id) on delete cascade,
   conversation_id uuid not null,
-  turn_id uuid not null,
-  invocation_id uuid not null,
-  root_invocation_id uuid not null,
+  turn_id uuid not null references public.ai_chat_turns(id) on delete cascade,
+  invocation_id uuid not null references public.ai_invocations(id) on delete cascade,
+  root_invocation_id uuid not null references public.ai_invocations(id) on delete cascade,
   parent_capability_id uuid,
-  parent_invocation_id uuid,
+  parent_invocation_id uuid references public.ai_invocations(id) on delete cascade,
   actor_fingerprint text not null,
   allowed_tools text[] not null default '{}',
   allowed_tools_hash text not null,
@@ -300,22 +280,6 @@ create table public.ai_hermes_run_capabilities (
   constraint ai_hermes_run_capabilities_conversation_owner_fkey
     foreign key (conversation_id, organization_id, owner_user_id)
     references public.ai_conversations(id, organization_id, owner_user_id)
-    on delete cascade,
-  constraint ai_hermes_run_capabilities_turn_tenant_fkey
-    foreign key (turn_id, organization_id, owner_user_id, conversation_id, root_invocation_id)
-    references public.ai_chat_turns(id, organization_id, owner_user_id, conversation_id, ai_invocation_id)
-    on delete cascade,
-  constraint ai_hermes_run_capabilities_invocation_tenant_fkey
-    foreign key (invocation_id, organization_id, owner_user_id)
-    references public.ai_invocations(id, organization_id, actor_user_id)
-    on delete cascade,
-  constraint ai_hermes_run_capabilities_root_invocation_tenant_fkey
-    foreign key (root_invocation_id, organization_id, owner_user_id)
-    references public.ai_invocations(id, organization_id, actor_user_id)
-    on delete cascade,
-  constraint ai_hermes_run_capabilities_parent_invocation_tenant_fkey
-    foreign key (parent_invocation_id, organization_id, owner_user_id)
-    references public.ai_invocations(id, organization_id, actor_user_id)
     on delete cascade,
   constraint ai_hermes_run_capabilities_parent_tenant_fkey
     foreign key (
@@ -428,6 +392,372 @@ create table public.ai_hermes_broker_calls (
 
 create index ai_hermes_broker_calls_org_recent_idx
   on public.ai_hermes_broker_calls (organization_id, created_at desc);
+
+create or replace function public.validate_ai_hermes_run_capability_identity()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.ai_chat_turns turn
+    where turn.id = new.turn_id
+      and turn.organization_id = new.organization_id
+      and turn.owner_user_id = new.owner_user_id
+      and turn.conversation_id = new.conversation_id
+      and turn.ai_invocation_id = new.root_invocation_id
+  ) then
+    raise exception 'hermes_capability_identity_invalid';
+  end if;
+  if not exists (
+    select 1
+    from public.ai_invocations invocation
+    where invocation.id = new.invocation_id
+      and invocation.organization_id = new.organization_id
+      and invocation.actor_user_id = new.owner_user_id
+  ) or not exists (
+    select 1
+    from public.ai_invocations root_invocation
+    where root_invocation.id = new.root_invocation_id
+      and root_invocation.organization_id = new.organization_id
+      and root_invocation.actor_user_id = new.owner_user_id
+  ) then
+    raise exception 'hermes_capability_identity_invalid';
+  end if;
+  if new.parent_invocation_id is not null and not exists (
+    select 1
+    from public.ai_invocations parent_invocation
+    where parent_invocation.id = new.parent_invocation_id
+      and parent_invocation.organization_id = new.organization_id
+      and parent_invocation.actor_user_id = new.owner_user_id
+  ) then
+    raise exception 'hermes_capability_identity_invalid';
+  end if;
+  if new.parent_capability_id is not null and not exists (
+    select 1
+    from public.ai_hermes_run_capabilities parent_capability
+    where parent_capability.id = new.parent_capability_id
+      and parent_capability.organization_id = new.organization_id
+      and parent_capability.owner_user_id = new.owner_user_id
+      and parent_capability.conversation_id = new.conversation_id
+      and parent_capability.turn_id = new.turn_id
+      and parent_capability.root_invocation_id = new.root_invocation_id
+      and parent_capability.invocation_id = new.parent_invocation_id
+      and parent_capability.actor_fingerprint = new.actor_fingerprint
+  ) then
+    raise exception 'hermes_capability_identity_invalid';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.validate_ai_hermes_memory_identity()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.ai_chat_messages source_message
+    where source_message.id = new.source_message_id
+      and source_message.role = 'user'
+      and source_message.status = 'completed'
+      and source_message.organization_id = new.organization_id
+      and source_message.owner_user_id = new.owner_user_id
+      and source_message.conversation_id = new.source_conversation_id
+  ) or not exists (
+    select 1
+    from public.ai_invocations source_invocation
+    where source_invocation.id = new.source_invocation_id
+      and source_invocation.organization_id = new.organization_id
+      and source_invocation.actor_user_id = new.owner_user_id
+  ) then
+    raise exception 'hermes_memory_identity_invalid';
+  end if;
+  if new.deactivated_by_invocation_id is not null and not exists (
+    select 1
+    from public.ai_invocations deactivation_invocation
+    where deactivation_invocation.id = new.deactivated_by_invocation_id
+      and deactivation_invocation.organization_id = new.organization_id
+      and deactivation_invocation.actor_user_id = new.owner_user_id
+  ) then
+    raise exception 'hermes_memory_identity_invalid';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.validate_ai_hermes_skill_draft_identity()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.ai_conversations conversation
+    where conversation.id = new.source_conversation_id
+      and conversation.organization_id = new.organization_id
+      and conversation.owner_user_id = new.owner_user_id
+  ) or not exists (
+    select 1
+    from public.ai_invocations source_invocation
+    where source_invocation.id = new.source_invocation_id
+      and source_invocation.organization_id = new.organization_id
+      and source_invocation.actor_user_id = new.owner_user_id
+  ) then
+    raise exception 'hermes_skill_draft_identity_invalid';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.validate_ai_hermes_broker_call_identity()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if not exists (
+    select 1
+    from public.ai_hermes_run_capabilities capability
+    where capability.id = new.capability_id
+      and capability.organization_id = new.organization_id
+      and capability.owner_user_id = new.owner_user_id
+  ) then
+    raise exception 'hermes_broker_call_identity_invalid';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.lock_and_validate_ai_hermes_capability_lineage(
+  p_capability_id uuid,
+  p_organization_id uuid,
+  p_owner_user_id uuid,
+  p_conversation_id uuid,
+  p_turn_id uuid,
+  p_root_invocation_id uuid,
+  p_actor_fingerprint text,
+  p_expected_depth integer
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_lineage_ids uuid[];
+  v_validated_lineage_ids uuid[];
+  v_lineage_count integer;
+  v_lineage_invalid boolean;
+  v_root_invocation_id uuid;
+begin
+  if p_capability_id is null
+     or p_organization_id is null
+     or p_owner_user_id is null
+     or p_conversation_id is null
+     or p_turn_id is null
+     or p_root_invocation_id is null
+     or p_actor_fingerprint is null
+     or p_expected_depth is null
+     or p_expected_depth < 0
+     or p_expected_depth > 3 then
+    raise exception 'capability_lineage_invalid';
+  end if;
+
+  with recursive capability_lineage as (
+    select
+      capability.id,
+      capability.parent_capability_id,
+      capability.invocation_id,
+      capability.parent_invocation_id,
+      capability.root_invocation_id,
+      capability.organization_id,
+      capability.owner_user_id,
+      capability.conversation_id,
+      capability.turn_id,
+      capability.actor_fingerprint,
+      capability.depth,
+      capability.revoked_at,
+      capability.expires_at,
+      0 as hop,
+      array[capability.id]::uuid[] as path,
+      false as cycle,
+      true as link_valid
+    from public.ai_hermes_run_capabilities capability
+    where capability.id = p_capability_id
+
+    union all
+
+    select
+      parent_capability.id,
+      parent_capability.parent_capability_id,
+      parent_capability.invocation_id,
+      parent_capability.parent_invocation_id,
+      parent_capability.root_invocation_id,
+      parent_capability.organization_id,
+      parent_capability.owner_user_id,
+      parent_capability.conversation_id,
+      parent_capability.turn_id,
+      parent_capability.actor_fingerprint,
+      parent_capability.depth,
+      parent_capability.revoked_at,
+      parent_capability.expires_at,
+      lineage.hop + 1,
+      lineage.path || parent_capability.id,
+      parent_capability.id = any(lineage.path),
+      coalesce(
+        parent_capability.invocation_id = lineage.parent_invocation_id
+        and parent_capability.depth = lineage.depth - 1
+        and parent_capability.root_invocation_id = lineage.root_invocation_id,
+        false
+      )
+    from capability_lineage lineage
+    join public.ai_hermes_run_capabilities parent_capability
+      on parent_capability.id = lineage.parent_capability_id
+    where not lineage.cycle
+      and lineage.hop < 4
+  )
+  select array_agg(distinct lineage.id order by lineage.id)
+  into v_lineage_ids
+  from capability_lineage lineage;
+
+  if v_lineage_ids is null then
+    raise exception 'capability_lineage_invalid';
+  end if;
+
+  perform 1
+  from public.ai_hermes_run_capabilities capability_to_lock
+  where capability_to_lock.id = any(v_lineage_ids)
+  order by capability_to_lock.id
+  for update;
+
+  with recursive capability_lineage as (
+    select
+      capability.id,
+      capability.parent_capability_id,
+      capability.invocation_id,
+      capability.parent_invocation_id,
+      capability.root_invocation_id,
+      capability.organization_id,
+      capability.owner_user_id,
+      capability.conversation_id,
+      capability.turn_id,
+      capability.actor_fingerprint,
+      capability.depth,
+      capability.revoked_at,
+      capability.expires_at,
+      0 as hop,
+      array[capability.id]::uuid[] as path,
+      false as cycle,
+      true as link_valid
+    from public.ai_hermes_run_capabilities capability
+    where capability.id = p_capability_id
+
+    union all
+
+    select
+      parent_capability.id,
+      parent_capability.parent_capability_id,
+      parent_capability.invocation_id,
+      parent_capability.parent_invocation_id,
+      parent_capability.root_invocation_id,
+      parent_capability.organization_id,
+      parent_capability.owner_user_id,
+      parent_capability.conversation_id,
+      parent_capability.turn_id,
+      parent_capability.actor_fingerprint,
+      parent_capability.depth,
+      parent_capability.revoked_at,
+      parent_capability.expires_at,
+      lineage.hop + 1,
+      lineage.path || parent_capability.id,
+      parent_capability.id = any(lineage.path),
+      coalesce(
+        parent_capability.invocation_id = lineage.parent_invocation_id
+        and parent_capability.depth = lineage.depth - 1
+        and parent_capability.root_invocation_id = lineage.root_invocation_id,
+        false
+      )
+    from capability_lineage lineage
+    join public.ai_hermes_run_capabilities parent_capability
+      on parent_capability.id = lineage.parent_capability_id
+    where not lineage.cycle
+      and lineage.hop < 4
+  )
+  select
+    array_agg(distinct lineage.id order by lineage.id),
+    count(*),
+    coalesce(bool_or(
+      lineage.cycle
+      or not lineage.link_valid
+      or lineage.depth <> p_expected_depth - lineage.hop
+      or lineage.organization_id is distinct from p_organization_id
+      or lineage.owner_user_id is distinct from p_owner_user_id
+      or lineage.conversation_id is distinct from p_conversation_id
+      or lineage.turn_id is distinct from p_turn_id
+      or lineage.actor_fingerprint is distinct from p_actor_fingerprint
+      or lineage.root_invocation_id is distinct from p_root_invocation_id
+      or lineage.revoked_at is not null
+      or lineage.expires_at <= now()
+      or (
+        lineage.depth = 0
+        and (
+          lineage.root_invocation_id is distinct from lineage.invocation_id
+          or lineage.parent_capability_id is not null
+          or lineage.parent_invocation_id is not null
+        )
+      )
+      or (
+        lineage.depth > 0
+        and (
+          lineage.parent_capability_id is null
+          or lineage.parent_invocation_id is null
+        )
+      )
+    ), true),
+    (array_agg(lineage.invocation_id order by lineage.hop desc)
+      filter (where lineage.depth = 0))[1]
+  into
+    v_validated_lineage_ids,
+    v_lineage_count,
+    v_lineage_invalid,
+    v_root_invocation_id
+  from capability_lineage lineage;
+
+  if v_lineage_ids is distinct from v_validated_lineage_ids
+     or v_lineage_count <> p_expected_depth + 1
+     or v_lineage_invalid
+     or v_root_invocation_id is distinct from p_root_invocation_id then
+    raise exception 'capability_lineage_invalid';
+  end if;
+
+  return v_root_invocation_id;
+end;
+$$;
+
+create trigger ai_hermes_run_capabilities_validate_identity
+before insert or update on public.ai_hermes_run_capabilities
+for each row execute function public.validate_ai_hermes_run_capability_identity();
+
+create trigger ai_hermes_memories_validate_identity
+before insert or update on public.ai_hermes_memories
+for each row execute function public.validate_ai_hermes_memory_identity();
+
+create trigger ai_hermes_skill_drafts_validate_identity
+before insert or update on public.ai_hermes_skill_drafts
+for each row execute function public.validate_ai_hermes_skill_draft_identity();
+
+create trigger ai_hermes_broker_calls_validate_identity
+before insert or update on public.ai_hermes_broker_calls
+for each row execute function public.validate_ai_hermes_broker_call_identity();
 
 create trigger ai_hermes_memories_touch_updated_at
 before update on public.ai_hermes_memories
@@ -668,6 +998,16 @@ begin
       raise exception 'capability_parent_invalid';
     end if;
     v_root_invocation_id := v_parent.root_invocation_id;
+    perform public.lock_and_validate_ai_hermes_capability_lineage(
+      v_parent.id,
+      p_organization_id,
+      p_owner_user_id,
+      p_conversation_id,
+      p_turn_id,
+      v_root_invocation_id,
+      lower(p_actor_fingerprint),
+      p_depth - 1
+    );
     if v_turn.ai_invocation_id is distinct from v_root_invocation_id then
       raise exception 'capability_parent_invalid';
     end if;
@@ -864,6 +1204,16 @@ begin
   if not found then
     raise exception 'capability_invalid';
   end if;
+  perform public.lock_and_validate_ai_hermes_capability_lineage(
+    v_capability.id,
+    v_capability.organization_id,
+    v_capability.owner_user_id,
+    v_capability.conversation_id,
+    v_capability.turn_id,
+    v_capability.root_invocation_id,
+    v_capability.actor_fingerprint,
+    v_capability.depth
+  );
   if exists (
     select 1
     from pg_catalog.unnest(v_capability.allowed_tools) as stored_tool(value)
@@ -1395,8 +1745,8 @@ begin
   for update;
 
   if found then
-    if (p_memory_key is not null and v_idempotent.memory_key <> p_memory_key)
-       or v_idempotent.revision <> p_expected_revision + 1
+    if v_idempotent.requested_memory_key is distinct from p_memory_key
+       or v_idempotent.requested_expected_revision is distinct from p_expected_revision
        or v_idempotent.source_conversation_id <> p_source_conversation_id
        or v_idempotent.source_message_id <> p_source_message_id
        or v_idempotent.source_invocation_id <> p_source_invocation_id
@@ -1461,6 +1811,8 @@ begin
 
   insert into public.ai_hermes_memories (
     memory_key,
+    requested_memory_key,
+    requested_expected_revision,
     idempotency_key,
     organization_id,
     owner_user_id,
@@ -1476,6 +1828,8 @@ begin
     deactivated_by_invocation_id
   ) values (
     v_memory_key,
+    p_memory_key,
+    p_expected_revision,
     p_idempotency_key,
     p_organization_id,
     p_owner_user_id,
@@ -2049,6 +2403,13 @@ revoke all on function public.ai_hermes_canonical_text_array_sha256(
 ) from public, anon, authenticated;
 revoke all on function public.ai_hermes_canonical_uuid_array_sha256(
   uuid[]
+) from public, anon, authenticated;
+revoke all on function public.validate_ai_hermes_run_capability_identity() from public, anon, authenticated;
+revoke all on function public.validate_ai_hermes_memory_identity() from public, anon, authenticated;
+revoke all on function public.validate_ai_hermes_skill_draft_identity() from public, anon, authenticated;
+revoke all on function public.validate_ai_hermes_broker_call_identity() from public, anon, authenticated;
+revoke all on function public.lock_and_validate_ai_hermes_capability_lineage(
+  uuid, uuid, uuid, uuid, uuid, uuid, text, integer
 ) from public, anon, authenticated;
 revoke all on function public.issue_ai_hermes_run_capability(
   text, uuid, uuid, uuid, uuid, uuid, uuid, text, text, text[], text, text[], text, text, uuid[], integer, boolean, timestamptz

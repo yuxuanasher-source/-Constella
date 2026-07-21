@@ -297,8 +297,8 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(table).toMatch(
       /\(depth = 0 and root_invocation_id = invocation_id and parent_capability_id is null and parent_invocation_id is null\)[\s\S]*?\(depth > 0 and parent_capability_id is not null and parent_invocation_id is not null\)/,
     );
-    expect(table).toMatch(
-      /foreign key \(turn_id, organization_id, owner_user_id, conversation_id, root_invocation_id\)\s+references public\.ai_chat_turns\(id, organization_id, owner_user_id, conversation_id, ai_invocation_id\)/,
+    expect(table).toContain(
+      "turn_id uuid not null references public.ai_chat_turns(id) on delete cascade",
     );
 
     expect(issue).toContain("p_parent_token_sha256 text");
@@ -340,6 +340,63 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
   });
 
+  it("locks and validates every depth-3 capability ancestor", () => {
+    const lineage = functionSql(
+      "lock_and_validate_ai_hermes_capability_lineage",
+    );
+    const issue = functionSql("issue_ai_hermes_run_capability");
+    const claim = functionSql("claim_ai_hermes_broker_call");
+    const recursivePasses =
+      lineage.match(/with recursive capability_lineage as/g) ?? [];
+
+    expect(lineage).toContain("security definer");
+    expect(lineage).toContain("set search_path = pg_catalog, public");
+    expect(recursivePasses).toHaveLength(2);
+    expect(lineage).toContain("parent_capability.id = any(lineage.path)");
+    expect(lineage).toContain(
+      "parent_capability.invocation_id = lineage.parent_invocation_id",
+    );
+    expect(lineage).toContain("parent_capability.depth = lineage.depth - 1");
+    expect(lineage).toContain("lineage.hop < 4");
+    expect(lineage).toContain(
+      "lineage.depth <> p_expected_depth - lineage.hop",
+    );
+    expect(lineage).toContain("v_lineage_count <> p_expected_depth + 1");
+    for (const ancestorFailure of [
+      "lineage.revoked_at is not null",
+      "lineage.expires_at <= now()",
+      "lineage.organization_id is distinct from p_organization_id",
+      "lineage.owner_user_id is distinct from p_owner_user_id",
+      "lineage.conversation_id is distinct from p_conversation_id",
+      "lineage.turn_id is distinct from p_turn_id",
+      "lineage.actor_fingerprint is distinct from p_actor_fingerprint",
+      "lineage.root_invocation_id is distinct from p_root_invocation_id",
+      "lineage.cycle",
+      "not lineage.link_valid",
+    ]) {
+      expect(lineage).toContain(ancestorFailure);
+    }
+    expect(lineage.indexOf("for update")).toBeLessThan(
+      lineage.lastIndexOf("with recursive capability_lineage as"),
+    );
+    expect(lineage).toContain("capability_lineage_invalid");
+    expect(issue).toContain(
+      "public.lock_and_validate_ai_hermes_capability_lineage(",
+    );
+    expect(issue).toMatch(
+      /public\.lock_and_validate_ai_hermes_capability_lineage\([\s\S]*?p_depth - 1[\s\S]*?\);/,
+    );
+    expect(claim).toContain(
+      "public.lock_and_validate_ai_hermes_capability_lineage(",
+    );
+    expect(claim).toMatch(
+      /public\.lock_and_validate_ai_hermes_capability_lineage\([\s\S]*?v_capability\.depth[\s\S]*?\);/,
+    );
+    expect(migration).toContain(
+      "revoke all on function public.lock_and_validate_ai_hermes_capability_lineage(",
+    );
+  });
+
   it("pins finish v2 and ledger invocation IDs to the exact tenant actor", () => {
     const finishV2 = functionSql("finish_ai_chat_turn_v2");
     const invocationCheck = finishV2.indexOf(
@@ -347,18 +404,6 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
     const firstLedgerWrite = finishV2.indexOf("update public.ai_chat_messages");
 
-    expect(migration).toContain(
-      "constraint ai_invocations_identity_key unique (id, organization_id, actor_user_id)",
-    );
-    expect(migration).toContain(
-      "constraint ai_chat_turns_identity_key unique (id, organization_id, owner_user_id, conversation_id, ai_invocation_id)",
-    );
-    expect(migration).toMatch(
-      /constraint ai_chat_turns_ai_invocation_tenant_fkey\s+foreign key \(ai_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)\s+not valid/,
-    );
-    expect(migration).toMatch(
-      /constraint ai_chat_messages_ai_invocation_tenant_fkey\s+foreign key \(ai_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)\s+not valid/,
-    );
     expect(invocationCheck).toBeGreaterThan(-1);
     expect(invocationCheck).toBeLessThan(firstLedgerWrite);
     expect(finishV2).toMatch(
@@ -420,6 +465,13 @@ describe("Xingyao Hermes native state schema contract", () => {
     const locks = writeMemory.match(/pg_advisory_xact_lock/g) ?? [];
 
     expect(table).toContain("idempotency_key text not null");
+    expect(table).toContain("requested_memory_key uuid");
+    expect(table).toContain("requested_expected_revision integer not null");
+    expect(table).toContain("requested_expected_revision >= 0");
+    expect(table).toContain("revision = requested_expected_revision + 1");
+    expect(table).toContain(
+      "requested_memory_key is null or requested_memory_key = memory_key",
+    );
     expect(table).toContain(
       "unique (organization_id, owner_user_id, idempotency_key)",
     );
@@ -429,8 +481,8 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(writeMemory).toContain("ai_hermes_memory_idempotency:");
     expect(writeMemory).toContain("ai_hermes_memory_key:");
     for (const comparison of [
-      "p_memory_key is not null and v_idempotent.memory_key <> p_memory_key",
-      "v_idempotent.revision <> p_expected_revision + 1",
+      "v_idempotent.requested_memory_key is distinct from p_memory_key",
+      "v_idempotent.requested_expected_revision is distinct from p_expected_revision",
       "v_idempotent.source_conversation_id <> p_source_conversation_id",
       "v_idempotent.source_message_id <> p_source_message_id",
       "v_idempotent.source_invocation_id <> p_source_invocation_id",
@@ -440,6 +492,12 @@ describe("Xingyao Hermes native state schema contract", () => {
     ]) {
       expect(writeMemory).toContain(comparison);
     }
+    expect(writeMemory).not.toContain(
+      "p_memory_key is not null and v_idempotent.memory_key <> p_memory_key",
+    );
+    expect(writeMemory).toMatch(
+      /insert into public\.ai_hermes_memories \(\s*memory_key,\s*requested_memory_key,\s*requested_expected_revision,\s*idempotency_key/,
+    );
     expect(writeMemory).toContain("memory_idempotency_conflict");
     expect(writeMemory.indexOf("pg_advisory_xact_lock")).toBeLessThan(
       writeMemory.indexOf("into v_idempotent"),
@@ -460,33 +518,125 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
   });
 
-  it("backs every Hermes tenant edge with composite foreign keys", () => {
+  it("validates direct Hermes writes without scanning legacy identity tables", () => {
     const capability = tableSql("ai_hermes_run_capabilities");
     const broker = tableSql("ai_hermes_broker_calls");
     const memory = tableSql("ai_hermes_memories");
     const draft = tableSql("ai_hermes_skill_drafts");
 
-    expect(capability).toMatch(
-      /foreign key \(turn_id, organization_id, owner_user_id, conversation_id, root_invocation_id\)\s+references public\.ai_chat_turns\(id, organization_id, owner_user_id, conversation_id, ai_invocation_id\)/,
+    expect(migration).not.toContain(
+      "add constraint ai_invocations_identity_key unique",
     );
-    expect(capability).toMatch(
-      /foreign key \(invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)/,
+    expect(migration).not.toContain(
+      "add constraint ai_chat_turns_identity_key unique",
     );
-    expect(capability).toMatch(
-      /foreign key \(parent_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)/,
+    expect(migration).not.toMatch(
+      /alter table public\.ai_invocations[\s\S]{0,200}?add constraint[\s\S]{0,200}?unique/,
+    );
+    expect(migration).not.toMatch(
+      /alter table public\.ai_chat_turns[\s\S]{0,200}?add constraint[\s\S]{0,200}?unique/,
+    );
+    expect(migration).not.toMatch(
+      /create unique index(?: concurrently)?[^;]*?on public\.(ai_invocations|ai_chat_turns)/,
+    );
+    expect(migration).not.toContain("create unique index concurrently");
+    expect(migration).not.toContain("ai_chat_turns_ai_invocation_tenant_fkey");
+    expect(migration).not.toContain(
+      "ai_chat_messages_ai_invocation_tenant_fkey",
+    );
+
+    expect(capability).toContain(
+      "turn_id uuid not null references public.ai_chat_turns(id) on delete cascade",
+    );
+    expect(capability).toContain(
+      "invocation_id uuid not null references public.ai_invocations(id) on delete cascade",
+    );
+    expect(capability).toContain(
+      "root_invocation_id uuid not null references public.ai_invocations(id) on delete cascade",
     );
     expect(broker).toContain("owner_user_id uuid not null");
     expect(broker).toMatch(
       /foreign key \(capability_id, organization_id, owner_user_id\)\s+references public\.ai_hermes_run_capabilities\(id, organization_id, owner_user_id\)/,
     );
-    expect(memory).toMatch(
-      /foreign key \(source_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)/,
+    expect(memory).toContain(
+      "source_invocation_id uuid not null references public.ai_invocations(id)",
     );
-    expect(memory).toMatch(
-      /foreign key \(deactivated_by_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)/,
+    expect(draft).toContain(
+      "source_invocation_id uuid not null references public.ai_invocations(id)",
     );
-    expect(draft).toMatch(
-      /foreign key \(source_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)/,
+
+    const identityTriggers = [
+      [
+        "validate_ai_hermes_run_capability_identity",
+        "ai_hermes_run_capabilities_validate_identity",
+        "ai_hermes_run_capabilities",
+      ],
+      [
+        "validate_ai_hermes_memory_identity",
+        "ai_hermes_memories_validate_identity",
+        "ai_hermes_memories",
+      ],
+      [
+        "validate_ai_hermes_skill_draft_identity",
+        "ai_hermes_skill_drafts_validate_identity",
+        "ai_hermes_skill_drafts",
+      ],
+      [
+        "validate_ai_hermes_broker_call_identity",
+        "ai_hermes_broker_calls_validate_identity",
+        "ai_hermes_broker_calls",
+      ],
+    ] as const;
+
+    for (const [functionName, triggerName, tableName] of identityTriggers) {
+      const fn = functionSql(functionName);
+      expect(fn, functionName).toContain("security definer");
+      expect(fn, functionName).toContain(
+        "set search_path = pg_catalog, public",
+      );
+      expect(fn, functionName).toContain("returns trigger");
+      expect(migration).toContain(
+        `create trigger ${triggerName}\nbefore insert or update on public.${tableName}`,
+      );
+      expect(migration).toContain(`execute function public.${functionName}();`);
+      expect(migration).toContain(
+        `revoke all on function public.${functionName}() from public, anon, authenticated;`,
+      );
+    }
+
+    const capabilityIdentity = functionSql(
+      "validate_ai_hermes_run_capability_identity",
+    );
+    expect(capabilityIdentity).toContain("turn.id = new.turn_id");
+    expect(capabilityIdentity).toContain(
+      "turn.organization_id = new.organization_id",
+    );
+    expect(capabilityIdentity).toContain(
+      "turn.owner_user_id = new.owner_user_id",
+    );
+    expect(capabilityIdentity).toContain(
+      "turn.conversation_id = new.conversation_id",
+    );
+    expect(capabilityIdentity).toContain(
+      "turn.ai_invocation_id = new.root_invocation_id",
+    );
+    expect(capabilityIdentity).toContain(
+      "invocation.actor_user_id = new.owner_user_id",
+    );
+    expect(capabilityIdentity).toContain("hermes_capability_identity_invalid");
+
+    const memoryIdentity = functionSql("validate_ai_hermes_memory_identity");
+    expect(memoryIdentity).toContain("source_message.role = 'user'");
+    expect(memoryIdentity).toContain(
+      "source_invocation.actor_user_id = new.owner_user_id",
+    );
+    expect(memoryIdentity).toContain("hermes_memory_identity_invalid");
+
+    expect(functionSql("validate_ai_hermes_skill_draft_identity")).toContain(
+      "hermes_skill_draft_identity_invalid",
+    );
+    expect(functionSql("validate_ai_hermes_broker_call_identity")).toContain(
+      "hermes_broker_call_identity_invalid",
     );
   });
 
