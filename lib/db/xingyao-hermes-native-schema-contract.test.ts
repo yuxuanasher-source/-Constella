@@ -71,6 +71,7 @@ describe("Xingyao Hermes native state schema contract", () => {
       "parent_invocation_id uuid",
       "actor_fingerprint text not null",
       "allowed_tools text[] not null",
+      "allowed_tools_hash text not null",
       "scopes text[] not null",
       "scope_hash text not null",
       "skill_grants_hash text not null",
@@ -84,6 +85,82 @@ describe("Xingyao Hermes native state schema contract", () => {
     }
     expect(table).toContain("unique (token_sha256)");
     expect(table).toContain("depth >= 0");
+  });
+
+  it("canonically binds capability tool, scope, and approved skill lists", () => {
+    const textArrayHash = functionSql("ai_hermes_canonical_text_array_sha256");
+    const uuidArrayHash = functionSql("ai_hermes_canonical_uuid_array_sha256");
+    const issue = functionSql("issue_ai_hermes_run_capability");
+    const claim = functionSql("claim_ai_hermes_broker_call");
+
+    for (const helper of [textArrayHash, uuidArrayHash]) {
+      expect(helper).toContain("security definer");
+      expect(helper).toContain("set search_path = pg_catalog, public");
+      expect(helper).toContain("extensions.digest");
+      expect(helper).toContain("'sha256'");
+      expect(helper).toContain("'[]'::jsonb");
+    }
+    for (const helperName of [
+      "ai_hermes_canonical_text_array_sha256",
+      "ai_hermes_canonical_uuid_array_sha256",
+    ]) {
+      expect(migration).toContain(
+        `revoke all on function public.${helperName}(`,
+      );
+      expect(migration).toContain(
+        `grant execute on function public.${helperName}(`,
+      );
+    }
+    expect(textArrayHash).toContain(
+      'jsonb_agg(value order by value collate "c")',
+    );
+    expect(uuidArrayHash).toContain(
+      'jsonb_agg(value::text order by value::text collate "c")',
+    );
+
+    expect(issue).toContain("p_allowed_tools_hash text");
+    expect(issue).toContain(
+      "p_allowed_tools is null or p_scopes is null or p_skill_draft_ids is null",
+    );
+    expect(issue).toContain("capability_binding_list_invalid");
+    expect(issue).toContain('count(distinct value collate "c") <> count(*)');
+    expect(issue).toContain("count(distinct value) <> count(*)");
+    expect(issue).toContain('array_agg(value order by value collate "c")');
+    expect(issue).toContain(
+      'array_agg(value order by value::text collate "c")',
+    );
+    expect(issue).toContain(
+      "v_allowed_tools_hash := public.ai_hermes_canonical_text_array_sha256(v_allowed_tools)",
+    );
+    expect(issue).toContain(
+      "v_scope_hash := public.ai_hermes_canonical_text_array_sha256(v_scopes)",
+    );
+    expect(issue).toContain(
+      "v_skill_grants_hash := public.ai_hermes_canonical_uuid_array_sha256(v_skill_draft_ids)",
+    );
+    expect(issue).toContain(
+      "lower(p_allowed_tools_hash) is distinct from v_allowed_tools_hash",
+    );
+    expect(issue).toContain(
+      "lower(p_scope_hash) is distinct from v_scope_hash",
+    );
+    expect(issue).toContain(
+      "lower(p_skill_grants_hash) is distinct from v_skill_grants_hash",
+    );
+    expect(issue).toContain("capability_binding_hash_mismatch");
+
+    expect(claim).toContain(
+      "v_capability.allowed_tools_hash is distinct from public.ai_hermes_canonical_text_array_sha256(v_capability.allowed_tools)",
+    );
+    expect(claim).toContain(
+      "v_capability.scope_hash is distinct from public.ai_hermes_canonical_text_array_sha256(v_capability.scopes)",
+    );
+    expect(claim).toContain(
+      "v_capability.skill_grants_hash is distinct from public.ai_hermes_canonical_uuid_array_sha256(v_capability.skill_draft_ids)",
+    );
+    expect(claim).toContain("capability_binding_list_invalid");
+    expect(claim).toContain("skill_draft.status <> 'approved'");
+    expect(claim).toContain("capability_binding_invalid");
   });
 
   it("makes broker claims atomic and replay safe", () => {
@@ -216,33 +293,57 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(migration).toMatch(
       /constraint ai_chat_turns_outcome_check check \(\s*outcome is null or outcome in \(\s*'complete',\s*'partial',\s*'blocked',\s*'failed',\s*'cancelled'\s*\)\s*\)/,
     );
-    for (const leaseFunction of [leaseTrigger, renewLease]) {
-      expect(leaseFunction).toContain("when 'fast' then interval '2 minutes'");
-      expect(leaseFunction).toContain("when 'deep' then interval '6 minutes'");
-    }
-    expect(finishV2).toContain(
-      "p_outcome in ('complete', 'partial', 'blocked')",
+    expect(leaseTrigger).toMatch(
+      /new\.lease_expires_at := now\(\) \+ case new\.mode\s+when 'fast' then interval '2 minutes'\s+when 'deep' then interval '6 minutes'\s+end/,
+    );
+    expect(renewLease).toMatch(
+      /set lease_expires_at = now\(\) \+ case mode\s+when 'fast' then interval '2 minutes'\s+when 'deep' then interval '6 minutes'\s+end/,
     );
     expect(finishV2).toContain(
-      "when p_outcome in ('complete', 'partial', 'blocked') then 'completed'",
+      "v_effective_outcome in ('complete', 'partial', 'blocked')",
     );
-    expect(finishV2).toContain("when p_outcome = 'failed' then 'failed'");
-    expect(finishV2).toContain("when p_outcome = 'cancelled' then 'cancelled'");
+    expect(finishV2).toContain(
+      "when v_effective_outcome in ('complete', 'partial', 'blocked') then 'completed'",
+    );
+    expect(finishV2).toContain(
+      "when v_effective_outcome = 'failed' then 'failed'",
+    );
+    expect(finishV2).toContain(
+      "when v_effective_outcome = 'cancelled' then 'cancelled'",
+    );
   });
 
-  it("adds idempotent cancellation, locked tool append, and provider-state CAS", () => {
+  it("makes cancellation terminal, idempotent, and dominant over late finishes", () => {
     const cancel = functionSql("cancel_ai_chat_turn");
-    const appendTool = functionSql("append_ai_hermes_tool_message");
-    const updateState = functionSql("update_ai_conversation_hermes_state");
+    const finishV2 = functionSql("finish_ai_chat_turn_v2");
 
     expect(cancel).toContain("for update");
     expect(cancel).toContain(
       "('accepted', 'grounding', 'generating', 'validating')",
     );
-    expect(cancel).toContain(
-      "cancel_requested_at = coalesce(cancel_requested_at, now())",
+    expect(cancel).not.toContain("lease_expires_at > now()");
+    expect(cancel).toMatch(
+      /update public\.ai_chat_messages\s+set status = 'failed'[\s\S]*?jsonb_build_object\('outcome', 'cancelled'\)/,
+    );
+    expect(cancel).toMatch(
+      /update public\.ai_chat_turns\s+set status = 'cancelled',\s+outcome = 'cancelled',\s+cancel_requested_at = coalesce\(cancel_requested_at, now\(\)\)/,
     );
     expect(cancel).toContain("'already_terminal', true");
+    expect(cancel).toContain("'status', 'cancelled'");
+
+    expect(finishV2).toContain(
+      "when v_turn.cancel_requested_at is not null then 'cancelled'",
+    );
+    expect(finishV2).toContain("v_effective_outcome <> 'cancelled' and (");
+    expect(finishV2).toContain(
+      "jsonb_build_object('outcome', v_effective_outcome)",
+    );
+    expect(finishV2).toContain("outcome = v_effective_outcome");
+  });
+
+  it("keeps tool append locked and provider-state updates compare-and-swap", () => {
+    const appendTool = functionSql("append_ai_hermes_tool_message");
+    const updateState = functionSql("update_ai_conversation_hermes_state");
 
     expect(appendTool).toContain("from public.ai_conversations");
     expect(appendTool).toContain("for update");

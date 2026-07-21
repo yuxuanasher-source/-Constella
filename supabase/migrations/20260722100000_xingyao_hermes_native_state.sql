@@ -30,7 +30,7 @@ set search_path = pg_catalog, public
 as $$
 begin
   if new.status in ('accepted', 'grounding', 'generating', 'validating') then
-    new.lease_expires_at := case new.mode
+    new.lease_expires_at := now() + case new.mode
       when 'fast' then interval '2 minutes'
       when 'deep' then interval '6 minutes'
     end;
@@ -39,6 +39,54 @@ begin
   end if;
   return new;
 end;
+$$;
+
+-- Capability list hashes use the UTF-8 text representation of a JSONB array
+-- sorted with the C collation. Issuance rejects nulls, blanks, and duplicates.
+create or replace function public.ai_hermes_canonical_text_array_sha256(
+  p_values text[]
+)
+returns text
+language sql
+immutable
+strict
+security definer
+set search_path = pg_catalog, public
+as $$
+  select pg_catalog.encode(
+    extensions.digest(
+      coalesce(
+        jsonb_agg(value order by value collate "C"),
+        '[]'::jsonb
+      )::text,
+      'sha256'
+    ),
+    'hex'
+  )
+  from pg_catalog.unnest(p_values) as values_to_hash(value);
+$$;
+
+create or replace function public.ai_hermes_canonical_uuid_array_sha256(
+  p_values uuid[]
+)
+returns text
+language sql
+immutable
+strict
+security definer
+set search_path = pg_catalog, public
+as $$
+  select pg_catalog.encode(
+    extensions.digest(
+      coalesce(
+        jsonb_agg(value::text order by value::text collate "C"),
+        '[]'::jsonb
+      )::text,
+      'sha256'
+    ),
+    'hex'
+  )
+  from pg_catalog.unnest(p_values) as values_to_hash(value);
 $$;
 
 create table public.ai_hermes_memories (
@@ -188,6 +236,7 @@ create table public.ai_hermes_run_capabilities (
   parent_invocation_id uuid references public.ai_invocations(id) on delete cascade,
   actor_fingerprint text not null,
   allowed_tools text[] not null default '{}',
+  allowed_tools_hash text not null,
   scopes text[] not null default '{}',
   scope_hash text not null,
   skill_grants_hash text not null,
@@ -208,6 +257,9 @@ create table public.ai_hermes_run_capabilities (
   ),
   constraint ai_hermes_run_capabilities_actor_hash_check check (
     actor_fingerprint ~ '^[0-9a-f]{64}$'
+  ),
+  constraint ai_hermes_run_capabilities_tool_hash_check check (
+    allowed_tools_hash ~ '^[0-9a-f]{64}$'
   ),
   constraint ai_hermes_run_capabilities_scope_hash_check check (
     scope_hash ~ '^[0-9a-f]{64}$'
@@ -321,6 +373,7 @@ create or replace function public.issue_ai_hermes_run_capability(
   p_parent_invocation_id uuid,
   p_actor_fingerprint text,
   p_allowed_tools text[],
+  p_allowed_tools_hash text,
   p_scopes text[],
   p_scope_hash text,
   p_skill_grants_hash text,
@@ -337,9 +390,16 @@ as $$
 declare
   v_capability_id uuid;
   v_turn public.ai_chat_turns%rowtype;
+  v_allowed_tools text[];
+  v_scopes text[];
+  v_skill_draft_ids uuid[];
+  v_allowed_tools_hash text;
+  v_scope_hash text;
+  v_skill_grants_hash text;
 begin
   if lower(coalesce(p_token_sha256, '')) !~ '^[0-9a-f]{64}$'
      or lower(coalesce(p_actor_fingerprint, '')) !~ '^[0-9a-f]{64}$'
+     or lower(coalesce(p_allowed_tools_hash, '')) !~ '^[0-9a-f]{64}$'
      or lower(coalesce(p_scope_hash, '')) !~ '^[0-9a-f]{64}$'
      or lower(coalesce(p_skill_grants_hash, '')) !~ '^[0-9a-f]{64}$' then
     raise exception 'capability_hash_invalid';
@@ -354,9 +414,70 @@ begin
   if p_expires_at is null or p_expires_at <= now() then
     raise exception 'capability_expiry_invalid';
   end if;
-  if array_position(coalesce(p_allowed_tools, '{}'::text[]), null) is not null
-     or array_position(coalesce(p_scopes, '{}'::text[]), null) is not null then
-    raise exception 'capability_scope_invalid';
+  if p_allowed_tools is null or p_scopes is null or p_skill_draft_ids is null then
+    raise exception 'capability_binding_list_invalid';
+  end if;
+  if exists (
+    select 1
+    from pg_catalog.unnest(p_allowed_tools) as provided_tool(value)
+    where value is null
+       or nullif(pg_catalog.btrim(value), '') is null
+       or value <> pg_catalog.btrim(value)
+  ) or exists (
+    select 1
+    from pg_catalog.unnest(p_scopes) as provided_scope(value)
+    where value is null
+       or nullif(pg_catalog.btrim(value), '') is null
+       or value <> pg_catalog.btrim(value)
+  ) or exists (
+    select 1
+    from pg_catalog.unnest(p_skill_draft_ids) as provided_skill(value)
+    where value is null
+  ) then
+    raise exception 'capability_binding_list_invalid';
+  end if;
+  if (
+    select count(distinct value collate "C") <> count(*)
+    from pg_catalog.unnest(p_allowed_tools) as provided_tool(value)
+  ) or (
+    select count(distinct value collate "C") <> count(*)
+    from pg_catalog.unnest(p_scopes) as provided_scope(value)
+  ) or (
+    select count(distinct value) <> count(*)
+    from pg_catalog.unnest(p_skill_draft_ids) as provided_skill(value)
+  ) then
+    raise exception 'capability_binding_list_invalid';
+  end if;
+
+  select coalesce(
+    array_agg(value order by value collate "C"),
+    '{}'::text[]
+  )
+  into v_allowed_tools
+  from pg_catalog.unnest(p_allowed_tools) as provided_tool(value);
+
+  select coalesce(
+    array_agg(value order by value collate "C"),
+    '{}'::text[]
+  )
+  into v_scopes
+  from pg_catalog.unnest(p_scopes) as provided_scope(value);
+
+  select coalesce(
+    array_agg(value order by value::text collate "C"),
+    '{}'::uuid[]
+  )
+  into v_skill_draft_ids
+  from pg_catalog.unnest(p_skill_draft_ids) as provided_skill(value);
+
+  v_allowed_tools_hash := public.ai_hermes_canonical_text_array_sha256(v_allowed_tools);
+  v_scope_hash := public.ai_hermes_canonical_text_array_sha256(v_scopes);
+  v_skill_grants_hash := public.ai_hermes_canonical_uuid_array_sha256(v_skill_draft_ids);
+
+  if lower(p_allowed_tools_hash) is distinct from v_allowed_tools_hash
+     or lower(p_scope_hash) is distinct from v_scope_hash
+     or lower(p_skill_grants_hash) is distinct from v_skill_grants_hash then
+    raise exception 'capability_binding_hash_mismatch';
   end if;
 
   perform 1
@@ -410,7 +531,7 @@ begin
 
   if exists (
     select 1
-    from unnest(coalesce(p_skill_draft_ids, '{}'::uuid[])) skill_grant(draft_id)
+    from pg_catalog.unnest(v_skill_draft_ids) skill_grant(draft_id)
     left join public.ai_hermes_skill_drafts skill_draft
       on skill_draft.id = skill_grant.draft_id
      and skill_draft.organization_id = p_organization_id
@@ -438,6 +559,7 @@ begin
     parent_invocation_id,
     actor_fingerprint,
     allowed_tools,
+    allowed_tools_hash,
     scopes,
     scope_hash,
     skill_grants_hash,
@@ -454,11 +576,12 @@ begin
     p_invocation_id,
     p_parent_invocation_id,
     lower(p_actor_fingerprint),
-    coalesce(p_allowed_tools, '{}'::text[]),
-    coalesce(p_scopes, '{}'::text[]),
-    lower(p_scope_hash),
-    lower(p_skill_grants_hash),
-    coalesce(p_skill_draft_ids, '{}'::uuid[]),
+    v_allowed_tools,
+    v_allowed_tools_hash,
+    v_scopes,
+    v_scope_hash,
+    v_skill_grants_hash,
+    v_skill_draft_ids,
     p_depth,
     p_ai_state_writes_allowed,
     p_expires_at
@@ -541,6 +664,53 @@ begin
 
   if not found then
     raise exception 'capability_invalid';
+  end if;
+  if exists (
+    select 1
+    from pg_catalog.unnest(v_capability.allowed_tools) as stored_tool(value)
+    where value is null
+       or nullif(pg_catalog.btrim(value), '') is null
+       or value <> pg_catalog.btrim(value)
+  ) or exists (
+    select 1
+    from pg_catalog.unnest(v_capability.scopes) as stored_scope(value)
+    where value is null
+       or nullif(pg_catalog.btrim(value), '') is null
+       or value <> pg_catalog.btrim(value)
+  ) or exists (
+    select 1
+    from pg_catalog.unnest(v_capability.skill_draft_ids) as stored_skill(value)
+    where value is null
+  ) or (
+    select count(distinct value collate "C") <> count(*)
+    from pg_catalog.unnest(v_capability.allowed_tools) as stored_tool(value)
+  ) or (
+    select count(distinct value collate "C") <> count(*)
+    from pg_catalog.unnest(v_capability.scopes) as stored_scope(value)
+  ) or (
+    select count(distinct value) <> count(*)
+    from pg_catalog.unnest(v_capability.skill_draft_ids) as stored_skill(value)
+  ) then
+    raise exception 'capability_binding_list_invalid';
+  end if;
+  if v_capability.allowed_tools_hash is distinct from public.ai_hermes_canonical_text_array_sha256(v_capability.allowed_tools)
+     or v_capability.scope_hash is distinct from public.ai_hermes_canonical_text_array_sha256(v_capability.scopes)
+     or v_capability.skill_grants_hash is distinct from public.ai_hermes_canonical_uuid_array_sha256(v_capability.skill_draft_ids) then
+    raise exception 'capability_binding_invalid';
+  end if;
+  if exists (
+    select 1
+    from pg_catalog.unnest(v_capability.skill_draft_ids) skill_grant(draft_id)
+    left join public.ai_hermes_skill_drafts skill_draft
+      on skill_draft.id = skill_grant.draft_id
+     and skill_draft.organization_id = v_capability.organization_id
+     and skill_draft.owner_user_id = v_capability.owner_user_id
+    where skill_draft.id is null
+       or skill_draft.status <> 'approved'
+       or skill_draft.signature is null
+       or skill_draft.signing_key_id is null
+  ) then
+    raise exception 'capability_binding_invalid';
   end if;
   if p_actor_fingerprint is distinct from v_capability.actor_fingerprint then
     raise exception 'capability_actor_mismatch';
@@ -1256,17 +1426,34 @@ begin
     raise exception 'turn_not_active';
   end if;
 
+  update public.ai_chat_messages
+  set status = 'failed',
+      metadata = metadata
+        || jsonb_build_object('outcome', 'cancelled')
+        || jsonb_build_object('cancelRequestedAt', now())
+  where id = v_turn.assistant_message_id;
+
   update public.ai_chat_turns
-  set cancel_requested_at = coalesce(cancel_requested_at, now())
+  set status = 'cancelled',
+      outcome = 'cancelled',
+      cancel_requested_at = coalesce(cancel_requested_at, now()),
+      error_code = coalesce(error_code, 'turn_cancelled'),
+      error_summary = coalesce(error_summary, 'Turn cancelled by owner'),
+      retryable = false,
+      completed_at = coalesce(completed_at, now())
   where id = v_turn.id;
 
   update public.ai_hermes_run_capabilities
   set revoked_at = coalesce(revoked_at, now())
   where turn_id = v_turn.id;
 
+  update public.ai_conversations
+  set last_message_at = now()
+  where id = v_turn.conversation_id;
+
   return jsonb_build_object(
     'turn_id', v_turn.id,
-    'status', v_turn.status,
+    'status', 'cancelled',
     'cancel_requested', true,
     'already_terminal', false
   );
@@ -1347,6 +1534,7 @@ as $$
 declare
   v_turn public.ai_chat_turns%rowtype;
   v_conversation_id uuid;
+  v_effective_outcome text;
   v_terminal_status text;
   v_superseded_message_id uuid;
 begin
@@ -1392,30 +1580,38 @@ begin
     return false;
   end if;
 
+  v_effective_outcome := case
+    when v_turn.cancel_requested_at is not null then 'cancelled'
+    else p_outcome
+  end;
+
   v_terminal_status := case
-    when p_outcome in ('complete', 'partial', 'blocked') then 'completed'
-    when p_outcome = 'failed' then 'failed'
-    when p_outcome = 'cancelled' then 'cancelled'
+    when v_effective_outcome in ('complete', 'partial', 'blocked') then 'completed'
+    when v_effective_outcome = 'failed' then 'failed'
+    when v_effective_outcome = 'cancelled' then 'cancelled'
   end;
 
   if v_turn.status in ('completed', 'failed', 'cancelled') then
-    return v_turn.status = v_terminal_status and v_turn.outcome = p_outcome;
+    return v_turn.status = v_terminal_status
+      and v_turn.outcome = v_effective_outcome;
   end if;
   if v_turn.status not in ('accepted', 'grounding', 'generating', 'validating') then
     return false;
   end if;
-  if v_turn.lease_expires_at is null or v_turn.lease_expires_at <= now() then
+  if v_effective_outcome <> 'cancelled' and (
+    v_turn.lease_expires_at is null or v_turn.lease_expires_at <= now()
+  ) then
     return false;
   end if;
   if v_turn.ai_invocation_id is not null
      and v_turn.ai_invocation_id is distinct from p_ai_invocation_id then
     return false;
   end if;
-  if p_outcome in ('complete', 'partial', 'blocked')
+  if v_effective_outcome in ('complete', 'partial', 'blocked')
      and nullif(trim(coalesce(p_content, '')), '') is null then
     return false;
   end if;
-  if p_outcome = 'cancelled' and v_turn.cancel_requested_at is null then
+  if v_effective_outcome = 'cancelled' and v_turn.cancel_requested_at is null then
     return false;
   end if;
 
@@ -1462,12 +1658,12 @@ begin
       end,
       ai_invocation_id = p_ai_invocation_id,
       metadata = coalesce(p_metadata, '{}'::jsonb)
-        || jsonb_build_object('outcome', p_outcome)
+        || jsonb_build_object('outcome', v_effective_outcome)
   where id = v_turn.assistant_message_id;
 
   update public.ai_chat_turns
   set status = v_terminal_status,
-      outcome = p_outcome,
+      outcome = v_effective_outcome,
       provider_name = p_provider_name,
       ai_invocation_id = p_ai_invocation_id,
       error_code = case
@@ -1502,9 +1698,15 @@ end;
 $$;
 
 revoke all on function public.refresh_ai_chat_turn_lease() from public, anon, authenticated;
+revoke all on function public.ai_hermes_canonical_text_array_sha256(
+  text[]
+) from public, anon, authenticated;
+revoke all on function public.ai_hermes_canonical_uuid_array_sha256(
+  uuid[]
+) from public, anon, authenticated;
 revoke all on function public.issue_ai_hermes_run_capability(
-  text, uuid, uuid, uuid, uuid, uuid, uuid, text, text[], text[], text, text,
-  uuid[], integer, boolean, timestamptz
+  text, uuid, uuid, uuid, uuid, uuid, uuid, text, text[], text, text[], text,
+  text, uuid[], integer, boolean, timestamptz
 ) from public, anon, authenticated;
 revoke all on function public.claim_ai_hermes_broker_call(
   text, text, text, text, text, jsonb
@@ -1538,10 +1740,16 @@ revoke all on function public.finish_ai_chat_turn_v2(
 ) from public, anon, authenticated;
 
 grant execute on function public.issue_ai_hermes_run_capability(
-  text, uuid, uuid, uuid, uuid, uuid, uuid, text, text[], text[], text, text,
-  uuid[], integer, boolean, timestamptz
+  text, uuid, uuid, uuid, uuid, uuid, uuid, text, text[], text, text[], text,
+  text, uuid[], integer, boolean, timestamptz
 ) to service_role;
 grant execute on function public.refresh_ai_chat_turn_lease() to service_role;
+grant execute on function public.ai_hermes_canonical_text_array_sha256(
+  text[]
+) to service_role;
+grant execute on function public.ai_hermes_canonical_uuid_array_sha256(
+  uuid[]
+) to service_role;
 grant execute on function public.claim_ai_hermes_broker_call(
   text, text, text, text, text, jsonb
 ) to service_role;
