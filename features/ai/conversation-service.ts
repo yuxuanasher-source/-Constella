@@ -12,21 +12,31 @@ import type {
 } from "./conversation-contracts";
 import type { AiMessage, AiProviderName } from "./contracts";
 import {
+  cancelAiConversationTurnV2,
+  compareAndSwapAiConversationGatewayState,
   completeAiConversationTurn,
   createAiConversation,
   createAiConversationTurn,
   failAiConversationTurn,
+  finishAiConversationTurnV2,
   getAiConversation,
   getAiConversationTurn,
   listAiConversationMessages,
   listAiConversationTurns,
   listAiConversations,
   renewAiConversationTurnLease,
+  renewAiConversationTurnLeaseV2,
   transitionAiConversationTurn,
   type ConversationRepositoryClient,
   type CreatedConversationTurn,
   type StoredConversationTurn,
 } from "./conversation-repository";
+import {
+  HermesStateRepositoryError,
+  assertHermesSanitizedObject,
+  mapHermesStateRepositoryError,
+} from "./hermes/hermes-state-repository";
+import type { HermesOutcome } from "./hermes/contracts";
 import { hasMeaningfulAiContent } from "./response-quality";
 
 const MAX_SNAPSHOT_VERSION = 2_147_483_647;
@@ -87,6 +97,18 @@ export type ConversationPersistence = {
   renewLease(
     input: Parameters<typeof renewAiConversationTurnLease>[1],
   ): Promise<boolean>;
+  finishTurnV2?(
+    input: Parameters<typeof finishAiConversationTurnV2>[1],
+  ): Promise<void>;
+  cancelTurnV2?(
+    input: Parameters<typeof cancelAiConversationTurnV2>[1],
+  ): ReturnType<typeof cancelAiConversationTurnV2>;
+  renewLeaseV2?(
+    input: Parameters<typeof renewAiConversationTurnLeaseV2>[1],
+  ): Promise<void>;
+  compareAndSwapGatewayState?(
+    input: Parameters<typeof compareAndSwapAiConversationGatewayState>[1],
+  ): Promise<number>;
 };
 
 export class ConversationServiceError extends Error {
@@ -123,6 +145,11 @@ export function createSupabaseConversationPersistence(
     completeTurn: (input) => completeAiConversationTurn(client, input),
     failTurn: (input) => failAiConversationTurn(client, input),
     renewLease: (input) => renewAiConversationTurnLease(client, input),
+    finishTurnV2: (input) => finishAiConversationTurnV2(client, input),
+    cancelTurnV2: (input) => cancelAiConversationTurnV2(client, input),
+    renewLeaseV2: (input) => renewAiConversationTurnLeaseV2(client, input),
+    compareAndSwapGatewayState: (input) =>
+      compareAndSwapAiConversationGatewayState(client, input),
   };
 }
 
@@ -476,6 +503,99 @@ export function createConversationService(
           "turn_state_conflict",
           "Turn lease could not be renewed",
         );
+      }
+    },
+
+    async finishTurnV2(
+      actor: ConversationActor,
+      turnId: string,
+      input: {
+        invocationId: string;
+        outcome: HermesOutcome;
+        content?: string;
+        providerName?: AiProviderName | null;
+        errorCode?: string | null;
+        errorSummary?: string | null;
+        retryable: boolean;
+        metadata?: Record<string, unknown>;
+      },
+    ) {
+      if (
+        ["complete", "partial", "blocked"].includes(input.outcome) &&
+        !hasMeaningfulAiContent(input.content ?? "")
+      ) {
+        throw new HermesStateRepositoryError("invalid_input");
+      }
+      if (!persistence.finishTurnV2) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        await persistence.finishTurnV2({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          turnId,
+          ...input,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async cancelTurn(
+      actor: ConversationActor,
+      conversationId: string,
+      turnId: string,
+    ) {
+      if (!persistence.cancelTurnV2) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        return await persistence.cancelTurnV2({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          conversationId,
+          turnId,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async renewLeaseV2(actor: ConversationActor, turnId: string) {
+      if (!persistence.renewLeaseV2) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        await persistence.renewLeaseV2({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          turnId,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async compareAndSwapGatewayState(
+      actor: ConversationActor,
+      conversationId: string,
+      expectedGeneration: number,
+      nextState: Record<string, unknown>,
+    ) {
+      const sanitizedState = assertHermesSanitizedObject(nextState);
+      if (!persistence.compareAndSwapGatewayState) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        return await persistence.compareAndSwapGatewayState({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          conversationId,
+          expectedGeneration,
+          nextState: sanitizedState,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
       }
     },
   };

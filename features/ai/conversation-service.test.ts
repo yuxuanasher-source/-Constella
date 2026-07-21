@@ -6,6 +6,7 @@ import {
   createConversationService,
   type ConversationPersistence,
 } from "./conversation-service";
+import { HermesStateRepositoryError } from "./hermes/hermes-state-repository";
 import type {
   CreatedConversationTurn,
   StoredConversationTurn,
@@ -38,6 +39,8 @@ function storedTurn(
     retryOfTurnId: null,
     regenerateOfTurnId: null,
     providerName: null,
+    outcome: null,
+    cancelRequestedAt: null,
     errorCode: null,
     errorSummary: null,
     retryable: true,
@@ -60,6 +63,16 @@ function persistence(
     completeTurn: vi.fn().mockResolvedValue(true),
     failTurn: vi.fn().mockResolvedValue(true),
     renewLease: vi.fn().mockResolvedValue(true),
+    finishTurnV2: vi.fn().mockResolvedValue(undefined),
+    cancelTurnV2: vi.fn().mockResolvedValue({
+      turnId: "turn-1",
+      status: "cancelled",
+      outcome: "cancelled",
+      cancelRequested: true,
+      alreadyTerminal: false,
+    }),
+    renewLeaseV2: vi.fn().mockResolvedValue(undefined),
+    compareAndSwapGatewayState: vi.fn().mockResolvedValue(2),
     ...overrides,
   };
 }
@@ -1248,6 +1261,93 @@ describe("Xingyao conversation service", () => {
         }),
       }),
     );
+  });
+
+  it("injects actor ownership into Hermes finish, cancel, lease, and state calls", async () => {
+    const store = persistence();
+    const service = createConversationService(store);
+
+    await service.finishTurnV2(actor, "turn-1", {
+      invocationId: "invocation-1",
+      outcome: "partial",
+      content: "基于部分可用数据。",
+      providerName: "deepseek",
+      errorCode: null,
+      errorSummary: null,
+      retryable: false,
+      metadata: { missingData: ["settlement"] },
+    });
+    expect(store.finishTurnV2).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      turnId: "turn-1",
+      invocationId: "invocation-1",
+      outcome: "partial",
+      content: "基于部分可用数据。",
+      providerName: "deepseek",
+      errorCode: null,
+      errorSummary: null,
+      retryable: false,
+      metadata: { missingData: ["settlement"] },
+    });
+
+    await service.cancelTurn(actor, "conversation-1", "turn-1");
+    expect(store.cancelTurnV2).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+    });
+
+    await service.renewLeaseV2(actor, "turn-1");
+    expect(store.renewLeaseV2).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      turnId: "turn-1",
+    });
+
+    await expect(
+      service.compareAndSwapGatewayState(actor, "conversation-1", 1, {
+        generation: 2,
+        sessionId: "session-1",
+        organizationId: "attacker-org",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(store.compareAndSwapGatewayState).not.toHaveBeenCalled();
+
+    await expect(
+      service.compareAndSwapGatewayState(actor, "conversation-1", 1, {
+        generation: 2,
+        sessionId: "session-1",
+      }),
+    ).resolves.toBe(2);
+    expect(store.compareAndSwapGatewayState).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      expectedGeneration: 1,
+      nextState: { generation: 2, sessionId: "session-1" },
+    });
+  });
+
+  it("normalizes unknown Hermes persistence failures without leaking internals", async () => {
+    const store = persistence({
+      cancelTurnV2: vi
+        .fn()
+        .mockRejectedValue(new Error("cancel_ai_chat_turn SQL failed")),
+    });
+    const service = createConversationService(store);
+
+    const error = await service
+      .cancelTurn(actor, "conversation-1", "turn-1")
+      .then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+    expect(error).toBeInstanceOf(HermesStateRepositoryError);
+    expect(error).toMatchObject({ code: "state_conflict" });
+    expect(String(error)).not.toContain("cancel_ai_chat_turn");
   });
 });
 

@@ -7,16 +7,18 @@ import type {
   ConversationTurnStatus,
 } from "./conversation-contracts";
 import type { AiChatMode, AiProviderName } from "./contracts";
+import {
+  createHermesStateRepository,
+  type HermesTurnCancellation,
+} from "./hermes/hermes-state-repository";
+import { isHermesOutcome, type HermesOutcome } from "./hermes/contracts";
 
 type QueryResult<T> = { data: T | null; error: unknown };
 
 type RepositoryQuery = PromiseLike<QueryResult<unknown>> & {
-  eq(column: string, value: string): RepositoryQuery;
+  eq(column: string, value: unknown): RepositoryQuery;
   in(column: string, values: string[]): RepositoryQuery;
-  order(
-    column: string,
-    options: { ascending: boolean },
-  ): RepositoryQuery;
+  order(column: string, options: { ascending: boolean }): RepositoryQuery;
   limit(count: number): RepositoryQuery;
   select(columns: string): RepositoryQuery;
   single(): PromiseLike<QueryResult<unknown>>;
@@ -70,6 +72,8 @@ export type StoredConversationTurn = {
   retryOfTurnId: string | null;
   regenerateOfTurnId: string | null;
   providerName: AiProviderName | null;
+  outcome?: HermesOutcome | null;
+  cancelRequestedAt?: string | null;
   errorCode: string | null;
   errorSummary: string | null;
   retryable: boolean;
@@ -87,6 +91,8 @@ type TurnRow = {
   retry_of_turn_id: string | null;
   regenerate_of_turn_id: string | null;
   provider_name: AiProviderName | null;
+  outcome?: HermesOutcome | null;
+  cancel_requested_at?: string | null;
   error_code: string | null;
   error_summary: string | null;
   retryable: boolean;
@@ -113,9 +119,7 @@ export async function createAiConversation(
       owner_user_id: input.ownerUserId,
       title: input.title,
     })
-    .select(
-      "id, title, status, last_message_at, created_at, updated_at",
-    )
+    .select("id, title, status, last_message_at, created_at, updated_at")
     .single();
 
   return error || !isConversationRow(data) ? null : toConversationDto(data);
@@ -141,7 +145,11 @@ export async function listAiConversations(
 
 export async function getAiConversation(
   client: ConversationRepositoryClient,
-  input: { organizationId: string; ownerUserId: string; conversationId: string },
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+  },
 ): Promise<AiConversationDto | null> {
   const { data, error } = await client
     .from("ai_conversations")
@@ -213,7 +221,7 @@ export async function getAiConversationTurn(
   const { data, error } = await client
     .from("ai_chat_turns")
     .select(
-      "id, conversation_id, user_message_id, assistant_message_id, mode, status, attempt_no, context_snapshot, retry_of_turn_id, regenerate_of_turn_id, provider_name, error_code, error_summary, retryable",
+      "id, conversation_id, user_message_id, assistant_message_id, mode, status, attempt_no, context_snapshot, retry_of_turn_id, regenerate_of_turn_id, provider_name, outcome, cancel_requested_at, error_code, error_summary, retryable",
     )
     .eq("id", input.turnId)
     .eq("organization_id", input.organizationId)
@@ -235,7 +243,7 @@ export async function listAiConversationTurns(
   const { data, error } = (await client
     .from("ai_chat_turns")
     .select(
-      "id, conversation_id, user_message_id, assistant_message_id, mode, status, attempt_no, context_snapshot, retry_of_turn_id, regenerate_of_turn_id, provider_name, error_code, error_summary, retryable",
+      "id, conversation_id, user_message_id, assistant_message_id, mode, status, attempt_no, context_snapshot, retry_of_turn_id, regenerate_of_turn_id, provider_name, outcome, cancel_requested_at, error_code, error_summary, retryable",
     )
     .eq("conversation_id", input.conversationId)
     .eq("organization_id", input.organizationId)
@@ -270,8 +278,10 @@ export async function transitionAiConversationTurn(
     payload.snapshot_version = input.patch.contextSnapshot.version;
   }
   if (input.patch?.contextHash) payload.context_hash = input.patch.contextHash;
-  if (input.patch?.providerName) payload.provider_name = input.patch.providerName;
-  if (input.patch?.invocationId) payload.ai_invocation_id = input.patch.invocationId;
+  if (input.patch?.providerName)
+    payload.provider_name = input.patch.providerName;
+  if (input.patch?.invocationId)
+    payload.ai_invocation_id = input.patch.invocationId;
   if (input.to === "generating") payload.started_at = new Date().toISOString();
 
   const { data, error } = await client
@@ -339,6 +349,85 @@ export async function renewAiConversationTurnLease(
     p_turn_id: input.turnId,
   });
   return !error && data === true;
+}
+
+export async function finishAiConversationTurnV2(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    turnId: string;
+    invocationId: string;
+    outcome: HermesOutcome;
+    content?: string;
+    providerName?: AiProviderName | null;
+    errorCode?: string | null;
+    errorSummary?: string | null;
+    retryable: boolean;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<void> {
+  await createHermesStateRepository(client).finishTurn(
+    {
+      organizationId: input.organizationId,
+      userId: input.ownerUserId,
+      invocationId: input.invocationId,
+    },
+    input.turnId,
+    {
+      outcome: input.outcome,
+      content: input.content,
+      providerName: input.providerName,
+      errorCode: input.errorCode,
+      errorSummary: input.errorSummary,
+      retryable: input.retryable,
+      metadata: input.metadata,
+    },
+  );
+}
+
+export async function cancelAiConversationTurnV2(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+  },
+): Promise<HermesTurnCancellation> {
+  return createHermesStateRepository(client).cancelTurn(
+    { organizationId: input.organizationId, userId: input.ownerUserId },
+    input.conversationId,
+    input.turnId,
+  );
+}
+
+export async function renewAiConversationTurnLeaseV2(
+  client: ConversationRepositoryClient,
+  input: { organizationId: string; ownerUserId: string; turnId: string },
+): Promise<void> {
+  await createHermesStateRepository(client).renewTurnLease(
+    { organizationId: input.organizationId, userId: input.ownerUserId },
+    input.turnId,
+  );
+}
+
+export async function compareAndSwapAiConversationGatewayState(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    expectedGeneration: number;
+    nextState: Record<string, unknown>;
+  },
+): Promise<number> {
+  return createHermesStateRepository(client).compareAndSwapGatewayState(
+    { organizationId: input.organizationId, userId: input.ownerUserId },
+    input.conversationId,
+    input.expectedGeneration,
+    input.nextState,
+  );
 }
 
 async function finishAiConversationTurn(
@@ -412,6 +501,12 @@ function toStoredTurn(row: TurnRow): StoredConversationTurn {
     retryOfTurnId: row.retry_of_turn_id,
     regenerateOfTurnId: row.regenerate_of_turn_id,
     providerName: row.provider_name,
+    outcome: isHermesOutcome(row.outcome) ? row.outcome : null,
+    cancelRequestedAt:
+      typeof row.cancel_requested_at === "string" &&
+      row.cancel_requested_at.trim()
+        ? row.cancel_requested_at
+        : null,
     errorCode: row.error_code,
     errorSummary: row.error_summary,
     retryable: row.retryable,
@@ -485,6 +580,12 @@ function isTurnRow(value: unknown): value is TurnRow {
     (value.mode === "fast" || value.mode === "deep") &&
     stringValue(value.status) !== null &&
     numberValue(value.attempt_no) !== null &&
+    (value.outcome === undefined ||
+      value.outcome === null ||
+      isHermesOutcome(value.outcome)) &&
+    (value.cancel_requested_at === undefined ||
+      value.cancel_requested_at === null ||
+      stringValue(value.cancel_requested_at) !== null) &&
     typeof value.retryable === "boolean"
   );
 }
