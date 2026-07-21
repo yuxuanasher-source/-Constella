@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
 import {
-  HERMES_KERNEL_ID,
-  HERMES_PROFILE_VERSION,
+  LEGACY_HERMES_KERNEL_ID,
+  LEGACY_HERMES_PROFILE_VERSION,
 } from "@/features/ai/hermes/contracts";
 import { getAllowedReadScopesForRole } from "@/features/ai/hermes/read-scopes";
 import {
@@ -38,8 +38,8 @@ export async function GET() {
   return NextResponse.json(
     {
       assistant: "xingyao-ai",
-      kernelId: HERMES_KERNEL_ID,
-      profileVersion: HERMES_PROFILE_VERSION,
+      kernelId: LEGACY_HERMES_KERNEL_ID,
+      profileVersion: LEGACY_HERMES_PROFILE_VERSION,
       organizationId: auth.organizationId,
       userId: auth.userId,
       role: auth.role,

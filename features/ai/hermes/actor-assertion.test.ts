@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  HERMES_ASSERTION_PROFILE_VERSION,
   signHermesActorAssertion,
   verifyHermesActorAssertion,
 } from "./actor-assertion";
@@ -9,6 +10,9 @@ import type { HermesActorProfile } from "./contracts";
 
 describe("Hermes actor assertion", () => {
   it("signs and verifies an RS256 actor assertion with a configured key and kid", async () => {
+    expect(HERMES_ASSERTION_PROFILE_VERSION).toBe(
+      "hermes-xingyao-v1+skills.c1755ec71e802748",
+    );
     const keys = rsaKeyPair();
     const token = await signHermesActorAssertion(PROFILE, {
       privateKeyPem: keys.privateKeyPem,
@@ -70,6 +74,15 @@ describe("Hermes actor assertion", () => {
           ...PROFILE,
           userName: "client injected",
         } as unknown as HermesActorProfile,
+        {
+          privateKeyPem: keys.privateKeyPem,
+          kid: "test-key-1",
+        },
+      ),
+    ).rejects.toThrow("actor profile");
+    await expect(
+      signHermesActorAssertion(
+        { ...PROFILE, profileVersion: "custom" },
         {
           privateKeyPem: keys.privateKeyPem,
           kid: "test-key-1",

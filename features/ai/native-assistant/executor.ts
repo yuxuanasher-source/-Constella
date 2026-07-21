@@ -9,6 +9,7 @@ import type {
   AiProviderName,
 } from "@/features/ai/contracts";
 import { recordAiInvocation } from "@/features/ai/invocation-ledger";
+import { LEGACY_HERMES_KERNEL_ID } from "@/features/ai/hermes/contracts";
 import {
   createHermesActorAssertionForRun,
   getHermesRunEventResponse,
@@ -60,6 +61,7 @@ export async function executeNativeHermesAssistant(
     stream?: unknown;
     pageContext?: unknown;
   };
+  const mode = sanitizeChatMode(body.mode);
   const messages = sanitizeMessages(body.messages);
   const lastUserMessage = latestUserMessage(messages);
   if (!lastUserMessage) {
@@ -79,6 +81,7 @@ export async function executeNativeHermesAssistant(
     invocationId,
     clientRequest: {
       message: lastUserMessage,
+      mode,
       pageContext: body.pageContext,
       attachmentIds: [],
     },
@@ -90,7 +93,6 @@ export async function executeNativeHermesAssistant(
   const history = conversationHistoryBeforeLatestUser(messages);
   const gatewayContext = buildGatewayContext({
     messages,
-    mode: sanitizeChatMode(body.mode),
     lastUserMessage,
     nativeContext,
   });
@@ -367,7 +369,7 @@ async function recordNativeInvocation({
       latencyMs: result.latencyMs,
       errorSummary,
       metadata: {
-        kernel: "hermes-agent-fork",
+        kernel: LEGACY_HERMES_KERNEL_ID,
         mode,
         runId,
         sessionId,
@@ -380,19 +382,17 @@ async function recordNativeInvocation({
 
 function buildGatewayContext({
   messages,
-  mode,
   lastUserMessage,
   nativeContext,
 }: {
   messages: AiMessage[];
-  mode: AiChatMode;
   lastUserMessage: string;
   nativeContext: NonNullable<ReturnType<typeof buildNativeAssistantContext>>;
 }): ConversationGatewayContext {
   return {
     messages,
     attachments: [],
-    mode,
+    mode: nativeContext.mode,
     primaryProvider: "hermes",
     lastUserMessage,
     responseMetadata: {
@@ -415,7 +415,7 @@ function buildGatewayContext({
 function nativeGrounding(runId: string, sessionId: string): Record<string, unknown> {
   return {
     assistant: "xingyao-ai",
-    kernel: "hermes-agent-fork",
+    kernel: LEGACY_HERMES_KERNEL_ID,
     runId,
     sessionId,
   };

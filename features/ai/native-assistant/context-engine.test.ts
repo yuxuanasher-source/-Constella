@@ -4,21 +4,21 @@ import { computeHermesSkillGrantsHash } from "../hermes/actor-fingerprint";
 import { buildNativeAssistantContext } from "./context-engine";
 
 describe("native assistant context engine", () => {
-  it("derives actor identity from server auth and computes role read scopes", () => {
+  it("defaults to the Legacy runtime identity", () => {
     const context = buildNativeAssistantContext({
-        auth: {
-          userId: USER_ID,
-          organizationId: ORG_ID,
-          role: "finance",
-        },
-        conversationId: CONVERSATION_ID,
-        invocationId: INVOCATION_ID,
-        clientRequest: {
-          message: "check settlement risk",
-          pageContext: { pageType: "finance_batch", objectIds: [BATCH_ID] },
-          attachmentIds: ["attachment-1"],
-        },
-      });
+      auth: {
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        role: "finance",
+      },
+      conversationId: CONVERSATION_ID,
+      invocationId: INVOCATION_ID,
+      clientRequest: {
+        message: "check settlement risk",
+        pageContext: { pageType: "finance_batch", objectIds: [BATCH_ID] },
+        attachmentIds: ["attachment-1"],
+      },
+    });
 
     expect(context).toMatchObject({
       assistant: {
@@ -26,6 +26,7 @@ describe("native assistant context engine", () => {
         kernelId: "hermes-agent-fork",
       },
       message: "check settlement risk",
+      mode: "fast",
       pageContext: { pageType: "finance_batch", objectIds: [BATCH_ID] },
       attachmentIds: ["attachment-1"],
       actor: {
@@ -50,12 +51,41 @@ describe("native assistant context engine", () => {
       },
       skillAudit: {
         type: "hermes.skill_grants.evaluated",
+        profileVersion: "hermes-xingyao-v1+skills.c1755ec71e802748",
         enabledSkillIds: ["business-context", "settlement-analysis"],
       },
     });
     expect(context?.actor.skillGrantsHash).toBe(
       computeHermesSkillGrantsHash(context?.actor.enabledSkillVersions ?? []),
     );
+  });
+
+  it("selects Gateway v2 only when explicitly requested", () => {
+    const context = buildNativeAssistantContext({
+      auth: {
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        role: "finance",
+      },
+      conversationId: CONVERSATION_ID,
+      invocationId: INVOCATION_ID,
+      runtime: "gateway",
+      clientRequest: {
+        message: "deep settlement review",
+        mode: "deep",
+      },
+    });
+
+    expect(context).toMatchObject({
+      assistant: {
+        displayName: "星耀 AI",
+        kernelId: "hermes-agent-official-gateway",
+      },
+      mode: "deep",
+      actor: {
+        profileVersion: "hermes-xingyao-v2",
+      },
+    });
   });
 
   it("fails closed for unknown server roles", () => {

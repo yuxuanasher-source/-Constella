@@ -1,6 +1,9 @@
 export const HERMES_KERNEL_ID = "hermes-agent-official-gateway";
 export const HERMES_PROTOCOL_VERSION = "xingyao-hermes-gateway-v2";
 export const HERMES_PROFILE_VERSION = "hermes-xingyao-v2";
+export const LEGACY_HERMES_KERNEL_ID = "hermes-agent-fork";
+export const LEGACY_HERMES_PROFILE_VERSION =
+  "hermes-xingyao-v1+skills.c1755ec71e802748";
 export const HERMES_UPSTREAM_TAG = "v2026.7.20";
 export const HERMES_UPSTREAM_COMMIT =
   "3ef6bbd201263d354fd83ec55b3c306ded2eb72a";
@@ -45,6 +48,9 @@ export const HERMES_OUTCOMES = [
 ] as const;
 
 export type HermesOutcome = (typeof HERMES_OUTCOMES)[number];
+export type HermesProfileVersion =
+  | typeof HERMES_PROFILE_VERSION
+  | typeof LEGACY_HERMES_PROFILE_VERSION;
 
 export const HERMES_AUTH_ROLES = [
   "owner",
@@ -126,6 +132,25 @@ const PAGE_TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 export function isHermesActorProfile(
   value: unknown,
 ): value is HermesActorProfile {
+  return isHermesActorProfileForVersion(value, HERMES_PROFILE_VERSION);
+}
+
+export function isLegacyHermesActorProfile(
+  value: unknown,
+): value is HermesActorProfile {
+  return isHermesActorProfileForVersion(value, LEGACY_HERMES_PROFILE_VERSION);
+}
+
+export function isKnownHermesActorProfile(
+  value: unknown,
+): value is HermesActorProfile {
+  return isHermesActorProfile(value) || isLegacyHermesActorProfile(value);
+}
+
+function isHermesActorProfileForVersion(
+  value: unknown,
+  profileVersion: HermesProfileVersion,
+): value is HermesActorProfile {
   if (!isRecord(value) || !hasExactKeys(value, ACTOR_PROFILE_KEYS)) {
     return false;
   }
@@ -139,7 +164,7 @@ export function isHermesActorProfile(
     isReadScopeArray(value.allowedReadScopes) &&
     isHermesSkillGrantArray(value.enabledSkillVersions) &&
     isSha256(value.skillGrantsHash) &&
-    value.profileVersion === HERMES_PROFILE_VERSION &&
+    value.profileVersion === profileVersion &&
     isHermesActorPageContext(value.pageContext)
   );
 }

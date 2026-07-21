@@ -1,5 +1,5 @@
 import {
-  HERMES_PROFILE_VERSION,
+  LEGACY_HERMES_PROFILE_VERSION,
   type HermesActorProfile,
 } from "./contracts";
 import { signHermesActorAssertion } from "./actor-assertion";
@@ -115,7 +115,7 @@ export async function startHermesRun({
       input,
       conversationHistory,
       ...(sessionId ? { sessionId } : {}),
-      profileVersion: HERMES_PROFILE_VERSION,
+      profileVersion: LEGACY_HERMES_PROFILE_VERSION,
     }),
   });
   const payload = await readJson(response);

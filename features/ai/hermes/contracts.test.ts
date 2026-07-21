@@ -9,8 +9,12 @@ import {
   HERMES_OUTCOMES,
   HERMES_PROFILE_VERSION,
   HERMES_PROTOCOL_VERSION,
+  LEGACY_HERMES_KERNEL_ID,
+  LEGACY_HERMES_PROFILE_VERSION,
   XINGYAO_PRODUCT_ISSUER,
   isHermesActorProfile,
+  isKnownHermesActorProfile,
+  isLegacyHermesActorProfile,
   isHermesOutcome,
 } from "./contracts";
 
@@ -25,6 +29,10 @@ describe("Hermes internal contracts", () => {
       "f7a47f72f5f2c5d93f3f8510b5b744f59c8937508b32c75d6556484a19d8a5e7",
     );
     expect(HERMES_PROFILE_VERSION).toBe("hermes-xingyao-v2");
+    expect(LEGACY_HERMES_KERNEL_ID).toBe("hermes-agent-fork");
+    expect(LEGACY_HERMES_PROFILE_VERSION).toBe(
+      "hermes-xingyao-v1+skills.c1755ec71e802748",
+    );
     expect(HERMES_MODE_BUDGETS.fast).toEqual({
       maxIterations: 24,
       wallClockMs: 90_000,
@@ -79,6 +87,18 @@ describe("Hermes internal contracts", () => {
     ).toBe(false);
     expect(
       isHermesActorProfile({ ...profile, skillGrantsHash: "not-a-sha256" }),
+    ).toBe(false);
+
+    const legacyProfile = {
+      ...profile,
+      profileVersion: "hermes-xingyao-v1+skills.c1755ec71e802748",
+    };
+    expect(isHermesActorProfile(legacyProfile)).toBe(false);
+    expect(isLegacyHermesActorProfile(legacyProfile)).toBe(true);
+    expect(isKnownHermesActorProfile(profile)).toBe(true);
+    expect(isKnownHermesActorProfile(legacyProfile)).toBe(true);
+    expect(
+      isKnownHermesActorProfile({ ...profile, profileVersion: "custom" }),
     ).toBe(false);
   });
 

@@ -1,5 +1,6 @@
 import {
   HERMES_KERNEL_ID,
+  LEGACY_HERMES_KERNEL_ID,
   isHermesMode,
   type HermesActorProfile,
   type HermesMode,
@@ -12,6 +13,11 @@ import {
 export const NATIVE_XINGYAO_ASSISTANT = {
   displayName: "星耀 AI",
   kernelId: HERMES_KERNEL_ID,
+} as const;
+
+export const LEGACY_XINGYAO_ASSISTANT = {
+  displayName: "星耀 AI",
+  kernelId: LEGACY_HERMES_KERNEL_ID,
 } as const;
 
 export type NativeAssistantClientRequest = {

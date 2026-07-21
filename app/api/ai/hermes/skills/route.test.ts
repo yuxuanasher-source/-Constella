@@ -34,6 +34,7 @@ describe("GET /api/ai/hermes/skills", () => {
     expect(body).toMatchObject({
       assistant: "xingyao-ai",
       kernelId: "hermes-agent-fork",
+      profileVersion: "hermes-xingyao-v1+skills.c1755ec71e802748",
       role: "finance",
       enabledSkillIds: ["business-context", "settlement-analysis"],
     });

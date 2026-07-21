@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  LEGACY_XINGYAO_ASSISTANT,
   NATIVE_XINGYAO_ASSISTANT,
   parseNativeAssistantClientRequest,
 } from "./contracts";
@@ -10,6 +11,10 @@ describe("native Xingyao assistant contract", () => {
     expect(NATIVE_XINGYAO_ASSISTANT).toEqual({
       displayName: "星耀 AI",
       kernelId: "hermes-agent-official-gateway",
+    });
+    expect(LEGACY_XINGYAO_ASSISTANT).toEqual({
+      displayName: "星耀 AI",
+      kernelId: "hermes-agent-fork",
     });
   });
 

@@ -8,9 +8,9 @@ import {
 
 import {
   HERMES_AUDIENCE,
-  HERMES_PROFILE_VERSION,
+  LEGACY_HERMES_PROFILE_VERSION,
   XINGYAO_PRODUCT_ISSUER,
-  isHermesActorProfile,
+  isKnownHermesActorProfile,
   type HermesActorProfile,
 } from "./contracts";
 import {
@@ -36,7 +36,7 @@ export async function signHermesActorAssertion(
   options: SignOptions,
 ): Promise<string> {
   if (
-    !isHermesActorProfile(actor) ||
+    !isKnownHermesActorProfile(actor) ||
     actor.skillGrantsHash !== computeHermesSkillGrantsHash(actor.enabledSkillVersions)
   ) {
     throw new Error("invalid Hermes actor profile");
@@ -157,7 +157,8 @@ function toRuntimeUint8Array(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value));
 }
 
-export const HERMES_ASSERTION_PROFILE_VERSION = HERMES_PROFILE_VERSION;
+export const HERMES_ASSERTION_PROFILE_VERSION =
+  LEGACY_HERMES_PROFILE_VERSION;
 
 const ASSERTION_CLAIM_KEYS = [
   "allowedReadScopes",
@@ -193,7 +194,7 @@ function actorProfileFromClaims(
     pageContext: payload.pageContext,
   };
 
-  return isHermesActorProfile(actor) &&
+  return isKnownHermesActorProfile(actor) &&
     payload.invocationId === actor.invocationId &&
     actor.skillGrantsHash === computeHermesSkillGrantsHash(actor.enabledSkillVersions)
     ? actor
