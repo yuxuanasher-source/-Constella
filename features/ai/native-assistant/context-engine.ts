@@ -85,11 +85,10 @@ export function buildNativeAssistantContext(
     pageContext: clientRequest.pageContext ?? { pageType: "global", objectIds: [] },
   };
 
-  if (
-    useGateway
-      ? !isHermesActorProfile(actor)
-      : !isLegacyHermesActorProfile(actor)
-  ) {
+  const isExpectedActorProfile = useGateway
+    ? isHermesActorProfile
+    : isLegacyHermesActorProfile;
+  if (!isExpectedActorProfile(actor)) {
     return null;
   }
 
