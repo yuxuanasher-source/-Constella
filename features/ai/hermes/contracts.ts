@@ -6,6 +6,8 @@ export const HERMES_UPSTREAM_COMMIT =
   "3ef6bbd201263d354fd83ec55b3c306ded2eb72a";
 export const HERMES_BUILTIN_SKILLS_SHA256 =
   "c1755ec71e802748d518c2a27c81d429c95f8e31b1b82ab77d966e60469c9239";
+export const HERMES_CAPABILITY_MANIFEST_SHA256 =
+  "f7a47f72f5f2c5d93f3f8510b5b744f59c8937508b32c75d6556484a19d8a5e7";
 export const XINGYAO_PRODUCT_ISSUER = "xingyao-product";
 export const HERMES_AUDIENCE = "xingyao-hermes-agent";
 

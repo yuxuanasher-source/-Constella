@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  HERMES_CAPABILITY_MANIFEST_SHA256,
   HERMES_PROFILE_VERSION,
   HERMES_PROTOCOL_VERSION,
   HERMES_UPSTREAM_COMMIT,
@@ -17,11 +18,14 @@ describe("Hermes Gateway v2 runtime contracts", () => {
     expect(parseHermesGatewayHealth(HEALTH)).toEqual(HEALTH);
 
     for (const drift of [
+      { status: "starting" },
+      { upstreamTag: "v2026.7.21" },
       { protocolVersion: "xingyao-hermes-gateway-v3" },
       { profileVersion: "hermes-xingyao-v1" },
       { upstreamCommit: "b".repeat(40) },
       { upstreamCommit: HERMES_UPSTREAM_COMMIT.slice(0, 39) },
       { forkCommit: "not-a-full-commit" },
+      { capabilityManifestSha256: "a".repeat(64) },
       { capabilityManifestSha256: "not-a-sha256" },
     ]) {
       expect(parseHermesGatewayHealth({ ...HEALTH, ...drift })).toBeNull();
@@ -195,6 +199,16 @@ describe("Hermes Gateway v2 runtime contracts", () => {
         message: "Completed with missing settlement evidence",
         metadata: { ...metadata, missingData: ["settlement export"] },
       }),
+      event("turn.terminal", {
+        outcome: "failed",
+        message: "Gateway execution failed",
+        metadata,
+      }),
+      event("turn.terminal", {
+        outcome: "cancelled",
+        message: "User cancelled the turn",
+        metadata,
+      }),
     ];
 
     for (const value of events) {
@@ -213,6 +227,32 @@ describe("Hermes Gateway v2 runtime contracts", () => {
       metadata: EMPTY_METADATA,
     });
     expect(parseHermesGatewayEvent(terminal)).toBeNull();
+
+    expect(
+      parseHermesGatewayEvent(
+        event("turn.terminal", {
+          outcome: "failed",
+          message: "Invalid observation timestamp",
+          metadata: { ...EMPTY_METADATA, updatedAt: "not-a-timestamp" },
+        }),
+      ),
+    ).toBeNull();
+
+    const sequenced = event("message.delta", { text: "hello" });
+    for (const sequence of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(
+        parseHermesGatewayEvent({
+          ...sequenced,
+          params: { ...sequenced.params, sequence },
+        }),
+      ).toBeNull();
+    }
+
+    expect(
+      parseHermesGatewayEvent(
+        event("message.delta", { text: "hello", extra: "forbidden" }),
+      ),
+    ).toBeNull();
 
     const delta = event("message.delta", { text: "hello" });
     expect(
@@ -255,7 +295,7 @@ const HEALTH = {
   protocolVersion: HERMES_PROTOCOL_VERSION,
   profileVersion: HERMES_PROFILE_VERSION,
   capabilityManifestSha256:
-    "f7a47f72f5f2c5d93f3f8510b5b744f59c8937508b32c75d6556484a19d8a5e7",
+    HERMES_CAPABILITY_MANIFEST_SHA256,
 } as const;
 
 const EMPTY_METADATA = {

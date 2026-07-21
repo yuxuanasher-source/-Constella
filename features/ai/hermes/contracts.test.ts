@@ -3,6 +3,7 @@
 import {
   HERMES_AUDIENCE,
   HERMES_BUILTIN_SKILLS_SHA256,
+  HERMES_CAPABILITY_MANIFEST_SHA256,
   HERMES_KERNEL_ID,
   HERMES_MODE_BUDGETS,
   HERMES_OUTCOMES,
@@ -19,6 +20,9 @@ describe("Hermes internal contracts", () => {
     expect(HERMES_PROTOCOL_VERSION).toBe("xingyao-hermes-gateway-v2");
     expect(HERMES_BUILTIN_SKILLS_SHA256).toBe(
       "c1755ec71e802748d518c2a27c81d429c95f8e31b1b82ab77d966e60469c9239",
+    );
+    expect(HERMES_CAPABILITY_MANIFEST_SHA256).toBe(
+      "f7a47f72f5f2c5d93f3f8510b5b744f59c8937508b32c75d6556484a19d8a5e7",
     );
     expect(HERMES_PROFILE_VERSION).toBe("hermes-xingyao-v2");
     expect(HERMES_MODE_BUDGETS.fast).toEqual({

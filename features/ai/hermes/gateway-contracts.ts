@@ -1,4 +1,5 @@
 import {
+  HERMES_CAPABILITY_MANIFEST_SHA256,
   HERMES_PROFILE_VERSION,
   HERMES_PROTOCOL_VERSION,
   HERMES_UPSTREAM_COMMIT,
@@ -6,7 +7,6 @@ import {
   hasExactKeys,
   isHermesMode,
   isHermesOutcome,
-  isSha256,
   isUuid,
   type HermesMode,
   type HermesOutcome,
@@ -52,7 +52,7 @@ export type HermesGatewayHealth = {
   forkCommit: string;
   protocolVersion: typeof HERMES_PROTOCOL_VERSION;
   profileVersion: typeof HERMES_PROFILE_VERSION;
-  capabilityManifestSha256: string;
+  capabilityManifestSha256: typeof HERMES_CAPABILITY_MANIFEST_SHA256;
 };
 
 export type HermesToolResultMetadata = {
@@ -262,7 +262,7 @@ export function parseHermesGatewayHealth(
     !isGitCommit(value.forkCommit) ||
     value.protocolVersion !== HERMES_PROTOCOL_VERSION ||
     value.profileVersion !== HERMES_PROFILE_VERSION ||
-    !isSha256(value.capabilityManifestSha256)
+    value.capabilityManifestSha256 !== HERMES_CAPABILITY_MANIFEST_SHA256
   ) {
     return null;
   }
@@ -315,7 +315,7 @@ export function parseHermesGatewayEvent(
     !hasExactKeys(value.params, SESSION_EVENT_KEYS) ||
     !isSessionId(value.params.sessionId) ||
     !isUuid(value.params.invocationId) ||
-    !isNonNegativeInteger(value.params.sequence) ||
+    !isNonNegativeSafeInteger(value.params.sequence) ||
     !isRecord(value.params.payload) ||
     !isEventPayload(value.params.type, value.params.payload)
   ) {
@@ -711,8 +711,8 @@ function isBoundedToken(value: unknown, maxLength: number): value is string {
   );
 }
 
-function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function isOneOf(value: unknown, allowed: readonly string[]): value is string {
