@@ -264,7 +264,7 @@ export function createHermesStateRepository(
       if (
         !Number.isInteger(binding.depth) ||
         binding.depth < 0 ||
-        binding.depth > 3
+        binding.depth > 2
       ) {
         invalidInput();
       }

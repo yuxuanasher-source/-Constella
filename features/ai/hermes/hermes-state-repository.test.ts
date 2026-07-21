@@ -189,6 +189,26 @@ describe("Hermes state repository", () => {
     expect(JSON.stringify(calls)).not.toContain("actor-jws-secret");
   });
 
+  it("rejects capability depth 3 before calling the database", async () => {
+    const { client, rpc } = rpcClient({
+      data: {
+        capability_id: CAPABILITY_ID,
+        expires_at: "2026-07-22T05:05:00.000Z",
+      },
+      error: null,
+    });
+
+    await expect(
+      createHermesStateRepository(client).issueRunCapability(
+        actorSnapshot,
+        { id: TURN_ID, conversationId: CONVERSATION_ID },
+        { ...capabilityBinding, depth: 3 },
+        new Date("2026-07-22T05:05:00.000Z"),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it("claims and completes broker calls with claim ownership and fencing", async () => {
     const claimClient = rpcClient({
       data: {

@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createHermesActorFingerprint } from "./actor-fingerprint";
 import { HERMES_PROFILE_VERSION, type HermesActorProfile } from "./contracts";
 import { HermesStateRepositoryError } from "./hermes-state-repository";
+import { HermesLiveActorAuthorizationError } from "./live-actor-authorization";
 import {
   deriveHermesChildRunCapability,
   issueHermesRootRunCapability,
@@ -307,6 +308,30 @@ describe("Hermes run capabilities", () => {
         actor: parent.actor,
         childInvocationId: CHILD_INVOCATION_ID,
       });
+    },
+  );
+
+  it.each([
+    ["membership_query_failed", "persistence_failed"],
+    ["membership_inactive", "actor_changed"],
+  ] as const)(
+    "maps live actor %s to %s",
+    async (authorizationCode, expectedCode) => {
+      const dependencies = derivationDependencies(parentCapability(), 0);
+      dependencies.reauthorizeActor.mockRejectedValue(
+        new HermesLiveActorAuthorizationError(authorizationCode),
+      );
+
+      await expect(
+        deriveHermesChildRunCapability({
+          parentCapabilityToken: "p".repeat(43),
+          request: derivationRequest(),
+          dependencies,
+          now: NOW,
+        }),
+      ).rejects.toMatchObject({ code: expectedCode });
+      expect(dependencies.countActiveChildren).not.toHaveBeenCalled();
+      expect(dependencies.createChildInvocation).not.toHaveBeenCalled();
     },
   );
 

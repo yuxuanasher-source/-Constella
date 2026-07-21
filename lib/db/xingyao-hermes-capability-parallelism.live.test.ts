@@ -10,7 +10,7 @@ const LIVE_ENABLED =
 
 describe("Hermes capability parallelism", () => {
   it.runIf(LIVE_ENABLED)(
-    "atomically caps concurrent descendants across different parents per turn",
+    "enforces mode depth and reuses run-wide slots after child completion",
     async () => {
       const client = createLiveClient();
       const suffix = randomUUID();
@@ -111,12 +111,23 @@ async function assertRunWideModeLimit(
   const turnId = recordString(turn.data, "turn_id");
   const rootInvocationId = randomUUID();
   const seedInvocationId = randomUUID();
+  const depthTwoInvocationId = input.mode === "deep" ? randomUUID() : null;
+  const overDepthInvocationId = randomUUID();
+  const replacementInvocationId = randomUUID();
   const attemptedChildren = input.mode === "fast" ? 2 : 4;
   const childInvocationIds = Array.from({ length: attemptedChildren }, () =>
     randomUUID(),
   );
+  const allInvocationIds = [
+    rootInvocationId,
+    seedInvocationId,
+    ...(depthTwoInvocationId ? [depthTwoInvocationId] : []),
+    overDepthInvocationId,
+    replacementInvocationId,
+    ...childInvocationIds,
+  ];
   const invocations = await client.from("ai_invocations").insert(
-    [rootInvocationId, seedInvocationId, ...childInvocationIds].map((id) => ({
+    allInvocationIds.map((id) => ({
       id,
       organization_id: input.organizationId,
       actor_user_id: input.userId,
@@ -169,8 +180,47 @@ async function assertRunWideModeLimit(
   });
   expect(seed.error).toBeNull();
 
+  let deepestParentInvocationId = seedInvocationId;
+  let deepestParentTokenSha256 = seedTokenSha256;
+  if (input.mode === "deep" && depthTwoInvocationId) {
+    const depthTwoTokenSha256 = sha256(`depth-two:${input.suffix}`);
+    const depthTwo = await issueCapability(client, {
+      tokenSha256: depthTwoTokenSha256,
+      organizationId: input.organizationId,
+      userId: input.userId,
+      conversationId,
+      turnId,
+      invocationId: depthTwoInvocationId,
+      parentInvocationId: seedInvocationId,
+      parentTokenSha256: seedTokenSha256,
+      actorFingerprint,
+      depth: 2,
+      expiresAt,
+      emptyArrayHash,
+    });
+    expect(depthTwo.error).toBeNull();
+    deepestParentInvocationId = depthTwoInvocationId;
+    deepestParentTokenSha256 = depthTwoTokenSha256;
+  }
+
+  const overDepth = await issueCapability(client, {
+    tokenSha256: sha256(`over-depth:${input.mode}:${input.suffix}`),
+    organizationId: input.organizationId,
+    userId: input.userId,
+    conversationId,
+    turnId,
+    invocationId: overDepthInvocationId,
+    parentInvocationId: deepestParentInvocationId,
+    parentTokenSha256: deepestParentTokenSha256,
+    actorFingerprint,
+    depth: input.mode === "fast" ? 2 : 3,
+    expiresAt,
+    emptyArrayHash,
+  });
+  expect(overDepth.error?.message).toContain("capability_depth_limit");
+
   const attempts = childInvocationIds.map((childInvocationId, index) => {
-    const deriveFromSeed = input.mode === "fast" ? index === 1 : index >= 2;
+    const deriveFromSeed = input.mode === "deep" && index >= 2;
     return {
       childInvocationId,
       parentInvocationId: deriveFromSeed ? seedInvocationId : rootInvocationId,
@@ -203,7 +253,7 @@ async function assertRunWideModeLimit(
 
   const successes = results.filter((result) => result.error === null);
   const failures = results.filter((result) => result.error !== null);
-  const expectedSuccesses = input.mode === "fast" ? 0 : 2;
+  const expectedSuccesses = input.mode === "fast" ? 0 : 1;
   const expectedActiveSubagents = input.mode === "fast" ? 1 : 3;
   expect(successes).toHaveLength(expectedSuccesses);
   expect(failures).toHaveLength(attemptedChildren - expectedSuccesses);
@@ -211,15 +261,67 @@ async function assertRunWideModeLimit(
     expect(failure.error?.message).toContain("capability_parallel_limit");
   }
 
-  const activeSubagents = await client
+  await expect(countActiveSubagents(client, turnId)).resolves.toBe(
+    expectedActiveSubagents,
+  );
+
+  const terminalStatus = input.mode === "fast" ? "succeeded" : "failed";
+  const completion = await client
+    .from("ai_invocations")
+    .update({
+      status: terminalStatus,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", seedInvocationId)
+    .eq("organization_id", input.organizationId)
+    .eq("actor_user_id", input.userId);
+  expect(completion.error).toBeNull();
+
+  const replacement = await issueCapability(client, {
+    tokenSha256: sha256(`replacement:${input.mode}:${input.suffix}`),
+    organizationId: input.organizationId,
+    userId: input.userId,
+    conversationId,
+    turnId,
+    invocationId: replacementInvocationId,
+    parentInvocationId: rootInvocationId,
+    parentTokenSha256: rootTokenSha256,
+    actorFingerprint,
+    depth: 1,
+    expiresAt,
+    emptyArrayHash,
+  });
+  expect(replacement.error).toBeNull();
+  await expect(countActiveSubagents(client, turnId)).resolves.toBe(
+    expectedActiveSubagents,
+  );
+}
+
+async function countActiveSubagents(
+  client: SupabaseClient,
+  turnId: string,
+): Promise<number> {
+  const capabilities = await client
     .from("ai_hermes_run_capabilities")
-    .select("id", { count: "exact", head: true })
+    .select("invocation_id")
     .eq("turn_id", turnId)
     .gt("depth", 0)
     .is("revoked_at", null)
     .gt("expires_at", new Date().toISOString());
-  expect(activeSubagents.error).toBeNull();
-  expect(activeSubagents.count).toBe(expectedActiveSubagents);
+  expect(capabilities.error).toBeNull();
+  const invocationIds = (capabilities.data ?? []).map(
+    (capability) => capability.invocation_id,
+  );
+  if (invocationIds.length === 0) return 0;
+
+  const invocations = await client
+    .from("ai_invocations")
+    .select("id, status")
+    .in("id", invocationIds);
+  expect(invocations.error).toBeNull();
+  return (invocations.data ?? []).filter((invocation) =>
+    ["started", "queued"].includes(invocation.status),
+  ).length;
 }
 
 function issueCapability(

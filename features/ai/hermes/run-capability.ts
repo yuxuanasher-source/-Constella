@@ -18,6 +18,7 @@ import {
   computeHermesSkillGrantsHash,
   createHermesActorFingerprint,
 } from "./actor-fingerprint";
+import { HermesLiveActorAuthorizationError } from "./live-actor-authorization";
 
 const CAPABILITY_BYTES = 32;
 const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -245,7 +246,13 @@ export async function deriveHermesChildRunCapability({
       actorSnapshot: parent.actor,
       expectedActorFingerprint: parent.actorFingerprint,
     });
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof HermesLiveActorAuthorizationError &&
+      error.code === "membership_query_failed"
+    ) {
+      throw new HermesRunCapabilityError("persistence_failed");
+    }
     throw new HermesRunCapabilityError("actor_changed");
   }
   if (

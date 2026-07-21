@@ -315,7 +315,7 @@ create table public.ai_hermes_run_capabilities (
     skill_grants_hash ~ '^[0-9a-f]{64}$'
   ),
   constraint ai_hermes_run_capabilities_depth_check check (
-    depth >= 0 and depth <= 3
+    depth >= 0 and depth <= 2
   ),
   constraint ai_hermes_run_capabilities_parent_check check (
     (depth = 0 and root_invocation_id = invocation_id and parent_capability_id is null and parent_invocation_id is null)
@@ -410,6 +410,20 @@ begin
       and turn.ai_invocation_id = new.root_invocation_id
   ) then
     raise exception 'hermes_capability_identity_invalid';
+  end if;
+  if exists (
+    select 1
+    from public.ai_chat_turns turn
+    where turn.id = new.turn_id
+      and turn.organization_id = new.organization_id
+      and turn.owner_user_id = new.owner_user_id
+      and turn.conversation_id = new.conversation_id
+      and (
+        (turn.mode = 'fast' and new.depth > 1)
+        or (turn.mode = 'deep' and new.depth > 2)
+      )
+  ) then
+    raise exception 'capability_depth_limit';
   end if;
   if not exists (
     select 1
@@ -568,7 +582,7 @@ begin
      or p_actor_fingerprint is null
      or p_expected_depth is null
      or p_expected_depth < 0
-     or p_expected_depth > 3 then
+     or p_expected_depth > 2 then
     raise exception 'capability_lineage_invalid';
   end if;
 
@@ -623,7 +637,7 @@ begin
     join public.ai_hermes_run_capabilities parent_capability
       on parent_capability.id = lineage.parent_capability_id
     where not lineage.cycle
-      and lineage.hop < 4
+      and lineage.hop < 3
   )
   select array_agg(distinct lineage.id order by lineage.id)
   into v_lineage_ids
@@ -690,7 +704,7 @@ begin
     join public.ai_hermes_run_capabilities parent_capability
       on parent_capability.id = lineage.parent_capability_id
     where not lineage.cycle
-      and lineage.hop < 4
+      and lineage.hop < 3
   )
   select
     array_agg(distinct lineage.id order by lineage.id),
@@ -840,7 +854,7 @@ begin
     raise exception 'capability_parent_invalid';
   end if;
   if p_depth is null or p_ai_state_writes_allowed is null
-     or p_depth < 0 or p_depth > 3
+     or p_depth < 0
      or (
        p_depth = 0
        and (
@@ -954,6 +968,10 @@ begin
   if not found then
     raise exception 'capability_context_invalid';
   end if;
+  if (v_turn.mode = 'fast' and p_depth > 1)
+     or (v_turn.mode = 'deep' and p_depth > 2) then
+    raise exception 'capability_depth_limit';
+  end if;
   if p_depth = 0 then
     v_root_invocation_id := p_invocation_id;
     if v_turn.ai_invocation_id is not null
@@ -1063,10 +1081,19 @@ begin
     select count(*)
     into v_active_subagents
     from public.ai_hermes_run_capabilities subagent_capability
-    where subagent_capability.turn_id = p_turn_id
+    join public.ai_invocations subagent_invocation
+      on subagent_invocation.id = subagent_capability.invocation_id
+     and subagent_invocation.organization_id = p_organization_id
+     and subagent_invocation.actor_user_id = p_owner_user_id
+    where subagent_capability.organization_id = p_organization_id
+      and subagent_capability.owner_user_id = p_owner_user_id
+      and subagent_capability.conversation_id = p_conversation_id
+      and subagent_capability.turn_id = p_turn_id
+      and subagent_capability.root_invocation_id = v_root_invocation_id
       and subagent_capability.depth > 0
       and subagent_capability.revoked_at is null
-      and subagent_capability.expires_at > now();
+      and subagent_capability.expires_at > now()
+      and subagent_invocation.status in ('started', 'queued');
 
     if (v_turn.mode = 'fast' and v_active_subagents >= 1)
        or (v_turn.mode = 'deep' and v_active_subagents >= 3) then

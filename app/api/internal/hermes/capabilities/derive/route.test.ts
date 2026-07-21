@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createHermesActorFingerprint } from "@/features/ai/hermes/actor-fingerprint";
+const { createSupabaseAdminClientMock } = vi.hoisted(() => ({
+  createSupabaseAdminClientMock: vi.fn(),
+}));
+
+vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseAdminClient: createSupabaseAdminClientMock,
+}));
+
+import {
+  computeHermesSkillGrantsHash,
+  createHermesActorFingerprint,
+} from "@/features/ai/hermes/actor-fingerprint";
 import {
   HERMES_PROFILE_VERSION,
   type HermesActorProfile,
@@ -15,8 +26,11 @@ import {
   type HermesCapabilityDerivationDependencies,
   type HermesParentRunCapability,
 } from "@/features/ai/hermes/run-capability";
+import { getAllowedReadScopesForRole } from "@/features/ai/hermes/read-scopes";
+import { evaluateHermesSkillGrantsForActor } from "@/features/ai/hermes/skill-governance";
 
 import {
+  POST,
   createHermesCapabilityDeriveHandler,
   type HermesCapabilityDeriveTransport,
 } from "./route";
@@ -231,19 +245,86 @@ describe("Hermes capability derivation route", () => {
     expect(body).not.toContain("capability_parallel_limit");
     expect(body.toLowerCase()).not.toContain("select");
   });
+
+  it.each([
+    "ai_hermes_run_capabilities",
+    "ai_chat_turns",
+    "ai_invocations",
+    "organization_members",
+  ] as const)("returns 503 when the %s query fails", async (errorTable) => {
+    const { client } = persistenceClient({ errorTable });
+    createSupabaseAdminClientMock.mockReturnValue(client);
+
+    const response = await POST(request(validBody(), PARENT_CAPABILITY));
+    const body = JSON.stringify(await response.json());
+
+    expect(response.status).toBe(503);
+    expect(body).toBe('{"error":{"code":"persistence_failed"}}');
+    expect(body).not.toContain(PARENT_CAPABILITY);
+    expect(body.toLowerCase()).not.toContain("select");
+  });
+
+  it("keeps a genuinely missing parent distinct from loader failure", async () => {
+    const { client } = persistenceClient({ missingParent: true });
+    createSupabaseAdminClientMock.mockReturnValue(client);
+
+    const response = await POST(request(validBody(), PARENT_CAPABILITY));
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "parent_not_found" },
+    });
+  });
+
+  it("keeps genuinely inactive membership as actor_changed", async () => {
+    const { client } = persistenceClient({ inactiveMembership: true });
+    createSupabaseAdminClientMock.mockReturnValue(client);
+
+    const response = await POST(request(validBody(), PARENT_CAPABILITY));
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "actor_changed" },
+    });
+  });
+
+  it("pre-counts only started or queued child invocations", async () => {
+    const { client, queries } = persistenceClient({ countError: true });
+    createSupabaseAdminClientMock.mockReturnValue(client);
+
+    const response = await POST(request(validBody(), PARENT_CAPABILITY));
+    const capabilityQueries = queries.filter(
+      (query) => query.table === "ai_hermes_run_capabilities",
+    );
+
+    expect(response.status).toBe(503);
+    expect(capabilityQueries).toHaveLength(2);
+    expect(capabilityQueries[1]?.select).toContain(
+      "child_invocation:ai_invocations!ai_hermes_run_capabilities_invocation_id_fkey!inner(id)",
+    );
+    expect(capabilityQueries[1]?.filters).toContainEqual([
+      "in",
+      "child_invocation.status",
+      ["started", "queued"],
+    ]);
+  });
 });
 
 function parentCapability(): HermesParentRunCapability {
+  const allowedReadScopes = getAllowedReadScopesForRole("owner");
+  const enabledSkillVersions = evaluateHermesSkillGrantsForActor({
+    role: "owner",
+    allowedReadScopes,
+  }).enabledSkillVersions;
   const actor: HermesActorProfile = {
     userId: USER_ID,
     organizationId: ORGANIZATION_ID,
     role: "owner",
     conversationId: CONVERSATION_ID,
     invocationId: PARENT_INVOCATION_ID,
-    allowedReadScopes: ["context.read", "projects.search"],
-    enabledSkillVersions: [],
-    skillGrantsHash:
-      "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    allowedReadScopes,
+    enabledSkillVersions,
+    skillGrantsHash: computeHermesSkillGrantsHash(enabledSkillVersions),
     profileVersion: HERMES_PROFILE_VERSION,
     pageContext: { pageType: "global", objectIds: [] },
   };
@@ -258,8 +339,122 @@ function parentCapability(): HermesParentRunCapability {
     scopes: ["context.read", "projects.search"],
     skillDraftIds: [],
     depth: 0,
-    expiresAt: "2026-07-22T00:02:00.000Z",
+    expiresAt: "2099-07-22T00:02:00.000Z",
   };
+}
+
+type PersistenceTable =
+  | "ai_hermes_run_capabilities"
+  | "ai_chat_turns"
+  | "ai_invocations"
+  | "organization_members";
+
+type PersistenceQuery = {
+  table: string;
+  select: string;
+  filters: Array<[string, string, unknown]>;
+};
+
+function persistenceClient(
+  options: {
+    errorTable?: PersistenceTable;
+    missingParent?: boolean;
+    inactiveMembership?: boolean;
+    countError?: boolean;
+  } = {},
+) {
+  const parent = parentCapability();
+  const tableCalls = new Map<string, number>();
+  const queries: PersistenceQuery[] = [];
+  const queryError = {
+    code: "PGRST000",
+    message: `select failed Bearer ${PARENT_CAPABILITY}`,
+  };
+  const successRows: Record<PersistenceTable, unknown> = {
+    ai_hermes_run_capabilities: {
+      organization_id: ORGANIZATION_ID,
+      owner_user_id: USER_ID,
+      conversation_id: CONVERSATION_ID,
+      turn_id: TURN_ID,
+      invocation_id: PARENT_INVOCATION_ID,
+      root_invocation_id: PARENT_INVOCATION_ID,
+      actor_fingerprint: parent.actorFingerprint,
+      allowed_tools: parent.allowedTools,
+      scopes: parent.scopes,
+      skill_draft_ids: parent.skillDraftIds,
+      depth: parent.depth,
+      expires_at: parent.expiresAt,
+    },
+    ai_chat_turns: {
+      mode: parent.mode,
+      status: "accepted",
+      lease_expires_at: "2099-07-22T00:02:00.000Z",
+      context_snapshot: { hermesActor: parent.actor },
+      ai_invocation_id: PARENT_INVOCATION_ID,
+    },
+    ai_invocations: { metadata: { hermesActor: parent.actor } },
+    organization_members: { role: parent.actor.role },
+  };
+
+  const client = {
+    from(table: PersistenceTable) {
+      const callIndex = tableCalls.get(table) ?? 0;
+      tableCalls.set(table, callIndex + 1);
+      const query: PersistenceQuery = { table, select: "", filters: [] };
+      queries.push(query);
+      const isCount = table === "ai_hermes_run_capabilities" && callIndex > 0;
+      const result = isCount
+        ? {
+            data: null,
+            error: options.countError ? queryError : null,
+            count: options.countError ? null : 0,
+          }
+        : {
+            data:
+              table === "ai_hermes_run_capabilities" && options.missingParent
+                ? null
+                : table === "organization_members" &&
+                    options.inactiveMembership
+                  ? null
+                  : successRows[table],
+            error: options.errorTable === table ? queryError : null,
+          };
+      const builder = {
+        select(columns: string) {
+          query.select = columns;
+          return builder;
+        },
+        eq(column: string, value: unknown) {
+          query.filters.push(["eq", column, value]);
+          return builder;
+        },
+        is(column: string, value: unknown) {
+          query.filters.push(["is", column, value]);
+          return builder;
+        },
+        gt(column: string, value: unknown) {
+          query.filters.push(["gt", column, value]);
+          return builder;
+        },
+        in(column: string, value: unknown) {
+          query.filters.push(["in", column, value]);
+          return builder;
+        },
+        maybeSingle() {
+          return Promise.resolve(result);
+        },
+        then<TResult1 = typeof result, TResult2 = never>(
+          onfulfilled?: ((value: typeof result) => TResult1) | null,
+          onrejected?: ((reason: unknown) => TResult2) | null,
+        ) {
+          return Promise.resolve(result).then(onfulfilled, onrejected);
+        },
+      };
+      return builder;
+    },
+    rpc: vi.fn(),
+  };
+  return { client, queries };
 }
 
 function validBody() {

@@ -156,7 +156,10 @@ async function loadParentCapability(
     .is("revoked_at", null)
     .gt("expires_at", now.toISOString())
     .maybeSingle();
-  if (capabilityResult.error || !isRecord(capabilityResult.data)) return null;
+  if (capabilityResult.error) {
+    throw new HermesRunCapabilityError("persistence_failed");
+  }
+  if (!isRecord(capabilityResult.data)) return null;
   const capability = capabilityResult.data;
 
   const organizationId = stringValue(capability.organization_id);
@@ -190,7 +193,10 @@ async function loadParentCapability(
     .is("cancel_requested_at", null)
     .gt("lease_expires_at", now.toISOString())
     .maybeSingle();
-  if (turnResult.error || !isRecord(turnResult.data)) return null;
+  if (turnResult.error) {
+    throw new HermesRunCapabilityError("persistence_failed");
+  }
+  if (!isRecord(turnResult.data)) return null;
 
   const invocationResult = await client
     .from("ai_invocations")
@@ -199,7 +205,10 @@ async function loadParentCapability(
     .eq("organization_id", organizationId)
     .eq("actor_user_id", userId)
     .maybeSingle();
-  if (invocationResult.error || !isRecord(invocationResult.data)) return null;
+  if (invocationResult.error) {
+    throw new HermesRunCapabilityError("persistence_failed");
+  }
+  if (!isRecord(invocationResult.data)) return null;
 
   const actor = actorSnapshotFromRecords(
     turnResult.data.context_snapshot,
@@ -253,14 +262,18 @@ async function countActiveChildren(
 ): Promise<number> {
   const result = await client
     .from("ai_hermes_run_capabilities")
-    .select("id", { count: "exact", head: true })
+    .select(
+      "id, child_invocation:ai_invocations!ai_hermes_run_capabilities_invocation_id_fkey!inner(id)",
+      { count: "exact", head: true },
+    )
     .eq("organization_id", input.organizationId)
     .eq("owner_user_id", input.userId)
     .eq("turn_id", input.turnId)
     .eq("root_invocation_id", input.rootInvocationId)
     .gt("depth", 0)
     .is("revoked_at", null)
-    .gt("expires_at", input.now.toISOString());
+    .gt("expires_at", input.now.toISOString())
+    .in("child_invocation.status", ["started", "queued"]);
   if (result.error || typeof result.count !== "number") {
     throw new HermesRunCapabilityError("persistence_failed");
   }

@@ -86,7 +86,8 @@ describe("Xingyao Hermes native state schema contract", () => {
       expect(table).toContain(column);
     }
     expect(table).toContain("unique (token_sha256)");
-    expect(table).toContain("depth >= 0");
+    expect(table).toContain("depth >= 0 and depth <= 2");
+    expect(table).not.toContain("depth <= 3");
   });
 
   it("canonically binds capability tool, scope, and approved skill lists", () => {
@@ -364,9 +365,25 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(parentLocked).toBeGreaterThan(parentLock);
     expect(parallelCount).toBeGreaterThan(parentLocked);
     expect(capabilityInsert).toBeGreaterThan(parallelCount);
-    expect(issue).toMatch(
-      /select count\(\*\)\s+into v_active_subagents\s+from public\.ai_hermes_run_capabilities subagent_capability\s+where subagent_capability\.turn_id = p_turn_id\s+and subagent_capability\.depth > 0\s+and subagent_capability\.revoked_at is null\s+and subagent_capability\.expires_at > now\(\)/,
+    expect(issue).toContain(
+      "join public.ai_invocations subagent_invocation",
     );
+    for (const fence of [
+      "subagent_capability.organization_id = p_organization_id",
+      "subagent_capability.owner_user_id = p_owner_user_id",
+      "subagent_capability.conversation_id = p_conversation_id",
+      "subagent_capability.turn_id = p_turn_id",
+      "subagent_capability.root_invocation_id = v_root_invocation_id",
+      "subagent_capability.depth > 0",
+      "subagent_capability.revoked_at is null",
+      "subagent_capability.expires_at > now()",
+      "subagent_invocation.id = subagent_capability.invocation_id",
+      "subagent_invocation.organization_id = p_organization_id",
+      "subagent_invocation.actor_user_id = p_owner_user_id",
+      "subagent_invocation.status in ('started', 'queued')",
+    ]) {
+      expect(issue).toContain(fence);
+    }
     expect(issue).not.toContain(
       "subagent_capability.parent_capability_id = v_parent.id",
     );
@@ -379,7 +396,37 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(issue).toContain("capability_parallel_limit");
   });
 
-  it("locks and validates every depth-3 capability ancestor", () => {
+  it("enforces Fast depth 1 and Deep depth 2 in the table and issuer", () => {
+    const identity = functionSql(
+      "validate_ai_hermes_run_capability_identity",
+    );
+    const issue = functionSql("issue_ai_hermes_run_capability");
+    const lineage = functionSql(
+      "lock_and_validate_ai_hermes_capability_lineage",
+    );
+    const turnLock = issue.indexOf("from public.ai_chat_turns turn");
+    const turnLocked = issue.indexOf("for update", turnLock);
+    const depthLimit = issue.indexOf("capability_depth_limit", turnLocked);
+    const parentLock = issue.indexOf(
+      "from public.ai_hermes_run_capabilities parent_capability",
+    );
+
+    expect(identity).toMatch(
+      /\(turn\.mode = 'fast' and new\.depth > 1\)[\s\S]*?\(turn\.mode = 'deep' and new\.depth > 2\)/,
+    );
+    expect(identity).toContain("capability_depth_limit");
+    expect(turnLocked).toBeGreaterThan(turnLock);
+    expect(depthLimit).toBeGreaterThan(turnLocked);
+    expect(depthLimit).toBeLessThan(parentLock);
+    expect(issue).toMatch(
+      /\(v_turn\.mode = 'fast' and p_depth > 1\)[\s\S]*?\(v_turn\.mode = 'deep' and p_depth > 2\)/,
+    );
+    expect(issue).not.toContain("p_depth > 3");
+    expect(lineage).toContain("p_expected_depth > 2");
+    expect(lineage).not.toContain("p_expected_depth > 3");
+  });
+
+  it("locks and validates every delegated capability ancestor", () => {
     const lineage = functionSql(
       "lock_and_validate_ai_hermes_capability_lineage",
     );
@@ -396,7 +443,7 @@ describe("Xingyao Hermes native state schema contract", () => {
       "parent_capability.invocation_id = lineage.parent_invocation_id",
     );
     expect(lineage).toContain("parent_capability.depth = lineage.depth - 1");
-    expect(lineage).toContain("lineage.hop < 4");
+    expect(lineage).toContain("lineage.hop < 3");
     expect(lineage).toContain(
       "lineage.depth <> p_expected_depth - lineage.hop",
     );
