@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   CompactSign,
   compactVerify,
@@ -8,9 +10,12 @@ import {
 
 import {
   HERMES_AUDIENCE,
+  HERMES_PROFILE_VERSION,
   LEGACY_HERMES_PROFILE_VERSION,
   XINGYAO_PRODUCT_ISSUER,
-  isKnownHermesActorProfile,
+  isHermesActorProfile,
+  isLegacyHermesActorProfile,
+  isUuid,
   type HermesActorProfile,
 } from "./contracts";
 import {
@@ -23,21 +28,27 @@ type SignOptions = {
   kid: string;
   now?: Date;
   ttlSeconds?: number;
+  runtime?: HermesAssertionRuntime;
 };
 
 type VerifyOptions = {
   publicKeyPem: string;
   now?: Date;
   audience?: string;
+  runtime?: HermesAssertionRuntime;
 };
+
+export type HermesAssertionRuntime = "legacy" | "gateway";
 
 export async function signHermesActorAssertion(
   actor: HermesActorProfile,
   options: SignOptions,
 ): Promise<string> {
+  const runtime = options.runtime ?? "legacy";
   if (
-    !isKnownHermesActorProfile(actor) ||
-    actor.skillGrantsHash !== computeHermesSkillGrantsHash(actor.enabledSkillVersions)
+    !isActorProfileForRuntime(actor, runtime) ||
+    actor.skillGrantsHash !==
+      computeHermesSkillGrantsHash(actor.enabledSkillVersions)
   ) {
     throw new Error("invalid Hermes actor profile");
   }
@@ -70,7 +81,7 @@ export async function signHermesActorAssertion(
     skillGrantsHash: actor.skillGrantsHash,
     profileVersion: actor.profileVersion,
     pageContext: actor.pageContext,
-    jti: actor.invocationId,
+    jti: runtime === "gateway" ? randomUUID() : actor.invocationId,
     iat: issuedAt,
     exp: issuedAt + ttlSeconds,
   };
@@ -88,6 +99,7 @@ export async function verifyHermesActorAssertion(
   actorFingerprint: string;
   header: { alg: "RS256"; kid?: string };
 }> {
+  const runtime = options.runtime ?? "legacy";
   const header = decodeProtectedHeader(token);
   if (header.alg !== "RS256") {
     throw new Error("Hermes actor assertion must use RS256");
@@ -129,7 +141,7 @@ export async function verifyHermesActorAssertion(
     throw new Error("Hermes actor assertion lifetime is invalid");
   }
 
-  const actor = actorProfileFromClaims(payload);
+  const actor = actorProfileFromClaims(payload, runtime);
   if (!hasOnlyAssertionClaims(payload) || !actor) {
     throw new Error("invalid Hermes actor assertion actor profile");
   }
@@ -157,8 +169,8 @@ function toRuntimeUint8Array(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value));
 }
 
-export const HERMES_ASSERTION_PROFILE_VERSION =
-  LEGACY_HERMES_PROFILE_VERSION;
+export const HERMES_ASSERTION_PROFILE_VERSION = LEGACY_HERMES_PROFILE_VERSION;
+export const HERMES_GATEWAY_ASSERTION_PROFILE_VERSION = HERMES_PROFILE_VERSION;
 
 const ASSERTION_CLAIM_KEYS = [
   "allowedReadScopes",
@@ -180,13 +192,14 @@ const ASSERTION_CLAIM_KEYS = [
 
 function actorProfileFromClaims(
   payload: Record<string, unknown>,
+  runtime: HermesAssertionRuntime,
 ): HermesActorProfile | null {
   const actor = {
     userId: payload.sub,
     organizationId: payload.organizationId,
     role: payload.role,
     conversationId: payload.conversationId,
-    invocationId: payload.jti,
+    invocationId: payload.invocationId,
     allowedReadScopes: payload.allowedReadScopes,
     enabledSkillVersions: payload.enabledSkillVersions,
     skillGrantsHash: payload.skillGrantsHash,
@@ -194,9 +207,21 @@ function actorProfileFromClaims(
     pageContext: payload.pageContext,
   };
 
-  return isKnownHermesActorProfile(actor) &&
+  return isActorProfileForRuntime(actor, runtime) &&
     payload.invocationId === actor.invocationId &&
-    actor.skillGrantsHash === computeHermesSkillGrantsHash(actor.enabledSkillVersions)
+    isUuid(payload.jti) &&
+    (runtime === "gateway" || payload.jti === actor.invocationId) &&
+    actor.skillGrantsHash ===
+      computeHermesSkillGrantsHash(actor.enabledSkillVersions)
     ? actor
     : null;
+}
+
+function isActorProfileForRuntime(
+  actor: unknown,
+  runtime: HermesAssertionRuntime,
+): actor is HermesActorProfile {
+  return runtime === "gateway"
+    ? isHermesActorProfile(actor)
+    : isLegacyHermesActorProfile(actor);
 }
