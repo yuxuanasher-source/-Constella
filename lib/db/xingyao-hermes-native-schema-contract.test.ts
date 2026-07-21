@@ -345,7 +345,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
   });
 
-  it("serializes and enforces mode-aware direct child limits before capability insert", () => {
+  it("serializes and enforces mode-aware run-wide subagent limits before capability insert", () => {
     const issue = functionSql("issue_ai_hermes_run_capability");
     const turnLock = issue.indexOf("from public.ai_chat_turns turn");
     const turnLocked = issue.indexOf("for update", turnLock);
@@ -353,7 +353,7 @@ describe("Xingyao Hermes native state schema contract", () => {
       "from public.ai_hermes_run_capabilities parent_capability",
     );
     const parentLocked = issue.indexOf("for update", parentLock);
-    const parallelCount = issue.indexOf("into v_active_direct_children");
+    const parallelCount = issue.indexOf("into v_active_subagents");
     const capabilityInsert = issue.indexOf(
       "insert into public.ai_hermes_run_capabilities",
     );
@@ -364,16 +364,17 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(parentLocked).toBeGreaterThan(parentLock);
     expect(parallelCount).toBeGreaterThan(parentLocked);
     expect(capabilityInsert).toBeGreaterThan(parallelCount);
-    expect(issue).toContain(
-      "child_capability.parent_capability_id = v_parent.id",
-    );
-    expect(issue).toContain("child_capability.revoked_at is null");
-    expect(issue).toContain("child_capability.expires_at > now()");
     expect(issue).toMatch(
-      /v_turn\.mode = 'fast'[\s\S]*?v_active_direct_children >= 1/,
+      /select count\(\*\)\s+into v_active_subagents\s+from public\.ai_hermes_run_capabilities subagent_capability\s+where subagent_capability\.turn_id = p_turn_id\s+and subagent_capability\.depth > 0\s+and subagent_capability\.revoked_at is null\s+and subagent_capability\.expires_at > now\(\)/,
+    );
+    expect(issue).not.toContain(
+      "subagent_capability.parent_capability_id = v_parent.id",
     );
     expect(issue).toMatch(
-      /v_turn\.mode = 'deep'[\s\S]*?v_active_direct_children >= 3/,
+      /v_turn\.mode = 'fast'[\s\S]*?v_active_subagents >= 1/,
+    );
+    expect(issue).toMatch(
+      /v_turn\.mode = 'deep'[\s\S]*?v_active_subagents >= 3/,
     );
     expect(issue).toContain("capability_parallel_limit");
   });
