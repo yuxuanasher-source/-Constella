@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   HermesStateRepositoryError,
+  assertHermesSanitizedObject,
   createHermesStateRepository,
   type HermesCapabilityActorSnapshot,
   type HermesRunCapabilityBinding,
@@ -56,6 +57,79 @@ const capabilityBinding: HermesRunCapabilityBinding = {
     tokenSha256: PARENT_TOKEN_SHA256,
   },
 };
+
+function persistedJsonOperations(
+  payload: Record<string, unknown>,
+): Array<(repository: HermesStateRepository) => Promise<unknown>> {
+  return [
+    (repository) =>
+      repository.claimBrokerCall(
+        actor,
+        TOKEN_SHA256,
+        ACTOR_FINGERPRINT,
+        CLAIM_OWNER_ID,
+        "tool-call-secret",
+        "tool.alpha",
+        REQUEST_SHA256,
+        payload,
+      ),
+    (repository) =>
+      repository.completeBrokerCall(
+        actor,
+        BROKER_CALL_ID,
+        CLAIM_OWNER_ID,
+        1,
+        "completed",
+        payload,
+      ),
+    (repository) =>
+      repository.appendToolMessage(actor, TURN_ID, {
+        content: "Tool completed",
+        metadata: payload,
+      }),
+    (repository) =>
+      repository.upsertSkillDraft(actor, {
+        skillId: "risk_review",
+        version: 1,
+        manifest: payload,
+        bundle: "skill bundle",
+      }),
+    (repository) =>
+      repository.compareAndSwapGatewayState(actor, CONVERSATION_ID, 1, {
+        generation: 2,
+        ...payload,
+      }),
+    (repository) =>
+      repository.finishTurn(actor, TURN_ID, {
+        outcome: "complete",
+        content: "Complete",
+        retryable: false,
+        metadata: payload,
+      }),
+  ];
+}
+
+function payloadShapes(
+  key: string,
+  value: unknown,
+): Record<string, unknown>[] {
+  const ownKeyObject = (): Record<string, unknown> => {
+    const payload: Record<string, unknown> = {};
+    Object.defineProperty(payload, key, {
+      value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    return payload;
+  };
+
+  return [
+    ownKeyObject(),
+    { nested: ownKeyObject() },
+    { items: [ownKeyObject()] },
+  ];
+}
 
 describe("Hermes state repository", () => {
   it("issues a capability with canonical bindings and never persists raw secrets", async () => {
@@ -475,80 +549,114 @@ describe("Hermes state repository", () => {
   });
 
   it.each([
-    "jws",
-    "JWT",
-    "actor_jws",
-    "authorization",
+    "ACCESS_token",
+    "refresh__token",
+    "client_secret",
+    "authorization_header",
     "bearer_token",
     "api_key",
+    "api_token",
     "service_token",
-    "cookie",
-    "password",
-    "private_key",
+    "session_token",
+    "session_cookie",
+    "db_password",
+    "rsa_private_key",
+    "client_secret_key",
+    "actor_jws",
+    "JWT",
   ])(
     "recursively rejects raw secret key %s on every persisted JSON surface",
     async (forbiddenKey) => {
-      const payload = { nested: [{ [forbiddenKey]: "raw-secret" }] };
-      const operations: Array<
-        (repository: HermesStateRepository) => Promise<unknown>
-      > = [
-        (repository) =>
-          repository.claimBrokerCall(
-            actor,
-            TOKEN_SHA256,
-            ACTOR_FINGERPRINT,
-            CLAIM_OWNER_ID,
-            "tool-call-secret",
-            "tool.alpha",
-            REQUEST_SHA256,
-            payload,
-          ),
-        (repository) =>
-          repository.completeBrokerCall(
-            actor,
-            BROKER_CALL_ID,
-            CLAIM_OWNER_ID,
-            1,
-            "completed",
-            payload,
-          ),
-        (repository) =>
-          repository.appendToolMessage(actor, TURN_ID, {
-            content: "Tool completed",
-            metadata: payload,
-          }),
-        (repository) =>
-          repository.upsertSkillDraft(actor, {
-            skillId: "risk_review",
-            version: 1,
-            manifest: payload,
-            bundle: "skill bundle",
-          }),
-        (repository) =>
-          repository.compareAndSwapGatewayState(
-            actor,
-            CONVERSATION_ID,
-            1,
-            { generation: 2, ...payload },
-          ),
-        (repository) =>
-          repository.finishTurn(actor, TURN_ID, {
-            outcome: "complete",
-            content: "Complete",
-            retryable: false,
-            metadata: payload,
-          }),
-      ];
-
-      for (const operation of operations) {
-        const { client, rpc } = rpcClient({ data: null, error: null });
-        await expect(
-          operation(createHermesStateRepository(client)),
-        ).rejects.toMatchObject({ code: "invalid_input" });
-        expect(rpc).not.toHaveBeenCalled();
+      for (const payload of payloadShapes(forbiddenKey, "raw-secret")) {
+        for (const operation of persistedJsonOperations(payload)) {
+          const { client, rpc } = rpcClient({ data: null, error: null });
+          await expect(
+            operation(createHermesStateRepository(client)),
+          ).rejects.toMatchObject({ code: "invalid_input" });
+          expect(rpc).not.toHaveBeenCalled();
+        }
       }
     },
   );
+
+  it.each([
+    ["authorizationHash", "Bearer raw"],
+    ["token_sha256", "a".repeat(63)],
+    ["capabilityHash", "z".repeat(64)],
+    ["api_key_hash", { raw: "secret" }],
+  ])(
+    "rejects non-SHA-256 value on digest-labeled key %s",
+    async (digestKey, invalidDigest) => {
+      for (const payload of payloadShapes(digestKey, invalidDigest)) {
+        for (const operation of persistedJsonOperations(payload)) {
+          const { client, rpc } = rpcClient({ data: null, error: null });
+          await expect(
+            operation(createHermesStateRepository(client)),
+          ).rejects.toMatchObject({ code: "invalid_input" });
+          expect(rpc).not.toHaveBeenCalled();
+        }
+      }
+    },
+  );
+
+  it.each(["__proto__", "prototype", "constructor"])(
+    "rejects prototype-control key %s at every persisted JSON depth",
+    async (controlKey) => {
+      for (const payload of payloadShapes(controlKey, { polluted: true })) {
+        for (const operation of persistedJsonOperations(payload)) {
+          const { client, rpc } = rpcClient({ data: null, error: null });
+          await expect(
+            operation(createHermesStateRepository(client)),
+          ).rejects.toMatchObject({ code: "invalid_input" });
+          expect(rpc).not.toHaveBeenCalled();
+        }
+      }
+    },
+  );
+
+  it.each(["access_token", "__proto__", "prototype", "constructor"])(
+    "rejects dangerous own array property %s instead of silently dropping it",
+    async (dangerousKey) => {
+      const items: unknown[] = [{ safe: true }];
+      Object.defineProperty(items, dangerousKey, {
+        value: "attack",
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+      const { client, rpc } = rpcClient({ data: null, error: null });
+
+      await expect(
+        createHermesStateRepository(client).appendToolMessage(actor, TURN_ID, {
+          content: "Tool completed",
+          metadata: { items },
+        }),
+      ).rejects.toMatchObject({ code: "invalid_input" });
+      expect(rpc).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails closed on an own __proto__ property produced by JSON.parse", async () => {
+    const payload: Record<string, unknown> = JSON.parse(
+      '{"__proto__":{"polluted":true}}',
+    );
+    const { client, rpc } = rpcClient({ data: null, error: null });
+
+    await expect(
+      createHermesStateRepository(client).claimBrokerCall(
+        actor,
+        TOKEN_SHA256,
+        ACTOR_FINGERPRINT,
+        CLAIM_OWNER_ID,
+        "tool-call-prototype",
+        "tool.alpha",
+        REQUEST_SHA256,
+        payload,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(rpc).not.toHaveBeenCalled();
+    expect(Object.prototype).not.toHaveProperty("polluted");
+  });
 
   it("allows explicit secret hashes in sanitized envelopes", async () => {
     const { client, rpc } = rpcClient({
@@ -566,6 +674,8 @@ describe("Hermes state repository", () => {
       jwtSha256: "1".repeat(64),
       api_key_hash: "2".repeat(64),
       serviceTokenSha256: "3".repeat(64),
+      token_sha256: "4".repeat(64),
+      capabilityHash: "5".repeat(64),
     };
 
     await createHermesStateRepository(client).claimBrokerCall(
@@ -583,6 +693,16 @@ describe("Hermes state repository", () => {
       "claim_ai_hermes_broker_call",
       expect.objectContaining({ p_sanitized_request_envelope: { hashes } }),
     );
+  });
+
+  it("returns a plain own-property copy for benign sanitized payloads", () => {
+    const source = { nested: [{ safe: true }] };
+    const copy = assertHermesSanitizedObject(source);
+
+    expect(copy).toEqual(source);
+    expect(copy).not.toBe(source);
+    expect(Object.getPrototypeOf(copy)).toBe(Object.prototype);
+    expect("polluted" in copy).toBe(false);
   });
 
   it.each(["organizationId", "userId", "conversationId", "invocationId"])(

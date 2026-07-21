@@ -721,24 +721,16 @@ function parseTurnCancellation(value: unknown): HermesTurnCancellation {
 
 const FORBIDDEN_PAYLOAD_KEYS = new Set([
   "actorassertion",
-  "actorjws",
-  "authorization",
-  "bearer",
-  "bearertoken",
-  "capabilitytoken",
-  "cookie",
-  "jws",
-  "jwstoken",
-  "jwt",
-  "jwttoken",
   "organizationid",
   "owneruserid",
-  "password",
-  "privatekey",
   "rawcapability",
-  "servicetoken",
-  "signingprivatekey",
   "userid",
+]);
+
+const PROTOTYPE_CONTROL_KEYS = new Set([
+  "constructor",
+  "proto",
+  "prototype",
 ]);
 
 function copySanitizedObject(value: unknown): Record<string, unknown> {
@@ -768,39 +760,94 @@ function copySanitizedValue(
   seen.add(value);
   if (Array.isArray(value)) {
     if (Object.getPrototypeOf(value) !== Array.prototype) invalidInput();
-    return value.map((item) => copySanitizedValue(item, seen, depth + 1));
+    return copySanitizedArray(value, seen, depth);
   }
   if (Object.getPrototypeOf(value) !== Object.prototype) invalidInput();
   const copy: Record<string, unknown> = {};
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key !== "string") invalidInput();
-    if (isForbiddenPayloadKey(key)) invalidInput();
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
       invalidInput();
     }
-    copy[key] = copySanitizedValue(descriptor.value, seen, depth + 1);
+    validatePayloadProperty(key, descriptor.value);
+    const copiedValue = copySanitizedValue(
+      descriptor.value,
+      seen,
+      depth + 1,
+    );
+    Object.defineProperty(copy, key, {
+      value: copiedValue,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return copy;
+}
+
+function copySanitizedArray(
+  value: unknown[],
+  seen: WeakSet<object>,
+  depth: number,
+): unknown[] {
+  for (const key of Reflect.ownKeys(value)) {
+    if (key === "length") continue;
+    if (typeof key !== "string" || !isArrayIndexKey(key, value.length)) {
+      invalidInput();
+    }
+  }
+
+  const copy = new Array<unknown>(value.length);
+  for (let index = 0; index < value.length; index += 1) {
+    const key = String(index);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+      invalidInput();
+    }
+    Object.defineProperty(copy, key, {
+      value: copySanitizedValue(descriptor.value, seen, depth + 1),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return copy;
+}
+
+function isArrayIndexKey(key: string, length: number): boolean {
+  if (!/^(0|[1-9][0-9]*)$/.test(key)) return false;
+  const index = Number(key);
+  return Number.isSafeInteger(index) && index >= 0 && index < length;
 }
 
 function normalizePayloadKey(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-function isForbiddenPayloadKey(value: string): boolean {
-  const normalized = normalizePayloadKey(value);
+function validatePayloadProperty(key: string, value: unknown): void {
+  const normalized = normalizePayloadKey(key);
+  if (PROTOTYPE_CONTROL_KEYS.has(normalized)) invalidInput();
   if (normalized.endsWith("hash") || normalized.endsWith("sha256")) {
-    return false;
+    requireHash(value);
+    return;
   }
-  return (
+  if (
     FORBIDDEN_PAYLOAD_KEYS.has(normalized) ||
     normalized.includes("authorization") ||
+    normalized.includes("bearer") ||
+    normalized.endsWith("token") ||
     normalized.endsWith("apikey") ||
-    normalized.endsWith("servicetoken") ||
     normalized.includes("cookie") ||
-    normalized.endsWith("password")
-  );
+    normalized.endsWith("password") ||
+    normalized.endsWith("privatekey") ||
+    normalized.endsWith("secretkey") ||
+    normalized.endsWith("secret") ||
+    normalized.endsWith("jws") ||
+    normalized.endsWith("jwt")
+  ) {
+    invalidInput();
+  }
 }
 
 function canonicalTextList(values: readonly string[]): string[] {
