@@ -114,12 +114,51 @@ describe("Hermes product read API boundary", () => {
       data: { rows: [{ id: PROJECT_ID, name: "Canonical project" }] },
       sourceLabels: ["project_record"],
     });
+    expect(client.calls).toContainEqual([
+      "projects",
+      "select",
+      "id, name, status, started_at:starts_at, ended_at:ends_at, created_at, updated_at",
+    ]);
     expect(client.calls).toContainEqual(["projects", "eq", "organization_id", ORG_ID]);
     expect(client.calls).not.toContainEqual([
       "projects",
       "eq",
       "organization_id",
       "evil",
+    ]);
+  });
+
+  it("queries project summaries with columns that exist on the project table", async () => {
+    const client = supabaseDouble([
+      {
+        id: PROJECT_ID,
+        name: "Canonical project",
+        status: "active",
+        default_settlement_method: "cpt",
+      },
+    ]);
+
+    const result = await executeHermesReadTool(
+      client as never,
+      profile(),
+      "xingyao_get_project_summary",
+      { projectId: PROJECT_ID },
+    );
+
+    expect(result).toMatchObject({
+      data: {
+        project: {
+          id: PROJECT_ID,
+          name: "Canonical project",
+          default_settlement_method: "cpt",
+        },
+      },
+      sourceLabels: ["project_record"],
+    });
+    expect(client.calls).toContainEqual([
+      "projects",
+      "select",
+      "id, name, status, started_at:starts_at, ended_at:ends_at, settlement_method:default_settlement_method, default_hourly_rate, default_base_salary, created_at, updated_at",
     ]);
   });
 
@@ -218,6 +257,10 @@ function supabaseDouble(rows: unknown[]) {
     limit: vi.fn(async (limit: number) => {
       calls.push(["projects", "limit", limit]);
       return { data: rows, error: null };
+    }),
+    maybeSingle: vi.fn(async () => {
+      calls.push(["projects", "maybeSingle"]);
+      return { data: rows[0] ?? null, error: null };
     }),
   };
   return {
