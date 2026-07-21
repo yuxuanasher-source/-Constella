@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getRouteContextMock = vi.fn();
 const createConversationTurnStreamMock = vi.fn();
+const executeNativeHermesAssistantMock = vi.fn();
 
 vi.mock("@/app/api/ai/conversation-route-context", () => ({
   getAiConversationRouteContext: getRouteContextMock,
@@ -16,8 +17,8 @@ vi.mock("@/features/ai/conversation-stream-adapter", () => ({
   createConversationTurnStream: createConversationTurnStreamMock,
 }));
 
-vi.mock("@/app/api/ai/chat/route", () => ({
-  executeDashboardAiChat: vi.fn(),
+vi.mock("@/features/ai/native-assistant/executor", () => ({
+  executeNativeHermesAssistant: executeNativeHermesAssistantMock,
 }));
 
 describe("POST /api/ai/turns/:turnId/regenerate", () => {
@@ -25,6 +26,7 @@ describe("POST /api/ai/turns/:turnId/regenerate", () => {
     vi.resetModules();
     getRouteContextMock.mockReset();
     createConversationTurnStreamMock.mockReset();
+    executeNativeHermesAssistantMock.mockReset();
   });
 
   it("creates a new assistant version without accepting a user message", async () => {
@@ -63,7 +65,11 @@ describe("POST /api/ai/turns/:turnId/regenerate", () => {
     );
     expect(acceptTurn).not.toHaveBeenCalled();
     expect(createConversationTurnStreamMock).toHaveBeenCalledWith(
-      expect.objectContaining({ turn: regeneratedTurn, attachments: [] }),
+      expect.objectContaining({
+        turn: regeneratedTurn,
+        attachments: [],
+        executeLegacyChat: executeNativeHermesAssistantMock,
+      }),
     );
   });
 });

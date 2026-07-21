@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 
-import { executeDashboardAiChat } from "@/app/api/ai/chat/route";
 import {
   conversationRouteErrorResponse,
   getAiConversationRouteContext,
 } from "@/app/api/ai/conversation-route-context";
 import { parseCreateTurnCommand } from "@/features/ai/conversation-contracts";
 import { createConversationTurnStream } from "@/features/ai/conversation-stream-adapter";
+import { executeNativeHermesAssistant } from "@/features/ai/native-assistant/executor";
 
 export const maxDuration = 60;
 
@@ -46,7 +46,7 @@ export async function POST(
       turn,
       attachments: command.attachments,
       service: context.service,
-      executeLegacyChat: executeDashboardAiChat,
+      executeLegacyChat: executeNativeHermesAssistant,
     });
   } catch (error) {
     return conversationRouteErrorResponse(error);

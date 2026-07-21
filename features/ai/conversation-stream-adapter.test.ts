@@ -126,6 +126,12 @@ describe("conversation stream adapter", () => {
       }),
     );
     const forwarded = await executeLegacyChat.mock.calls[0]?.[0].json();
+    expect(executeLegacyChat.mock.calls[0]?.[1]).toMatchObject({
+      nativeAssistant: {
+        conversationId: "conversation-1",
+        invocationId: "turn-1",
+      },
+    });
     expect(forwarded).toMatchObject({
       messages: [{ role: "user", content: "当前问题" }],
       mode: "deep",

@@ -614,7 +614,7 @@ function isConversationGatewayContext(
     hasExactSanitizedAttachments(value.attachments) &&
     (value.mode === "fast" || value.mode === "deep") &&
     typeof value.primaryProvider === "string" &&
-    ["openai", "hunyuan", "deepseek", "deterministic"].includes(
+    ["openai", "hunyuan", "deepseek", "hermes", "deterministic"].includes(
       value.primaryProvider,
     ) &&
     typeof value.lastUserMessage === "string" &&
