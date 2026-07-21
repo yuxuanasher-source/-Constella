@@ -25,6 +25,14 @@ const conversationRow = {
   updated_at: "2026-07-11T03:00:00.000Z",
 };
 
+const v2Ids = {
+  organizationId: "00000000-0000-4000-8000-000000000001",
+  ownerUserId: "00000000-0000-4000-8000-000000000002",
+  conversationId: "00000000-0000-4000-8000-000000000003",
+  turnId: "00000000-0000-4000-8000-000000000004",
+  invocationId: "00000000-0000-4000-8000-000000000005",
+};
+
 describe("Xingyao conversation repository", () => {
   it("creates an owner-scoped conversation and maps the public DTO", async () => {
     const single = vi
@@ -364,10 +372,10 @@ describe("Xingyao conversation repository", () => {
       finishAiConversationTurnV2(
         { rpc } as unknown as ConversationRepositoryClient,
         {
-          organizationId: "org-1",
-          ownerUserId: "user-1",
-          turnId: "turn-1",
-          invocationId: "invocation-1",
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          turnId: v2Ids.turnId,
+          invocationId: v2Ids.invocationId,
           outcome: "blocked",
           content: "缺少结算权限。",
           providerName: "deepseek",
@@ -379,13 +387,13 @@ describe("Xingyao conversation repository", () => {
       ),
     ).resolves.toBeUndefined();
     expect(rpc).toHaveBeenCalledWith("finish_ai_chat_turn_v2", {
-      p_organization_id: "org-1",
-      p_owner_user_id: "user-1",
-      p_turn_id: "turn-1",
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_turn_id: v2Ids.turnId,
       p_outcome: "blocked",
       p_content: "缺少结算权限。",
       p_provider_name: "deepseek",
-      p_ai_invocation_id: "invocation-1",
+      p_ai_invocation_id: v2Ids.invocationId,
       p_error_code: null,
       p_error_summary: null,
       p_retryable: false,
@@ -396,7 +404,7 @@ describe("Xingyao conversation repository", () => {
   it("exposes actor-scoped cancel, v2 lease, and provider-state wrappers", async () => {
     const cancelRpc = vi.fn().mockResolvedValue({
       data: {
-        turn_id: "turn-1",
+        turn_id: v2Ids.turnId,
         status: "cancelled",
         cancel_requested: true,
         already_terminal: false,
@@ -407,29 +415,33 @@ describe("Xingyao conversation repository", () => {
       cancelAiConversationTurnV2(
         { rpc: cancelRpc } as unknown as ConversationRepositoryClient,
         {
-          organizationId: "org-1",
-          ownerUserId: "user-1",
-          conversationId: "conversation-1",
-          turnId: "turn-1",
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          turnId: v2Ids.turnId,
         },
       ),
     ).resolves.toMatchObject({ outcome: "cancelled", cancelRequested: true });
     expect(cancelRpc).toHaveBeenCalledWith("cancel_ai_chat_turn", {
-      p_organization_id: "org-1",
-      p_owner_user_id: "user-1",
-      p_conversation_id: "conversation-1",
-      p_turn_id: "turn-1",
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_conversation_id: v2Ids.conversationId,
+      p_turn_id: v2Ids.turnId,
     });
 
     const renewRpc = vi.fn().mockResolvedValue({ data: true, error: null });
     await renewAiConversationTurnLeaseV2(
       { rpc: renewRpc } as unknown as ConversationRepositoryClient,
-      { organizationId: "org-1", ownerUserId: "user-1", turnId: "turn-1" },
+      {
+        organizationId: v2Ids.organizationId,
+        ownerUserId: v2Ids.ownerUserId,
+        turnId: v2Ids.turnId,
+      },
     );
     expect(renewRpc).toHaveBeenCalledWith("renew_ai_chat_turn_lease", {
-      p_organization_id: "org-1",
-      p_owner_user_id: "user-1",
-      p_turn_id: "turn-1",
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_turn_id: v2Ids.turnId,
     });
 
     const stateRpc = vi.fn().mockResolvedValue({
@@ -440,9 +452,9 @@ describe("Xingyao conversation repository", () => {
       compareAndSwapAiConversationGatewayState(
         { rpc: stateRpc } as unknown as ConversationRepositoryClient,
         {
-          organizationId: "org-1",
-          ownerUserId: "user-1",
-          conversationId: "conversation-1",
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
           expectedGeneration: 1,
           nextState: { generation: 2, sessionId: "session-1" },
         },
@@ -451,9 +463,9 @@ describe("Xingyao conversation repository", () => {
     expect(stateRpc).toHaveBeenCalledWith(
       "update_ai_conversation_hermes_state",
       {
-        p_organization_id: "org-1",
-        p_owner_user_id: "user-1",
-        p_conversation_id: "conversation-1",
+        p_organization_id: v2Ids.organizationId,
+        p_owner_user_id: v2Ids.ownerUserId,
+        p_conversation_id: v2Ids.conversationId,
         p_expected_generation: 1,
         p_next_hermes_state: { generation: 2, sessionId: "session-1" },
       },

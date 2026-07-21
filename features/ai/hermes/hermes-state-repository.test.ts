@@ -8,6 +8,7 @@ import {
   type HermesCapabilityActorSnapshot,
   type HermesRunCapabilityBinding,
   type HermesStateActor,
+  type HermesStateRepository,
   type HermesStateRepositoryClient,
 } from "./hermes-state-repository";
 
@@ -130,6 +131,7 @@ describe("Hermes state repository", () => {
 
     await expect(
       claimRepository.claimBrokerCall(
+        actor,
         TOKEN_SHA256,
         ACTOR_FINGERPRINT,
         CLAIM_OWNER_ID,
@@ -142,6 +144,8 @@ describe("Hermes state repository", () => {
     expect(claimClient.rpc).toHaveBeenCalledWith(
       "claim_ai_hermes_broker_call",
       {
+        p_organization_id: ORGANIZATION_ID,
+        p_owner_user_id: USER_ID,
         p_token_sha256: TOKEN_SHA256,
         p_actor_fingerprint: ACTOR_FINGERPRINT,
         p_claim_owner_id: CLAIM_OWNER_ID,
@@ -165,6 +169,7 @@ describe("Hermes state repository", () => {
       completeClient.client,
     );
     await completeRepository.completeBrokerCall(
+      actor,
       BROKER_CALL_ID,
       CLAIM_OWNER_ID,
       7,
@@ -174,6 +179,8 @@ describe("Hermes state repository", () => {
     expect(completeClient.rpc).toHaveBeenCalledWith(
       "complete_ai_hermes_broker_call",
       {
+        p_organization_id: ORGANIZATION_ID,
+        p_owner_user_id: USER_ID,
         p_broker_call_id: BROKER_CALL_ID,
         p_claim_owner_id: CLAIM_OWNER_ID,
         p_fencing_token: 7,
@@ -453,6 +460,7 @@ describe("Hermes state repository", () => {
     ]) {
       await expect(
         repository.claimBrokerCall(
+          actor,
           TOKEN_SHA256,
           ACTOR_FINGERPRINT,
           CLAIM_OWNER_ID,
@@ -464,6 +472,329 @@ describe("Hermes state repository", () => {
       ).rejects.toMatchObject({ code: "invalid_input" });
     }
     expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "jws",
+    "JWT",
+    "actor_jws",
+    "authorization",
+    "bearer_token",
+    "api_key",
+    "service_token",
+    "cookie",
+    "password",
+    "private_key",
+  ])(
+    "recursively rejects raw secret key %s on every persisted JSON surface",
+    async (forbiddenKey) => {
+      const payload = { nested: [{ [forbiddenKey]: "raw-secret" }] };
+      const operations: Array<
+        (repository: HermesStateRepository) => Promise<unknown>
+      > = [
+        (repository) =>
+          repository.claimBrokerCall(
+            actor,
+            TOKEN_SHA256,
+            ACTOR_FINGERPRINT,
+            CLAIM_OWNER_ID,
+            "tool-call-secret",
+            "tool.alpha",
+            REQUEST_SHA256,
+            payload,
+          ),
+        (repository) =>
+          repository.completeBrokerCall(
+            actor,
+            BROKER_CALL_ID,
+            CLAIM_OWNER_ID,
+            1,
+            "completed",
+            payload,
+          ),
+        (repository) =>
+          repository.appendToolMessage(actor, TURN_ID, {
+            content: "Tool completed",
+            metadata: payload,
+          }),
+        (repository) =>
+          repository.upsertSkillDraft(actor, {
+            skillId: "risk_review",
+            version: 1,
+            manifest: payload,
+            bundle: "skill bundle",
+          }),
+        (repository) =>
+          repository.compareAndSwapGatewayState(
+            actor,
+            CONVERSATION_ID,
+            1,
+            { generation: 2, ...payload },
+          ),
+        (repository) =>
+          repository.finishTurn(actor, TURN_ID, {
+            outcome: "complete",
+            content: "Complete",
+            retryable: false,
+            metadata: payload,
+          }),
+      ];
+
+      for (const operation of operations) {
+        const { client, rpc } = rpcClient({ data: null, error: null });
+        await expect(
+          operation(createHermesStateRepository(client)),
+        ).rejects.toMatchObject({ code: "invalid_input" });
+        expect(rpc).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("allows explicit secret hashes in sanitized envelopes", async () => {
+    const { client, rpc } = rpcClient({
+      data: {
+        broker_call_id: BROKER_CALL_ID,
+        status: "claimed",
+        execute: true,
+        reused: false,
+        fencing_token: 1,
+        sanitized_response_envelope: null,
+      },
+      error: null,
+    });
+    const hashes = {
+      jwtSha256: "1".repeat(64),
+      api_key_hash: "2".repeat(64),
+      serviceTokenSha256: "3".repeat(64),
+    };
+
+    await createHermesStateRepository(client).claimBrokerCall(
+      actor,
+      TOKEN_SHA256,
+      ACTOR_FINGERPRINT,
+      CLAIM_OWNER_ID,
+      "tool-call-hashes",
+      "tool.alpha",
+      REQUEST_SHA256,
+      { hashes },
+    );
+
+    expect(rpc).toHaveBeenCalledWith(
+      "claim_ai_hermes_broker_call",
+      expect.objectContaining({ p_sanitized_request_envelope: { hashes } }),
+    );
+  });
+
+  it.each(["organizationId", "userId", "conversationId", "invocationId"])(
+    "rejects a non-UUID actor %s at the repository boundary",
+    async (field) => {
+      const invalidActor = { ...actor, [field]: "not-a-uuid" };
+      const { client, rpc } = rpcClient({ data: null, error: null });
+
+      await expect(
+        createHermesStateRepository(client).appendToolMessage(
+          invalidActor,
+          TURN_ID,
+          { content: "Tool completed" },
+        ),
+      ).rejects.toMatchObject({ code: "invalid_input" });
+      expect(rpc).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    {
+      name: "capability_id",
+      data: {
+        capability_id: "not-a-uuid",
+        expires_at: "2026-07-22T05:05:00.000Z",
+      },
+      invoke: (repository: HermesStateRepository) =>
+        repository.issueRunCapability(
+          actorSnapshot,
+          { id: TURN_ID, conversationId: CONVERSATION_ID },
+          capabilityBinding,
+          new Date("2026-07-22T05:05:00.000Z"),
+        ),
+    },
+    {
+      name: "broker_call_id from claim",
+      data: {
+        broker_call_id: "not-a-uuid",
+        status: "claimed",
+        execute: true,
+        reused: false,
+        fencing_token: 1,
+        sanitized_response_envelope: null,
+      },
+      invoke: (repository: HermesStateRepository) =>
+        repository.claimBrokerCall(
+          actor,
+          TOKEN_SHA256,
+          ACTOR_FINGERPRINT,
+          CLAIM_OWNER_ID,
+          "tool-call-invalid-id",
+          "tool.alpha",
+          REQUEST_SHA256,
+          {},
+        ),
+    },
+    {
+      name: "broker_call_id from completion",
+      data: {
+        broker_call_id: "not-a-uuid",
+        status: "completed",
+        reused: false,
+        fencing_token: 1,
+      },
+      invoke: (repository: HermesStateRepository) =>
+        repository.completeBrokerCall(
+          actor,
+          BROKER_CALL_ID,
+          CLAIM_OWNER_ID,
+          1,
+          "completed",
+          {},
+        ),
+    },
+    {
+      name: "message_id",
+      data: { message_id: "not-a-uuid", sequence_no: 1 },
+      invoke: (repository: HermesStateRepository) =>
+        repository.appendToolMessage(actor, TURN_ID, {
+          content: "Tool completed",
+        }),
+    },
+    {
+      name: "memory_id",
+      data: {
+        memory_id: "not-a-uuid",
+        memory_key: MEMORY_KEY,
+        revision: 1,
+        active: true,
+        reused: false,
+      },
+      invoke: (repository: HermesStateRepository) =>
+        repository.writeMemoryRevision(actor, {
+          idempotencyKey: "memory-invalid-id",
+          memoryKey: null,
+          expectedRevision: 0,
+          memoryType: "preference",
+          content: "Remember this",
+          active: true,
+          sourceMessageId: MESSAGE_ID,
+        }),
+    },
+    {
+      name: "memory_key",
+      data: {
+        memory_id: MEMORY_ID,
+        memory_key: "not-a-uuid",
+        revision: 1,
+        active: true,
+        reused: false,
+      },
+      invoke: (repository: HermesStateRepository) =>
+        repository.writeMemoryRevision(actor, {
+          idempotencyKey: "memory-invalid-key",
+          memoryKey: null,
+          expectedRevision: 0,
+          memoryType: "preference",
+          content: "Remember this",
+          active: true,
+          sourceMessageId: MESSAGE_ID,
+        }),
+    },
+    {
+      name: "draft_id from write",
+      data: { draft_id: "not-a-uuid", status: "draft", reused: false },
+      invoke: (repository: HermesStateRepository) =>
+        repository.upsertSkillDraft(actor, {
+          skillId: "risk_review",
+          version: 1,
+          manifest: {},
+          bundle: "skill bundle",
+        }),
+    },
+    {
+      name: "draft_id from review",
+      data: { draft_id: "not-a-uuid", status: "approved" },
+      invoke: (repository: HermesStateRepository) =>
+        repository.reviewSkillDraft(actor, {
+          draftId: DRAFT_ID,
+          nextStatus: "approved",
+          signature: "signature",
+          signingKeyId: "public-key-id",
+        }),
+    },
+    {
+      name: "turn_id",
+      data: {
+        turn_id: "not-a-uuid",
+        status: "cancelled",
+        cancel_requested: true,
+        already_terminal: false,
+      },
+      invoke: (repository: HermesStateRepository) =>
+        repository.cancelTurn(actor, CONVERSATION_ID, TURN_ID),
+    },
+  ])("fails closed on malformed success UUID $name", async ({ data, invoke }) => {
+    const { client } = rpcClient({ data, error: null });
+    await expect(invoke(createHermesStateRepository(client))).rejects.toMatchObject(
+      { code: "state_conflict" },
+    );
+  });
+
+  it.each([
+    "2026-07-22",
+    "2026-02-30T05:05:00.000Z",
+    "not-an-iso-date",
+  ])("fails closed on malformed success timestamp %s", async (expiresAt) => {
+    const { client } = rpcClient({
+      data: { capability_id: CAPABILITY_ID, expires_at: expiresAt },
+      error: null,
+    });
+
+    await expect(
+      createHermesStateRepository(client).issueRunCapability(
+        actorSnapshot,
+        { id: TURN_ID, conversationId: CONVERSATION_ID },
+        capabilityBinding,
+        new Date("2026-07-22T05:05:00.000Z"),
+      ),
+    ).rejects.toMatchObject({ code: "state_conflict" });
+  });
+
+  it.each([
+    "id",
+    "memory_key",
+    "source_conversation_id",
+    "source_message_id",
+    "source_invocation_id",
+  ])("fails closed on malformed loaded memory UUID %s", async (field) => {
+    const row = {
+      id: MEMORY_ID,
+      memory_key: MEMORY_KEY,
+      memory_type: "preference",
+      content: "Prefer concise answers",
+      content_hash: "e".repeat(64),
+      revision: 2,
+      source_conversation_id: CONVERSATION_ID,
+      source_message_id: MESSAGE_ID,
+      source_invocation_id: INVOCATION_ID,
+      created_at: "2026-07-22T05:00:00.000Z",
+      updated_at: "2026-07-22T05:01:00.000Z",
+      [field]: "not-a-uuid",
+    };
+    const query = memoryQuery({ data: [row], error: null });
+    const client = {
+      from: vi.fn(() => query.builder),
+      rpc: vi.fn(),
+    } as unknown as HermesStateRepositoryClient;
+
+    await expect(
+      createHermesStateRepository(client).loadActiveMemories(actor),
+    ).rejects.toMatchObject({ code: "state_conflict" });
   });
 
   it.each([
@@ -498,6 +829,7 @@ describe("Hermes state repository", () => {
 
     await expect(
       createHermesStateRepository(client).claimBrokerCall(
+        actor,
         TOKEN_SHA256,
         ACTOR_FINGERPRINT,
         CLAIM_OWNER_ID,

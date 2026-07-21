@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { AiProviderName } from "../contracts";
-import { isHermesOutcome, type HermesOutcome } from "./contracts";
+import { isHermesOutcome, isUuid, type HermesOutcome } from "./contracts";
 
 type RepositoryResult<T> = { data: T | null; error: unknown };
 
@@ -191,6 +191,7 @@ export type HermesStateRepository = {
     expiresAt: Date,
   ): Promise<IssuedHermesCapability>;
   claimBrokerCall(
+    actor: HermesStateOwnerActor,
     capabilityHash: string,
     actorFingerprint: string,
     claimOwnerId: string,
@@ -200,6 +201,7 @@ export type HermesStateRepository = {
     sanitizedEnvelope: Record<string, unknown>,
   ): Promise<HermesBrokerCallClaim>;
   completeBrokerCall(
+    actor: HermesStateOwnerActor,
     claimId: string,
     claimOwnerId: string,
     fencingToken: number,
@@ -248,11 +250,10 @@ export function createHermesStateRepository(
 ): HermesStateRepository {
   return {
     async issueRunCapability(actorSnapshot, turn, binding, expiresAt) {
-      requireIdentity(actorSnapshot);
-      requireNonEmpty(actorSnapshot.conversationId);
-      requireNonEmpty(actorSnapshot.invocationId);
+      requireActor(actorSnapshot);
       requireHash(actorSnapshot.actorFingerprint);
-      requireNonEmpty(turn.id);
+      requireUuidInput(turn.id);
+      requireUuidInput(turn.conversationId);
       if (turn.conversationId !== actorSnapshot.conversationId) invalidInput();
       const allowedTools = canonicalTextList(binding.allowedTools);
       const scopes = canonicalTextList(binding.scopes);
@@ -270,7 +271,7 @@ export function createHermesStateRepository(
       if (binding.depth > 0 && !binding.parentCapability) invalidInput();
       if (binding.depth > 0 && binding.aiStateWritesAllowed) invalidInput();
       if (binding.parentCapability) {
-        requireNonEmpty(binding.parentCapability.invocationId);
+        requireUuidInput(binding.parentCapability.invocationId);
         requireHash(binding.parentCapability.tokenSha256);
       }
       if (
@@ -305,6 +306,7 @@ export function createHermesStateRepository(
     },
 
     async claimBrokerCall(
+      actor,
       capabilityHash,
       actorFingerprint,
       claimOwnerId,
@@ -313,14 +315,17 @@ export function createHermesStateRepository(
       requestHash,
       sanitizedEnvelope,
     ) {
+      requireIdentity(actor);
       requireHash(capabilityHash);
       requireHash(actorFingerprint);
-      requireNonEmpty(claimOwnerId);
+      requireUuidInput(claimOwnerId);
       requireNonEmpty(toolCallId);
       requireNonEmpty(toolName);
       requireHash(requestHash);
       const envelope = copySanitizedObject(sanitizedEnvelope);
       const data = await callRpc(client, "claim_ai_hermes_broker_call", {
+        p_organization_id: actor.organizationId,
+        p_owner_user_id: actor.userId,
         p_token_sha256: capabilityHash.toLowerCase(),
         p_actor_fingerprint: actorFingerprint.toLowerCase(),
         p_claim_owner_id: claimOwnerId,
@@ -333,18 +338,22 @@ export function createHermesStateRepository(
     },
 
     async completeBrokerCall(
+      actor,
       claimId,
       claimOwnerId,
       fencingToken,
       status,
       sanitizedEnvelope,
     ) {
-      requireNonEmpty(claimId);
-      requireNonEmpty(claimOwnerId);
+      requireIdentity(actor);
+      requireUuidInput(claimId);
+      requireUuidInput(claimOwnerId);
       if (!isPositiveInteger(fencingToken)) invalidInput();
       if (!isBrokerTerminalStatus(status)) invalidInput();
       const envelope = copySanitizedObject(sanitizedEnvelope);
       const data = await callRpc(client, "complete_ai_hermes_broker_call", {
+        p_organization_id: actor.organizationId,
+        p_owner_user_id: actor.userId,
         p_broker_call_id: claimId,
         p_claim_owner_id: claimOwnerId,
         p_fencing_token: fencingToken,
@@ -357,7 +366,7 @@ export function createHermesStateRepository(
 
     async appendToolMessage(actor, turnId, auditMessage) {
       requireActor(actor);
-      requireNonEmpty(turnId);
+      requireUuidInput(turnId);
       requireNonEmpty(auditMessage.content);
       const metadata = copySanitizedObject(auditMessage.metadata ?? {});
       const data = await callRpc(client, "append_ai_hermes_tool_message", {
@@ -393,12 +402,12 @@ export function createHermesStateRepository(
     async writeMemoryRevision(actor, proposal) {
       requireActor(actor);
       requireNonEmpty(proposal.idempotencyKey);
-      if (proposal.memoryKey !== null) requireNonEmpty(proposal.memoryKey);
+      if (proposal.memoryKey !== null) requireUuidInput(proposal.memoryKey);
       if (!isNonNegativeInteger(proposal.expectedRevision)) invalidInput();
       if (!isMemoryType(proposal.memoryType)) invalidInput();
       requireNonEmpty(proposal.content);
       if (typeof proposal.active !== "boolean") invalidInput();
-      requireNonEmpty(proposal.sourceMessageId);
+      requireUuidInput(proposal.sourceMessageId);
       const data = await callRpc(client, "write_ai_hermes_memory_revision", {
         p_organization_id: actor.organizationId,
         p_owner_user_id: actor.userId,
@@ -438,7 +447,7 @@ export function createHermesStateRepository(
 
     async reviewSkillDraft(ownerActor, command) {
       requireIdentity(ownerActor);
-      requireNonEmpty(command.draftId);
+      requireUuidInput(command.draftId);
       if (!isReviewStatus(command.nextStatus)) invalidInput();
       const data = await callRpc(client, "review_ai_hermes_skill_draft", {
         p_organization_id: ownerActor.organizationId,
@@ -460,7 +469,7 @@ export function createHermesStateRepository(
       nextState,
     ) {
       requireIdentity(actor);
-      requireNonEmpty(conversationId);
+      requireUuidInput(conversationId);
       if (!isNonNegativeInteger(expectedGeneration)) invalidInput();
       const state = copySanitizedObject(nextState);
       const data = await callRpc(
@@ -479,8 +488,8 @@ export function createHermesStateRepository(
 
     async cancelTurn(actor, conversationId, turnId) {
       requireIdentity(actor);
-      requireNonEmpty(conversationId);
-      requireNonEmpty(turnId);
+      requireUuidInput(conversationId);
+      requireUuidInput(turnId);
       const data = await callRpc(client, "cancel_ai_chat_turn", {
         p_organization_id: actor.organizationId,
         p_owner_user_id: actor.userId,
@@ -492,7 +501,7 @@ export function createHermesStateRepository(
 
     async renewTurnLease(actor, turnId) {
       requireIdentity(actor);
-      requireNonEmpty(turnId);
+      requireUuidInput(turnId);
       const data = await callRpc(client, "renew_ai_chat_turn_lease", {
         p_organization_id: actor.organizationId,
         p_owner_user_id: actor.userId,
@@ -505,8 +514,8 @@ export function createHermesStateRepository(
 
     async finishTurn(actor, turnId, result) {
       requireIdentity(actor);
-      requireNonEmpty(actor.invocationId);
-      requireNonEmpty(turnId);
+      requireUuidInput(actor.invocationId);
+      requireUuidInput(turnId);
       if (!isHermesOutcome(result.outcome)) invalidInput();
       if (typeof result.retryable !== "boolean") invalidInput();
       const metadata = copySanitizedObject(result.metadata ?? {});
@@ -579,9 +588,8 @@ async function callRpc(
 
 function parseIssuedCapability(value: unknown): IssuedHermesCapability {
   if (!isRecord(value)) malformedPayload();
-  const capabilityId = requiredString(value.capability_id);
-  const expiresAt = requiredString(value.expires_at);
-  if (!Number.isFinite(Date.parse(expiresAt))) malformedPayload();
+  const capabilityId = requiredUuid(value.capability_id);
+  const expiresAt = requiredDateString(value.expires_at);
   return { capabilityId, expiresAt };
 }
 
@@ -596,7 +604,7 @@ function parseBrokerClaim(value: unknown): HermesBrokerCallClaim {
   const response = value.sanitized_response_envelope;
   if (response !== null && !isRecord(response)) malformedPayload();
   return {
-    brokerCallId: requiredString(value.broker_call_id),
+    brokerCallId: requiredUuid(value.broker_call_id),
     status,
     execute: value.execute,
     reused: value.reused,
@@ -612,7 +620,7 @@ function parseBrokerCompletion(value: unknown): CompletedHermesBrokerCall {
   }
   if (typeof value.reused !== "boolean") malformedPayload();
   return {
-    brokerCallId: requiredString(value.broker_call_id),
+    brokerCallId: requiredUuid(value.broker_call_id),
     status: value.status,
     reused: value.reused,
     fencingToken: requiredPositiveInteger(value.fencing_token),
@@ -622,7 +630,7 @@ function parseBrokerCompletion(value: unknown): CompletedHermesBrokerCall {
 function parseAppendedToolMessage(value: unknown): AppendedHermesToolMessage {
   if (!isRecord(value)) malformedPayload();
   return {
-    messageId: requiredString(value.message_id),
+    messageId: requiredUuid(value.message_id),
     sequence: requiredPositiveInteger(value.sequence_no),
   };
 }
@@ -630,15 +638,15 @@ function parseAppendedToolMessage(value: unknown): AppendedHermesToolMessage {
 function parseMemory(value: unknown): HermesMemory {
   if (!isRecord(value) || !isMemoryType(value.memory_type)) malformedPayload();
   return {
-    id: requiredString(value.id),
-    memoryKey: requiredString(value.memory_key),
+    id: requiredUuid(value.id),
+    memoryKey: requiredUuid(value.memory_key),
     memoryType: value.memory_type,
     content: requiredString(value.content),
     contentHash: requiredHash(value.content_hash),
     revision: requiredPositiveInteger(value.revision),
-    sourceConversationId: requiredString(value.source_conversation_id),
-    sourceMessageId: requiredString(value.source_message_id),
-    sourceInvocationId: requiredString(value.source_invocation_id),
+    sourceConversationId: requiredUuid(value.source_conversation_id),
+    sourceMessageId: requiredUuid(value.source_message_id),
+    sourceInvocationId: requiredUuid(value.source_invocation_id),
     createdAt: requiredDateString(value.created_at),
     updatedAt: requiredDateString(value.updated_at),
   };
@@ -650,8 +658,8 @@ function parseMemoryRevision(value: unknown): HermesMemoryRevision {
     malformedPayload();
   }
   return {
-    memoryId: requiredString(value.memory_id),
-    memoryKey: requiredString(value.memory_key),
+    memoryId: requiredUuid(value.memory_id),
+    memoryKey: requiredUuid(value.memory_key),
     revision: requiredPositiveInteger(value.revision),
     active: value.active,
     reused: value.reused,
@@ -662,7 +670,7 @@ function parseSkillDraftWrite(value: unknown): HermesSkillDraftWrite {
   if (!isRecord(value) || !isSkillDraftStatus(value.status)) malformedPayload();
   if (typeof value.reused !== "boolean") malformedPayload();
   return {
-    draftId: requiredString(value.draft_id),
+    draftId: requiredUuid(value.draft_id),
     status: value.status,
     reused: value.reused,
   };
@@ -671,7 +679,7 @@ function parseSkillDraftWrite(value: unknown): HermesSkillDraftWrite {
 function parseSkillDraftReview(value: unknown): HermesSkillDraftReview {
   if (!isRecord(value) || !isReviewStatus(value.status)) malformedPayload();
   return {
-    draftId: requiredString(value.draft_id),
+    draftId: requiredUuid(value.draft_id),
     status: value.status,
   };
 }
@@ -703,7 +711,7 @@ function parseTurnCancellation(value: unknown): HermesTurnCancellation {
     malformedPayload();
   }
   return {
-    turnId: requiredString(value.turn_id),
+    turnId: requiredUuid(value.turn_id),
     status: value.status,
     outcome: value.status === "cancelled" ? "cancelled" : null,
     cancelRequested,
@@ -714,11 +722,21 @@ function parseTurnCancellation(value: unknown): HermesTurnCancellation {
 const FORBIDDEN_PAYLOAD_KEYS = new Set([
   "actorassertion",
   "actorjws",
+  "authorization",
+  "bearer",
+  "bearertoken",
   "capabilitytoken",
+  "cookie",
+  "jws",
+  "jwstoken",
+  "jwt",
+  "jwttoken",
   "organizationid",
   "owneruserid",
+  "password",
   "privatekey",
   "rawcapability",
+  "servicetoken",
   "signingprivatekey",
   "userid",
 ]);
@@ -756,7 +774,7 @@ function copySanitizedValue(
   const copy: Record<string, unknown> = {};
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key !== "string") invalidInput();
-    if (FORBIDDEN_PAYLOAD_KEYS.has(normalizePayloadKey(key))) invalidInput();
+    if (isForbiddenPayloadKey(key)) invalidInput();
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
       invalidInput();
@@ -768,6 +786,21 @@ function copySanitizedValue(
 
 function normalizePayloadKey(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isForbiddenPayloadKey(value: string): boolean {
+  const normalized = normalizePayloadKey(value);
+  if (normalized.endsWith("hash") || normalized.endsWith("sha256")) {
+    return false;
+  }
+  return (
+    FORBIDDEN_PAYLOAD_KEYS.has(normalized) ||
+    normalized.includes("authorization") ||
+    normalized.endsWith("apikey") ||
+    normalized.endsWith("servicetoken") ||
+    normalized.includes("cookie") ||
+    normalized.endsWith("password")
+  );
 }
 
 function canonicalTextList(values: readonly string[]): string[] {
@@ -784,7 +817,7 @@ function canonicalUuidList(values: readonly string[]): string[] {
   if (!Array.isArray(values)) invalidInput();
   return sortUnique(
     values.map((value) => {
-      requireNonEmpty(value);
+      requireUuidInput(value);
       if (value !== value.trim()) invalidInput();
       return value.toLowerCase();
     }),
@@ -809,13 +842,17 @@ function sha256(value: string): string {
 
 function requireActor(actor: HermesStateActor): void {
   requireIdentity(actor);
-  requireNonEmpty(actor.conversationId);
-  requireNonEmpty(actor.invocationId);
+  requireUuidInput(actor.conversationId);
+  requireUuidInput(actor.invocationId);
 }
 
 function requireIdentity(actor: HermesStateOwnerActor): void {
-  requireNonEmpty(actor.organizationId);
-  requireNonEmpty(actor.userId);
+  requireUuidInput(actor.organizationId);
+  requireUuidInput(actor.userId);
+}
+
+function requireUuidInput(value: unknown): asserts value is string {
+  if (typeof value !== "string" || !isUuid(value)) invalidInput();
 }
 
 function requireHash(value: unknown): asserts value is string {
@@ -838,10 +875,58 @@ function requiredString(value: unknown): string {
   return value;
 }
 
+function requiredUuid(value: unknown): string {
+  if (typeof value !== "string" || !isUuid(value)) malformedPayload();
+  return value;
+}
+
 function requiredDateString(value: unknown): string {
   const text = requiredString(value);
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/.exec(
+      text,
+    );
+  if (!match) malformedPayload();
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (
+    year < 1 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth(year, month) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    malformedPayload();
+  }
+  const zone = match[8];
+  if (zone !== "Z") {
+    const offsetHour = Number(zone.slice(1, 3));
+    const offsetMinute = Number(zone.slice(4, 6));
+    if (
+      offsetHour > 14 ||
+      offsetMinute > 59 ||
+      (offsetHour === 14 && offsetMinute !== 0)
+    ) {
+      malformedPayload();
+    }
+  }
   if (!Number.isFinite(Date.parse(text))) malformedPayload();
   return text;
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leap ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
 
 function requiredPositiveInteger(value: unknown): number {

@@ -1330,6 +1330,40 @@ describe("Xingyao conversation service", () => {
     });
   });
 
+  it("does not let a runtime finish payload override verified identity or turn", async () => {
+    const store = persistence();
+    const service = createConversationService(store);
+    const maliciousInput = {
+      invocationId: "invocation-1",
+      outcome: "complete" as const,
+      content: "可信回答",
+      providerName: "deepseek" as const,
+      errorCode: null,
+      errorSummary: null,
+      retryable: false,
+      metadata: {},
+      organizationId: "attacker-org",
+      ownerUserId: "attacker-user",
+      turnId: "attacker-turn",
+    };
+
+    await service.finishTurnV2(actor, "turn-1", maliciousInput);
+
+    expect(store.finishTurnV2).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      turnId: "turn-1",
+      invocationId: "invocation-1",
+      outcome: "complete",
+      content: "可信回答",
+      providerName: "deepseek",
+      errorCode: null,
+      errorSummary: null,
+      retryable: false,
+      metadata: {},
+    });
+  });
+
   it("normalizes unknown Hermes persistence failures without leaking internals", async () => {
     const store = persistence({
       cancelTurnV2: vi

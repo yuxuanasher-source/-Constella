@@ -182,6 +182,11 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(table).not.toMatch(/\n\s*(raw_response|response)\s+jsonb/);
 
     expect(claim).toContain("for update");
+    expect(claim).toContain("p_organization_id uuid");
+    expect(claim).toContain("p_owner_user_id uuid");
+    expect(claim).toMatch(
+      /capability\.token_sha256 = lower\(p_token_sha256\)\s+and capability\.organization_id = p_organization_id\s+and capability\.owner_user_id = p_owner_user_id/,
+    );
     expect(claim).toMatch(/token_sha256\s*=\s*lower\(p_token_sha256\)/);
     expect(claim).toMatch(/revoked_at\s+is\s+null/);
     expect(claim).toMatch(/expires_at\s*>\s*now\(\)/);
@@ -448,6 +453,11 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(claim).toContain("'fencing_token'");
 
     expect(complete).toContain("p_claim_owner_id uuid");
+    expect(complete).toContain("p_organization_id uuid");
+    expect(complete).toContain("p_owner_user_id uuid");
+    expect(complete).toMatch(
+      /broker_call\.id = p_broker_call_id\s+and broker_call\.organization_id = p_organization_id\s+and broker_call\.owner_user_id = p_owner_user_id/,
+    );
     expect(complete).toContain("p_fencing_token bigint");
     expect(complete).toMatch(
       /v_call\.claim_owner_id is distinct from p_claim_owner_id\s+or v_call\.fencing_token is distinct from p_fencing_token/,
@@ -661,8 +671,10 @@ describe("Xingyao Hermes native state schema contract", () => {
   it("revokes and grants the hardened RPC signatures exactly", () => {
     const issueSignature =
       "text, uuid, uuid, uuid, uuid, uuid, uuid, text, text, text[], text, text[], text, text, uuid[], integer, boolean, timestamptz";
-    const claimSignature = "text, text, uuid, text, text, text, jsonb";
-    const completeSignature = "uuid, uuid, bigint, text, jsonb, text";
+    const claimSignature =
+      "uuid, uuid, text, text, uuid, text, text, text, jsonb";
+    const completeSignature =
+      "uuid, uuid, uuid, uuid, bigint, text, jsonb, text";
     const memorySignature =
       "uuid, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid";
 

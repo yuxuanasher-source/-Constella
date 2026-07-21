@@ -531,10 +531,17 @@ export function createConversationService(
       }
       try {
         await persistence.finishTurnV2({
+          invocationId: input.invocationId,
+          outcome: input.outcome,
+          content: input.content,
+          providerName: input.providerName,
+          errorCode: input.errorCode,
+          errorSummary: input.errorSummary,
+          retryable: input.retryable,
+          metadata: input.metadata,
           organizationId: actor.organizationId,
           ownerUserId: actor.userId,
           turnId,
-          ...input,
         });
       } catch (error) {
         throw mapHermesStateRepositoryError(error);

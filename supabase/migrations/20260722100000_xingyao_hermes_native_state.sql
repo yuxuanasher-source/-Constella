@@ -1135,7 +1135,13 @@ exception
 end;
 $$;
 
+drop function if exists public.claim_ai_hermes_broker_call(
+  text, text, uuid, text, text, text, jsonb
+);
+
 create or replace function public.claim_ai_hermes_broker_call(
+  p_organization_id uuid,
+  p_owner_user_id uuid,
   p_token_sha256 text,
   p_actor_fingerprint text,
   p_claim_owner_id uuid,
@@ -1153,7 +1159,9 @@ declare
   v_capability public.ai_hermes_run_capabilities%rowtype;
   v_existing public.ai_hermes_broker_calls%rowtype;
 begin
-  if lower(coalesce(p_token_sha256, '')) !~ '^[0-9a-f]{64}$'
+  if p_organization_id is null
+     or p_owner_user_id is null
+     or lower(coalesce(p_token_sha256, '')) !~ '^[0-9a-f]{64}$'
      or lower(coalesce(p_actor_fingerprint, '')) !~ '^[0-9a-f]{64}$' then
     raise exception 'capability_invalid';
   end if;
@@ -1169,6 +1177,8 @@ begin
   into v_capability
   from public.ai_hermes_run_capabilities capability
   where capability.token_sha256 = lower(p_token_sha256)
+    and capability.organization_id = p_organization_id
+    and capability.owner_user_id = p_owner_user_id
     and capability.revoked_at is null
     and capability.expires_at > now();
 
@@ -1197,6 +1207,8 @@ begin
   from public.ai_hermes_run_capabilities capability
   where capability.id = v_capability.id
     and capability.token_sha256 = lower(p_token_sha256)
+    and capability.organization_id = p_organization_id
+    and capability.owner_user_id = p_owner_user_id
     and capability.revoked_at is null
     and capability.expires_at > now()
   for update;
@@ -1324,7 +1336,9 @@ begin
   if found then
     update public.ai_hermes_run_capabilities
     set last_used_at = now()
-    where id = v_capability.id;
+    where id = v_capability.id
+      and organization_id = p_organization_id
+      and owner_user_id = p_owner_user_id;
 
     return jsonb_build_object(
       'broker_call_id', v_existing.id,
@@ -1340,6 +1354,8 @@ begin
   into v_existing
   from public.ai_hermes_broker_calls broker_call
   where broker_call.capability_id = v_capability.id
+    and broker_call.organization_id = p_organization_id
+    and broker_call.owner_user_id = p_owner_user_id
     and broker_call.tool_call_id = p_tool_call_id
   for update;
 
@@ -1355,7 +1371,9 @@ begin
 
   update public.ai_hermes_run_capabilities
   set last_used_at = now()
-  where id = v_capability.id;
+  where id = v_capability.id
+    and organization_id = p_organization_id
+    and owner_user_id = p_owner_user_id;
 
   if v_existing.status in ('completed', 'failed', 'denied') then
     return jsonb_build_object(
@@ -1400,6 +1418,8 @@ begin
       fencing_token = fencing_token + 1,
       claimed_at = now()
   where id = v_existing.id
+    and organization_id = p_organization_id
+    and owner_user_id = p_owner_user_id
   returning * into v_existing;
 
   return jsonb_build_object(
@@ -1413,7 +1433,13 @@ begin
 end;
 $$;
 
+drop function if exists public.complete_ai_hermes_broker_call(
+  uuid, uuid, bigint, text, jsonb, text
+);
+
 create or replace function public.complete_ai_hermes_broker_call(
+  p_organization_id uuid,
+  p_owner_user_id uuid,
   p_broker_call_id uuid,
   p_claim_owner_id uuid,
   p_fencing_token bigint,
@@ -1429,7 +1455,9 @@ as $$
 declare
   v_call public.ai_hermes_broker_calls%rowtype;
 begin
-  if p_claim_owner_id is null
+  if p_organization_id is null
+     or p_owner_user_id is null
+     or p_claim_owner_id is null
      or p_fencing_token is null
      or p_fencing_token <= 0
      or p_status is null
@@ -1442,6 +1470,8 @@ begin
   into v_call
   from public.ai_hermes_broker_calls broker_call
   where broker_call.id = p_broker_call_id
+    and broker_call.organization_id = p_organization_id
+    and broker_call.owner_user_id = p_owner_user_id
   for update;
 
   if not found then
@@ -1481,6 +1511,8 @@ begin
       error_code = nullif(trim(coalesce(p_error_code, '')), ''),
       completed_at = now()
   where id = v_call.id
+    and organization_id = p_organization_id
+    and owner_user_id = p_owner_user_id
     and claim_owner_id = p_claim_owner_id
     and fencing_token = p_fencing_token;
 
@@ -2415,10 +2447,10 @@ revoke all on function public.issue_ai_hermes_run_capability(
   text, uuid, uuid, uuid, uuid, uuid, uuid, text, text, text[], text, text[], text, text, uuid[], integer, boolean, timestamptz
 ) from public, anon, authenticated;
 revoke all on function public.claim_ai_hermes_broker_call(
-  text, text, uuid, text, text, text, jsonb
+  uuid, uuid, text, text, uuid, text, text, text, jsonb
 ) from public, anon, authenticated;
 revoke all on function public.complete_ai_hermes_broker_call(
-  uuid, uuid, bigint, text, jsonb, text
+  uuid, uuid, uuid, uuid, bigint, text, jsonb, text
 ) from public, anon, authenticated;
 revoke all on function public.append_ai_hermes_tool_message(
   uuid, uuid, uuid, uuid, uuid, text, jsonb
@@ -2456,10 +2488,10 @@ grant execute on function public.ai_hermes_canonical_uuid_array_sha256(
   uuid[]
 ) to service_role;
 grant execute on function public.claim_ai_hermes_broker_call(
-  text, text, uuid, text, text, text, jsonb
+  uuid, uuid, text, text, uuid, text, text, text, jsonb
 ) to service_role;
 grant execute on function public.complete_ai_hermes_broker_call(
-  uuid, uuid, bigint, text, jsonb, text
+  uuid, uuid, uuid, uuid, bigint, text, jsonb, text
 ) to service_role;
 grant execute on function public.append_ai_hermes_tool_message(
   uuid, uuid, uuid, uuid, uuid, text, jsonb
