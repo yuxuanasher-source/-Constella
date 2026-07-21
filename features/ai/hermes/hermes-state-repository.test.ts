@@ -941,6 +941,29 @@ describe("Hermes state repository", () => {
     expect(String(error)).not.toContain(message);
   });
 
+  it("maps an atomic capability parallel-limit rejection to state_conflict", async () => {
+    const { client } = rpcClient({
+      data: null,
+      error: { code: "P0001", message: "capability_parallel_limit" },
+    });
+
+    const error = await createHermesStateRepository(client)
+      .issueRunCapability(
+        actorSnapshot,
+        { id: TURN_ID, conversationId: CONVERSATION_ID },
+        capabilityBinding,
+        new Date("2026-07-22T05:05:00.000Z"),
+      )
+      .then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+    expect(error).toBeInstanceOf(HermesStateRepositoryError);
+    expect(error).toMatchObject({ code: "state_conflict" });
+    expect(String(error)).not.toContain("capability_parallel_limit");
+  });
+
   it("fails closed when an RPC succeeds with malformed data", async () => {
     const { client } = rpcClient({
       data: { status: "claimed", execute: true },

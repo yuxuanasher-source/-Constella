@@ -826,6 +826,7 @@ declare
   v_scope_hash text;
   v_skill_grants_hash text;
   v_root_invocation_id uuid;
+  v_active_direct_children bigint;
 begin
   if lower(coalesce(p_token_sha256, '')) !~ '^[0-9a-f]{64}$'
      or lower(coalesce(p_actor_fingerprint, '')) !~ '^[0-9a-f]{64}$'
@@ -1057,6 +1058,22 @@ begin
          or parent_skill_draft.signing_key_id is null
     ) then
       raise exception 'capability_parent_invalid';
+    end if;
+
+    select count(*)
+    into v_active_direct_children
+    from public.ai_hermes_run_capabilities child_capability
+    where child_capability.parent_capability_id = v_parent.id
+      and child_capability.organization_id = p_organization_id
+      and child_capability.owner_user_id = p_owner_user_id
+      and child_capability.conversation_id = p_conversation_id
+      and child_capability.turn_id = p_turn_id
+      and child_capability.revoked_at is null
+      and child_capability.expires_at > now();
+
+    if (v_turn.mode = 'fast' and v_active_direct_children >= 1)
+       or (v_turn.mode = 'deep' and v_active_direct_children >= 3) then
+      raise exception 'capability_parallel_limit';
     end if;
   end if;
 

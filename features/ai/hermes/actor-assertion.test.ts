@@ -156,6 +156,57 @@ describe("Hermes actor assertion", () => {
       ),
     ).rejects.toThrow("actor profile");
   });
+
+  it("accepts bounded Gateway clock skew and rejects future issued-at claims", async () => {
+    const keys = rsaKeyPair();
+    const gatewayProfile = {
+      ...PROFILE,
+      profileVersion: HERMES_PROFILE_VERSION,
+    };
+    const nearFuture = await signHermesActorAssertion(gatewayProfile, {
+      privateKeyPem: keys.privateKeyPem,
+      kid: "gateway-key-1",
+      now: new Date("2026-07-22T00:00:20.000Z"),
+      runtime: "gateway",
+    });
+    const farFuture = await signHermesActorAssertion(gatewayProfile, {
+      privateKeyPem: keys.privateKeyPem,
+      kid: "gateway-key-1",
+      now: new Date("2026-07-22T00:00:31.000Z"),
+      runtime: "gateway",
+    });
+
+    await expect(
+      verifyHermesActorAssertion(nearFuture, {
+        publicKeyPem: keys.publicKeyPem,
+        now: new Date("2026-07-22T00:00:00.000Z"),
+        runtime: "gateway",
+      }),
+    ).resolves.toMatchObject({ actor: gatewayProfile });
+    await expect(
+      verifyHermesActorAssertion(farFuture, {
+        publicKeyPem: keys.publicKeyPem,
+        now: new Date("2026-07-22T00:00:00.000Z"),
+        runtime: "gateway",
+      }),
+    ).rejects.toThrow("issued-at");
+    await expect(
+      verifyHermesActorAssertion(nearFuture, {
+        publicKeyPem: keys.publicKeyPem,
+        now: new Date("2026-07-22T00:00:00.000Z"),
+        runtime: "gateway",
+        clockSkewSeconds: 10,
+      }),
+    ).rejects.toThrow("issued-at");
+    await expect(
+      verifyHermesActorAssertion(nearFuture, {
+        publicKeyPem: keys.publicKeyPem,
+        now: new Date("2026-07-22T00:00:00.000Z"),
+        runtime: "gateway",
+        clockSkewSeconds: 31,
+      }),
+    ).rejects.toThrow("clock skew");
+  });
 });
 
 const PROFILE: HermesActorProfile = {

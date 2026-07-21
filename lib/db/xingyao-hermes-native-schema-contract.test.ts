@@ -345,6 +345,39 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
   });
 
+  it("serializes and enforces mode-aware direct child limits before capability insert", () => {
+    const issue = functionSql("issue_ai_hermes_run_capability");
+    const turnLock = issue.indexOf("from public.ai_chat_turns turn");
+    const turnLocked = issue.indexOf("for update", turnLock);
+    const parentLock = issue.indexOf(
+      "from public.ai_hermes_run_capabilities parent_capability",
+    );
+    const parentLocked = issue.indexOf("for update", parentLock);
+    const parallelCount = issue.indexOf("into v_active_direct_children");
+    const capabilityInsert = issue.indexOf(
+      "insert into public.ai_hermes_run_capabilities",
+    );
+
+    expect(turnLock).toBeGreaterThanOrEqual(0);
+    expect(turnLocked).toBeGreaterThan(turnLock);
+    expect(parentLock).toBeGreaterThan(turnLocked);
+    expect(parentLocked).toBeGreaterThan(parentLock);
+    expect(parallelCount).toBeGreaterThan(parentLocked);
+    expect(capabilityInsert).toBeGreaterThan(parallelCount);
+    expect(issue).toContain(
+      "child_capability.parent_capability_id = v_parent.id",
+    );
+    expect(issue).toContain("child_capability.revoked_at is null");
+    expect(issue).toContain("child_capability.expires_at > now()");
+    expect(issue).toMatch(
+      /v_turn\.mode = 'fast'[\s\S]*?v_active_direct_children >= 1/,
+    );
+    expect(issue).toMatch(
+      /v_turn\.mode = 'deep'[\s\S]*?v_active_direct_children >= 3/,
+    );
+    expect(issue).toContain("capability_parallel_limit");
+  });
+
   it("locks and validates every depth-3 capability ancestor", () => {
     const lineage = functionSql(
       "lock_and_validate_ai_hermes_capability_lineage",

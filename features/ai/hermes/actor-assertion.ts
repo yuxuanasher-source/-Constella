@@ -36,9 +36,13 @@ type VerifyOptions = {
   now?: Date;
   audience?: string;
   runtime?: HermesAssertionRuntime;
+  clockSkewSeconds?: number;
 };
 
 export type HermesAssertionRuntime = "legacy" | "gateway";
+
+const DEFAULT_CLOCK_SKEW_SECONDS = 30;
+const MAX_CLOCK_SKEW_SECONDS = 30;
 
 export async function signHermesActorAssertion(
   actor: HermesActorProfile,
@@ -100,6 +104,17 @@ export async function verifyHermesActorAssertion(
   header: { alg: "RS256"; kid?: string };
 }> {
   const runtime = options.runtime ?? "legacy";
+  const clockSkewSeconds =
+    options.clockSkewSeconds ?? DEFAULT_CLOCK_SKEW_SECONDS;
+  if (
+    !Number.isInteger(clockSkewSeconds) ||
+    clockSkewSeconds < 0 ||
+    clockSkewSeconds > MAX_CLOCK_SKEW_SECONDS
+  ) {
+    throw new Error(
+      `Hermes actor assertion clock skew must be between 0 and ${MAX_CLOCK_SKEW_SECONDS} seconds`,
+    );
+  }
   const header = decodeProtectedHeader(token);
   if (header.alg !== "RS256") {
     throw new Error("Hermes actor assertion must use RS256");
@@ -136,6 +151,9 @@ export async function verifyHermesActorAssertion(
   const nowSeconds = Math.floor((options.now ?? new Date()).getTime() / 1000);
   if (payload.exp <= nowSeconds) {
     throw new Error("Hermes actor assertion expired");
+  }
+  if (payload.iat > nowSeconds + clockSkewSeconds) {
+    throw new Error("Hermes actor assertion issued-at is in the future");
   }
   if (payload.exp <= payload.iat || payload.exp - payload.iat > 300) {
     throw new Error("Hermes actor assertion lifetime is invalid");

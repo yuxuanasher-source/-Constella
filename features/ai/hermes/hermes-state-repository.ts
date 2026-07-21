@@ -544,6 +544,9 @@ export function mapHermesStateRepositoryError(
 ): HermesStateRepositoryError {
   if (error instanceof HermesStateRepositoryError) return error;
   const text = errorText(error);
+  if (/capability_parallel_limit/.test(text)) {
+    return new HermesStateRepositoryError("state_conflict");
+  }
   if (/not_found|not found|pgrst116/.test(text)) {
     return new HermesStateRepositoryError("not_found");
   }
