@@ -2,7 +2,7 @@
 
 ## 状态
 
-- 设计状态：已确认，等待书面规格复核
+- 设计状态：已批准，进入实施计划
 - 产品基线：`origin/codex/full-project-ui` at `d8e066c`
 - 集成选择：方案 B，直接接入官方 TUI Gateway
 - 官方基线：Hermes Agent `v2026.7.20`（v0.19.0，签名发布标签，短提交 `3ef6bbd`）
