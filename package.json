@@ -25,7 +25,7 @@
     "test:p6-payment": "vitest run lib/db/p6-schema-contract.test.ts features/billing features/regression/p6-payment.test.ts",
     "test:onboarding-funnel": "vitest run lib/db/funnel-schema-contract.test.ts features/funnel features/regression/onboarding-funnel.test.ts",
     "test:async-tasks": "vitest run lib/db/async-task-schema-contract.test.ts features/async-tasks",
-    "test:ai-system": "vitest run lib/db/ai-schema-contract.test.ts features/ai app/api/ai app/api/ocr",
+    "test:ai-system": "vitest run lib/db/ai-schema-contract.test.ts lib/db/xingyao-hermes-native-schema-contract.test.ts features/ai app/api/ai app/api/ocr",
     "test:permissions": "vitest run features/live-operations/live-operations-service.test.ts features/settlements/settlement-service.test.ts",
     "test:custom-settlement": "vitest run features/settlements app/api/settlement-batches features/regression/custom-settlement-rules-golden-path.test.ts features/regression/custom-settlement-cost-reconciliation.test.ts",
     "test:ui-smoke": "vitest run components/reference-ui/ops-reference.test.jsx components/reference-ui/ops-reference-org-members.test.jsx components/reference-ui/streamer-mobile-reference.test.jsx",
