@@ -255,7 +255,7 @@ export async function executeHermesReadTool(
         actor,
         table: "projects",
         select:
-          "id, name, status, started_at, ended_at, created_at, updated_at",
+          "id, name, status, started_at:starts_at, ended_at:ends_at, created_at, updated_at",
         query: input.query,
         queryColumn: "name",
         limit: input.limit,
@@ -326,7 +326,7 @@ async function querySingleProject(
   const builder = client
     .from("projects")
     .select(
-      "id, name, status, started_at, ended_at, budget, settlement_method, created_at, updated_at",
+      "id, name, status, started_at:starts_at, ended_at:ends_at, settlement_method:default_settlement_method, default_hourly_rate, default_base_salary, created_at, updated_at",
     )
     .eq("organization_id", actor.organizationId)
     .eq("id", projectId) as unknown as QueryBuilder;
