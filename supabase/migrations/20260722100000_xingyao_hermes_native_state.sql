@@ -5,6 +5,24 @@ alter table public.ai_chat_turns
   add column if not exists outcome text,
   add column if not exists cancel_requested_at timestamptz;
 
+alter table public.ai_invocations
+  add constraint ai_invocations_identity_key unique (id, organization_id, actor_user_id);
+
+alter table public.ai_chat_turns
+  add constraint ai_chat_turns_identity_key unique (id, organization_id, owner_user_id, conversation_id, ai_invocation_id);
+
+alter table public.ai_chat_turns
+  add constraint ai_chat_turns_ai_invocation_tenant_fkey
+    foreign key (ai_invocation_id, organization_id, owner_user_id)
+    references public.ai_invocations(id, organization_id, actor_user_id)
+    not valid;
+
+alter table public.ai_chat_messages
+  add constraint ai_chat_messages_ai_invocation_tenant_fkey
+    foreign key (ai_invocation_id, organization_id, owner_user_id)
+    references public.ai_invocations(id, organization_id, actor_user_id)
+    not valid;
+
 alter table public.ai_chat_turns
   add constraint ai_chat_turns_outcome_check check (
     outcome is null or outcome in (
@@ -14,13 +32,16 @@ alter table public.ai_chat_turns
       'failed',
       'cancelled'
     )
-  ),
+  ) not valid,
   add constraint ai_chat_turns_outcome_status_check check (
     outcome is null
     or (outcome in ('complete', 'partial', 'blocked') and status = 'completed')
     or (outcome = 'failed' and status = 'failed')
     or (outcome = 'cancelled' and status = 'cancelled')
-  );
+  ) not valid;
+
+-- Validation is intentionally deferred to a later migration so this rollout
+-- does not scan and lock the existing turn ledger in the same transaction.
 
 create or replace function public.refresh_ai_chat_turn_lease()
 returns trigger
@@ -92,6 +113,7 @@ $$;
 create table public.ai_hermes_memories (
   id uuid primary key default extensions.gen_random_uuid(),
   memory_key uuid not null default extensions.gen_random_uuid(),
+  idempotency_key text not null,
   organization_id uuid not null references public.organizations(id) on delete cascade,
   owner_user_id uuid not null references public.profiles(id) on delete cascade,
   memory_type text not null,
@@ -101,9 +123,9 @@ create table public.ai_hermes_memories (
   active boolean not null default true,
   source_conversation_id uuid not null,
   source_message_id uuid not null,
-  source_invocation_id uuid not null references public.ai_invocations(id),
+  source_invocation_id uuid not null,
   deactivated_at timestamptz,
-  deactivated_by_invocation_id uuid references public.ai_invocations(id),
+  deactivated_by_invocation_id uuid,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint ai_hermes_memories_conversation_owner_fkey
@@ -122,10 +144,20 @@ create table public.ai_hermes_memories (
       organization_id,
       owner_user_id
     ),
+  constraint ai_hermes_memories_source_invocation_tenant_fkey
+    foreign key (source_invocation_id, organization_id, owner_user_id)
+    references public.ai_invocations(id, organization_id, actor_user_id),
+  constraint ai_hermes_memories_deactivation_invocation_tenant_fkey
+    foreign key (deactivated_by_invocation_id, organization_id, owner_user_id)
+    references public.ai_invocations(id, organization_id, actor_user_id),
   constraint ai_hermes_memories_revision_key
     unique (organization_id, owner_user_id, memory_key, revision),
-  constraint ai_hermes_memories_invocation_content_key
-    unique (source_invocation_id, content_hash),
+  constraint ai_hermes_memories_idempotency_key
+    unique (organization_id, owner_user_id, idempotency_key),
+  constraint ai_hermes_memories_idempotency_value_check check (
+    char_length(idempotency_key) between 1 and 200
+    and idempotency_key = trim(idempotency_key)
+  ),
   constraint ai_hermes_memories_type_check check (
     memory_type in (
       'preference',
@@ -170,7 +202,7 @@ create table public.ai_hermes_skill_drafts (
   bundle_sha256 text not null,
   status text not null default 'draft',
   source_conversation_id uuid not null,
-  source_invocation_id uuid not null references public.ai_invocations(id),
+  source_invocation_id uuid not null,
   reviewed_by uuid references public.profiles(id),
   reviewed_at timestamptz,
   review_note text,
@@ -182,6 +214,9 @@ create table public.ai_hermes_skill_drafts (
     foreign key (source_conversation_id, organization_id, owner_user_id)
     references public.ai_conversations(id, organization_id, owner_user_id)
     on delete cascade,
+  constraint ai_hermes_skill_drafts_source_invocation_tenant_fkey
+    foreign key (source_invocation_id, organization_id, owner_user_id)
+    references public.ai_invocations(id, organization_id, actor_user_id),
   constraint ai_hermes_skill_drafts_version_key
     unique (organization_id, owner_user_id, skill_id, version),
   constraint ai_hermes_skill_drafts_source_bundle_key
@@ -231,9 +266,11 @@ create table public.ai_hermes_run_capabilities (
   organization_id uuid not null references public.organizations(id) on delete cascade,
   owner_user_id uuid not null references public.profiles(id) on delete cascade,
   conversation_id uuid not null,
-  turn_id uuid not null references public.ai_chat_turns(id) on delete cascade,
-  invocation_id uuid not null references public.ai_invocations(id) on delete cascade,
-  parent_invocation_id uuid references public.ai_invocations(id) on delete cascade,
+  turn_id uuid not null,
+  invocation_id uuid not null,
+  root_invocation_id uuid not null,
+  parent_capability_id uuid,
+  parent_invocation_id uuid,
   actor_fingerprint text not null,
   allowed_tools text[] not null default '{}',
   allowed_tools_hash text not null,
@@ -248,10 +285,56 @@ create table public.ai_hermes_run_capabilities (
   last_used_at timestamptz,
   created_at timestamptz not null default now(),
   constraint ai_hermes_run_capabilities_token_key unique (token_sha256),
+  constraint ai_hermes_run_capabilities_identity_key
+    unique (id, organization_id, owner_user_id),
+  constraint ai_hermes_run_capabilities_parent_identity_key
+    unique (
+      id,
+      organization_id,
+      owner_user_id,
+      conversation_id,
+      turn_id,
+      root_invocation_id,
+      invocation_id
+    ),
   constraint ai_hermes_run_capabilities_conversation_owner_fkey
     foreign key (conversation_id, organization_id, owner_user_id)
     references public.ai_conversations(id, organization_id, owner_user_id)
     on delete cascade,
+  constraint ai_hermes_run_capabilities_turn_tenant_fkey
+    foreign key (turn_id, organization_id, owner_user_id, conversation_id, root_invocation_id)
+    references public.ai_chat_turns(id, organization_id, owner_user_id, conversation_id, ai_invocation_id)
+    on delete cascade,
+  constraint ai_hermes_run_capabilities_invocation_tenant_fkey
+    foreign key (invocation_id, organization_id, owner_user_id)
+    references public.ai_invocations(id, organization_id, actor_user_id)
+    on delete cascade,
+  constraint ai_hermes_run_capabilities_root_invocation_tenant_fkey
+    foreign key (root_invocation_id, organization_id, owner_user_id)
+    references public.ai_invocations(id, organization_id, actor_user_id)
+    on delete cascade,
+  constraint ai_hermes_run_capabilities_parent_invocation_tenant_fkey
+    foreign key (parent_invocation_id, organization_id, owner_user_id)
+    references public.ai_invocations(id, organization_id, actor_user_id)
+    on delete cascade,
+  constraint ai_hermes_run_capabilities_parent_tenant_fkey
+    foreign key (
+      parent_capability_id,
+      organization_id,
+      owner_user_id,
+      conversation_id,
+      turn_id,
+      root_invocation_id,
+      parent_invocation_id
+    ) references public.ai_hermes_run_capabilities(
+      id,
+      organization_id,
+      owner_user_id,
+      conversation_id,
+      turn_id,
+      root_invocation_id,
+      invocation_id
+    ) on delete cascade,
   constraint ai_hermes_run_capabilities_token_hash_check check (
     token_sha256 ~ '^[0-9a-f]{64}$'
   ),
@@ -271,8 +354,8 @@ create table public.ai_hermes_run_capabilities (
     depth >= 0 and depth <= 3
   ),
   constraint ai_hermes_run_capabilities_parent_check check (
-    (depth = 0 and parent_invocation_id is null)
-    or (depth > 0 and parent_invocation_id is not null)
+    (depth = 0 and root_invocation_id = invocation_id and parent_capability_id is null and parent_invocation_id is null)
+    or (depth > 0 and parent_capability_id is not null and parent_invocation_id is not null)
   ),
   constraint ai_hermes_run_capabilities_child_write_check check (
     depth = 0 or not ai_state_writes_allowed
@@ -294,8 +377,9 @@ create index ai_hermes_run_capabilities_turn_active_idx
 
 create table public.ai_hermes_broker_calls (
   id uuid primary key default extensions.gen_random_uuid(),
-  capability_id uuid not null references public.ai_hermes_run_capabilities(id) on delete cascade,
+  capability_id uuid not null,
   organization_id uuid not null references public.organizations(id) on delete cascade,
+  owner_user_id uuid not null references public.profiles(id) on delete cascade,
   tool_call_id text not null,
   tool_name text not null,
   request_sha256 text not null,
@@ -303,12 +387,20 @@ create table public.ai_hermes_broker_calls (
   status text not null default 'claimed',
   sanitized_response_envelope jsonb,
   error_code text,
+  claim_owner_id uuid not null,
+  claim_lease_expires_at timestamptz not null,
+  claim_attempt integer not null default 1,
+  fencing_token bigint not null default 1,
   claimed_at timestamptz not null default now(),
   completed_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint ai_hermes_broker_calls_tool_call_key
     unique (capability_id, tool_call_id),
+  constraint ai_hermes_broker_calls_capability_tenant_fkey
+    foreign key (capability_id, organization_id, owner_user_id)
+    references public.ai_hermes_run_capabilities(id, organization_id, owner_user_id)
+    on delete cascade,
   constraint ai_hermes_broker_calls_request_hash_check check (
     request_sha256 ~ '^[0-9a-f]{64}$'
   ),
@@ -317,6 +409,11 @@ create table public.ai_hermes_broker_calls (
   ),
   constraint ai_hermes_broker_calls_status_check check (
     status in ('claimed', 'completed', 'failed', 'denied')
+  ),
+  constraint ai_hermes_broker_calls_claim_attempt_check check (claim_attempt > 0),
+  constraint ai_hermes_broker_calls_fencing_token_check check (fencing_token > 0),
+  constraint ai_hermes_broker_calls_claim_lease_check check (
+    claim_lease_expires_at > claimed_at
   ),
   constraint ai_hermes_broker_calls_response_check check (
     (status = 'claimed' and sanitized_response_envelope is null and completed_at is null)
@@ -371,6 +468,7 @@ create or replace function public.issue_ai_hermes_run_capability(
   p_turn_id uuid,
   p_invocation_id uuid,
   p_parent_invocation_id uuid,
+  p_parent_token_sha256 text,
   p_actor_fingerprint text,
   p_allowed_tools text[],
   p_allowed_tools_hash text,
@@ -390,12 +488,14 @@ as $$
 declare
   v_capability_id uuid;
   v_turn public.ai_chat_turns%rowtype;
+  v_parent public.ai_hermes_run_capabilities%rowtype;
   v_allowed_tools text[];
   v_scopes text[];
   v_skill_draft_ids uuid[];
   v_allowed_tools_hash text;
   v_scope_hash text;
   v_skill_grants_hash text;
+  v_root_invocation_id uuid;
 begin
   if lower(coalesce(p_token_sha256, '')) !~ '^[0-9a-f]{64}$'
      or lower(coalesce(p_actor_fingerprint, '')) !~ '^[0-9a-f]{64}$'
@@ -404,10 +504,26 @@ begin
      or lower(coalesce(p_skill_grants_hash, '')) !~ '^[0-9a-f]{64}$' then
     raise exception 'capability_hash_invalid';
   end if;
+  if p_parent_token_sha256 is not null
+     and lower(p_parent_token_sha256) !~ '^[0-9a-f]{64}$' then
+    raise exception 'capability_parent_invalid';
+  end if;
   if p_depth is null or p_ai_state_writes_allowed is null
      or p_depth < 0 or p_depth > 3
-     or (p_depth = 0 and p_parent_invocation_id is not null)
-     or (p_depth > 0 and p_parent_invocation_id is null)
+     or (
+       p_depth = 0
+       and (
+         p_parent_token_sha256 is not null
+         or p_parent_invocation_id is not null
+       )
+     )
+     or (
+       p_depth > 0
+       and (
+         p_parent_token_sha256 is null
+         or p_parent_invocation_id is null
+       )
+     )
      or (p_depth > 0 and p_ai_state_writes_allowed) then
     raise exception 'capability_delegation_invalid';
   end if;
@@ -504,9 +620,15 @@ begin
     and turn.cancel_requested_at is null
   for update;
 
-  if not found
-     or (v_turn.ai_invocation_id is not null and v_turn.ai_invocation_id <> p_invocation_id) then
+  if not found then
     raise exception 'capability_context_invalid';
+  end if;
+  if p_depth = 0 then
+    v_root_invocation_id := p_invocation_id;
+    if v_turn.ai_invocation_id is not null
+       and v_turn.ai_invocation_id is distinct from v_root_invocation_id then
+      raise exception 'capability_context_invalid';
+    end if;
   end if;
 
   if not exists (
@@ -519,14 +641,83 @@ begin
     raise exception 'capability_context_invalid';
   end if;
 
-  if p_parent_invocation_id is not null and not exists (
-    select 1
-    from public.ai_invocations parent_invocation
-    where parent_invocation.id = p_parent_invocation_id
-      and parent_invocation.organization_id = p_organization_id
-      and parent_invocation.actor_user_id = p_owner_user_id
-  ) then
-    raise exception 'capability_parent_invalid';
+  if p_depth > 0 then
+    select parent_capability.*
+    into v_parent
+    from public.ai_hermes_run_capabilities parent_capability
+    where parent_capability.token_sha256 = lower(p_parent_token_sha256)
+      and parent_capability.revoked_at is null
+      and parent_capability.expires_at > now()
+    for update;
+
+    if not found then
+      raise exception 'capability_parent_invalid';
+    end if;
+    if v_parent.organization_id is distinct from p_organization_id
+       or v_parent.owner_user_id is distinct from p_owner_user_id
+       or v_parent.conversation_id is distinct from p_conversation_id
+       or v_parent.turn_id is distinct from p_turn_id
+       or v_parent.invocation_id is distinct from p_parent_invocation_id
+       or p_depth <> v_parent.depth + 1
+       or lower(p_actor_fingerprint) is distinct from v_parent.actor_fingerprint
+       or not (v_allowed_tools <@ v_parent.allowed_tools)
+       or not (v_scopes <@ v_parent.scopes)
+       or not (v_skill_draft_ids <@ v_parent.skill_draft_ids)
+       or p_expires_at > v_parent.expires_at
+       or p_ai_state_writes_allowed then
+      raise exception 'capability_parent_invalid';
+    end if;
+    v_root_invocation_id := v_parent.root_invocation_id;
+    if v_turn.ai_invocation_id is distinct from v_root_invocation_id then
+      raise exception 'capability_parent_invalid';
+    end if;
+    if exists (
+      select 1
+      from pg_catalog.unnest(v_parent.allowed_tools) as parent_tool(value)
+      where value is null
+         or nullif(pg_catalog.btrim(value), '') is null
+         or value <> pg_catalog.btrim(value)
+    ) or exists (
+      select 1
+      from pg_catalog.unnest(v_parent.scopes) as parent_scope(value)
+      where value is null
+         or nullif(pg_catalog.btrim(value), '') is null
+         or value <> pg_catalog.btrim(value)
+    ) or exists (
+      select 1
+      from pg_catalog.unnest(v_parent.skill_draft_ids) as parent_skill(value)
+      where value is null
+    ) or (
+      select count(distinct value collate "C") <> count(*)
+      from pg_catalog.unnest(v_parent.allowed_tools) as parent_tool(value)
+    ) or (
+      select count(distinct value collate "C") <> count(*)
+      from pg_catalog.unnest(v_parent.scopes) as parent_scope(value)
+    ) or (
+      select count(distinct value) <> count(*)
+      from pg_catalog.unnest(v_parent.skill_draft_ids) as parent_skill(value)
+    ) or v_parent.allowed_tools_hash is distinct from
+      public.ai_hermes_canonical_text_array_sha256(v_parent.allowed_tools)
+    or v_parent.scope_hash is distinct from
+      public.ai_hermes_canonical_text_array_sha256(v_parent.scopes)
+    or v_parent.skill_grants_hash is distinct from
+      public.ai_hermes_canonical_uuid_array_sha256(v_parent.skill_draft_ids) then
+      raise exception 'capability_parent_invalid';
+    end if;
+    if exists (
+      select 1
+      from pg_catalog.unnest(v_parent.skill_draft_ids) parent_skill_grant(draft_id)
+      left join public.ai_hermes_skill_drafts parent_skill_draft
+        on parent_skill_draft.id = parent_skill_grant.draft_id
+       and parent_skill_draft.organization_id = p_organization_id
+       and parent_skill_draft.owner_user_id = p_owner_user_id
+      where parent_skill_draft.id is null
+         or parent_skill_draft.status <> 'approved'
+         or parent_skill_draft.signature is null
+         or parent_skill_draft.signing_key_id is null
+    ) then
+      raise exception 'capability_parent_invalid';
+    end if;
   end if;
 
   if exists (
@@ -544,10 +735,12 @@ begin
     raise exception 'skill_grant_not_approved';
   end if;
 
-  update public.ai_chat_turns
-  set ai_invocation_id = p_invocation_id
-  where id = p_turn_id
-    and ai_invocation_id is null;
+  if p_depth = 0 then
+    update public.ai_chat_turns
+    set ai_invocation_id = p_invocation_id
+    where id = p_turn_id
+      and ai_invocation_id is null;
+  end if;
 
   insert into public.ai_hermes_run_capabilities (
     token_sha256,
@@ -556,6 +749,8 @@ begin
     conversation_id,
     turn_id,
     invocation_id,
+    root_invocation_id,
+    parent_capability_id,
     parent_invocation_id,
     actor_fingerprint,
     allowed_tools,
@@ -574,6 +769,8 @@ begin
     p_conversation_id,
     p_turn_id,
     p_invocation_id,
+    v_root_invocation_id,
+    v_parent.id,
     p_parent_invocation_id,
     lower(p_actor_fingerprint),
     v_allowed_tools,
@@ -601,6 +798,7 @@ $$;
 create or replace function public.claim_ai_hermes_broker_call(
   p_token_sha256 text,
   p_actor_fingerprint text,
+  p_claim_owner_id uuid,
   p_tool_call_id text,
   p_tool_name text,
   p_request_sha256 text,
@@ -614,12 +812,13 @@ as $$
 declare
   v_capability public.ai_hermes_run_capabilities%rowtype;
   v_existing public.ai_hermes_broker_calls%rowtype;
-  v_broker_call_id uuid;
 begin
-  if lower(coalesce(p_token_sha256, '')) !~ '^[0-9a-f]{64}$' then
+  if lower(coalesce(p_token_sha256, '')) !~ '^[0-9a-f]{64}$'
+     or lower(coalesce(p_actor_fingerprint, '')) !~ '^[0-9a-f]{64}$' then
     raise exception 'capability_invalid';
   end if;
-  if lower(coalesce(p_request_sha256, '')) !~ '^[0-9a-f]{64}$'
+  if p_claim_owner_id is null
+     or lower(coalesce(p_request_sha256, '')) !~ '^[0-9a-f]{64}$'
      or nullif(trim(coalesce(p_tool_call_id, '')), '') is null
      or nullif(trim(coalesce(p_tool_name, '')), '') is null
      or jsonb_typeof(coalesce(p_sanitized_request_envelope, '{}'::jsonb)) <> 'object' then
@@ -643,7 +842,7 @@ begin
     and turn.organization_id = v_capability.organization_id
     and turn.owner_user_id = v_capability.owner_user_id
     and turn.conversation_id = v_capability.conversation_id
-    and turn.ai_invocation_id = v_capability.invocation_id
+    and turn.ai_invocation_id = v_capability.root_invocation_id
     and turn.status in ('accepted', 'grounding', 'generating', 'validating')
     and turn.lease_expires_at > now()
     and turn.cancel_requested_at is null
@@ -712,7 +911,23 @@ begin
   ) then
     raise exception 'capability_binding_invalid';
   end if;
-  if p_actor_fingerprint is distinct from v_capability.actor_fingerprint then
+  if v_capability.parent_capability_id is not null and not exists (
+    select 1
+    from public.ai_hermes_run_capabilities parent_capability
+    where parent_capability.id = v_capability.parent_capability_id
+      and parent_capability.organization_id = v_capability.organization_id
+      and parent_capability.owner_user_id = v_capability.owner_user_id
+      and parent_capability.conversation_id = v_capability.conversation_id
+      and parent_capability.turn_id = v_capability.turn_id
+      and parent_capability.root_invocation_id = v_capability.root_invocation_id
+      and parent_capability.invocation_id = v_capability.parent_invocation_id
+      and parent_capability.actor_fingerprint = v_capability.actor_fingerprint
+      and parent_capability.revoked_at is null
+      and parent_capability.expires_at > now()
+  ) then
+    raise exception 'capability_parent_invalid';
+  end if;
+  if lower(p_actor_fingerprint) is distinct from v_capability.actor_fingerprint then
     raise exception 'capability_actor_mismatch';
   end if;
   if not (p_tool_name = any(v_capability.allowed_tools)) then
@@ -726,19 +941,37 @@ begin
     raise exception 'capability_state_write_not_allowed';
   end if;
 
-  select broker_call.*
-  into v_existing
-  from public.ai_hermes_broker_calls broker_call
-  where broker_call.capability_id = v_capability.id
-    and broker_call.tool_call_id = p_tool_call_id
-  for update;
+  insert into public.ai_hermes_broker_calls (
+    capability_id,
+    organization_id,
+    owner_user_id,
+    tool_call_id,
+    tool_name,
+    request_sha256,
+    sanitized_request_envelope,
+    claim_owner_id,
+    claim_lease_expires_at,
+    claim_attempt,
+    fencing_token,
+    claimed_at
+  ) values (
+    v_capability.id,
+    v_capability.organization_id,
+    v_capability.owner_user_id,
+    p_tool_call_id,
+    p_tool_name,
+    lower(p_request_sha256),
+    coalesce(p_sanitized_request_envelope, '{}'::jsonb),
+    p_claim_owner_id,
+    least(now() + interval '2 minutes', v_capability.expires_at),
+    1,
+    1,
+    now()
+  )
+  on conflict (capability_id, tool_call_id) do nothing
+  returning * into v_existing;
 
   if found then
-    if v_existing.request_sha256 is distinct from lower(p_request_sha256)
-       or v_existing.tool_name is distinct from p_tool_name then
-      raise exception 'broker_call_request_conflict';
-    end if;
-
     update public.ai_hermes_run_capabilities
     set last_used_at = now()
     where id = v_capability.id;
@@ -746,36 +979,85 @@ begin
     return jsonb_build_object(
       'broker_call_id', v_existing.id,
       'status', v_existing.status,
-      'reused', true,
-      'sanitized_response_envelope', v_existing.sanitized_response_envelope
+      'execute', true,
+      'reused', false,
+      'fencing_token', v_existing.fencing_token,
+      'sanitized_response_envelope', null
     );
   end if;
 
-  insert into public.ai_hermes_broker_calls (
-    capability_id,
-    organization_id,
-    tool_call_id,
-    tool_name,
-    request_sha256,
-    sanitized_request_envelope
-  ) values (
-    v_capability.id,
-    v_capability.organization_id,
-    p_tool_call_id,
-    p_tool_name,
-    lower(p_request_sha256),
-    coalesce(p_sanitized_request_envelope, '{}'::jsonb)
-  )
-  returning id into v_broker_call_id;
+  select broker_call.*
+  into v_existing
+  from public.ai_hermes_broker_calls broker_call
+  where broker_call.capability_id = v_capability.id
+    and broker_call.tool_call_id = p_tool_call_id
+  for update;
+
+  if not found then
+    raise exception 'broker_call_claim_conflict';
+  end if;
+  if v_existing.request_sha256 is distinct from lower(p_request_sha256)
+     or v_existing.tool_name is distinct from p_tool_name
+     or v_existing.sanitized_request_envelope is distinct from
+       coalesce(p_sanitized_request_envelope, '{}'::jsonb) then
+    raise exception 'broker_call_request_conflict';
+  end if;
 
   update public.ai_hermes_run_capabilities
   set last_used_at = now()
   where id = v_capability.id;
 
+  if v_existing.status in ('completed', 'failed', 'denied') then
+    return jsonb_build_object(
+      'broker_call_id', v_existing.id,
+      'status', v_existing.status,
+      'execute', false,
+      'reused', true,
+      'fencing_token', v_existing.fencing_token,
+      'sanitized_response_envelope', v_existing.sanitized_response_envelope
+    );
+  end if;
+
+  if v_existing.claim_lease_expires_at > now() then
+    if v_existing.claim_owner_id = p_claim_owner_id then
+      return jsonb_build_object(
+        'broker_call_id', v_existing.id,
+        'status', v_existing.status,
+        'execute', true,
+        'reused', true,
+        'fencing_token', v_existing.fencing_token,
+        'sanitized_response_envelope', null
+      );
+    end if;
+
+    return jsonb_build_object(
+      'broker_call_id', v_existing.id,
+      'status', v_existing.status,
+      'execute', false,
+      'reused', true,
+      'fencing_token', v_existing.fencing_token,
+      'sanitized_response_envelope', null
+    );
+  end if;
+
+  update public.ai_hermes_broker_calls
+  set claim_owner_id = p_claim_owner_id,
+      claim_lease_expires_at = least(
+        now() + interval '2 minutes',
+        v_capability.expires_at
+      ),
+      claim_attempt = claim_attempt + 1,
+      fencing_token = fencing_token + 1,
+      claimed_at = now()
+  where id = v_existing.id
+  returning * into v_existing;
+
   return jsonb_build_object(
-    'broker_call_id', v_broker_call_id,
-    'status', 'claimed',
+    'broker_call_id', v_existing.id,
+    'status', v_existing.status,
+    'execute', true,
     'reused', false,
+    'fencing_token', v_existing.fencing_token,
     'sanitized_response_envelope', null
   );
 end;
@@ -783,6 +1065,8 @@ $$;
 
 create or replace function public.complete_ai_hermes_broker_call(
   p_broker_call_id uuid,
+  p_claim_owner_id uuid,
+  p_fencing_token bigint,
   p_status text,
   p_sanitized_response_envelope jsonb,
   p_error_code text
@@ -795,7 +1079,10 @@ as $$
 declare
   v_call public.ai_hermes_broker_calls%rowtype;
 begin
-  if p_status is null
+  if p_claim_owner_id is null
+     or p_fencing_token is null
+     or p_fencing_token <= 0
+     or p_status is null
      or p_status not in ('completed', 'failed', 'denied')
      or jsonb_typeof(coalesce(p_sanitized_response_envelope, '{}'::jsonb)) <> 'object' then
     raise exception 'broker_call_completion_invalid';
@@ -810,6 +1097,10 @@ begin
   if not found then
     raise exception 'broker_call_not_found';
   end if;
+  if v_call.claim_owner_id is distinct from p_claim_owner_id
+     or v_call.fencing_token is distinct from p_fencing_token then
+    raise exception 'broker_call_fence_invalid';
+  end if;
 
   if v_call.status <> 'claimed' then
     if v_call.status = p_status
@@ -821,10 +1112,14 @@ begin
       return jsonb_build_object(
         'broker_call_id', v_call.id,
         'status', v_call.status,
-        'reused', true
+        'reused', true,
+        'fencing_token', v_call.fencing_token
       );
     end if;
     raise exception 'broker_call_completion_conflict';
+  end if;
+  if v_call.status = 'claimed' and v_call.claim_lease_expires_at <= now() then
+    raise exception 'broker_call_fence_invalid';
   end if;
 
   update public.ai_hermes_broker_calls
@@ -835,12 +1130,15 @@ begin
       ),
       error_code = nullif(trim(coalesce(p_error_code, '')), ''),
       completed_at = now()
-  where id = v_call.id;
+  where id = v_call.id
+    and claim_owner_id = p_claim_owner_id
+    and fencing_token = p_fencing_token;
 
   return jsonb_build_object(
     'broker_call_id', v_call.id,
     'status', p_status,
-    'reused', false
+    'reused', false,
+    'fencing_token', v_call.fencing_token
   );
 end;
 $$;
@@ -1008,6 +1306,7 @@ $$;
 create or replace function public.write_ai_hermes_memory_revision(
   p_organization_id uuid,
   p_owner_user_id uuid,
+  p_idempotency_key text,
   p_memory_key uuid,
   p_expected_revision integer,
   p_memory_type text,
@@ -1026,11 +1325,16 @@ as $$
 declare
   v_existing public.ai_hermes_memories%rowtype;
   v_idempotent public.ai_hermes_memories%rowtype;
-  v_memory_key uuid := coalesce(p_memory_key, extensions.gen_random_uuid());
+  v_memory_key uuid;
   v_next_revision integer;
   v_created_id uuid;
 begin
   if p_active is null
+     or p_expected_revision is null
+     or p_expected_revision < 0
+     or nullif(trim(coalesce(p_idempotency_key, '')), '') is null
+     or char_length(p_idempotency_key) > 200
+     or p_idempotency_key <> trim(p_idempotency_key)
      or p_memory_type is null or p_memory_type not in (
     'preference',
     'workflow',
@@ -1070,18 +1374,35 @@ begin
     raise exception 'memory_source_invalid';
   end if;
 
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      'ai_hermes_memory_idempotency:'
+        || p_organization_id::text
+        || ':'
+        || p_owner_user_id::text
+        || ':'
+        || p_idempotency_key,
+      0
+    )
+  );
+
   select memory.*
   into v_idempotent
   from public.ai_hermes_memories memory
-  where memory.source_invocation_id = p_source_invocation_id
-    and memory.content_hash = lower(p_content_hash)
+  where memory.organization_id = p_organization_id
+    and memory.owner_user_id = p_owner_user_id
+    and memory.idempotency_key = p_idempotency_key
   for update;
 
   if found then
-    if v_idempotent.organization_id <> p_organization_id
-       or v_idempotent.owner_user_id <> p_owner_user_id
+    if (p_memory_key is not null and v_idempotent.memory_key <> p_memory_key)
+       or v_idempotent.revision <> p_expected_revision + 1
+       or v_idempotent.source_conversation_id <> p_source_conversation_id
+       or v_idempotent.source_message_id <> p_source_message_id
+       or v_idempotent.source_invocation_id <> p_source_invocation_id
        or v_idempotent.memory_type <> p_memory_type
        or v_idempotent.content <> p_content
+       or v_idempotent.content_hash <> lower(p_content_hash)
        or v_idempotent.active <> p_active then
       raise exception 'memory_idempotency_conflict';
     end if;
@@ -1093,6 +1414,20 @@ begin
       'reused', true
     );
   end if;
+
+  v_memory_key := coalesce(p_memory_key, extensions.gen_random_uuid());
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      'ai_hermes_memory_key:'
+        || p_organization_id::text
+        || ':'
+        || p_owner_user_id::text
+        || ':'
+        || v_memory_key::text,
+      0
+    )
+  );
 
   select memory.*
   into v_existing
@@ -1118,8 +1453,7 @@ begin
       where id = v_existing.id;
     end if;
   else
-    if p_memory_key is not null
-       or coalesce(p_expected_revision, 0) <> 0 then
+    if p_expected_revision <> 0 then
       raise exception 'memory_expected_revision_conflict';
     end if;
     v_next_revision := 1;
@@ -1127,6 +1461,7 @@ begin
 
   insert into public.ai_hermes_memories (
     memory_key,
+    idempotency_key,
     organization_id,
     owner_user_id,
     memory_type,
@@ -1141,6 +1476,7 @@ begin
     deactivated_by_invocation_id
   ) values (
     v_memory_key,
+    p_idempotency_key,
     p_organization_id,
     p_owner_user_id,
     p_memory_type,
@@ -1568,6 +1904,16 @@ begin
     return false;
   end if;
 
+  perform 1
+  from public.ai_invocations invocation
+  where invocation.id = p_ai_invocation_id
+    and invocation.organization_id = p_organization_id
+    and invocation.actor_user_id = p_owner_user_id;
+
+  if not found then
+    return false;
+  end if;
+
   select turn.*
   into v_turn
   from public.ai_chat_turns turn
@@ -1705,14 +2051,13 @@ revoke all on function public.ai_hermes_canonical_uuid_array_sha256(
   uuid[]
 ) from public, anon, authenticated;
 revoke all on function public.issue_ai_hermes_run_capability(
-  text, uuid, uuid, uuid, uuid, uuid, uuid, text, text[], text, text[], text,
-  text, uuid[], integer, boolean, timestamptz
+  text, uuid, uuid, uuid, uuid, uuid, uuid, text, text, text[], text, text[], text, text, uuid[], integer, boolean, timestamptz
 ) from public, anon, authenticated;
 revoke all on function public.claim_ai_hermes_broker_call(
-  text, text, text, text, text, jsonb
+  text, text, uuid, text, text, text, jsonb
 ) from public, anon, authenticated;
 revoke all on function public.complete_ai_hermes_broker_call(
-  uuid, text, jsonb, text
+  uuid, uuid, bigint, text, jsonb, text
 ) from public, anon, authenticated;
 revoke all on function public.append_ai_hermes_tool_message(
   uuid, uuid, uuid, uuid, uuid, text, jsonb
@@ -1721,7 +2066,7 @@ revoke all on function public.update_ai_conversation_hermes_state(
   uuid, uuid, uuid, integer, jsonb
 ) from public, anon, authenticated;
 revoke all on function public.write_ai_hermes_memory_revision(
-  uuid, uuid, uuid, integer, text, text, text, boolean, uuid, uuid, uuid
+  uuid, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid
 ) from public, anon, authenticated;
 revoke all on function public.write_ai_hermes_skill_draft(
   uuid, uuid, text, integer, jsonb, text, text, uuid, uuid
@@ -1740,8 +2085,7 @@ revoke all on function public.finish_ai_chat_turn_v2(
 ) from public, anon, authenticated;
 
 grant execute on function public.issue_ai_hermes_run_capability(
-  text, uuid, uuid, uuid, uuid, uuid, uuid, text, text[], text, text[], text,
-  text, uuid[], integer, boolean, timestamptz
+  text, uuid, uuid, uuid, uuid, uuid, uuid, text, text, text[], text, text[], text, text, uuid[], integer, boolean, timestamptz
 ) to service_role;
 grant execute on function public.refresh_ai_chat_turn_lease() to service_role;
 grant execute on function public.ai_hermes_canonical_text_array_sha256(
@@ -1751,10 +2095,10 @@ grant execute on function public.ai_hermes_canonical_uuid_array_sha256(
   uuid[]
 ) to service_role;
 grant execute on function public.claim_ai_hermes_broker_call(
-  text, text, text, text, text, jsonb
+  text, text, uuid, text, text, text, jsonb
 ) to service_role;
 grant execute on function public.complete_ai_hermes_broker_call(
-  uuid, text, jsonb, text
+  uuid, uuid, bigint, text, jsonb, text
 ) to service_role;
 grant execute on function public.append_ai_hermes_tool_message(
   uuid, uuid, uuid, uuid, uuid, text, jsonb
@@ -1763,7 +2107,7 @@ grant execute on function public.update_ai_conversation_hermes_state(
   uuid, uuid, uuid, integer, jsonb
 ) to service_role;
 grant execute on function public.write_ai_hermes_memory_revision(
-  uuid, uuid, uuid, integer, text, text, text, boolean, uuid, uuid, uuid
+  uuid, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid
 ) to service_role;
 grant execute on function public.write_ai_hermes_skill_draft(
   uuid, uuid, text, integer, jsonb, text, text, uuid, uuid

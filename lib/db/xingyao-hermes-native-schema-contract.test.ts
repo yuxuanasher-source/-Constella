@@ -68,6 +68,8 @@ describe("Xingyao Hermes native state schema contract", () => {
       "conversation_id uuid not null",
       "turn_id uuid not null",
       "invocation_id uuid not null",
+      "root_invocation_id uuid not null",
+      "parent_capability_id uuid",
       "parent_invocation_id uuid",
       "actor_fingerprint text not null",
       "allowed_tools text[] not null",
@@ -172,6 +174,10 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(table).toContain("request_sha256 text not null");
     expect(table).toContain("status text not null");
     expect(table).toContain("sanitized_response_envelope jsonb");
+    expect(table).toContain("claim_owner_id uuid not null");
+    expect(table).toContain("claim_lease_expires_at timestamptz not null");
+    expect(table).toContain("claim_attempt integer not null");
+    expect(table).toContain("fencing_token bigint not null");
     expect(table).toContain("unique (capability_id, tool_call_id)");
     expect(table).not.toMatch(/\n\s*(raw_response|response)\s+jsonb/);
 
@@ -180,14 +186,14 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(claim).toMatch(/revoked_at\s+is\s+null/);
     expect(claim).toMatch(/expires_at\s*>\s*now\(\)/);
     expect(claim).toMatch(
-      /turn\.ai_invocation_id\s*=\s*v_capability\.invocation_id/,
+      /turn\.ai_invocation_id\s*=\s*v_capability\.root_invocation_id/,
     );
     expect(claim).toMatch(/turn\.lease_expires_at\s*>\s*now\(\)/);
     expect(claim).toContain(
       "turn.status in ('accepted', 'grounding', 'generating', 'validating')",
     );
     expect(claim).toContain(
-      "p_actor_fingerprint is distinct from v_capability.actor_fingerprint",
+      "lower(p_actor_fingerprint) is distinct from v_capability.actor_fingerprint",
     );
     expect(claim).toContain(
       "not (p_tool_name = any(v_capability.allowed_tools))",
@@ -277,6 +283,252 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(issue).toContain("skill_draft.status <> 'approved'");
     expect(issue).toContain("skill_grant_not_approved");
     expect(review).toContain("invalid_skill_review_transition");
+  });
+
+  it("derives child capabilities from a locked valid parent capability", () => {
+    const table = tableSql("ai_hermes_run_capabilities");
+    const issue = functionSql("issue_ai_hermes_run_capability");
+
+    expect(table).toContain("parent_capability_id uuid");
+    expect(table).toContain("root_invocation_id uuid not null");
+    expect(table).toMatch(
+      /foreign key \(\s*parent_capability_id,\s*organization_id,\s*owner_user_id,\s*conversation_id,\s*turn_id,\s*root_invocation_id,\s*parent_invocation_id\s*\) references public\.ai_hermes_run_capabilities\(\s*id,\s*organization_id,\s*owner_user_id,\s*conversation_id,\s*turn_id,\s*root_invocation_id,\s*invocation_id\s*\)/,
+    );
+    expect(table).toMatch(
+      /\(depth = 0 and root_invocation_id = invocation_id and parent_capability_id is null and parent_invocation_id is null\)[\s\S]*?\(depth > 0 and parent_capability_id is not null and parent_invocation_id is not null\)/,
+    );
+    expect(table).toMatch(
+      /foreign key \(turn_id, organization_id, owner_user_id, conversation_id, root_invocation_id\)\s+references public\.ai_chat_turns\(id, organization_id, owner_user_id, conversation_id, ai_invocation_id\)/,
+    );
+
+    expect(issue).toContain("p_parent_token_sha256 text");
+    expect(issue).toMatch(
+      /from public\.ai_hermes_run_capabilities parent_capability[\s\S]*?parent_capability\.token_sha256 = lower\(p_parent_token_sha256\)[\s\S]*?parent_capability\.revoked_at is null[\s\S]*?parent_capability\.expires_at > now\(\)[\s\S]*?for update/,
+    );
+    for (const binding of [
+      "v_parent.organization_id is distinct from p_organization_id",
+      "v_parent.owner_user_id is distinct from p_owner_user_id",
+      "v_parent.conversation_id is distinct from p_conversation_id",
+      "v_parent.turn_id is distinct from p_turn_id",
+      "v_parent.invocation_id is distinct from p_parent_invocation_id",
+      "p_depth <> v_parent.depth + 1",
+      "lower(p_actor_fingerprint) is distinct from v_parent.actor_fingerprint",
+      "not (v_allowed_tools <@ v_parent.allowed_tools)",
+      "not (v_scopes <@ v_parent.scopes)",
+      "not (v_skill_draft_ids <@ v_parent.skill_draft_ids)",
+      "p_expires_at > v_parent.expires_at",
+      "p_ai_state_writes_allowed",
+      "parent_skill_draft.status <> 'approved'",
+    ]) {
+      expect(issue).toContain(binding);
+    }
+    expect(issue).toContain("capability_parent_invalid");
+    expect(issue).toMatch(
+      /p_depth = 0[\s\S]*?p_parent_token_sha256 is not null[\s\S]*?p_parent_invocation_id is not null/,
+    );
+    expect(issue).toContain("parent_capability_id");
+    expect(issue).toContain("v_parent.id");
+    expect(issue).toContain("v_root_invocation_id := p_invocation_id");
+    expect(issue).toContain(
+      "v_root_invocation_id := v_parent.root_invocation_id",
+    );
+    expect(issue).toContain(
+      "v_turn.ai_invocation_id is distinct from v_root_invocation_id",
+    );
+    expect(functionSql("claim_ai_hermes_broker_call")).toContain(
+      "turn.ai_invocation_id = v_capability.root_invocation_id",
+    );
+  });
+
+  it("pins finish v2 and ledger invocation IDs to the exact tenant actor", () => {
+    const finishV2 = functionSql("finish_ai_chat_turn_v2");
+    const invocationCheck = finishV2.indexOf(
+      "from public.ai_invocations invocation",
+    );
+    const firstLedgerWrite = finishV2.indexOf("update public.ai_chat_messages");
+
+    expect(migration).toContain(
+      "constraint ai_invocations_identity_key unique (id, organization_id, actor_user_id)",
+    );
+    expect(migration).toContain(
+      "constraint ai_chat_turns_identity_key unique (id, organization_id, owner_user_id, conversation_id, ai_invocation_id)",
+    );
+    expect(migration).toMatch(
+      /constraint ai_chat_turns_ai_invocation_tenant_fkey\s+foreign key \(ai_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)\s+not valid/,
+    );
+    expect(migration).toMatch(
+      /constraint ai_chat_messages_ai_invocation_tenant_fkey\s+foreign key \(ai_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)\s+not valid/,
+    );
+    expect(invocationCheck).toBeGreaterThan(-1);
+    expect(invocationCheck).toBeLessThan(firstLedgerWrite);
+    expect(finishV2).toMatch(
+      /invocation\.id = p_ai_invocation_id\s+and invocation\.organization_id = p_organization_id\s+and invocation\.actor_user_id = p_owner_user_id/,
+    );
+    expect(finishV2).toContain("if not found then\n    return false;");
+  });
+
+  it("uses owner leases and fencing tokens for crash-safe broker claims", () => {
+    const table = tableSql("ai_hermes_broker_calls");
+    const claim = functionSql("claim_ai_hermes_broker_call");
+    const complete = functionSql("complete_ai_hermes_broker_call");
+
+    for (const column of [
+      "claim_owner_id uuid not null",
+      "claim_lease_expires_at timestamptz not null",
+      "claim_attempt integer not null default 1",
+      "fencing_token bigint not null default 1",
+    ]) {
+      expect(table).toContain(column);
+    }
+    expect(table).toContain("claim_attempt > 0");
+    expect(table).toContain("fencing_token > 0");
+    expect(claim).toContain("p_claim_owner_id uuid");
+    expect(claim).toContain("p_claim_owner_id is null");
+    expect(claim).toContain(
+      "on conflict (capability_id, tool_call_id) do nothing",
+    );
+    expect(claim).toMatch(
+      /v_existing\.status in \('completed', 'failed', 'denied'\)[\s\S]*?'execute', false[\s\S]*?'reused', true[\s\S]*?'fencing_token', v_existing\.fencing_token/,
+    );
+    expect(claim).toMatch(
+      /v_existing\.claim_lease_expires_at > now\(\)[\s\S]*?v_existing\.claim_owner_id = p_claim_owner_id[\s\S]*?'execute', true[\s\S]*?'reused', true/,
+    );
+    expect(claim).toMatch(
+      /v_existing\.claim_lease_expires_at > now\(\)[\s\S]*?'execute', false/,
+    );
+    expect(claim).toMatch(
+      /set claim_owner_id = p_claim_owner_id,[\s\S]*?claim_attempt = claim_attempt \+ 1,[\s\S]*?fencing_token = fencing_token \+ 1/,
+    );
+    expect(claim).toContain("'execute', true");
+    expect(claim).toContain("'fencing_token'");
+
+    expect(complete).toContain("p_claim_owner_id uuid");
+    expect(complete).toContain("p_fencing_token bigint");
+    expect(complete).toMatch(
+      /v_call\.claim_owner_id is distinct from p_claim_owner_id\s+or v_call\.fencing_token is distinct from p_fencing_token/,
+    );
+    expect(complete).toContain(
+      "v_call.status = 'claimed' and v_call.claim_lease_expires_at <= now()",
+    );
+    expect(complete).toContain("broker_call_fence_invalid");
+    expect(complete).toContain("'fencing_token', v_call.fencing_token");
+  });
+
+  it("serializes memory idempotency and compares the complete request", () => {
+    const table = tableSql("ai_hermes_memories");
+    const writeMemory = functionSql("write_ai_hermes_memory_revision");
+    const locks = writeMemory.match(/pg_advisory_xact_lock/g) ?? [];
+
+    expect(table).toContain("idempotency_key text not null");
+    expect(table).toContain(
+      "unique (organization_id, owner_user_id, idempotency_key)",
+    );
+    expect(writeMemory).toContain("p_idempotency_key text");
+    expect(writeMemory).toContain("p_expected_revision is null");
+    expect(locks).toHaveLength(2);
+    expect(writeMemory).toContain("ai_hermes_memory_idempotency:");
+    expect(writeMemory).toContain("ai_hermes_memory_key:");
+    for (const comparison of [
+      "p_memory_key is not null and v_idempotent.memory_key <> p_memory_key",
+      "v_idempotent.revision <> p_expected_revision + 1",
+      "v_idempotent.source_conversation_id <> p_source_conversation_id",
+      "v_idempotent.source_message_id <> p_source_message_id",
+      "v_idempotent.source_invocation_id <> p_source_invocation_id",
+      "v_idempotent.memory_type <> p_memory_type",
+      "v_idempotent.content <> p_content",
+      "v_idempotent.active <> p_active",
+    ]) {
+      expect(writeMemory).toContain(comparison);
+    }
+    expect(writeMemory).toContain("memory_idempotency_conflict");
+    expect(writeMemory.indexOf("pg_advisory_xact_lock")).toBeLessThan(
+      writeMemory.indexOf("into v_idempotent"),
+    );
+    expect(writeMemory.lastIndexOf("pg_advisory_xact_lock")).toBeLessThan(
+      writeMemory.indexOf("into v_existing"),
+    );
+  });
+
+  it("validates and normalizes claim actor fingerprints", () => {
+    const claim = functionSql("claim_ai_hermes_broker_call");
+
+    expect(claim).toContain(
+      "lower(coalesce(p_actor_fingerprint, '')) !~ '^[0-9a-f]{64}$'",
+    );
+    expect(claim).toContain(
+      "lower(p_actor_fingerprint) is distinct from v_capability.actor_fingerprint",
+    );
+  });
+
+  it("backs every Hermes tenant edge with composite foreign keys", () => {
+    const capability = tableSql("ai_hermes_run_capabilities");
+    const broker = tableSql("ai_hermes_broker_calls");
+    const memory = tableSql("ai_hermes_memories");
+    const draft = tableSql("ai_hermes_skill_drafts");
+
+    expect(capability).toMatch(
+      /foreign key \(turn_id, organization_id, owner_user_id, conversation_id, root_invocation_id\)\s+references public\.ai_chat_turns\(id, organization_id, owner_user_id, conversation_id, ai_invocation_id\)/,
+    );
+    expect(capability).toMatch(
+      /foreign key \(invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)/,
+    );
+    expect(capability).toMatch(
+      /foreign key \(parent_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)/,
+    );
+    expect(broker).toContain("owner_user_id uuid not null");
+    expect(broker).toMatch(
+      /foreign key \(capability_id, organization_id, owner_user_id\)\s+references public\.ai_hermes_run_capabilities\(id, organization_id, owner_user_id\)/,
+    );
+    expect(memory).toMatch(
+      /foreign key \(source_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)/,
+    );
+    expect(memory).toMatch(
+      /foreign key \(deactivated_by_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)/,
+    );
+    expect(draft).toMatch(
+      /foreign key \(source_invocation_id, organization_id, owner_user_id\)\s+references public\.ai_invocations\(id, organization_id, actor_user_id\)/,
+    );
+  });
+
+  it("defers both legacy turn outcome checks for a later validation migration", () => {
+    expect(migration).toMatch(
+      /constraint ai_chat_turns_outcome_check check \([\s\S]*?\)\s+not valid,/,
+    );
+    expect(migration).toMatch(
+      /constraint ai_chat_turns_outcome_status_check check \([\s\S]*?\)\s+not valid;/,
+    );
+    expect(migration).toContain(
+      "validation is intentionally deferred to a later migration",
+    );
+    expect(migration).not.toContain(
+      "validate constraint ai_chat_turns_outcome_check",
+    );
+    expect(migration).not.toContain(
+      "validate constraint ai_chat_turns_outcome_status_check",
+    );
+  });
+
+  it("revokes and grants the hardened RPC signatures exactly", () => {
+    const issueSignature =
+      "text, uuid, uuid, uuid, uuid, uuid, uuid, text, text, text[], text, text[], text, text, uuid[], integer, boolean, timestamptz";
+    const claimSignature = "text, text, uuid, text, text, text, jsonb";
+    const completeSignature = "uuid, uuid, bigint, text, jsonb, text";
+    const memorySignature =
+      "uuid, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid";
+
+    for (const [name, signature] of [
+      ["issue_ai_hermes_run_capability", issueSignature],
+      ["claim_ai_hermes_broker_call", claimSignature],
+      ["complete_ai_hermes_broker_call", completeSignature],
+      ["write_ai_hermes_memory_revision", memorySignature],
+    ]) {
+      expect(migration).toContain(
+        `revoke all on function public.${name}(\n  ${signature}\n) from public, anon, authenticated;`,
+      );
+      expect(migration).toContain(
+        `grant execute on function public.${name}(\n  ${signature}\n) to service_role;`,
+      );
+    }
   });
 
   it("extends turns with exact outcomes, cancellation, and mode-aware leases", () => {
