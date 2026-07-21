@@ -121,6 +121,7 @@ describe("Hermes Skill governance", () => {
         role: "finance",
         conversationId: "44444444-4444-4444-8444-444444444444",
         invocationId: "66666666-6666-4666-8666-666666666666",
+        profileVersion: "hermes-xingyao-v1+skills.c1755ec71e802748",
       },
       evaluation,
     });

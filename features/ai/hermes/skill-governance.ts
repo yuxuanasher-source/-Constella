@@ -1,9 +1,9 @@
 import { computeHermesSkillGrantsHash } from "./actor-fingerprint";
 import {
   HERMES_BUILTIN_SKILLS_SHA256,
-  LEGACY_HERMES_PROFILE_VERSION,
   isHermesAuthRole,
   isHermesReadScope,
+  type HermesActorProfile,
   type HermesAuthRole,
   type HermesReadScope,
   type HermesSkillGrant,
@@ -171,13 +171,15 @@ export function toHermesSkillGrantAuditEvent({
   actor,
   evaluation,
 }: {
-  actor: {
-    organizationId: string;
-    userId: string;
-    role: string;
-    conversationId: string;
-    invocationId: string;
-  };
+  actor: Pick<
+    HermesActorProfile,
+    | "organizationId"
+    | "userId"
+    | "role"
+    | "conversationId"
+    | "invocationId"
+    | "profileVersion"
+  >;
   evaluation: HermesSkillGrantEvaluation;
 }): HermesSkillGrantAuditEvent {
   return {
@@ -187,7 +189,7 @@ export function toHermesSkillGrantAuditEvent({
     role: actor.role,
     conversationId: actor.conversationId,
     invocationId: actor.invocationId,
-    profileVersion: LEGACY_HERMES_PROFILE_VERSION,
+    profileVersion: actor.profileVersion,
     builtinSkillsSha256: HERMES_BUILTIN_SKILLS_SHA256,
     enabledSkillIds: evaluation.enabledSkillVersions.map(
       (skill) => skill.skillId,

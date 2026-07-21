@@ -58,6 +58,9 @@ describe("native assistant context engine", () => {
     expect(context?.actor.skillGrantsHash).toBe(
       computeHermesSkillGrantsHash(context?.actor.enabledSkillVersions ?? []),
     );
+    expect(context?.skillAudit.profileVersion).toBe(
+      context?.actor.profileVersion,
+    );
   });
 
   it("selects Gateway v2 only when explicitly requested", () => {
@@ -85,7 +88,13 @@ describe("native assistant context engine", () => {
       actor: {
         profileVersion: "hermes-xingyao-v2",
       },
+      skillAudit: {
+        profileVersion: "hermes-xingyao-v2",
+      },
     });
+    expect(context?.skillAudit.profileVersion).toBe(
+      context?.actor.profileVersion,
+    );
   });
 
   it("fails closed for unknown server roles", () => {
