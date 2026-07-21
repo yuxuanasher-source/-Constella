@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type {
+  NormalizedRecordingSelfCheck,
+  RecordingSelfAssessmentLevel,
+} from "@/features/recordings/recording-production-standard";
+
+import type {
   ApplicationSource,
   ApplicationRecord,
   ApplicationRepository,
@@ -62,6 +67,8 @@ type RecordingSubmissionRow = {
   status: RecordingSubmissionRecord["status"];
   collaboration_id: string | null;
   contributor_organization_id: string | null;
+  self_score_total: number | null;
+  self_assessment_level: RecordingSelfAssessmentLevel | null;
 };
 
 type ProjectStreamerRow = {
@@ -90,6 +97,17 @@ const applicationSelect = `
   decision_reason,
   collaboration_id,
   contributor_organization_id
+`;
+
+const recordingSubmissionSelect = `
+  id,
+  application_id,
+  version,
+  status,
+  collaboration_id,
+  contributor_organization_id,
+  self_score_total,
+  self_assessment_level
 `;
 
 export class SupabaseApplicationRepository implements ApplicationRepository {
@@ -309,6 +327,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     durationSeconds?: number;
     collaborationId?: string | null;
     contributorOrganizationId?: string | null;
+    selfCheck?: NormalizedRecordingSelfCheck;
   }): Promise<RecordingSubmissionRecord> {
     const { data, error } = await this.client
       .from("recording_submissions")
@@ -323,10 +342,18 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         duration_seconds: input.durationSeconds,
         collaboration_id: input.collaborationId,
         contributor_organization_id: input.contributorOrganizationId,
+        ...(input.selfCheck
+          ? {
+              task_card_read_confirmed_at: new Date().toISOString(),
+              self_check: input.selfCheck.dimensionScores ?? {},
+              key_moments: input.selfCheck.keyMoments ?? [],
+              self_score_total: input.selfCheck.totalScore ?? null,
+              self_assessment_level: input.selfCheck.selfLevel ?? null,
+              submitter_note: input.selfCheck.note ?? null,
+            }
+          : {}),
       })
-      .select(
-        "id, application_id, version, status, collaboration_id, contributor_organization_id",
-      )
+      .select(recordingSubmissionSelect)
       .single<RecordingSubmissionRow>();
 
     if (error) {
@@ -341,9 +368,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
   ): Promise<RecordingSubmissionRecord | null> {
     const { data, error } = await this.client
       .from("recording_submissions")
-      .select(
-        "id, application_id, version, status, collaboration_id, contributor_organization_id",
-      )
+      .select(recordingSubmissionSelect)
       .eq("application_id", applicationId)
       .order("version", { ascending: false })
       .limit(1)
@@ -374,9 +399,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         review_note: input.reviewNote,
       })
       .eq("id", recordingId)
-      .select(
-        "id, application_id, version, status, collaboration_id, contributor_organization_id",
-      )
+      .select(recordingSubmissionSelect)
       .single<RecordingSubmissionRow>();
 
     if (error) {
@@ -520,5 +543,7 @@ function toRecordingSubmissionRecord(
     status: row.status,
     collaborationId: row.collaboration_id,
     contributorOrganizationId: row.contributor_organization_id,
+    selfScoreTotal: row.self_score_total ?? null,
+    selfAssessmentLevel: row.self_assessment_level ?? null,
   };
 }

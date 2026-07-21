@@ -76,6 +76,7 @@ describe("streamer project announcement detail route", () => {
       decisionReason: null,
       rejectionReasons: [],
       recordingFeedback: null,
+      recordingGuide: recordingGuideFixture(),
       reviewStatusLabel: "待投递",
       canSubmitRecording: true,
     });
@@ -119,3 +120,20 @@ describe("streamer project announcement detail route", () => {
     });
   });
 });
+
+function recordingGuideFixture() {
+  return {
+    gameName: "Game A",
+    gameVersion: "",
+    serverRegion: "",
+    promotionGoal: "",
+    targetAudience: "",
+    requiredContent: ["Streamer-facing summary"],
+    requiredTalkingPoints: [],
+    forbiddenContent: ["虚假宣传", "攻击竞品"],
+    commercialActions: [],
+    technicalStandard: { forceRecording: true, minDurationMinutes: 10 },
+    templateText: "开场说明本场目标。",
+    exampleUrl: null,
+  };
+}

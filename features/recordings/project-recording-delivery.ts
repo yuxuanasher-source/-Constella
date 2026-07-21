@@ -7,6 +7,10 @@ import type {
   RecordingSubmissionRecord,
 } from "@/features/applications/application-service";
 import { submitRecording } from "@/features/applications/application-service";
+import {
+  normalizeRecordingSelfCheck,
+  parseRecordingSelfCheckInput,
+} from "./recording-production-standard";
 
 export type PublicProjectForRecording = {
   id: string;
@@ -57,6 +61,7 @@ export async function submitProjectRecording({
     link?: unknown;
     storagePath?: unknown;
     durationSeconds?: number;
+    selfCheck?: unknown;
   };
 }): Promise<ProjectRecordingDeliveryResult> {
   if (actor.role !== "streamer") {
@@ -64,6 +69,7 @@ export async function submitProjectRecording({
   }
 
   const normalized = normalizeProjectRecordingInput(input);
+  const selfCheck = normalizeRecordingSelfCheck(normalized.selfCheck);
   const project = await repo.getPublicProjectForRecording(normalized.projectId);
   if (
     !project ||
@@ -102,6 +108,7 @@ export async function submitProjectRecording({
       externalUrl: normalized.link,
       storagePath: normalized.storagePath,
       durationSeconds: normalized.durationSeconds,
+      selfCheck,
     },
   });
 
@@ -118,10 +125,13 @@ function normalizeProjectRecordingInput(input: {
   link?: unknown;
   storagePath?: unknown;
   durationSeconds?: number;
+  selfCheck?: unknown;
 }) {
   if (typeof input.projectId !== "string" || !input.projectId.trim()) {
     throw new Error("projectId is required");
   }
+
+  const selfCheck = parseRecordingSelfCheckInput(input.selfCheck);
 
   const link =
     typeof input.link === "string" && input.link.trim()
@@ -153,5 +163,6 @@ function normalizeProjectRecordingInput(input: {
     link,
     storagePath,
     durationSeconds: input.durationSeconds,
+    selfCheck,
   };
 }

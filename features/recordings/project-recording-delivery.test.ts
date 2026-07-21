@@ -10,6 +10,24 @@ const actor = {
   streamerId: "streamer-1",
 };
 
+const completeSelfCheck = {
+  readConfirmed: true,
+  dimensionScores: {
+    product_understanding: 20,
+    expression_control: 18,
+    content_structure: 12,
+    interaction_design: 12,
+    commercial_task: 12,
+    technical_compliance: 9,
+  },
+  keyMoments: [
+    { key: "best_performance" as const, startSeconds: 30, endSeconds: 80 },
+    { key: "selling_point" as const, startSeconds: 120, endSeconds: 180 },
+    { key: "commercial_task" as const, startSeconds: 240, endSeconds: 300 },
+  ],
+  note: "Ready for review.",
+};
+
 function baseRepo() {
   return {
     getPublicProjectForRecording: vi.fn().mockResolvedValue({
@@ -91,6 +109,7 @@ describe("submitProjectRecording", () => {
         projectId: "project-1",
         streamerId: "streamer-1",
         link: "https://videos.example.com/public-project",
+        selfCheck: completeSelfCheck,
       },
     });
 
@@ -141,6 +160,7 @@ describe("submitProjectRecording", () => {
         streamerId: "streamer-1",
         storagePath: "org-1/recordings/project-1/demo.mp4",
         durationSeconds: 900,
+        selfCheck: completeSelfCheck,
       },
     });
 
@@ -195,6 +215,7 @@ describe("submitProjectRecording", () => {
         projectId: "project-1",
         streamerId: "streamer-1",
         link: "https://videos.example.com/resubmit",
+        selfCheck: completeSelfCheck,
       },
     });
 
@@ -230,8 +251,176 @@ describe("submitProjectRecording", () => {
           projectId: "project-2",
           streamerId: "streamer-1",
           link: "https://videos.example.com/hidden",
+          selfCheck: completeSelfCheck,
         },
       }),
     ).rejects.toThrow("Project is not available for recording delivery");
+  });
+
+  it("rejects missing self-check before creating a recording submission", async () => {
+    const repo = baseRepo();
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/missing-self-check",
+        },
+      }),
+    ).rejects.toThrow("Recording self-check is required");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed self-check objects before normalization throws raw runtime errors", async () => {
+    const repo = baseRepo();
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/malformed-self-check",
+          selfCheck: {
+            readConfirmed: true,
+            dimensionScores: completeSelfCheck.dimensionScores,
+          } as never,
+        },
+      }),
+    ).rejects.toThrow("Recording self-check is required");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
+  it("rejects self-check payloads missing one score with a controlled error", async () => {
+    const repo = baseRepo();
+    const dimensionScores: Record<string, number> = {
+      ...completeSelfCheck.dimensionScores,
+    };
+    delete dimensionScores.product_understanding;
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/missing-score",
+          selfCheck: {
+            ...completeSelfCheck,
+            dimensionScores,
+          },
+        },
+      }),
+    ).rejects.toThrow("Recording self-check is required");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
+  it("rejects self-check payloads missing one key moment with a controlled error", async () => {
+    const repo = baseRepo();
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/missing-key-moment",
+          selfCheck: {
+            ...completeSelfCheck,
+            keyMoments: completeSelfCheck.keyMoments.filter(
+              (moment) => moment.key !== "selling_point",
+            ),
+          },
+        },
+      }),
+    ).rejects.toThrow("Recording self-check is required");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the task card has not been confirmed", async () => {
+    const repo = baseRepo();
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/unconfirmed",
+          selfCheck: {
+            ...completeSelfCheck,
+            readConfirmed: false,
+          },
+        },
+      }),
+    ).rejects.toThrow("Recording task card must be confirmed before submission");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
+  it("stores low self-score evidence without blocking submission", async () => {
+    const repo = baseRepo();
+
+    const result = await submitProjectRecording({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor,
+      input: {
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        link: "https://videos.example.com/low-self-score",
+        selfCheck: {
+          readConfirmed: true,
+          dimensionScores: {
+            product_understanding: 8,
+            expression_control: 8,
+            content_structure: 7,
+            interaction_design: 7,
+            commercial_task: 6,
+            technical_compliance: 6,
+          },
+          keyMoments: [
+            { key: "best_performance", startSeconds: 10, endSeconds: 20 },
+            { key: "selling_point", startSeconds: 30, endSeconds: 45 },
+            { key: "commercial_task", startSeconds: 50, endSeconds: 70 },
+          ],
+          note: "Self score is low; please give revision advice.",
+        },
+      },
+    });
+
+    expect(result.recording.status).toBe("submitted");
+    expect(repo.createRecordingSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selfCheck: expect.objectContaining({
+          totalScore: 42,
+          selfLevel: "L0",
+          note: "Self score is low; please give revision advice.",
+        }),
+      }),
+    );
+    expect(repo.updateApplicationStatus).not.toHaveBeenCalled();
   });
 });

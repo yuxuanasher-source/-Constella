@@ -1,6 +1,11 @@
 import type { AuditLogInput } from "@/lib/audit/audit";
 import type { NotificationInput } from "@/lib/notify/notify";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
+import type { AdmissionCheckpointResultInput } from "@/features/admission-review/contracts";
+import type {
+  NormalizedRecordingSelfCheck,
+  RecordingSelfAssessmentLevel,
+} from "@/features/recordings/recording-production-standard";
 
 import {
   assertApplicationTransition,
@@ -70,6 +75,8 @@ export type RecordingSubmissionRecord = {
   status: RecordingReviewStatus;
   collaborationId?: string | null;
   contributorOrganizationId?: string | null;
+  selfScoreTotal?: number | null;
+  selfAssessmentLevel?: RecordingSelfAssessmentLevel | null;
 };
 
 export type ProjectStreamerRecord = {
@@ -153,6 +160,7 @@ export type ApplicationRepository = {
     durationSeconds?: number;
     collaborationId?: string | null;
     contributorOrganizationId?: string | null;
+    selfCheck?: NormalizedRecordingSelfCheck;
   }): Promise<RecordingSubmissionRecord>;
   getLatestRecordingSubmission(
     applicationId: string,
@@ -354,6 +362,7 @@ export async function submitRecording({
     storagePath?: string;
     externalUrl?: string;
     durationSeconds?: number;
+    selfCheck?: NormalizedRecordingSelfCheck;
   };
 }): Promise<RecordingSubmissionRecord> {
   if (actor.role !== "streamer") {
@@ -392,6 +401,7 @@ export async function submitRecording({
     durationSeconds: input.durationSeconds,
     collaborationId: application.collaborationId,
     contributorOrganizationId: application.contributorOrganizationId,
+    selfCheck: input.selfCheck,
   });
 
   await repo.markApplicationRecordingReviewing(application.id);
@@ -437,11 +447,7 @@ export type AdmissionEvaluationRecorder = (input: {
   note?: string;
   noteSource: "human" | "needs_classification";
   reasonCodes: string[];
-  checkpointResults?: Array<{
-    checkpointKey: string;
-    verdict: "pass" | "fail" | "not_applicable";
-    note?: string;
-  }>;
+  checkpointResults?: AdmissionCheckpointResultInput[];
 }) => Promise<void>;
 
 export async function reviewRecordingSubmission({
@@ -464,11 +470,7 @@ export async function reviewRecordingSubmission({
     >;
     note?: string;
     reasonCodes?: string[];
-    checkpointResults?: Array<{
-      checkpointKey: string;
-      verdict: "pass" | "fail" | "not_applicable";
-      note?: string;
-    }>;
+    checkpointResults?: AdmissionCheckpointResultInput[];
   };
   recordEvaluation?: AdmissionEvaluationRecorder;
 }): Promise<ApplicationRecord> {

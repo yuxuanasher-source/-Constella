@@ -15918,8 +15918,10 @@ function ScreenAdmission() {
       setAdmissionMessage("录屏审核后台暂未接入。");
       return false;
     }
+    const reviewNote = admissionRecordingReviewNote(application, decision);
     // 驳回/需修改时按卡点字典选择结构化理由码（沉淀审核信号）。
     let reasonCodes = [];
+    let checkpointResults = [];
     if (decision === "rejected" || decision === "needs_changes") {
       const checkpoints = await loadMcnReviewCheckpoints();
       if (checkpoints.length > 0) {
@@ -15929,17 +15931,34 @@ function ScreenAdmission() {
           return false;
         }
         reasonCodes = picked;
+        const structuredFeedback = askAdmissionStructuredFeedback(decision);
+        if (structuredFeedback === null) {
+          setAdmissionMessage("操作已取消：反馈需填写哪里不合格和怎么改");
+          return false;
+        }
+        checkpointResults = reasonCodes.map((checkpointKey) => ({
+          checkpointKey,
+          verdict: "fail",
+          note: reviewNote,
+          evidence: {
+            structuredFeedback,
+          },
+        }));
       }
     }
     const applicationId = application.id;
     setBusyAction(`review:${applicationId}:${decision}`);
     setAdmissionMessage("");
     try {
-      await actions.reviewApplicationRecording(applicationId, {
+      const reviewPayload = {
         decision,
-        note: admissionRecordingReviewNote(application, decision),
+        note: reviewNote,
         reasonCodes,
-      });
+      };
+      if (checkpointResults.length > 0) {
+        reviewPayload.checkpointResults = checkpointResults;
+      }
+      await actions.reviewApplicationRecording(applicationId, reviewPayload);
       await syncAdmissionProjectBoards();
       setAdmissionMessage(recordingDecisionSuccessMessage(decision));
       return true;
@@ -19402,6 +19421,38 @@ function askAdmissionReasonCodes(checkpoints, decision) {
     ),
   ];
   return codes.length ? codes : null;
+}
+
+function askAdmissionStructuredFeedback() {
+  const issue = askText("哪里不合格");
+  if (!issue) return null;
+  const howToImprove = askText("怎么改");
+  if (!howToImprove) return null;
+  const rawSuggestion = globalThis.prompt?.(
+    "建议（none=不建议重录，clip=补录指定片段，full=整段重录）",
+    "none",
+  );
+  if (typeof rawSuggestion !== "string") return null;
+
+  return {
+    issue,
+    howToImprove,
+    rerecordSuggestion: normalizeAdmissionRerecordSuggestion(rawSuggestion),
+    advisoryOnly: true,
+  };
+}
+
+function normalizeAdmissionRerecordSuggestion(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (["1", "clip", "片段", "补录", "补录指定片段"].includes(normalized)) {
+    return "clip";
+  }
+  if (["2", "full", "整段", "重录", "整段重录"].includes(normalized)) {
+    return "full";
+  }
+  return "none";
 }
 
 function askText(label, defaultValue = "") {

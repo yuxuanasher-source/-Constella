@@ -10,6 +10,7 @@ import {
 import { SupabaseApplicationRepository } from "@/features/applications/application-repository";
 import { listStreamerRecordingAssets } from "@/features/recordings/recording-asset-library";
 import { submitProjectRecording } from "@/features/recordings/project-recording-delivery";
+import { parseRecordingSelfCheckInput } from "@/features/recordings/recording-production-standard";
 import {
   createStreamerRecordingLink,
   listStreamerRecordingLinks,
@@ -65,6 +66,7 @@ export async function POST(request: Request) {
             typeof body.durationSeconds === "number"
               ? body.durationSeconds
               : undefined,
+          selfCheck: parseRecordingSelfCheckInput(body.selfCheck),
         },
       });
 

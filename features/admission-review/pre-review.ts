@@ -14,6 +14,11 @@ import {
   createConfiguredAiProviders,
   resolveAiProviderRouting,
 } from "@/features/ai/provider-registry";
+import type { RecordingProductionGuide } from "@/features/recordings/recording-production-guide";
+import type {
+  NormalizedRecordingSelfCheck,
+  RerecordSuggestion,
+} from "@/features/recordings/recording-production-standard";
 
 import {
   checkpointsForStage,
@@ -33,9 +38,18 @@ import {
 // 预审结果只是草稿，一审仍由人工提交；人工提交时自动产生 ai_vs_mcn 对齐信号。
 
 export const PRE_REVIEW_SCENE = "admission.pre_review";
-export const PRE_REVIEW_PROMPT_VERSION = 1;
+export const PRE_REVIEW_PROMPT_VERSION = 2;
 const TRANSCRIPT_HEAD_CHARS = 8_000;
 const TRANSCRIPT_TAIL_CHARS = 2_000;
+const PROMPT_SHORT_FIELD_CHARS = 80;
+const PROMPT_LONG_FIELD_CHARS = 80;
+const PROMPT_URL_CHARS = 120;
+const PROMPT_LIST_MAX_ITEMS = 4;
+const PROMPT_LIST_ITEM_CHARS = 42;
+const PROMPT_TECHNICAL_MAX_ENTRIES = 3;
+const PROMPT_TECHNICAL_KEY_CHARS = 24;
+const PROMPT_TECHNICAL_VALUE_CHARS = 36;
+const PROMPT_KEY_MOMENT_NOTE_CHARS = 36;
 
 export type AdmissionPreReviewSubmission = {
   organizationId: string;
@@ -79,6 +93,9 @@ const preReviewSchema = z.object({
         verdict: z.enum(["pass", "fail", "not_applicable"]),
         confidence: z.number().min(0).max(1),
         evidence: z.string().trim(),
+        issue: z.string().trim().optional(),
+        howToImprove: z.string().trim().optional(),
+        rerecordSuggestion: z.enum(["none", "clip", "full"]).optional(),
       }),
     )
     .min(1),
@@ -191,6 +208,8 @@ export async function generateAdmissionPreReview({
   actor,
   submission,
   transcript,
+  projectGuide = null,
+  selfCheck = null,
   rubric,
   examples = [],
   providers,
@@ -202,6 +221,8 @@ export async function generateAdmissionPreReview({
   actor: AiActor;
   submission: AdmissionPreReviewSubmission;
   transcript: AdmissionTranscriptSource;
+  projectGuide?: RecordingProductionGuide | null;
+  selfCheck?: NormalizedRecordingSelfCheck | null;
   rubric?: AdmissionRubric;
   examples?: AdmissionPreReviewExample[];
   providers?: AiProvider[];
@@ -242,7 +263,12 @@ export async function generateAdmissionPreReview({
         { role: "system", content: buildSystemPrompt(checkpoints, examples) },
         {
           role: "user",
-          content: buildUserPrompt({ submission, transcript }),
+          content: buildUserPrompt({
+            submission,
+            transcript,
+            projectGuide,
+            selfCheck,
+          }),
         },
       ],
       responseSchema: preReviewSchema,
@@ -289,14 +315,25 @@ export async function generateAdmissionPreReview({
   const checkpointResults: AdmissionCheckpointResultInput[] =
     parsed.data.checkpoints
       .filter((item) => allowedKeys.has(item.key))
-      .map((item) => ({
-        checkpointKey: item.key,
-        verdict: item.verdict,
-        confidence: item.confidence,
-        evidence: item.evidence.trim()
-          ? { source: "asr_transcript", quote: item.evidence.trim() }
-          : { source: "asr_transcript" },
-      }));
+      .map((item) => {
+        const rerecordSuggestion: RerecordSuggestion =
+          item.rerecordSuggestion ?? "none";
+        return {
+          checkpointKey: item.key,
+          verdict: item.verdict,
+          confidence: item.confidence,
+          evidence: {
+            source: "asr_transcript",
+            ...(item.evidence.trim() ? { quote: item.evidence.trim() } : {}),
+            structuredFeedback: {
+              issue: item.issue?.trim() || null,
+              howToImprove: item.howToImprove?.trim() || null,
+              rerecordSuggestion,
+              advisoryOnly: true,
+            },
+          },
+        };
+      });
   if (!checkpointResults.length) {
     throw new Error("Admission pre-review produced no valid checkpoints");
   }
@@ -443,6 +480,8 @@ function buildSystemPrompt(
     "3. evidence 必须引用转写原文片段；没有依据就留空字符串。",
     "4. 你的结论只是人工审核的预填草稿，不会自动生效；置信度不足时 decision 用 manual_review。",
     "5. 硬卡点（hard_block）fail 时 decision 不得为 approved。",
+    "6. rerecordSuggestion 只能表达建议，不能表达最终审核结论，也不能作为通过/驳回依据。",
+    "7. 避免强制重录口吻；需要时写“建议补录指定片段”或“建议整段重录”。",
     "卡点清单:",
     ...checkpoints.map(
       (checkpoint) =>
@@ -469,7 +508,15 @@ function buildSystemPrompt(
       confidence: "high|medium|low",
       noteDraft: "给审核员的一句话预审意见",
       checkpoints: [
-        { key: "...", verdict: "pass|fail|not_applicable", confidence: 0.9, evidence: "转写引用" },
+        {
+          key: "...",
+          verdict: "pass|fail|not_applicable",
+          confidence: 0.9,
+          evidence: "转写引用",
+          issue: "问题概述或空字符串",
+          howToImprove: "改进建议或空字符串",
+          rerecordSuggestion: "none|clip|full",
+        },
       ],
     }),
   );
@@ -480,9 +527,13 @@ function buildSystemPrompt(
 function buildUserPrompt({
   submission,
   transcript,
+  projectGuide,
+  selfCheck,
 }: {
   submission: AdmissionPreReviewSubmission;
   transcript: AdmissionTranscriptSource;
+  projectGuide?: RecordingProductionGuide | null;
+  selfCheck?: NormalizedRecordingSelfCheck | null;
 }): string {
   const scorecardLine = Object.entries(transcript.scorecard)
     .map(([key, value]) => `${key}=${value}`)
@@ -496,11 +547,155 @@ function buildUserPrompt({
     transcript.summary ? `录屏 AI 摘要: ${transcript.summary}` : "",
     scorecardLine ? `录屏 AI 六维评分: ${scorecardLine}` : "",
     "",
+    ...buildProjectGuidePromptLines(projectGuide),
+    ...buildSelfCheckPromptLines(selfCheck),
+    "",
     "【转写全文】",
     truncateTranscript(transcript.transcriptText),
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function buildProjectGuidePromptLines(
+  projectGuide: RecordingProductionGuide | null | undefined,
+): string[] {
+  if (!projectGuide) {
+    return [];
+  }
+
+  return [
+    "【项目任务卡】",
+    `游戏: ${formatPromptField(projectGuide.gameName)}`,
+    `版本/区服: ${joinNonEmpty([
+      compactText(projectGuide.gameVersion, PROMPT_SHORT_FIELD_CHARS),
+      compactText(projectGuide.serverRegion, PROMPT_SHORT_FIELD_CHARS),
+    ]) || "未知"}`,
+    `推广目标: ${formatPromptField(projectGuide.promotionGoal)}`,
+    `目标用户: ${formatPromptField(projectGuide.targetAudience)}`,
+    `必须展示: ${formatTextList(projectGuide.requiredContent)}`,
+    `必须讲解: ${formatTextList(projectGuide.requiredTalkingPoints)}`,
+    `商业动作: ${formatTextList(projectGuide.commercialActions)}`,
+    `禁止内容: ${formatTextList(projectGuide.forbiddenContent)}`,
+    formatTechnicalStandard(projectGuide.technicalStandard),
+    projectGuide.templateText
+      ? `任务模板: ${compactText(projectGuide.templateText, PROMPT_LONG_FIELD_CHARS)}`
+      : "",
+    projectGuide.exampleUrl
+      ? `参考视频: ${compactText(projectGuide.exampleUrl, PROMPT_URL_CHARS)}`
+      : "",
+    "",
+  ].filter(Boolean);
+}
+
+function buildSelfCheckPromptLines(
+  selfCheck: NormalizedRecordingSelfCheck | null | undefined,
+): string[] {
+  if (!selfCheck) {
+    return [];
+  }
+
+  const keyMoments = Array.isArray(selfCheck.keyMoments)
+    ? selfCheck.keyMoments
+        .map(
+          (item) =>
+            `${item.key}=${item.startSeconds}-${item.endSeconds}s${
+              item.note
+                ? `(${compactText(item.note, PROMPT_KEY_MOMENT_NOTE_CHARS)})`
+                : ""
+            }`,
+        )
+        .join("；")
+    : "";
+
+  return [
+    "【主播自检】",
+    `主播自评总分: ${selfCheck.totalScore}`,
+    `主播自评等级: ${selfCheck.selfLevel}`,
+    `关键时间点: ${keyMoments || "无"}`,
+    selfCheck.note
+      ? `主播备注: ${compactText(selfCheck.note, PROMPT_LONG_FIELD_CHARS)}`
+      : "",
+    "",
+  ].filter(Boolean);
+}
+
+function formatTextList(values: string[] | null | undefined): string {
+  const normalized = (values ?? [])
+    .map((value) => compactText(value, PROMPT_LIST_ITEM_CHARS))
+    .filter(Boolean);
+  if (!normalized.length) {
+    return "无";
+  }
+
+  const visible = normalized.slice(0, PROMPT_LIST_MAX_ITEMS);
+  const remaining = normalized.length - visible.length;
+  return remaining > 0
+    ? `${visible.join("；")}；另${remaining}项`
+    : visible.join("；");
+}
+
+function joinNonEmpty(values: Array<string | null | undefined>): string {
+  return values.map((value) => value?.trim()).filter(Boolean).join(" / ");
+}
+
+function formatTechnicalStandard(
+  standard: Record<string, unknown> | null | undefined,
+): string {
+  if (!standard || !Object.keys(standard).length) {
+    return "技术标准: 无";
+  }
+
+  const entries = Object.entries(standard)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(
+      ([key, value]) =>
+        `${compactText(key, PROMPT_TECHNICAL_KEY_CHARS)}=${compactText(
+          stringifyPromptValue(value),
+          PROMPT_TECHNICAL_VALUE_CHARS,
+        )}`,
+    );
+  const visible = entries.slice(0, PROMPT_TECHNICAL_MAX_ENTRIES);
+  const remaining = entries.length - visible.length;
+  return `技术标准: ${
+    visible.length
+      ? remaining > 0
+        ? `${visible.join("；")}；另${remaining}项`
+        : visible.join("；")
+      : "无"
+  }`;
+}
+
+function formatPromptField(value: string | null | undefined): string {
+  return compactText(value, PROMPT_SHORT_FIELD_CHARS) || "未知";
+}
+
+function compactText(
+  value: string | null | undefined,
+  maxChars: number,
+): string {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length <= maxChars) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function stringifyPromptValue(value: unknown): string {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function truncateTranscript(text: string): string {

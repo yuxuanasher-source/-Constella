@@ -93,9 +93,94 @@ describe("listLatestRejectionFeedback", () => {
           key: "script_fit",
           label: "话术贴合项目卖点",
           note: "缺少开服冲榜卖点",
+          issue: null,
+          howToImprove: null,
+          rerecordSuggestion: "none",
+          advisoryOnly: true,
         },
       ],
     });
+  });
+
+  it("returns structured advisory fields without converting them into a decision", async () => {
+    const client = createFakeClient({
+      evaluations: [
+        {
+          id: "evaluation-structured",
+          application_id: "application-1",
+          stage: "mcn_first",
+          decision: "needs_changes",
+          note: "人工保留为需修改",
+          created_at: "2026-07-04T10:00:00.000Z",
+        },
+      ],
+      results: [
+        {
+          evaluation_id: "evaluation-structured",
+          checkpoint_key: "script_fit",
+          verdict: "fail",
+          note: "缺少开服冲榜卖点",
+          evidence: {
+            structuredFeedback: {
+              issue: "  卖点没说清  ",
+              howToImprove: "补充福利入口和预约动作",
+              rerecordSuggestion: "clip",
+              advisoryOnly: false,
+              decision: "approved",
+            },
+          },
+        },
+        {
+          evaluation_id: "evaluation-structured",
+          checkpoint_key: "media_quality",
+          verdict: "fail",
+          note: "时长略短",
+          evidence: {
+            structuredFeedback: {
+              issue: "  ",
+              howToImprove: 42,
+              rerecordSuggestion: "must",
+            },
+          },
+        },
+      ],
+    });
+
+    const feedback = await listLatestRejectionFeedback({
+      client,
+      organizationId: "org-1",
+      applicationIds: ["application-1"],
+    });
+
+    expect(feedback.get("application-1")).toEqual({
+      stage: "mcn_first",
+      decision: "needs_changes",
+      note: "人工保留为需修改",
+      createdAt: "2026-07-04T10:00:00.000Z",
+      reasons: [
+        {
+          key: "script_fit",
+          label: "话术贴合项目卖点",
+          note: "缺少开服冲榜卖点",
+          issue: "卖点没说清",
+          howToImprove: "补充福利入口和预约动作",
+          rerecordSuggestion: "clip",
+          advisoryOnly: true,
+        },
+        {
+          key: "media_quality",
+          label: "音画质量",
+          note: "时长略短",
+          issue: null,
+          howToImprove: null,
+          rerecordSuggestion: "none",
+          advisoryOnly: true,
+        },
+      ],
+    });
+    expect(feedback.get("application-1")?.reasons[0]).not.toHaveProperty(
+      "decision",
+    );
   });
 
   it("returns an empty map when there is nothing to report", async () => {
