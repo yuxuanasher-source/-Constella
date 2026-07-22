@@ -7,11 +7,13 @@ import {
   createAiConversation,
   createAiConversationTurn,
   finishAiConversationTurnV2,
+  getAiConversationGatewayState,
   listAiConversationMessages,
   listAiConversationTurns,
   listAiConversations,
   renewAiConversationTurnLease,
   renewAiConversationTurnLeaseV2,
+  syncAiConversationSummary,
   transitionAiConversationTurn,
   type ConversationRepositoryClient,
 } from "./conversation-repository";
@@ -470,5 +472,60 @@ describe("Xingyao conversation repository", () => {
         p_next_hermes_state: { generation: 2, sessionId: "session-1" },
       },
     );
+  });
+
+  it("loads Gateway state and synchronizes official compression summary with tenant and version guards", async () => {
+    const maybeSingle = vi.fn().mockResolvedValue({
+      data: {
+        provider_state: { hermesGateway: { generation: 3, sessionId: "session-1" } },
+        summary: { text: "old" },
+        summary_version: 2,
+      },
+      error: null,
+    });
+    const select = vi.fn(() => ({ eq: vi.fn(() => ({ eq: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle })) })) })) }));
+    const fromForGet = vi.fn(() => ({ select }));
+
+    await expect(
+      getAiConversationGatewayState(
+        { from: fromForGet } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: "org-1",
+          ownerUserId: "user-1",
+          conversationId: "conversation-1",
+        },
+      ),
+    ).resolves.toEqual({
+      generation: 3,
+      sessionId: "session-1",
+      summary: { text: "old" },
+      summaryVersion: 2,
+    });
+
+    const returns = vi.fn().mockResolvedValue({ data: [{ id: "conversation-1" }], error: null });
+    const syncEqSummaryVersion = vi.fn(() => ({ select: vi.fn(() => ({ returns })) }));
+    const syncEqOwner = vi.fn(() => ({ eq: syncEqSummaryVersion }));
+    const syncEqOrganization = vi.fn(() => ({ eq: syncEqOwner }));
+    const syncEqId = vi.fn(() => ({ eq: syncEqOrganization }));
+    const update = vi.fn(() => ({ eq: syncEqId }));
+    const fromForUpdate = vi.fn(() => ({ update }));
+
+    await expect(
+      syncAiConversationSummary(
+        { from: fromForUpdate } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: "org-1",
+          ownerUserId: "user-1",
+          conversationId: "conversation-1",
+          expectedSummaryVersion: 2,
+          summary: { text: "compressed" },
+        },
+      ),
+    ).resolves.toBe(true);
+    expect(update).toHaveBeenCalledWith({
+      summary: { text: "compressed" },
+      summary_version: 3,
+    });
+    expect(syncEqSummaryVersion).toHaveBeenCalledWith("summary_version", 2);
   });
 });

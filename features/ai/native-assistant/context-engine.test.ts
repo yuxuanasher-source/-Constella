@@ -1,7 +1,10 @@
 ﻿import { describe, expect, it } from "vitest";
 
 import { computeHermesSkillGrantsHash } from "../hermes/actor-fingerprint";
-import { buildNativeAssistantContext } from "./context-engine";
+import {
+  buildGatewayNativeAssistantContext,
+  buildNativeAssistantContext,
+} from "./context-engine";
 
 describe("native assistant context engine", () => {
   it("defaults to the Legacy runtime identity", () => {
@@ -111,6 +114,64 @@ describe("native assistant context engine", () => {
       }),
     ).toBeNull();
   });
+
+  it("freezes actor, page context, skill grants, personal memory revision, budget, and ledger transcript once per Gateway turn", () => {
+    const context = buildGatewayNativeAssistantContext({
+      auth: {
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        role: "finance",
+      },
+      conversationId: CONVERSATION_ID,
+      invocationId: INVOCATION_ID,
+      clientRequest: {
+        message: "check settlement risk",
+        mode: "deep",
+        pageContext: { pageType: "finance_batch", objectIds: [BATCH_ID] },
+      },
+      personalMemoryRevision: 12,
+      messages: [
+        ledgerMessage("m-user-1", "user", 1, "completed", "first question"),
+        ledgerMessage("m-tool-1", "tool", 2, "completed", "cached result", {
+          toolName: "projects.search",
+          updatedAt: "2026-07-20T08:00:00.000Z",
+          privateReasoning: "never expose",
+        }),
+        ledgerMessage("m-other-user", "user", 3, "completed", "other user state", {
+          ownerUserId: "other-user",
+        }),
+        ledgerMessage("m-assistant-failed", "assistant", 4, "failed", "failed draft"),
+      ],
+    });
+
+    expect(context).toMatchObject({
+      personalMemoryRevision: 12,
+      budget: {
+        maxIterations: 90,
+        wallClockMs: 300_000,
+      },
+      actor: {
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        pageContext: { pageType: "finance_batch", objectIds: [BATCH_ID] },
+        profileVersion: "hermes-xingyao-v2",
+      },
+      ledgerTranscript: [
+        { role: "user", content: "first question" },
+        {
+          role: "tool",
+          content: "cached result",
+          metadata: {
+            toolName: "projects.search",
+            updatedAt: "2026-07-20T08:00:00.000Z",
+            historical: true,
+          },
+        },
+      ],
+    });
+    expect(JSON.stringify(context)).not.toContain("other user state");
+    expect(JSON.stringify(context)).not.toContain("privateReasoning");
+  });
 });
 
 const USER_ID = "22222222-2222-4222-8222-222222222222";
@@ -118,3 +179,25 @@ const ORG_ID = "33333333-3333-4333-8333-333333333333";
 const CONVERSATION_ID = "44444444-4444-4444-8444-444444444444";
 const BATCH_ID = "55555555-5555-4555-8555-555555555555";
 const INVOCATION_ID = "66666666-6666-4666-8666-666666666666";
+
+function ledgerMessage(
+  id: string,
+  role: "user" | "assistant" | "tool",
+  sequence: number,
+  status: "completed" | "failed",
+  content: string,
+  metadata: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    conversationId: CONVERSATION_ID,
+    sequence,
+    role,
+    status,
+    content,
+    parentMessageId: null,
+    metadata,
+    createdAt: "2026-07-22T08:00:00.000Z",
+    updatedAt: "2026-07-22T08:00:00.000Z",
+  };
+}

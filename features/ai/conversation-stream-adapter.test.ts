@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { CreatedConversationTurn } from "./conversation-repository";
 import { createConversationTurnStream } from "./conversation-stream-adapter";
+import { createLegacyTurnExecutor } from "./native-assistant/legacy-turn-executor";
 
 const turn: CreatedConversationTurn = {
   conversationId: "conversation-1",
@@ -16,18 +17,60 @@ const turn: CreatedConversationTurn = {
 describe("conversation stream adapter", () => {
   it("rejects duplicate turns without mutating the original execution", async () => {
     const service = serviceDouble({ callOrder: [] });
+    const executor = { execute: vi.fn() };
     const response = createConversationTurnStream({
       request: new Request("http://localhost/api/ai/turns"),
       actor: { organizationId: "org-1", userId: "user-1" },
       turn: { ...turn, duplicate: true, status: "generating" },
       attachments: [],
       service,
-      executeLegacyChat: vi.fn(),
+      executor,
     });
 
     expect(response.status).toBe(409);
-    expect(service.prepareTurn).not.toHaveBeenCalled();
-    expect(service.failTurn).not.toHaveBeenCalled();
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it("streams events from a typed ConversationTurnExecutor source", async () => {
+    const service = serviceDouble({ callOrder: [] });
+    const executor = {
+      execute: vi.fn().mockImplementation(async function* () {
+        yield {
+          type: "turn.started",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          userMessageId: "message-user-1",
+          assistantMessageId: "message-assistant-1",
+        };
+        yield {
+          type: "response.cancelled",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          messageId: "message-assistant-1",
+        };
+      }),
+    };
+
+    const response = createConversationTurnStream({
+      request: new Request("http://localhost/api/ai/turns"),
+      actor: { organizationId: "org-1", userId: "user-1" },
+      turn,
+      attachments: [],
+      service,
+      executor,
+    });
+
+    const events = parseSseEvents(await response.text());
+    expect(events.map((event) => event.event)).toEqual([
+      "turn.started",
+      "response.cancelled",
+    ]);
+    expect(executor.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        turn,
+        service,
+      }),
+    );
   });
 
   it("maps legacy chat events to typed events and commits before completion", async () => {
@@ -71,7 +114,7 @@ describe("conversation stream adapter", () => {
       turn,
       attachments: [],
       service,
-      executeLegacyChat,
+      executor: createLegacyTurnExecutor({ executeLegacyChat }),
     });
     const events = parseSseEvents(await response.text());
 
@@ -156,7 +199,7 @@ describe("conversation stream adapter", () => {
       turn,
       attachments: [],
       service,
-      executeLegacyChat,
+      executor: createLegacyTurnExecutor({ executeLegacyChat }),
     });
     const events = parseSseEvents(await response.text());
 
@@ -193,7 +236,7 @@ describe("conversation stream adapter", () => {
       turn,
       attachments: [],
       service,
-      executeLegacyChat,
+      executor: createLegacyTurnExecutor({ executeLegacyChat }),
     });
 
     await expect(response.text()).rejects.toThrow("terminal state");

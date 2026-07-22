@@ -108,6 +108,13 @@ export type CreatedConversationTurn = {
   duplicate: boolean;
 };
 
+export type ConversationGatewayState = {
+  generation: number;
+  sessionId?: string;
+  summary: Record<string, unknown>;
+  summaryVersion: number;
+};
+
 export async function createAiConversation(
   client: ConversationRepositoryClient,
   input: { organizationId: string; ownerUserId: string; title: string },
@@ -185,6 +192,66 @@ export async function listAiConversationMessages(
   return error || !Array.isArray(data)
     ? []
     : data.filter(isMessageRow).map(toMessageDto).reverse();
+}
+
+export async function getAiConversationGatewayState(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+  },
+): Promise<ConversationGatewayState | null> {
+  const { data, error } = await client
+    .from("ai_conversations")
+    .select("provider_state, summary, summary_version")
+    .eq("id", input.conversationId)
+    .eq("organization_id", input.organizationId)
+    .eq("owner_user_id", input.ownerUserId)
+    .maybeSingle();
+
+  if (error || !isRecord(data)) return null;
+  const providerState = isRecord(data.provider_state) ? data.provider_state : {};
+  const hermesGateway = isRecord(providerState.hermesGateway)
+    ? providerState.hermesGateway
+    : {};
+  const generation = numberValue(hermesGateway.generation) ?? 0;
+  const sessionId = stringValue(hermesGateway.sessionId);
+  const summary = isRecord(data.summary) ? data.summary : {};
+  const summaryVersion = numberValue(data.summary_version) ?? 0;
+  return {
+    generation,
+    ...(sessionId ? { sessionId } : {}),
+    summary,
+    summaryVersion,
+  };
+}
+
+export async function syncAiConversationSummary(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    expectedSummaryVersion: number;
+    summary: Record<string, unknown>;
+  },
+): Promise<boolean> {
+  const nextVersion = input.expectedSummaryVersion + 1;
+  const { data, error } = await client
+    .from("ai_conversations")
+    .update({
+      summary: input.summary,
+      summary_version: nextVersion,
+    })
+    .eq("id", input.conversationId)
+    .eq("organization_id", input.organizationId)
+    .eq("owner_user_id", input.ownerUserId)
+    .eq("summary_version", input.expectedSummaryVersion)
+    .select("id")
+    .returns<{ id: string }[]>();
+
+  return !error && (data?.length ?? 0) > 0;
 }
 
 export async function createAiConversationTurn(

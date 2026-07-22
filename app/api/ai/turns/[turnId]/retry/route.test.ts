@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getRouteContextMock = vi.fn();
 const createConversationTurnStreamMock = vi.fn();
-const executeNativeHermesAssistantMock = vi.fn();
+const createGatewayTurnExecutorMock = vi.fn();
 
 vi.mock("@/app/api/ai/conversation-route-context", () => ({
   getAiConversationRouteContext: getRouteContextMock,
@@ -17,8 +17,8 @@ vi.mock("@/features/ai/conversation-stream-adapter", () => ({
   createConversationTurnStream: createConversationTurnStreamMock,
 }));
 
-vi.mock("@/features/ai/native-assistant/executor", () => ({
-  executeNativeHermesAssistant: executeNativeHermesAssistantMock,
+vi.mock("@/features/ai/native-assistant/gateway-executor", () => ({
+  createGatewayTurnExecutor: createGatewayTurnExecutorMock,
 }));
 
 describe("POST /api/ai/turns/:turnId/retry", () => {
@@ -26,7 +26,7 @@ describe("POST /api/ai/turns/:turnId/retry", () => {
     vi.resetModules();
     getRouteContextMock.mockReset();
     createConversationTurnStreamMock.mockReset();
-    executeNativeHermesAssistantMock.mockReset();
+    createGatewayTurnExecutorMock.mockReset();
   });
 
   it("retries the source turn without accepting a new user message", async () => {
@@ -42,6 +42,8 @@ describe("POST /api/ai/turns/:turnId/retry", () => {
     const retryTurn = vi.fn().mockResolvedValue(retriedTurn);
     const acceptTurn = vi.fn();
     const service = { retryTurn, acceptTurn };
+    const executor = { execute: vi.fn() };
+    createGatewayTurnExecutorMock.mockReturnValue(executor);
     getRouteContextMock.mockResolvedValue({
       actor: { organizationId: "org-1", userId: "user-1" },
       service,
@@ -65,8 +67,11 @@ describe("POST /api/ai/turns/:turnId/retry", () => {
       expect.objectContaining({
         turn: retriedTurn,
         attachments: [],
-        executeLegacyChat: executeNativeHermesAssistantMock,
+        executor,
       }),
+    );
+    expect(createGatewayTurnExecutorMock).toHaveBeenCalledWith(
+      expect.objectContaining({ service }),
     );
   });
 });

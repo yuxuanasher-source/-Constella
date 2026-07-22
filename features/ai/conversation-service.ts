@@ -19,6 +19,7 @@ import {
   createAiConversationTurn,
   failAiConversationTurn,
   finishAiConversationTurnV2,
+  getAiConversationGatewayState,
   getAiConversation,
   getAiConversationTurn,
   listAiConversationMessages,
@@ -26,8 +27,10 @@ import {
   listAiConversations,
   renewAiConversationTurnLease,
   renewAiConversationTurnLeaseV2,
+  syncAiConversationSummary,
   transitionAiConversationTurn,
   type ConversationRepositoryClient,
+  type ConversationGatewayState,
   type CreatedConversationTurn,
   type StoredConversationTurn,
 } from "./conversation-repository";
@@ -109,6 +112,18 @@ export type ConversationPersistence = {
   compareAndSwapGatewayState?(
     input: Parameters<typeof compareAndSwapAiConversationGatewayState>[1],
   ): Promise<number>;
+  getGatewayState?(input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+  }): Promise<ConversationGatewayState | null>;
+  syncConversationSummary?(input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    expectedSummaryVersion: number;
+    summary: Record<string, unknown>;
+  }): Promise<boolean>;
 };
 
 export class ConversationServiceError extends Error {
@@ -150,6 +165,8 @@ export function createSupabaseConversationPersistence(
     renewLeaseV2: (input) => renewAiConversationTurnLeaseV2(client, input),
     compareAndSwapGatewayState: (input) =>
       compareAndSwapAiConversationGatewayState(client, input),
+    getGatewayState: (input) => getAiConversationGatewayState(client, input),
+    syncConversationSummary: (input) => syncAiConversationSummary(client, input),
   };
 }
 
@@ -210,6 +227,19 @@ export function createConversationService(
         persistence.listTurns(scope),
       ]);
       return { conversation, messages, turns };
+    },
+
+    listMessages(
+      actor: ConversationActor,
+      conversationId: string,
+      limit = 200,
+    ) {
+      return persistence.listMessages({
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        conversationId,
+        limit,
+      });
     },
 
     async acceptTurn(
@@ -603,6 +633,43 @@ export function createConversationService(
         });
       } catch (error) {
         throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async getGatewayState(actor: ConversationActor, conversationId: string) {
+      if (!persistence.getGatewayState) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      return persistence.getGatewayState({
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        conversationId,
+      });
+    },
+
+    async syncConversationSummary(
+      actor: ConversationActor,
+      conversationId: string,
+      input: {
+        expectedSummaryVersion: number;
+        summary: Record<string, unknown>;
+      },
+    ) {
+      if (!persistence.syncConversationSummary) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      const synced = await persistence.syncConversationSummary({
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        conversationId,
+        expectedSummaryVersion: input.expectedSummaryVersion,
+        summary: assertHermesSanitizedObject(input.summary),
+      });
+      if (!synced) {
+        throw new ConversationServiceError(
+          "turn_state_conflict",
+          "Conversation summary changed before synchronization",
+        );
       }
     },
   };

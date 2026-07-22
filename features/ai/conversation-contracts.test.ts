@@ -138,6 +138,61 @@ describe("Xingyao conversation protocol contracts", () => {
     expect(isConversationStreamEvent({ type: "done" })).toBe(false);
   });
 
+  it("accepts the native product SSE event contract with explicit outcomes and observation metadata", () => {
+    const completed: ConversationStreamEvent = {
+      type: "response.completed",
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+      messageId: "message-1",
+      content: "基于可用证据完成答复",
+      outcome: "partial",
+      evidence: ["project:1"],
+      missing: ["settlements.summary"],
+      observationTimes: {
+        firstObservedAt: "2026-07-22T09:00:00.000Z",
+        lastObservedAt: "2026-07-22T09:00:01.000Z",
+      },
+      meta: { traceCode: "ok" },
+    };
+
+    expect(isConversationStreamEvent(completed)).toBe(true);
+    expect(
+      isConversationStreamEvent({
+        ...completed,
+        outcome: "failed",
+      }),
+    ).toBe(false);
+    expect(
+      isConversationStreamEvent({
+        type: "response.failed",
+        conversationId: "conversation-1",
+        turnId: "turn-1",
+        code: "gateway_provider_failed",
+        retryable: true,
+        message: "Provider failed",
+        outcome: "partial",
+      }),
+    ).toBe(false);
+    for (const event of [
+      { type: "activity.updated", label: "Reading", status: "running" },
+      { type: "tool.started", toolCallId: "tool-1", toolName: "projects.search", label: "Project search" },
+      { type: "tool.completed", toolCallId: "tool-1", toolName: "projects.search", status: "completed", label: "Project search" },
+      { type: "clarify.requested", question: "Which project?", choices: ["A", "B"] },
+      { type: "todo.updated", items: [{ id: "todo-1", label: "Check", status: "done" }] },
+      { type: "subagent.updated", subagentId: "subagent-1", label: "Research", status: "running" },
+      { type: "response.cancelled", messageId: "message-1" },
+      { type: "heartbeat" },
+    ]) {
+      expect(
+        isConversationStreamEvent({
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          ...event,
+        }),
+      ).toBe(true);
+    }
+  });
+
   it("does not accept punctuation-only output as meaningful content", () => {
     expect(hasMeaningfulAiContent(".\n.")).toBe(false);
     expect(hasMeaningfulAiContent("**---**")).toBe(false);

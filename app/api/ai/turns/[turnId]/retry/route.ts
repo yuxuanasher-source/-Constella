@@ -6,7 +6,7 @@ import {
 } from "@/app/api/ai/conversation-route-context";
 import { parseRetryTurnCommand } from "@/features/ai/conversation-contracts";
 import { createConversationTurnStream } from "@/features/ai/conversation-stream-adapter";
-import { executeNativeHermesAssistant } from "@/features/ai/native-assistant/executor";
+import { createGatewayTurnExecutor } from "@/features/ai/native-assistant/gateway-executor";
 
 export const maxDuration = 60;
 
@@ -49,7 +49,12 @@ export async function POST(
       turn: retriedTurn,
       attachments: [],
       service: context.service,
-      executeLegacyChat: executeNativeHermesAssistant,
+      executor: createGatewayTurnExecutor({
+        service: context.service,
+        auth: context.auth,
+        provider: "hermes",
+        model: "hermes-official-gateway",
+      }),
     });
   } catch (error) {
     return conversationRouteErrorResponse(error);

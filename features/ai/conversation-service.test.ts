@@ -73,6 +73,8 @@ function persistence(
     }),
     renewLeaseV2: vi.fn().mockResolvedValue(undefined),
     compareAndSwapGatewayState: vi.fn().mockResolvedValue(2),
+    getGatewayState: vi.fn().mockResolvedValue(null),
+    syncConversationSummary: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
 }
@@ -1327,6 +1329,42 @@ describe("Xingyao conversation service", () => {
       conversationId: "conversation-1",
       expectedGeneration: 1,
       nextState: { generation: 2, sessionId: "session-1" },
+    });
+  });
+
+  it("tenant-scopes Gateway state, Session search inputs, and summary synchronization", async () => {
+    const store = persistence({
+      getGatewayState: vi.fn().mockResolvedValue({
+        generation: 2,
+        sessionId: "session-1",
+        summaryVersion: 4,
+        summary: { text: "old" },
+      }),
+      syncConversationSummary: vi.fn().mockResolvedValue(true),
+    });
+    const service = createConversationService(store);
+
+    await expect(
+      service.getGatewayState(actor, "conversation-1"),
+    ).resolves.toMatchObject({ generation: 2, sessionId: "session-1" });
+    expect(store.getGatewayState).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+    });
+
+    await expect(
+      service.syncConversationSummary(actor, "conversation-1", {
+        expectedSummaryVersion: 4,
+        summary: { text: "official compression" },
+      }),
+    ).resolves.toBeUndefined();
+    expect(store.syncConversationSummary).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      expectedSummaryVersion: 4,
+      summary: { text: "official compression" },
     });
   });
 

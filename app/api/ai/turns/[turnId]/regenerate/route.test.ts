@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getRouteContextMock = vi.fn();
 const createConversationTurnStreamMock = vi.fn();
-const executeNativeHermesAssistantMock = vi.fn();
+const createGatewayTurnExecutorMock = vi.fn();
 
 vi.mock("@/app/api/ai/conversation-route-context", () => ({
   getAiConversationRouteContext: getRouteContextMock,
@@ -17,8 +17,8 @@ vi.mock("@/features/ai/conversation-stream-adapter", () => ({
   createConversationTurnStream: createConversationTurnStreamMock,
 }));
 
-vi.mock("@/features/ai/native-assistant/executor", () => ({
-  executeNativeHermesAssistant: executeNativeHermesAssistantMock,
+vi.mock("@/features/ai/native-assistant/gateway-executor", () => ({
+  createGatewayTurnExecutor: createGatewayTurnExecutorMock,
 }));
 
 describe("POST /api/ai/turns/:turnId/regenerate", () => {
@@ -26,7 +26,7 @@ describe("POST /api/ai/turns/:turnId/regenerate", () => {
     vi.resetModules();
     getRouteContextMock.mockReset();
     createConversationTurnStreamMock.mockReset();
-    executeNativeHermesAssistantMock.mockReset();
+    createGatewayTurnExecutorMock.mockReset();
   });
 
   it("creates a new assistant version without accepting a user message", async () => {
@@ -42,6 +42,8 @@ describe("POST /api/ai/turns/:turnId/regenerate", () => {
     const regenerateTurn = vi.fn().mockResolvedValue(regeneratedTurn);
     const acceptTurn = vi.fn();
     const service = { regenerateTurn, acceptTurn };
+    const executor = { execute: vi.fn() };
+    createGatewayTurnExecutorMock.mockReturnValue(executor);
     getRouteContextMock.mockResolvedValue({
       actor: { organizationId: "org-1", userId: "user-1" },
       service,
@@ -68,8 +70,11 @@ describe("POST /api/ai/turns/:turnId/regenerate", () => {
       expect.objectContaining({
         turn: regeneratedTurn,
         attachments: [],
-        executeLegacyChat: executeNativeHermesAssistantMock,
+        executor,
       }),
+    );
+    expect(createGatewayTurnExecutorMock).toHaveBeenCalledWith(
+      expect.objectContaining({ service }),
     );
   });
 });

@@ -33,6 +33,8 @@ export type ConversationContextSnapshot = {
   gatewayContext?: ConversationGatewayContext;
 };
 
+export type ConversationResponseOutcome = "complete" | "partial" | "blocked";
+
 export type ConversationGatewayContext = {
   messages: AiMessage[];
   attachments: AiAttachment[];
@@ -109,6 +111,58 @@ export type ConversationStreamEvent =
       snapshotVersion: number;
     }
   | {
+      type: "activity.updated";
+      conversationId: string;
+      turnId: string;
+      label: string;
+      status: "pending" | "running" | "completed" | "failed";
+    }
+  | {
+      type: "tool.started";
+      conversationId: string;
+      turnId: string;
+      toolCallId: string;
+      toolName: string;
+      label: string;
+    }
+  | {
+      type: "tool.completed";
+      conversationId: string;
+      turnId: string;
+      toolCallId: string;
+      toolName: string;
+      status: "completed" | "failed" | "denied";
+      label: string;
+      evidence?: string[];
+      missing?: string[];
+      observedAt?: string;
+    }
+  | {
+      type: "clarify.requested";
+      conversationId: string;
+      turnId: string;
+      question: string;
+      choices?: string[];
+    }
+  | {
+      type: "todo.updated";
+      conversationId: string;
+      turnId: string;
+      items: Array<{
+        id: string;
+        label: string;
+        status: "pending" | "running" | "done" | "blocked";
+      }>;
+    }
+  | {
+      type: "subagent.updated";
+      conversationId: string;
+      turnId: string;
+      subagentId: string;
+      label: string;
+      status: "pending" | "running" | "completed" | "failed";
+    }
+  | {
       type: "response.delta";
       conversationId: string;
       turnId: string;
@@ -121,6 +175,13 @@ export type ConversationStreamEvent =
       turnId: string;
       messageId: string;
       content: string;
+      outcome: ConversationResponseOutcome;
+      evidence: string[];
+      missing: string[];
+      observationTimes: {
+        firstObservedAt: string | null;
+        lastObservedAt: string | null;
+      };
       meta?: Record<string, unknown>;
       invocationId?: string;
     }
@@ -131,6 +192,13 @@ export type ConversationStreamEvent =
       code: string;
       retryable: boolean;
       message: string;
+      invocationId?: string;
+    }
+  | {
+      type: "response.cancelled";
+      conversationId: string;
+      turnId: string;
+      messageId: string;
       invocationId?: string;
     }
   | {
@@ -208,6 +276,56 @@ export function isConversationStreamEvent(
         Number.isInteger(value.snapshotVersion) &&
         value.snapshotVersion > 0
       );
+    case "activity.updated":
+      return (
+        nonEmptyString(value.label) &&
+        ["pending", "running", "completed", "failed"].includes(
+          String(value.status),
+        ) &&
+        !Object.prototype.hasOwnProperty.call(value, "reasoning")
+      );
+    case "tool.started":
+      return (
+        nonEmptyString(value.toolCallId) &&
+        nonEmptyString(value.toolName) &&
+        nonEmptyString(value.label)
+      );
+    case "tool.completed":
+      return (
+        nonEmptyString(value.toolCallId) &&
+        nonEmptyString(value.toolName) &&
+        nonEmptyString(value.label) &&
+        ["completed", "failed", "denied"].includes(String(value.status)) &&
+        (value.evidence == null || isStringArray(value.evidence)) &&
+        (value.missing == null || isStringArray(value.missing)) &&
+        (value.observedAt == null || isDateString(value.observedAt))
+      );
+    case "clarify.requested":
+      return (
+        nonEmptyString(value.question) &&
+        (value.choices == null || isStringArray(value.choices))
+      );
+    case "todo.updated":
+      return (
+        Array.isArray(value.items) &&
+        value.items.every(
+          (item) =>
+            isRecord(item) &&
+            nonEmptyString(item.id) &&
+            nonEmptyString(item.label) &&
+            ["pending", "running", "done", "blocked"].includes(
+              String(item.status),
+            ),
+        )
+      );
+    case "subagent.updated":
+      return (
+        nonEmptyString(value.subagentId) &&
+        nonEmptyString(value.label) &&
+        ["pending", "running", "completed", "failed"].includes(
+          String(value.status),
+        )
+      );
     case "response.delta":
       return nonEmptyString(value.messageId) && typeof value.delta === "string";
     case "response.completed":
@@ -215,6 +333,14 @@ export function isConversationStreamEvent(
         nonEmptyString(value.messageId) &&
         typeof value.content === "string" &&
         hasMeaningfulAiContent(value.content) &&
+        ["complete", "partial", "blocked"].includes(String(value.outcome)) &&
+        isStringArray(value.evidence) &&
+        isStringArray(value.missing) &&
+        isRecord(value.observationTimes) &&
+        (value.observationTimes.firstObservedAt === null ||
+          isDateString(value.observationTimes.firstObservedAt)) &&
+        (value.observationTimes.lastObservedAt === null ||
+          isDateString(value.observationTimes.lastObservedAt)) &&
         (value.meta == null || isRecord(value.meta)) &&
         (value.invocationId == null || nonEmptyString(value.invocationId))
       );
@@ -223,6 +349,12 @@ export function isConversationStreamEvent(
         nonEmptyString(value.code) &&
         typeof value.retryable === "boolean" &&
         nonEmptyString(value.message) &&
+        !Object.prototype.hasOwnProperty.call(value, "outcome") &&
+        (value.invocationId == null || nonEmptyString(value.invocationId))
+      );
+    case "response.cancelled":
+      return (
+        nonEmptyString(value.messageId) &&
         (value.invocationId == null || nonEmptyString(value.invocationId))
       );
     case "heartbeat":
@@ -254,6 +386,21 @@ function normalizedString(value: unknown, maxLength: number): string | null {
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === "string" && item.trim().length > 0)
+  );
+}
+
+function isDateString(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    Number.isFinite(Date.parse(value))
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
