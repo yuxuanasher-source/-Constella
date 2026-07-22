@@ -497,30 +497,43 @@ async function buildAndCaptureFreshGatewayContext({
   });
 
   let session: { sessionId: string };
+  const branchSession =
+    sourceCheckpoint !== null && input.turn.attempt > 1
+      ? gateway.branchSession
+      : undefined;
   try {
-    session =
-      sourceCheckpoint && input.turn.attempt > 1 && gateway.branchSession
-        ? await gateway.branchSession({
-            sessionId: sourceCheckpoint.sessionId,
-            actor: context.actor,
-            conversationId: input.turn.conversationId,
-            invocationCapability: capability.invocationCapability,
-            checkpoint: {
-              ...sourceCheckpoint,
-              sourceTurnId,
-            },
-          })
-        : await gateway.createSession({
-            actor: context.actor,
-            conversationId: input.turn.conversationId,
-            invocationCapability: capability.invocationCapability,
-            budget: context.budget,
-            personalMemoryRevision: context.personalMemoryRevision,
-            transcript: context.ledgerTranscript,
-            attachments: normalizeAttachmentUpload(input.attachments),
-          });
-  } catch {
+    if (sourceCheckpoint && branchSession) {
+      session = await branchSession({
+        sessionId: sourceCheckpoint.sessionId,
+        actor: context.actor,
+        conversationId: input.turn.conversationId,
+        invocationCapability: capability.invocationCapability,
+        checkpoint: {
+          ...sourceCheckpoint,
+          sourceTurnId,
+        },
+      });
+    } else {
+      session = await gateway.createSession({
+        actor: context.actor,
+        conversationId: input.turn.conversationId,
+        invocationCapability: capability.invocationCapability,
+        budget: context.budget,
+        personalMemoryRevision: context.personalMemoryRevision,
+        transcript: context.ledgerTranscript,
+        attachments: normalizeAttachmentUpload(input.attachments),
+      });
+    }
+  } catch (error) {
+    if (error instanceof GatewayExecutionError) throw error;
     throw new GatewayExecutionError("gateway_session_create_failed");
+  }
+  if (
+    sourceCheckpoint &&
+    branchSession &&
+    !isValidBranchedSessionId(session.sessionId, sourceCheckpoint.sessionId)
+  ) {
+    throw new GatewayExecutionError("gateway_checkpoint_invalid");
   }
 
   const checkpoint: GatewayCheckpoint = {
@@ -891,6 +904,14 @@ function isUsableCheckpoint(
   );
 }
 
+function isValidBranchedSessionId(
+  branchSessionId: unknown,
+  sourceSessionId: string,
+): branchSessionId is string {
+  const sessionId = stringValue(branchSessionId);
+  return !!sessionId && sessionId !== sourceSessionId;
+}
+
 export function resolveHermesGatewayConfig(
   env: Record<string, string | undefined> = process.env,
 ): HermesGatewayClientConfig | null {
@@ -943,21 +964,24 @@ export function createHermesGatewayClient({
       const result = await session.branch(
         stringValue(input.conversationId) ?? gatewayActor(input).conversationId,
       );
-      const branchedSessionId =
-        isRecord(result) && stringValue(result.sessionId)
-          ? stringValue(result.sessionId)!
-          : session.sessionId;
-      if (branchedSessionId !== session.sessionId) {
+      const branchedSessionId = isRecord(result)
+        ? stringValue(result.sessionId)
+        : null;
+      if (!branchedSessionId || branchedSessionId === sourceSessionId) {
         session.close();
-        session = await openOfficialGatewaySession({
-          input,
-          config,
-          actorAssertionConfig,
-          openSession,
-          createActorAssertion,
-          sessionId: branchedSessionId,
-        });
+        session = null;
+        throw new GatewayExecutionError("gateway_checkpoint_invalid");
       }
+      session.close();
+      session = null;
+      session = await openOfficialGatewaySession({
+        input,
+        config,
+        actorAssertionConfig,
+        openSession,
+        createActorAssertion,
+        sessionId: branchedSessionId,
+      });
       return { sessionId: branchedSessionId };
     },
     async *submitPrompt(input) {

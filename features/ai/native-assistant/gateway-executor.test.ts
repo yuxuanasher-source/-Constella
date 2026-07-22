@@ -635,6 +635,70 @@ describe("native Hermes Gateway executor", () => {
     });
   });
 
+  it.each([
+    {
+      name: "missing branch session id",
+      branchResult: {} as never,
+    },
+    {
+      name: "same branch session id",
+      branchResult: { sessionId: "session-source" },
+    },
+  ])(
+    "fails retry/regenerate when Gateway returns $name",
+    async ({ branchResult }) => {
+      const service = serviceDouble({
+        messages: [message(turn.userMessageId, 1, "user", "completed", "retry this")],
+        gatewayGeneration: 2,
+      });
+      service.getSourceGatewayCheckpoint.mockResolvedValue({
+        sessionId: "session-source",
+        checkpointId: "checkpoint-source",
+        turnId: "source-turn",
+        conversationId: turn.conversationId,
+        ownerUserId: actor.userId,
+        organizationId: actor.organizationId,
+      });
+      const gateway = gatewayDouble([
+        { type: "text.delta", delta: "must not stream" },
+        { type: "completed", sessionId: "session-source" },
+      ]);
+      gateway.branchSession.mockResolvedValue(branchResult);
+      const executor = createGatewayTurnExecutor({
+        service,
+        gateway,
+        auth: { ...actor, role: "finance" },
+        provider: "hermes",
+        model: "hermes-official-gateway",
+      });
+      const retryTurn = { ...turn, attempt: 2, retryOfTurnId: "source-turn" };
+
+      const events = await collect(
+        executor.execute({
+          request: jsonRequest({ message: "retry this", mode: "fast" }),
+          actor,
+          turn: retryTurn,
+          attachments: [],
+          service: {} as never,
+        }),
+      );
+
+      expect(gateway.submitPrompt).not.toHaveBeenCalled();
+      expect(service.finishTurnV2).toHaveBeenLastCalledWith(
+        actor,
+        retryTurn.turnId,
+        expect.objectContaining({
+          outcome: "failed",
+          errorCode: "gateway_checkpoint_invalid",
+        }),
+      );
+      expect(events.at(-1)).toMatchObject({
+        type: "response.failed",
+        code: "gateway_checkpoint_invalid",
+      });
+    },
+  );
+
   it("refuses to branch from another actor or conversation checkpoint", async () => {
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "retry this")],
