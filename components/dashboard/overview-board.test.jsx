@@ -537,6 +537,445 @@ describe("OverviewBoard AI panel", () => {
     expect(cancelledRender.container).not.toHaveTextContent(/调用失败|上游|provider/i);
   });
 
+  it("mounts Skill draft review from AI metadata for owners only", async () => {
+    const skillDraft = {
+      id: "skill-draft-overview",
+      skillId: "weekly-risk-brief",
+      version: "0.1.0",
+      bundleSha256: "sha256:abcdef1234567890",
+      manifest: {
+        name: "Weekly risk brief",
+        permissions: ["read:projects"],
+      },
+      status: "pending_review",
+    };
+    const protocolFetch = createConversationProtocolFetch({
+      content: "AI summary",
+      meta: { skillDrafts: [skillDraft] },
+      conversationId: "conversation-skill-owner",
+    });
+    fetch.mockImplementation((url, options) => {
+      if (String(url).includes("/skill-drafts/")) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({ draft: { ...skillDraft, status: "approved" } }),
+        });
+      }
+      return protocolFetch(url, options) || defaultFetchResponse(url);
+    });
+    const owner = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "owner-skill", name: "123", role: "owner" }}
+      />,
+    );
+
+    fireEvent.change(owner.container.querySelector("input"), {
+      target: { value: "Review the skill draft" },
+    });
+    fireEvent.keyDown(owner.container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    expect(await screen.findByText("weekly-risk-brief")).toBeInTheDocument();
+    expect(screen.getByText("sha256:abcdef1234567890")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /manifest/i }));
+    expect(screen.getByText('"permissions": [')).toBeInTheDocument();
+    expect(screen.getByTestId("skill-draft-approve")).toBeInTheDocument();
+    expect(screen.getByTestId("skill-draft-reject")).toBeInTheDocument();
+
+    owner.unmount();
+    mockConversationProtocol({
+      content: "AI summary",
+      meta: { skillDrafts: [skillDraft] },
+      conversationId: "conversation-skill-staff",
+    });
+    const staff = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "staff-skill", name: "123", role: "ops" }}
+      />,
+    );
+
+    fireEvent.change(staff.container.querySelector("input"), {
+      target: { value: "Review the skill draft" },
+    });
+    fireEvent.keyDown(staff.container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    expect(await screen.findByText("weekly-risk-brief")).toBeInTheDocument();
+    expect(screen.queryByTestId("skill-draft-approve")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("skill-draft-reject")).not.toBeInTheDocument();
+  });
+
+  it("restores persisted pending clarify DTOs with the saved question", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversations: [{ id: "conversation-clarify-restore" }],
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-clarify-restore") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-clarify-restore" },
+              messages: [
+                {
+                  id: "message-user-clarify-restore",
+                  role: "user",
+                  status: "completed",
+                  content: "Need scope",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-clarify-restore",
+                  assistantMessageId: "message-assistant-clarify-restore",
+                  status: "generating",
+                  pendingClarify: {
+                    clarifyId: "66666666-6666-4666-8666-666666666666",
+                    requestId: "clarify-request-restore",
+                    question: "Which project scope should be reviewed?",
+                    choices: ["Current month", "Current week"],
+                    allowFreeText: true,
+                  },
+                },
+              ],
+            }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+    localStorage.setItem(
+      "jingying-cabin.dashboard.ai.conversation.v1.user-clarify-restore",
+      "conversation-clarify-restore",
+    );
+
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-clarify-restore", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Which project scope should be reviewed?"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Current month" })).toBeEnabled();
+  });
+
+  it("queues Stop before turn.started and cancels once the server turn exists", async () => {
+    const encoder = new TextEncoder();
+    let streamController;
+    let turnSignal;
+    const cancelChecks = [];
+    fetch.mockImplementation((url, options = {}) => {
+      if (url === "/api/ai/conversations" && options.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () =>
+            Promise.resolve({ conversation: { id: "conversation-early-stop" } }),
+        });
+      }
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ conversations: [] }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-early-stop/turns") {
+        turnSignal = options.signal;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => "text/event-stream; charset=utf-8" },
+          body: new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+        });
+      }
+      if (
+        url ===
+        "/api/ai/conversations/conversation-early-stop/turns/turn-early-stop/cancel"
+      ) {
+        cancelChecks.push(turnSignal?.aborted === true);
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ turn: { status: "cancelled" } }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-early-stop", name: "123", role: "owner" }}
+      />,
+    );
+    fireEvent.change(container.querySelector("input"), {
+      target: { value: "Stop before turn id" },
+    });
+    fireEvent.keyDown(container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    await waitFor(() => expect(streamController).toBeTruthy());
+    fireEvent.click(await screen.findByTestId("ai-send-stop-button"));
+    expect(cancelChecks).toEqual([]);
+
+    streamController.enqueue(
+      encoder.encode(
+        protocolSse([
+          [
+            "turn.started",
+            {
+              type: "turn.started",
+              conversationId: "conversation-early-stop",
+              turnId: "turn-early-stop",
+              userMessageId: "message-user-early-stop",
+              assistantMessageId: "message-assistant-early-stop",
+            },
+          ],
+        ]),
+      ),
+    );
+
+    await waitFor(() => expect(cancelChecks).toEqual([false]));
+    expect(turnSignal.aborted).toBe(true);
+  });
+
+  it("does not render cancelled success when the cancel route fails", async () => {
+    const encoder = new TextEncoder();
+    const protocolFetch = createEventProtocolFetch({
+      conversationId: "conversation-cancel-fails",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-cancel-fails",
+            turnId: "turn-cancel-fails",
+            userMessageId: "message-user-cancel-fails",
+            assistantMessageId: "message-assistant-cancel-fails",
+          },
+        ],
+      ],
+      encoder,
+      keepOpen: true,
+    });
+    fetch.mockImplementation((url, options = {}) => {
+      if (
+        url ===
+        "/api/ai/conversations/conversation-cancel-fails/turns/turn-cancel-fails/cancel"
+      ) {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () =>
+            Promise.resolve({ error: "Hermes Gateway provider stack trace" }),
+        });
+      }
+      return protocolFetch(url, options) || defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-cancel-fails", name: "123", role: "owner" }}
+      />,
+    );
+    fireEvent.change(container.querySelector("input"), {
+      target: { value: "Cancel fails safely" },
+    });
+    fireEvent.keyDown(container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    fireEvent.click(await screen.findByTestId("ai-send-stop-button"));
+
+    expect(await screen.findByText("停止请求未确认")).toBeInTheDocument();
+    expect(screen.queryByText("已停止生成")).not.toBeInTheDocument();
+    expect(container).not.toHaveTextContent(/Hermes Gateway|provider|stack/i);
+  });
+
+  it("redacts unsafe gateway/provider strings from SSE labels and failures", async () => {
+    const encoder = new TextEncoder();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-redaction",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-redaction",
+            turnId: "turn-redaction",
+            userMessageId: "message-user-redaction",
+            assistantMessageId: "message-assistant-redaction",
+          },
+        ],
+        [
+          "tool.completed",
+          {
+            type: "tool.completed",
+            conversationId: "conversation-redaction",
+            turnId: "turn-redaction",
+            toolCallId: "tool-unsafe",
+            toolName: "internal.rawToolName",
+            label: "Hermes Gateway /api/internal {\"args\":true}",
+            status: "completed",
+            evidence: ["/api/internal/hermes/read"],
+            missing: ["provider model stack trace"],
+          },
+        ],
+        [
+          "response.failed",
+          {
+            type: "response.failed",
+            conversationId: "conversation-redaction",
+            turnId: "turn-redaction",
+            code: "provider_failed",
+            message: "DeepSeek provider model stack at /api/internal",
+            retryable: true,
+          },
+        ],
+      ],
+      encoder,
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-redaction", name: "123", role: "owner" }}
+      />,
+    );
+    fireEvent.change(container.querySelector("input"), {
+      target: { value: "Show unsafe progress" },
+    });
+    fireEvent.keyDown(container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    expect(await screen.findByText("AI response unavailable")).toBeInTheDocument();
+    expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
+      /Hermes Gateway|DeepSeek|provider|model|\/api\/internal|rawToolName|args|stack|chain-of-thought|reasoning/i,
+    );
+  });
+
+  it("keeps clarify enabled on failed POST and rejects invalid submissions", async () => {
+    const encoder = new TextEncoder();
+    const protocolFetch = createEventProtocolFetch({
+      conversationId: "conversation-clarify-failure",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-clarify-failure",
+            turnId: "turn-clarify-failure",
+            userMessageId: "message-user-clarify-failure",
+            assistantMessageId: "message-assistant-clarify-failure",
+          },
+        ],
+        [
+          "clarify.requested",
+          {
+            type: "clarify.requested",
+            conversationId: "conversation-clarify-failure",
+            turnId: "turn-clarify-failure",
+            clarifyId: "77777777-7777-4777-8777-777777777777",
+            question: "Choose a scope",
+            choices: ["Project A", "Project B"],
+            allowFreeText: false,
+          },
+        ],
+      ],
+      encoder,
+      keepOpen: true,
+    });
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).includes("/clarify")) {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ error: "stale clarify" }),
+        });
+      }
+      return protocolFetch(url, options) || defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-clarify-failure", name: "123", role: "owner" }}
+      />,
+    );
+    fireEvent.change(container.querySelector("input"), {
+      target: { value: "Need clarify" },
+    });
+    fireEvent.keyDown(container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    expect(await screen.findByText("Choose a scope")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提交澄清" }));
+    expect(fetch).not.toHaveBeenCalledWith(
+      "/api/ai/conversations/conversation-clarify-failure/turns/turn-clarify-failure/clarify",
+      expect.anything(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Project A" }));
+    fireEvent.click(screen.getByRole("button", { name: "提交澄清" }));
+    expect(await screen.findByText("澄清提交失败")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "提交澄清" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Project A" })).toBeEnabled();
+  });
+
   it("creates a durable conversation and sends only the new turn", async () => {
     const encoder = new TextEncoder();
     fetch.mockImplementation((url, options = {}) => {
@@ -2824,14 +3263,14 @@ function createConversationProtocolFetch({
   };
 }
 
-function mockConversationProtocolEvents({
+function createEventProtocolFetch({
   conversationId,
   events,
   encoder = new TextEncoder(),
   keepOpen = false,
 }) {
   let created = false;
-  fetch.mockImplementation((url, options = {}) => {
+  return (url, options = {}) => {
     if (url === "/api/ai/conversations" && options.method === "POST") {
       created = true;
       return Promise.resolve({
@@ -2879,6 +3318,25 @@ function mockConversationProtocolEvents({
         }),
       });
     }
+    return null;
+  };
+}
+
+function mockConversationProtocolEvents({
+  conversationId,
+  events,
+  encoder = new TextEncoder(),
+  keepOpen = false,
+}) {
+  const protocolFetch = createEventProtocolFetch({
+    conversationId,
+    events,
+    encoder,
+    keepOpen,
+  });
+  fetch.mockImplementation((url, options = {}) => {
+    const response = protocolFetch(url, options);
+    if (response) return response;
     if (url.includes("/clarify")) {
       return Promise.resolve({
         ok: true,

@@ -10,8 +10,8 @@ const draft = {
   version: "0.1.0",
   bundleSha256: "sha256:9d7f4c7a5b6e8f901234567890abcdef",
   manifest: {
-    name: "周风险复盘",
-    description: "只读汇总项目风险与缺失数据",
+    name: "Weekly risk brief",
+    description: "Read-only project risk and missing-data summary",
     permissions: ["read:projects", "read:settlements"],
   },
   status: "pending_review",
@@ -33,7 +33,7 @@ describe("HermesSkillDraftReview", () => {
     );
   });
 
-  it("lets an owner inspect hash and manifest, then approve or reject with a human action", async () => {
+  it("lets an owner inspect hash and manifest, then records one human decision", async () => {
     render(
       <HermesSkillDraftReview
         draft={draft}
@@ -41,19 +41,20 @@ describe("HermesSkillDraftReview", () => {
       />,
     );
 
-    expect(screen.getByText("Skill 草稿审核")).toBeInTheDocument();
     expect(screen.getByText("weekly-risk-brief")).toBeInTheDocument();
     expect(
       screen.getByText("sha256:9d7f4c7a5b6e8f901234567890abcdef"),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Hermes Gateway|provider|model/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Hermes Gateway|provider|model/i),
+    ).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "查看 manifest" }));
+    fireEvent.click(screen.getByRole("button", { name: /manifest/i }));
 
-    expect(screen.getByText('"name": "周风险复盘"')).toBeInTheDocument();
+    expect(screen.getByText('"name": "Weekly risk brief"')).toBeInTheDocument();
     expect(screen.getByText('"read:projects"')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "批准" }));
+    fireEvent.click(screen.getByTestId("skill-draft-approve"));
     await waitFor(() =>
       expect(fetch).toHaveBeenCalledWith(
         "/api/ai/hermes/skill-drafts/skill-draft-1/review",
@@ -67,21 +68,36 @@ describe("HermesSkillDraftReview", () => {
       decision: "approve",
       humanAction: true,
     });
+    expect(screen.getByTestId("skill-draft-approve")).toBeDisabled();
+    expect(screen.getByTestId("skill-draft-reject")).toBeDisabled();
 
-    fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
-    await waitFor(() =>
-      expect(fetch).toHaveBeenLastCalledWith(
-        "/api/ai/hermes/skill-drafts/skill-draft-1/review",
-        expect.objectContaining({
-          method: "POST",
-          body: expect.stringContaining('"decision":"reject"'),
-        }),
-      ),
-    );
-    expect(JSON.parse(fetch.mock.calls[1][1].body)).toMatchObject({
-      decision: "reject",
-      humanAction: true,
+    fireEvent.click(screen.getByTestId("skill-draft-reject"));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps owner commands available after a safe review failure", async () => {
+    fetch.mockResolvedValueOnce({
+      ok: false,
+      json: () =>
+        Promise.resolve({ error: "Hermes Gateway provider stack trace" }),
     });
+    render(
+      <HermesSkillDraftReview
+        draft={draft}
+        currentUser={{ id: "owner-1", role: "owner" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("skill-draft-approve"));
+
+    expect(await screen.findByTestId("skill-draft-review-error")).toHaveTextContent(
+      "审核提交失败",
+    );
+    expect(screen.getByTestId("skill-draft-approve")).toBeEnabled();
+    expect(screen.getByTestId("skill-draft-reject")).toBeEnabled();
+    expect(
+      screen.queryByText(/Hermes Gateway|provider|stack/i),
+    ).not.toBeInTheDocument();
   });
 
   it("hides approval commands from non-owners", () => {
@@ -93,7 +109,7 @@ describe("HermesSkillDraftReview", () => {
     );
 
     expect(screen.getByText("weekly-risk-brief")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "批准" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("skill-draft-approve")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("skill-draft-reject")).not.toBeInTheDocument();
   });
 });

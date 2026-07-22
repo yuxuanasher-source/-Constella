@@ -1198,8 +1198,16 @@ describe("Xingyao conversation service", () => {
     expect(store.completeTurn).not.toHaveBeenCalled();
   });
 
-  it("returns turn mappings with history so failed messages remain retryable after reload", async () => {
+  it("returns turn mappings and pending clarify with history for reload", async () => {
     const turn = storedTurn({ status: "failed", errorCode: "provider_failed" });
+    const pendingClarify = {
+      turnId: "turn-1",
+      clarifyId: "66666666-6666-4666-8666-666666666666",
+      requestId: "clarify-request-1",
+      question: "Which scope should be reviewed?",
+      choices: ["Current month", "Current week"],
+      allowFreeText: true,
+    };
     const store = persistence({
       getConversation: vi.fn().mockResolvedValue({
         id: "conversation-1",
@@ -1211,12 +1219,18 @@ describe("Xingyao conversation service", () => {
       }),
       listMessages: vi.fn().mockResolvedValue([]),
       listTurns: vi.fn().mockResolvedValue([turn]),
+      getGatewayState: vi.fn().mockResolvedValue({
+        generation: 3,
+        summary: {},
+        summaryVersion: 0,
+        pendingClarify,
+      }),
     });
     const service = createConversationService(store);
 
     const history = await service.getHistory(actor, "conversation-1");
 
-    expect(history.turns).toEqual([turn]);
+    expect(history.turns).toEqual([{ ...turn, pendingClarify }]);
   });
 
   it("captures the exact trusted gateway context before generation", async () => {

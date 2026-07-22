@@ -869,6 +869,7 @@ describe("native Hermes Gateway executor", () => {
           turnId: turn.turnId,
           clarifyId,
           requestId: clarifyId,
+          question: "Which project?",
           choices: ["project", "streamer"],
           allowFreeText: false,
         },

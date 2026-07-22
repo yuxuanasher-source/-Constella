@@ -21,6 +21,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { isConversationStreamEvent } from "@/features/ai/conversation-contracts";
+import { HermesSkillDraftReview } from "./hermes-skill-draft-review";
 
 // ——— 设计稿调色板（取自设计文件内联样式） ———
 const C = {
@@ -137,6 +138,51 @@ const AI_CHAT_ATTACHMENT_ACCEPT = [
   "application/pdf",
 ].join(",");
 
+const AI_UI_SAFE_FAILURE_TEXT = "AI response unavailable";
+const AI_UI_STOP_UNCONFIRMED_TEXT = "停止请求未确认";
+const AI_UI_CLARIFY_FAILED_TEXT = "澄清提交失败";
+const AI_UI_INTERNAL_TEXT =
+  /(Hermes(?:\s+Gateway)?|DeepSeek|OpenAI|provider|model|\/api\/|stack\s*trace|stack|rawArguments|arguments|args|reasoning|chain-of-thought|toolName|gateway|sessionId|prompt|event:\s|data:\s|{\s*["'])/i;
+
+function aiPublicText(value, fallback = "") {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return fallback;
+  if (AI_UI_INTERNAL_TEXT.test(text)) return fallback;
+  return text.replace(/\s+/g, " ").slice(0, 240);
+}
+
+function aiPublicContent(value, fallback = "") {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return fallback;
+  if (AI_UI_INTERNAL_TEXT.test(text)) return fallback;
+  return text.slice(0, 12000);
+}
+
+function aiPublicList(value, fallback = "") {
+  const source = Array.isArray(value) ? value : [];
+  return source
+    .map((item) => aiPublicText(item, ""))
+    .filter(Boolean)
+    .slice(0, 6)
+    .concat(fallback ? [fallback] : [])
+    .slice(0, 6);
+}
+
+function aiPublicStatus(status, fallback = "running") {
+  return [
+    "running",
+    "completed",
+    "succeeded",
+    "success",
+    "limited",
+    "denied",
+    "failed",
+    "failure",
+  ].includes(status)
+    ? status
+    : fallback;
+}
+
 function aiConversationStorageKey(user) {
   const identity = user?.id || user?.name || user?.role || "anonymous";
   return `${AI_CONVERSATION_STORAGE_PREFIX}.${identity}`;
@@ -183,11 +229,15 @@ function normalizeAiMessageMeta(value) {
     value?.webSearch || value?.knowledge?.webSearch,
   );
   const outcome = normalizeAiOutcome(value);
+  const skillDrafts = normalizeHermesSkillDrafts(
+    value?.skillDrafts || value?.hermes?.skillDrafts || value?.metadata?.skillDrafts,
+  );
   const meta = {
     ...(projectHealth ? { projectHealth } : {}),
     ...(suggestedActions ? { suggestedActions } : {}),
     ...(webSearch ? { webSearch } : {}),
     ...(outcome ? { outcome } : {}),
+    ...(skillDrafts?.length ? { skillDrafts } : {}),
   };
   return Object.keys(meta).length ? meta : undefined;
 }
@@ -211,11 +261,49 @@ function normalizeAiOutcome(value) {
       : [];
   return {
     outcome,
-    missing: missing
-      .map((item) => (typeof item === "string" ? item.trim().slice(0, 160) : ""))
-      .filter(Boolean)
-      .slice(0, 5),
+    missing: aiPublicList(missing).slice(0, 5),
   };
+}
+
+function normalizeHermesSkillDrafts(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((draft) => {
+      const id = aiPublicText(draft?.id, "");
+      const skillId = aiPublicText(draft?.skillId || draft?.skill_id, "");
+      const bundleSha256 = aiPublicText(
+        draft?.bundleSha256 || draft?.bundle_sha256,
+        "",
+      );
+      if (!id || !skillId || !bundleSha256) return null;
+      return {
+        id,
+        skillId,
+        version: aiPublicText(draft?.version, ""),
+        bundleSha256,
+        manifest: sanitizeAiPublicValue(draft?.manifest || {}),
+        status:
+          draft?.status === "pending_review" ||
+          draft?.status === "approved" ||
+          draft?.status === "rejected"
+            ? draft.status
+            : "pending_review",
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function sanitizeAiPublicValue(value) {
+  if (typeof value === "string") return aiPublicText(value, "已隐藏内部字段");
+  if (Array.isArray(value)) return value.map(sanitizeAiPublicValue).slice(0, 20);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !AI_UI_INTERNAL_TEXT.test(key))
+      .slice(0, 30)
+      .map(([key, item]) => [key, sanitizeAiPublicValue(item)]),
+  );
 }
 
 function normalizeProjectHealth(value) {
@@ -530,21 +618,13 @@ function normalizePendingClarify(value) {
         : typeof pending.clarify_id === "string"
           ? pending.clarify_id
           : "";
-    const question =
-      typeof pending.question === "string" ? pending.question.trim() : "";
+    const question = aiPublicText(pending.question, "");
     if (!clarifyId || !question || typeof turn?.id !== "string") continue;
     return {
       clarifyId,
       turnId: turn.id,
-      question: question.slice(0, 240),
-      choices: Array.isArray(pending.choices)
-        ? pending.choices
-            .map((choice) =>
-              typeof choice === "string" ? choice.trim().slice(0, 120) : "",
-            )
-            .filter(Boolean)
-            .slice(0, 6)
-        : [],
+      question,
+      choices: aiPublicList(pending.choices).slice(0, 6),
       allowFreeText: pending.allowFreeText === true,
       submitted: false,
     };
@@ -2628,6 +2708,8 @@ function AiRunProgressPanel({ progress, onSubmitClarify }) {
 }
 
 function AiProgressRow({ item, icon, kind, testId }) {
+  const safeLabel = aiPublicText(item?.label, kind === "tool" ? "读取数据" : "处理中");
+  const safeSource = aiPublicText(item?.source, "");
   const statusLabel = compactStatusLabel(kind, item.status);
   const statusTone =
     statusLabel === "成功" || statusLabel === "已完成"
@@ -2690,9 +2772,9 @@ function AiProgressRow({ item, icon, kind, testId }) {
             whiteSpace: "nowrap",
           }}
         >
-          {item.label}
+          {safeLabel}
         </span>
-        {item.source ? (
+        {safeSource ? (
           <span
             style={{
               color: C.muted,
@@ -2701,7 +2783,7 @@ function AiProgressRow({ item, icon, kind, testId }) {
               whiteSpace: "nowrap",
             }}
           >
-            {item.source}
+            {safeSource}
           </span>
         ) : null}
       </span>
@@ -2730,7 +2812,12 @@ function AiClarifyPrompt({ clarify, onSubmit }) {
   const [choice, setChoice] = React.useState("");
   const [text, setText] = React.useState("");
   const submitted = clarify.submitted === true;
-  const canSubmit = !submitted && Boolean((choice || text).trim());
+  const trimmedText = text.trim();
+  const validChoice = choice && clarify.choices?.includes(choice);
+  const canSubmit =
+    !submitted &&
+    (Boolean(validChoice) ||
+      (clarify.allowFreeText === true && Boolean(trimmedText)));
 
   React.useEffect(() => {
     setChoice("");
@@ -2795,6 +2882,14 @@ function AiClarifyPrompt({ clarify, onSubmit }) {
             outline: "none",
           }}
         />
+      ) : null}
+      {clarify.error ? (
+        <div
+          data-testid="ai-clarify-error"
+          style={{ fontSize: 11.5, color: C.danger, justifySelf: "end" }}
+        >
+          {clarify.error}
+        </div>
       ) : null}
       <button
         type="button"
@@ -3063,13 +3158,15 @@ function upsertById(items, id, nextItem) {
 
 function compactStatusLabel(kind, status) {
   if (kind === "tool") {
-    if (status === "completed") return "成功";
-    if (status === "denied") return "受限";
-    if (status === "failed") return "失败";
+    if (status === "completed" || status === "succeeded" || status === "success")
+      return "成功";
+    if (status === "denied" || status === "limited") return "受限";
+    if (status === "failed" || status === "failure") return "失败";
   }
-  if (status === "done" || status === "completed") return "已完成";
-  if (status === "blocked") return "受限";
-  if (status === "failed") return "失败";
+  if (status === "done" || status === "completed" || status === "succeeded")
+    return "已完成";
+  if (status === "blocked" || status === "limited") return "受限";
+  if (status === "failed" || status === "failure") return "失败";
   if (status === "running") return "进行中";
   return "待处理";
 }
@@ -3098,6 +3195,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   const conversationCreateRef = React.useRef(null);
   const panelMountedRef = React.useRef(true);
   const activeRunRef = React.useRef(null);
+  const runProgressRef = React.useRef(runProgress);
   React.useEffect(() => {
     if (bodyRef.current)
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -3106,6 +3204,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     conversationIdRef.current = conversationId;
     saveStoredConversationId(conversationStorageKey, conversationId);
   }, [conversationId, conversationStorageKey]);
+  React.useEffect(() => {
+    runProgressRef.current = runProgress;
+  }, [runProgress]);
   React.useEffect(() => {
     panelMountedRef.current = true;
     if (!conversationInitRef.current) {
@@ -3275,6 +3376,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         if (activeRunRef.current) {
           activeRunRef.current.turnId = activeTurnId;
           activeRunRef.current.assistantMessageId = activeAssistantMessageId;
+          if (activeRunRef.current.stopQueued) void stopActiveRun();
         }
         onAssistantMessageId?.(activeAssistantMessageId);
         if (userMessageClientId && payload?.userMessageId) {
@@ -3368,17 +3470,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           clarify: {
             clarifyId: payload.clarifyId,
             turnId: payload.turnId || activeTurnId,
-            question: String(payload.question || "").slice(0, 240),
-            choices: Array.isArray(payload.choices)
-              ? payload.choices
-                  .map((choice) =>
-                    typeof choice === "string"
-                      ? choice.trim().slice(0, 120)
-                      : "",
-                  )
-                  .filter(Boolean)
-                  .slice(0, 6)
-              : [],
+            question: aiPublicText(payload.question, "需要进一步确认"),
+            choices: aiPublicList(payload.choices).slice(0, 6),
             allowFreeText: payload.allowFreeText === true,
             submitted: false,
           },
@@ -3388,6 +3481,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       if (eventName === "response.delta") {
         const delta = typeof payload?.delta === "string" ? payload.delta : "";
         if (!delta) return;
+        if (AI_UI_INTERNAL_TEXT.test(delta)) return;
         streamedText += delta;
         activeTurnId = payload?.turnId || activeTurnId;
         activeAssistantMessageId =
@@ -3396,7 +3490,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         upsertAiMessage({
           id: activeAssistantMessageId,
           role: "ai",
-          text: streamedText,
+          text: aiPublicContent(streamedText, AI_UI_SAFE_FAILURE_TEXT),
           status: "streaming",
           turnId: activeTurnId,
         });
@@ -3412,7 +3506,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         upsertAiMessage({
           id: activeAssistantMessageId,
           role: "ai",
-          text: payload?.content || streamedText,
+          text: aiPublicContent(
+            payload?.content || streamedText,
+            AI_UI_SAFE_FAILURE_TEXT,
+          ),
           status: "completed",
           turnId: activeTurnId,
           retryable: false,
@@ -3442,16 +3539,14 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         sawTerminalEvent = true;
         failed = true;
         activeTurnId = payload?.turnId || activeTurnId;
-        const message = payload?.message || "AI 调用失败";
+        const message = AI_UI_SAFE_FAILURE_TEXT;
         upsertAiMessage({
           id:
             activeAssistantMessageId ||
             replaceMessageId ||
             createAiClientRequestId("assistant"),
           role: "ai",
-          text: streamedText
-            ? `${streamedText}\n\n⚠ 回复中断：${message}`
-            : `⚠ ${message}`,
+          text: streamedText ? `${streamedText}\n\n${message}` : message,
           status: "failed",
           turnId: activeTurnId,
           retryable: payload?.retryable === true,
@@ -3550,6 +3645,19 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     const requestMode = options.mode || mode;
     const requestAttachments = options.attachments || [];
     const userMessageClientId = createAiClientRequestId("user");
+    const askRunControl =
+      kind === "ask"
+        ? {
+            controller: new AbortController(),
+            conversationId: "",
+            turnId: "",
+            assistantMessageId: "",
+            cancelRequested: false,
+            stopQueued: false,
+            canceling: false,
+            localAbort: false,
+          }
+        : null;
     let acceptedTurn = null;
     let userMessagePushed = false;
     const pushUserMessage = () => {
@@ -3570,11 +3678,13 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     };
     setBusy(true);
     setRunProgress(createEmptyAiRunProgress());
+    if (askRunControl) activeRunRef.current = askRunControl;
     try {
       let text = "";
       let meta;
       const activeConversationId =
         kind === "ask" ? await ensureServerConversation(userText) : null;
+      if (askRunControl) askRunControl.conversationId = activeConversationId || "";
       pushUserMessage();
       if (kind === "match") {
         const res = await fetch("/api/marketplace/intel", {
@@ -3590,21 +3700,13 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
               .join("\n")
           : "当前暂无可撮合的高契合机会，待有新发单/接单意向后会自动出现。";
       } else if (kind === "ask") {
-        const controller = new AbortController();
-        activeRunRef.current = {
-          controller,
-          conversationId: activeConversationId,
-          turnId: "",
-          assistantMessageId: "",
-          cancelRequested: false,
-        };
         await sendConversationTurn({
           activeConversationId,
           userText,
           requestMode,
           requestAttachments,
           userMessageClientId,
-          signal: controller.signal,
+          signal: askRunControl.controller.signal,
           onTurnStarted: (turn) => {
             acceptedTurn = turn;
           },
@@ -3645,11 +3747,15 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }
       push("ai", text, meta);
     } catch (e) {
-      if (kind === "ask" && activeRunRef.current?.cancelRequested) {
+      if (kind === "ask" && activeRunRef.current?.localAbort) {
         return;
       }
       const errorMessage =
-        e instanceof Error ? e.message : "调用失败，请稍后重试";
+        kind === "ask"
+          ? aiPublicText(e instanceof Error ? e.message : "", AI_UI_SAFE_FAILURE_TEXT)
+          : e instanceof Error
+            ? e.message
+            : "调用失败，请稍后重试";
       if (kind === "ask") {
         setMsgs((current) => {
           const next = acceptedTurn
@@ -3684,71 +3790,121 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         push("ai", `⚠ ${errorMessage}`);
       }
     } finally {
-      if (!activeRunRef.current?.cancelRequested) setBusy(false);
+      if (!activeRunRef.current?.localAbort) setBusy(false);
       activeRunRef.current = null;
     }
   }
 
   async function stopActiveRun() {
     const active = activeRunRef.current;
-    if (!busy || !active || active.cancelRequested) return;
-    active.cancelRequested = true;
+    if (!active || active.cancelRequested || active.canceling) return;
+    if (!active.turnId) {
+      active.stopQueued = true;
+      return;
+    }
+    active.canceling = true;
     try {
-      if (active.conversationId && active.turnId) {
-        await fetch(
-          `/api/ai/conversations/${encodeURIComponent(
-            active.conversationId,
-          )}/turns/${encodeURIComponent(active.turnId)}/cancel`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              clientRequestId: createAiClientRequestId("cancel"),
-            }),
-          },
-        );
+      const response = await fetch(
+        `/api/ai/conversations/${encodeURIComponent(
+          active.conversationId,
+        )}/turns/${encodeURIComponent(active.turnId)}/cancel`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clientRequestId: createAiClientRequestId("cancel"),
+          }),
+        },
+      );
+      if (!response.ok) {
+        active.localAbort = true;
+        active.controller?.abort?.();
+        upsertStopResult(active, {
+          text: AI_UI_STOP_UNCONFIRMED_TEXT,
+          status: "failed",
+          retryable: false,
+        });
+        setBusy(false);
+        return;
       }
-    } finally {
+      active.cancelRequested = true;
+      active.localAbort = true;
       active.controller?.abort?.();
-      const assistantId =
-        active.assistantMessageId || createAiClientRequestId("assistant");
-      setMsgs((current) => {
-        if (current.some((message) => message.id === assistantId)) {
-          return current.map((message) =>
-            message.id === assistantId
-              ? {
-                  ...message,
-                  role: "ai",
-                  text: "已停止生成",
-                  status: "cancelled",
-                  retryable: false,
-                  turnId: active.turnId,
-                }
-              : message,
-          );
-        }
-        return current.concat([
-          {
-            id: assistantId,
-            role: "ai",
-            text: "已停止生成",
-            status: "cancelled",
-            retryable: false,
-            turnId: active.turnId,
-          },
-        ]);
+      upsertStopResult(active, {
+        text: "已停止生成",
+        status: "cancelled",
+        retryable: false,
       });
       setBusy(false);
+    } catch {
+      active.localAbort = true;
+      active.controller?.abort?.();
+      upsertStopResult(active, {
+        text: AI_UI_STOP_UNCONFIRMED_TEXT,
+        status: "failed",
+        retryable: false,
+      });
+      setBusy(false);
+    } finally {
+      active.canceling = false;
     }
   }
 
+  function upsertStopResult(active, patch) {
+    const assistantId =
+      active.assistantMessageId || createAiClientRequestId("assistant");
+    setMsgs((current) => {
+      if (current.some((message) => message.id === assistantId)) {
+        return current.map((message) =>
+          message.id === assistantId
+            ? {
+                ...message,
+                role: "ai",
+                text: patch.text,
+                status: patch.status,
+                retryable: patch.retryable,
+                turnId: active.turnId,
+              }
+            : message,
+        );
+      }
+      return current.concat([
+        {
+          id: assistantId,
+          role: "ai",
+          text: patch.text,
+          status: patch.status,
+          retryable: patch.retryable,
+          turnId: active.turnId,
+        },
+      ]);
+    });
+  }
+
   async function submitClarifyResponse({ clarify, choice, text }) {
-    if (!conversationIdRef.current || !clarify?.turnId || clarify.submitted) {
+    const currentClarify = runProgressRef.current?.clarify;
+    if (
+      !conversationIdRef.current ||
+      !clarify?.turnId ||
+      clarify.submitted ||
+      !currentClarify ||
+      currentClarify.clarifyId !== clarify.clarifyId ||
+      currentClarify.turnId !== clarify.turnId
+    ) {
       return;
     }
-    const answer = [choice, text].filter(Boolean).join("\n").trim();
+    const selectedChoice = typeof choice === "string" ? choice.trim() : "";
+    const freeText = typeof text === "string" ? text.trim() : "";
+    if (
+      selectedChoice &&
+      !currentClarify.choices?.includes(selectedChoice)
+    ) {
+      return;
+    }
+    if (freeText && currentClarify.allowFreeText !== true) return;
+    const answer = [selectedChoice, freeText].filter(Boolean).join("\n").trim();
     if (!answer) return;
-    await fetch(
+    const response = await fetch(
       `/api/ai/conversations/${encodeURIComponent(
         conversationIdRef.current,
       )}/turns/${encodeURIComponent(clarify.turnId)}/clarify`,
@@ -3758,16 +3914,31 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         body: JSON.stringify({
           clarifyId: clarify.clarifyId,
           answer,
-          choice: choice || null,
-          text: text || "",
+          choice: selectedChoice || null,
+          text: freeText || "",
           clientRequestId: createAiClientRequestId("clarify"),
         }),
       },
     );
+    if (!response.ok) {
+      setRunProgress((current) => ({
+        ...current,
+        clarify:
+          current.clarify?.clarifyId === clarify.clarifyId &&
+          current.clarify?.turnId === clarify.turnId
+            ? {
+                ...current.clarify,
+                submitted: false,
+                error: AI_UI_CLARIFY_FAILED_TEXT,
+              }
+            : current.clarify,
+      }));
+      return;
+    }
     setRunProgress((current) => ({
       ...current,
       clarify: current.clarify
-        ? { ...current.clarify, submitted: true }
+        ? { ...current.clarify, submitted: true, error: "" }
         : current.clarify,
     }));
   }
@@ -4269,6 +4440,15 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
                     actions={m.meta?.suggestedActions}
                     onCreateDraft={createSuggestedActionDraft}
                   />
+                  {Array.isArray(m.meta?.skillDrafts)
+                    ? m.meta.skillDrafts.map((skillDraft) => (
+                        <HermesSkillDraftReview
+                          key={skillDraft.id}
+                          draft={skillDraft}
+                          currentUser={user}
+                        />
+                      ))
+                    : null}
                   {m.turnId &&
                   (m.status === "failed" || m.status === "completed") ? (
                     <div
@@ -4527,6 +4707,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           />
           <button
             type="button"
+            data-testid="ai-send-stop-button"
             aria-label={busy ? "停止生成" : "发送"}
             title={busy ? "停止生成" : "发送"}
             onClick={busy ? stopActiveRun : send}

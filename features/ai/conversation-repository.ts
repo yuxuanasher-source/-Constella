@@ -121,6 +121,7 @@ export type ConversationGatewayPendingClarify = {
   turnId: string;
   clarifyId: string;
   requestId: string;
+  question: string;
   choices: string[];
   allowFreeText: boolean;
   response?: {
@@ -763,10 +764,11 @@ function parsePendingClarify(
   const turnId = stringValue(value.turnId);
   const clarifyId = stringValue(value.clarifyId);
   const requestId = stringValue(value.requestId) ?? clarifyId;
+  const question = stringValue(value.question);
   const choices = Array.isArray(value.choices)
     ? value.choices.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
     : [];
-  if (!turnId || !clarifyId || !requestId) return null;
+  if (!turnId || !clarifyId || !requestId || !question) return null;
   const response = isRecord(value.response)
     ? {
         clarifyId: stringValue(value.response.clarifyId) ?? clarifyId,
@@ -779,6 +781,7 @@ function parsePendingClarify(
     turnId,
     clarifyId,
     requestId,
+    question,
     choices,
     allowFreeText: value.allowFreeText === true,
     ...(response ? { response } : {}),

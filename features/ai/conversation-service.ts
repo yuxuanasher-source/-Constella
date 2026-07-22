@@ -260,11 +260,22 @@ export function createConversationService(
         ownerUserId: actor.userId,
         conversationId,
       };
-      const [messages, turns] = await Promise.all([
+      const [messages, turns, gatewayState] = await Promise.all([
         persistence.listMessages(scope),
         persistence.listTurns(scope),
+        persistence.getGatewayState
+          ? persistence.getGatewayState(scope)
+          : Promise.resolve(null),
       ]);
-      return { conversation, messages, turns };
+      const pendingClarify = gatewayState?.pendingClarify;
+      const turnsWithPendingClarify = pendingClarify
+        ? turns.map((turn) =>
+            turn.id === pendingClarify.turnId
+              ? { ...turn, pendingClarify }
+              : turn,
+          )
+        : turns;
+      return { conversation, messages, turns: turnsWithPendingClarify };
     },
 
     listMessages(

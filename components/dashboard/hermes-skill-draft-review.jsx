@@ -18,19 +18,40 @@ const C = {
   dangerBg: "#fdecec",
 };
 
+const INTERNAL_TEXT =
+  /(Hermes(?:\s+Gateway)?|DeepSeek|OpenAI|provider|model|\/api\/|stack|trace|rawArguments|args|reasoning|chain-of-thought)/i;
+
+function publicDraftValue(value) {
+  if (typeof value === "string") {
+    return INTERNAL_TEXT.test(value) ? "已隐藏内部字段" : value;
+  }
+  if (Array.isArray(value)) return value.map(publicDraftValue).slice(0, 20);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !INTERNAL_TEXT.test(key))
+      .slice(0, 30)
+      .map(([key, item]) => [key, publicDraftValue(item)]),
+  );
+}
+
 export function HermesSkillDraftReview({ draft, currentUser }) {
   const [expanded, setExpanded] = React.useState(false);
   const [busyDecision, setBusyDecision] = React.useState("");
   const [reviewState, setReviewState] = React.useState("");
+  const [error, setError] = React.useState("");
   if (!draft) return null;
 
   const owner = currentUser?.role === "owner";
-  const manifestLines = JSON.stringify(draft.manifest || {}, null, 2)
+  const reviewable = owner && draft.status === "pending_review" && !reviewState;
+  const manifestLines = JSON.stringify(publicDraftValue(draft.manifest || {}), null, 2)
     .split("\n")
     .map((line) => line.replace(/,$/, ""));
 
   const review = async (decision) => {
+    if (!reviewable || busyDecision) return;
     setBusyDecision(decision);
+    setError("");
     try {
       const response = await fetch(
         `/api/ai/hermes/skill-drafts/${encodeURIComponent(draft.id)}/review`,
@@ -42,6 +63,8 @@ export function HermesSkillDraftReview({ draft, currentUser }) {
       );
       if (!response.ok) throw new Error("review failed");
       setReviewState(decision);
+    } catch {
+      setError("审核提交失败");
     } finally {
       setBusyDecision("");
     }
@@ -158,8 +181,9 @@ export function HermesSkillDraftReview({ draft, currentUser }) {
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button
             type="button"
+            data-testid="skill-draft-reject"
             onClick={() => review("reject")}
-            disabled={Boolean(busyDecision)}
+            disabled={!reviewable || Boolean(busyDecision)}
             style={{
               height: 30,
               border: `1px solid ${C.danger}`,
@@ -172,7 +196,7 @@ export function HermesSkillDraftReview({ draft, currentUser }) {
               padding: "0 10px",
               fontSize: 12,
               fontWeight: 740,
-              cursor: busyDecision ? "default" : "pointer",
+              cursor: !reviewable || busyDecision ? "default" : "pointer",
             }}
           >
             <XCircle size={13} aria-hidden="true" />
@@ -180,8 +204,9 @@ export function HermesSkillDraftReview({ draft, currentUser }) {
           </button>
           <button
             type="button"
+            data-testid="skill-draft-approve"
             onClick={() => review("approve")}
-            disabled={Boolean(busyDecision)}
+            disabled={!reviewable || Boolean(busyDecision)}
             style={{
               height: 30,
               border: `1px solid ${C.ok}`,
@@ -194,13 +219,21 @@ export function HermesSkillDraftReview({ draft, currentUser }) {
               padding: "0 10px",
               fontSize: 12,
               fontWeight: 740,
-              cursor: busyDecision ? "default" : "pointer",
+              cursor: !reviewable || busyDecision ? "default" : "pointer",
             }}
           >
             <CheckCircle2 size={13} aria-hidden="true" />
             批准
           </button>
         </div>
+      ) : null}
+      {error ? (
+        <span
+          data-testid="skill-draft-review-error"
+          style={{ justifySelf: "end", fontSize: 11.5, color: C.danger }}
+        >
+          {error}
+        </span>
       ) : null}
       {reviewState ? (
         <span style={{ justifySelf: "end", fontSize: 11.5, color: C.muted }}>

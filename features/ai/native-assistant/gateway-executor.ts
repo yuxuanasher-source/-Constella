@@ -69,6 +69,7 @@ type GatewayService = {
       turnId: string;
       clarifyId: string;
       requestId?: string;
+      question: string;
       choices: string[];
       allowFreeText: boolean;
     };
@@ -1384,6 +1385,7 @@ async function persistGatewayClarifyRequest({
     turnId: turn.turnId,
     clarifyId: event.clarifyId,
     requestId: event.clarifyId,
+    question: event.question,
     choices: event.choices ?? [],
     allowFreeText: event.allowFreeText === true,
   };
