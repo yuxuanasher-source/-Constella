@@ -158,7 +158,14 @@ function parseArgs(argv) {
         parsed.profile = next();
         break;
       case "--model-identifier":
-        parsed.modelIdentifier = next();
+        throw new Error(
+          "Use --model-identifier-file or --model-identifier-stdin to avoid exposing model identifiers in process arguments",
+        );
+      case "--model-identifier-file":
+        parsed.modelIdentifierFile = next();
+        break;
+      case "--model-identifier-stdin":
+        parsed.modelIdentifierStdin = true;
         break;
       case "--schema-migration-file":
         parsed.schemaMigrationFile = next();
@@ -169,7 +176,15 @@ function parseArgs(argv) {
       case "--test-result": {
         const value = next();
         const [name, statusAndPath] = value.split("=", 2);
-        const [status, outputPath] = (statusAndPath ?? "").split(":", 2);
+        const separatorIndex = (statusAndPath ?? "").indexOf(":");
+        const status =
+          separatorIndex >= 0
+            ? statusAndPath.slice(0, separatorIndex)
+            : statusAndPath;
+        const outputPath =
+          separatorIndex >= 0
+            ? statusAndPath.slice(separatorIndex + 1)
+            : undefined;
         parsed.testResults.push({
           name,
           status,
@@ -199,14 +214,18 @@ Usage:
     --product-commit <40-hex> --fork-commit <40-hex> \\
     --upstream-tag <tag> --upstream-commit <40-hex> \\
     --protocol <protocol> --profile <profile> \\
-    --model-identifier <identifier> --schema-migration-file <path> \\
+    --model-identifier-file <path> --schema-migration-file <path> \\
     --test-result "pnpm test:ai-system=passed:path/to/output.log" \\
     --artifact "rollback-script=scripts/create-xingyao-hermes-rollback.sh"
 
 Records commits, upstream reference, protocol/profile, hashed model identifier,
 hashed schema migration, test-result output hashes, and artifact SHA-256 values.
 Raw model identifiers, migration SQL, command output, env files, and credentials
-are not written to the evidence file.`;
+are not written to the evidence file.
+
+Model identifier input:
+  --model-identifier-file <path>  Read the model identifier from a local file.
+  --model-identifier-stdin        Read the model identifier from stdin.`;
 }
 
 function main(argv) {
@@ -222,10 +241,20 @@ function main(argv) {
     (args.schemaMigrationFile
       ? readFileSync(args.schemaMigrationFile, "utf8")
       : undefined);
+  const modelIdentifier =
+    args.modelIdentifier ??
+    (args.modelIdentifierFile
+      ? readFileSync(args.modelIdentifierFile, "utf8").trim()
+      : args.modelIdentifierStdin
+        ? readFileSync(0, "utf8").trim()
+        : undefined);
 
   const missing = requiredFields.filter((field) => {
     if (field === "schemaMigrationSql") {
       return !schemaMigrationSql;
+    }
+    if (field === "modelIdentifier") {
+      return !modelIdentifier;
     }
     return !args[field];
   });
@@ -235,6 +264,7 @@ function main(argv) {
 
   const evidence = buildReleaseEvidence({
     ...args,
+    modelIdentifier,
     schemaMigrationSql,
   });
   const outputPath =

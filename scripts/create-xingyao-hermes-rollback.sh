@@ -114,10 +114,19 @@ set -euo pipefail
 
 APP_DIR="\${APP_DIR:-/var/www/jingying-cabin}"
 PM2_NAME="\${PM2_NAME:-$PM2_NAME}"
+PRODUCT_COMMIT="$PRODUCT_COMMIT"
+PREVIOUS_COMMIT="$PREVIOUS_COMMIT"
+HERMES_ROLLBACK_OVERRIDE="\${HERMES_ROLLBACK_OVERRIDE:-false}"
 
 cd "\$APP_DIR"
+current_commit="\$(git rev-parse HEAD)"
+if [ "\$current_commit" != "\$PRODUCT_COMMIT" ] && [ "\$HERMES_ROLLBACK_OVERRIDE" != "true" ]; then
+  printf 'Refusing rollback: HEAD %s does not match expected product commit %s. Set HERMES_ROLLBACK_OVERRIDE=true to override.\n' "\$current_commit" "\$PRODUCT_COMMIT" >&2
+  exit 1
+fi
+
 git fetch origin
-git reset --hard "$PREVIOUS_COMMIT"
+git reset --hard "\$PREVIOUS_COMMIT"
 pnpm install --frozen-lockfile
 pnpm run build
 pm2 restart "\$PM2_NAME" --update-env
@@ -139,5 +148,7 @@ chmod 750 "$OUTPUT_DIR/rollback-command.sh"
   done < <(find "$OUTPUT_DIR" -type f ! -name manifest.txt | sort)
 } > "$OUTPUT_DIR/manifest.txt"
 
-printf 'Created rollback package: %s\n' "$OUTPUT_DIR"
+manifest_hash="$(sha256sum "$OUTPUT_DIR/manifest.txt" | awk '{print $1}')"
+printf '%s  manifest.txt\n' "$manifest_hash" > "$OUTPUT_DIR/manifest.txt.sha256"
 
+printf 'Created rollback package: %s\n' "$OUTPUT_DIR"

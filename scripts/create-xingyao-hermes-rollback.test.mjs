@@ -72,6 +72,10 @@ describe("Xingyao Hermes rollback package", () => {
       expect(result.status, result.stderr).toBe(0);
 
       const manifest = readFileSync(join(outputDir, "manifest.txt"), "utf8");
+      const manifestHash = readFileSync(
+        join(outputDir, "manifest.txt.sha256"),
+        "utf8",
+      );
       expect(manifest).toContain(
         "product_commit=1234567890abcdef1234567890abcdef12345678",
       );
@@ -79,16 +83,30 @@ describe("Xingyao Hermes rollback package", () => {
         "previous_commit=2222222222222222222222222222222222222222",
       );
       expect(manifest).toMatch(/sha256\([^)]+\)=\b[a-f0-9]{64}\b/);
+      expect(manifestHash).toMatch(/\b[a-f0-9]{64}\b  manifest\.txt\n/);
 
       const rollbackCommand = readFileSync(
         join(outputDir, "rollback-command.sh"),
         "utf8",
+      );
+      expect(rollbackCommand).toContain(
+        'PRODUCT_COMMIT="1234567890abcdef1234567890abcdef12345678"',
+      );
+      expect(rollbackCommand).toContain(
+        'current_commit="$(git rev-parse HEAD)"',
+      );
+      expect(rollbackCommand).toContain(
+        'HERMES_ROLLBACK_OVERRIDE="${HERMES_ROLLBACK_OVERRIDE:-false}"',
+      );
+      expect(rollbackCommand).toContain(
+        'if [ "$current_commit" != "$PRODUCT_COMMIT" ] && [ "$HERMES_ROLLBACK_OVERRIDE" != "true" ]; then',
       );
       expect(rollbackCommand).toContain("git reset --hard");
       expect(rollbackCommand).toContain("pm2 restart");
 
       const packageText = [
         manifest,
+        manifestHash,
         rollbackCommand,
         readFileSync(join(outputDir, "files/scripts/deploy.sh"), "utf8"),
         readFileSync(

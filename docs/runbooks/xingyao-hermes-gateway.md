@@ -30,12 +30,20 @@ The initial release state must keep the gateway off:
 
 ```sh
 XINGYAO_HERMES_GATEWAY_ENABLED=false
-XINGYAO_HERMES_CANARY_ORGANIZATION_UUID=
-XINGYAO_HERMES_CANARY_USER_UUID=
+XINGYAO_HERMES_GATEWAY_ALLOWLIST=
 ```
 
 Use the service manager or PM2 ecosystem file to source this root-owned env
 file. Do not inline sensitive values into ad hoc shell commands.
+
+If the model identifier is not already available in a root-owned env file, store
+it in a separate root-owned `640` file and edit it only with `sudoedit`:
+
+```sh
+sudoedit /etc/jingying-cabin/xingyao-hermes-model-identifier
+sudo chown root:root /etc/jingying-cabin/xingyao-hermes-model-identifier
+sudo chmod 640 /etc/jingying-cabin/xingyao-hermes-model-identifier
+```
 
 ## Release Evidence
 
@@ -61,8 +69,10 @@ node scripts/verify-xingyao-hermes-release.mjs \
   --upstream-commit "<upstream-commit>" \
   --protocol "hermes-native-gateway" \
   --profile "production-canary" \
-  --model-identifier "<model-identifier-from-env-file>" \
+  --model-identifier-file /etc/jingying-cabin/xingyao-hermes-model-identifier \
   --schema-migration-file supabase/migrations/<hermes-migration>.sql \
+  --test-result "curl 8642 healthz=passed:artifacts/hermes-8642-healthz.log" \
+  --test-result "curl 8643 healthz=passed:artifacts/hermes-8643-healthz.log" \
   --test-result "pnpm test:ai-system=passed:artifacts/test-ai-system.log" \
   --artifact "rollback-script=scripts/create-xingyao-hermes-rollback.sh"
 ```
@@ -88,13 +98,16 @@ pm2 save
 After deploy, verify both services while the gateway is still disabled:
 
 ```sh
+mkdir -p artifacts
 pm2 status jingying-cabin
 systemctl status jingying-cabin --no-pager
 curl -fsS http://127.0.0.1:3000/api/health
+curl -fsS http://127.0.0.1:8642/healthz | tee artifacts/hermes-8642-healthz.log
+curl -fsS http://127.0.0.1:8643/healthz | tee artifacts/hermes-8643-healthz.log
 ```
 
-Record the command outputs as local files, then pass those files to the release
-evidence script as hashed test results.
+Record both `8642` and `8643` outputs in release evidence before canary
+enablement. The evidence script stores their SHA-256 values, not raw output.
 
 ## Canary Enablement
 
@@ -108,8 +121,7 @@ Set:
 
 ```sh
 XINGYAO_HERMES_GATEWAY_ENABLED=true
-XINGYAO_HERMES_CANARY_ORGANIZATION_UUID=<one-organization-uuid>
-XINGYAO_HERMES_CANARY_USER_UUID=<one-user-uuid>
+XINGYAO_HERMES_GATEWAY_ALLOWLIST=<organization-uuid>/<user-uuid>
 ```
 
 Restart PM2 with the refreshed environment:
@@ -121,7 +133,8 @@ pm2 save
 
 Confirm that only the exact `organizationUuid` and `userUuid` pair routes to
 the gateway. All other organizations and users must remain on the pre-gateway
-path.
+path. The allowlist must contain exactly one `<organization-uuid>/<user-uuid>`
+entry during canary; do not widen it with comma-separated or wildcard entries.
 
 ## Rollback Package
 
@@ -137,7 +150,8 @@ bash scripts/create-xingyao-hermes-rollback.sh \
 ```
 
 The package contains an allowlisted file snapshot, `manifest.txt` with SHA-256
-values, and `rollback-command.sh`. It intentionally excludes env files and any
+values, `manifest.txt.sha256` for the manifest itself, and
+`rollback-command.sh`. It intentionally excludes env files and any
 credential-bearing files.
 
 Run rollback with:
@@ -147,5 +161,16 @@ APP_DIR=/var/www/jingying-cabin PM2_NAME=jingying-cabin \
 bash artifacts/xingyao-hermes-rollback/rollback-command.sh
 ```
 
-After rollback, set `XINGYAO_HERMES_GATEWAY_ENABLED=false`, restart PM2 with
-`--update-env`, and record fresh health-check evidence.
+The rollback command checks that `git rev-parse HEAD` equals the packaged
+product commit before resetting to the previous commit. If the server has moved
+for a known reason, rerun only with an explicit override:
+
+```sh
+HERMES_ROLLBACK_OVERRIDE=true APP_DIR=/var/www/jingying-cabin \
+PM2_NAME=jingying-cabin \
+bash artifacts/xingyao-hermes-rollback/rollback-command.sh
+```
+
+After rollback, set `XINGYAO_HERMES_GATEWAY_ENABLED=false`, clear
+`XINGYAO_HERMES_GATEWAY_ALLOWLIST`, restart PM2 with `--update-env`, and record
+fresh health-check evidence.
