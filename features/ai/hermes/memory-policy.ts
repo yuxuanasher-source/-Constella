@@ -40,13 +40,16 @@ const MONEY_VALUE_PATTERNS = [
 ];
 
 const PRIVATE_OBJECT_CONTEXT = String.raw`(?:project|streamer|(?:live[_\s-]*)?report|settlement(?:[_\s-]*batch)?|org(?:anization)?|knowledge(?:[_\s-]*(?:base|document|chunk))?|document|chunk)`;
+const MACHINE_ID_CHARACTER = String.raw`[a-z\p{Nd}_.:/#-]`;
 const BARE_UUID_PATTERN = /\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/iu;
 const EXPLICIT_OBJECT_ID_PATTERN = new RegExp(
-  String.raw`\b${PRIVATE_OBJECT_CONTEXT}[_\s-]*(?:object[_\s-]*)?(?:id|uuid|key)\b\s*(?::|=|\bis\b)?\s*["']?([a-z0-9][a-z0-9_.:/#-]{2,})`,
+  String.raw`\b${PRIVATE_OBJECT_CONTEXT}[_\s-]*(?:object[_\s-]*)?(?:id|uuid|key)\b\s*(?::|=|\bis\b)?\s*["']?([a-z\p{Nd}]${MACHINE_ID_CHARACTER}{2,})`,
   "giu",
 );
-const KNOWN_PREFIXED_OBJECT_ID_PATTERN =
-  /\b(?:project|streamer|creator|report|batch|settlement|org(?:anization)?|knowledge|document|doc|chunk)[_-](?=[a-z0-9_.:/#-]{2,}\b)(?=[a-z0-9_.:/#-]*\p{Nd})[a-z0-9_.:/#-]+\b/giu;
+const KNOWN_PREFIXED_OBJECT_ID_PATTERN = new RegExp(
+  String.raw`\b(?:project|streamer|creator|report|batch|settlement|org(?:anization)?|knowledge|document|doc|chunk)[_-](?=${MACHINE_ID_CHARACTER}*\p{Nd})${MACHINE_ID_CHARACTER}{2,}(?!${MACHINE_ID_CHARACTER})`,
+  "giu",
+);
 const PROVENANCE_PATTERNS = [
   /\bevidence[_\s-]*refs?\b/iu,
   /\btool[_\s-]+(?:output|outputs|result|results|response|responses|call|calls)\b/iu,
@@ -120,18 +123,18 @@ function normalizeHermesMemoryContent(content: unknown): {
   joinedDetectionContent: string;
 } {
   if (typeof content !== "string") rejectMemoryContent();
-  const normalizedContent = content
-    .normalize("NFKC")
-    .replace(/[\p{Pd}\u2212]/gu, "-")
-    .replace(/[\u0609\u060a\u066a]/gu, "%")
-    .replace(/\u066b/gu, ".")
-    .replace(/\u066c/gu, ",")
-    .replace(/\r\n?/gu, "\n");
-  const canonicalContent = normalizedContent
-    .replace(/[^\S\r\n]*(?:\p{Cf}+[^\S\r\n]*)+/gu, " ")
+  const canonicalContent = normalizeHermesUnicodeSyntax(
+    replaceDefaultIgnorablesWithSeparator(content),
+  )
+    .replace(
+      /[^\S\r\n]*(?:\p{Default_Ignorable_Code_Point}+[^\S\r\n]*)+/gu,
+      " ",
+    )
     .trim();
-  const joinedDetectionContent = normalizedContent
-    .replace(/\p{Cf}/gu, "")
+  const joinedDetectionContent = normalizeHermesUnicodeSyntax(
+    content.replace(/\p{Default_Ignorable_Code_Point}/gu, ""),
+  )
+    .replace(/\p{Default_Ignorable_Code_Point}/gu, "")
     .trim();
   if (
     !canonicalContent ||
@@ -140,6 +143,23 @@ function normalizeHermesMemoryContent(content: unknown): {
     rejectMemoryContent();
   }
   return { canonicalContent, joinedDetectionContent };
+}
+
+function normalizeHermesUnicodeSyntax(content: string): string {
+  return content
+    .normalize("NFKC")
+    .replace(/[\p{Pd}\u2212]/gu, "-")
+    .replace(/[\u0609\u060a\u066a]/gu, "%")
+    .replace(/\u066b/gu, ".")
+    .replace(/\u066c/gu, ",")
+    .replace(/\r\n?/gu, "\n");
+}
+
+function replaceDefaultIgnorablesWithSeparator(content: string): string {
+  return content.replace(
+    /[^\S\r\n]*(?:\p{Default_Ignorable_Code_Point}+[^\S\r\n]*)+/gu,
+    " ",
+  );
 }
 
 function containsPrivateObjectId(content: string): boolean {
