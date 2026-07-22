@@ -23,10 +23,16 @@ import {
 } from "@/features/ai/hermes/read-api";
 import {
   executeHermesToolBrokerCall,
+  createHermesApprovedSkillArtifactLoader,
   HermesToolBrokerError,
   type HermesBrokerCapability,
   type HermesToolBrokerErrorCode,
 } from "@/features/ai/hermes/tool-broker";
+import {
+  hermesSkillSigningPublicKeysToRecord,
+  getHermesSkillSigningPublicKeysFromPublicEnv,
+} from "@/features/ai/hermes/skill-signing";
+import type { HermesSkillDraftRegistryClient } from "@/features/ai/hermes/approved-skill-registry";
 import {
   parseHermesToolBrokerRequest,
   type HermesToolBrokerEnvelope,
@@ -124,6 +130,12 @@ async function executeWithProductPersistence(input: {
         );
         return result.envelope;
       },
+      loadApprovedSkillArtifact: createHermesApprovedSkillArtifactLoader({
+        client: client as unknown as HermesSkillDraftRegistryClient,
+        publicKeys: hermesSkillSigningPublicKeysToRecord(
+          getHermesSkillSigningPublicKeysFromPublicEnv(),
+        ),
+      }),
     },
   });
 }

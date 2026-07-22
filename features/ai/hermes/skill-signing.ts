@@ -23,6 +23,7 @@ export type HermesSkillSigningKey = {
 type EnvLike = {
   [key: string]: string | undefined;
   XINGYAO_HERMES_SKILL_SIGNING_PRIVATE_KEY?: string;
+  XINGYAO_HERMES_SKILL_SIGNING_PUBLIC_KEY?: string;
   XINGYAO_HERMES_SKILL_SIGNING_KEY_ID?: string;
 };
 
@@ -41,6 +42,7 @@ export function loadHermesSkillSigningKeyFromEnv(
     throw new Error("Hermes Skill signing key is not configured");
   }
   const privateKey = createPrivateKey(privateKeyPem);
+  requireEd25519Key(privateKey, "Hermes Skill signing private key");
   const publicKeyPem = createPublicKey(privateKey).export({
     type: "spki",
     format: "pem",
@@ -59,12 +61,33 @@ export function loadHermesSkillSigningKeyFromEnv(
 export function getHermesSkillSigningPublicKeysFromEnv(
   env: EnvLike = process.env,
 ): Array<{ keyId: string; publicKeyPem: string }> {
+  const publicOnly = getHermesSkillSigningPublicKeysFromPublicEnv(env);
+  if (publicOnly.length) return publicOnly;
   try {
     const key = loadHermesSkillSigningKeyFromEnv(env);
     return [{ keyId: key.keyId, publicKeyPem: key.publicKeyPem }];
   } catch {
     return [];
   }
+}
+
+export function getHermesSkillSigningPublicKeysFromPublicEnv(
+  env: EnvLike = process.env,
+): Array<{ keyId: string; publicKeyPem: string }> {
+  const keyId = env.XINGYAO_HERMES_SKILL_SIGNING_KEY_ID?.trim();
+  const publicKeyPem = env.XINGYAO_HERMES_SKILL_SIGNING_PUBLIC_KEY?.trim();
+  if (keyId && publicKeyPem) {
+    try {
+      requireEd25519Key(
+        createPublicKey(publicKeyPem),
+        "Hermes Skill signing public key",
+      );
+      return [{ keyId, publicKeyPem }];
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
 export function signHermesSkillApproval({
@@ -83,6 +106,7 @@ export function signHermesSkillApproval({
   if (!privateKey) {
     throw new Error("Invalid Hermes Skill signing key");
   }
+  requireEd25519Key(privateKey, "Hermes Skill signing private key");
   const payload = skillApprovalPayload({
     manifest,
     bundleSha256,
@@ -113,6 +137,8 @@ export function verifyHermesSkillApproval({
     if (!isSha256(bundleSha256) || !signature || !signingKeyId) return false;
     const publicKeyPem = publicKeys[signingKeyId];
     if (!publicKeyPem) return false;
+    const publicKey = createPublicKey(publicKeyPem);
+    requireEd25519Key(publicKey, "Hermes Skill signing public key");
     const payload = skillApprovalPayload({
       manifest,
       bundleSha256,
@@ -121,12 +147,22 @@ export function verifyHermesSkillApproval({
     return verify(
       null,
       Buffer.from(payload, "utf8"),
-      createPublicKey(publicKeyPem),
+      publicKey,
       Buffer.from(signature, "base64url"),
     );
   } catch {
     return false;
   }
+}
+
+export function hermesSkillSigningPublicKeysToRecord(
+  publicKeys: readonly { keyId: string; publicKeyPem: string }[],
+): Record<string, string> {
+  return Object.fromEntries(
+    publicKeys
+      .filter((key) => key.keyId && key.publicKeyPem)
+      .map((key) => [key.keyId, key.publicKeyPem]),
+  );
 }
 
 function skillApprovalPayload(input: {
@@ -188,6 +224,12 @@ function assertJsonValue(value: unknown): JsonValue {
 
 function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+}
+
+function requireEd25519Key(key: KeyObject, label: string): void {
+  if (key.asymmetricKeyType !== "ed25519") {
+    throw new Error(`${label} must be Ed25519`);
+  }
 }
 
 function isPrototypeKey(key: string): boolean {

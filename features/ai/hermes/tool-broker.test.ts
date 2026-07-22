@@ -1,10 +1,15 @@
+import { generateKeyPairSync } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
   computeHermesSkillGrantsHash,
   createHermesActorFingerprint,
 } from "./actor-fingerprint";
-import { computeHermesSkillBundleSha256 } from "./approved-skill-registry";
+import {
+  computeHermesSkillBundleSha256,
+  type HermesSkillDraftApprovalRow,
+} from "./approved-skill-registry";
 import {
   HERMES_EVIDENCE_REF_MAX_LENGTH,
   type HermesActorProfile,
@@ -14,6 +19,11 @@ import { HermesStateRepositoryError } from "./hermes-state-repository";
 import { hashHermesCapabilityToken } from "./run-capability";
 import type { HermesToolBrokerRequest } from "./tool-broker-contracts";
 import {
+  loadHermesSkillSigningKeyFromEnv,
+  signHermesSkillApproval,
+} from "./skill-signing";
+import {
+  createHermesApprovedSkillArtifactLoader,
   executeHermesToolBrokerCall,
   type HermesBrokerCapability,
   type HermesToolBrokerDependencies,
@@ -946,6 +956,76 @@ describe("Hermes Product Tool Broker", () => {
       run(ungrantedDeps, skillViewRequest("business-context")),
     ).rejects.toMatchObject({ code: "permission_denied" });
   });
+
+  it("uses the production approved draft artifact loader for skill_view without private keys", async () => {
+    const signingKey = testSigningKey("skill-key-2026-07");
+    const row = approvedDraftRow(signingKey);
+    const grant = {
+      skillId: "risk-review",
+      version: "1.0.0",
+      bundleSha256: row.bundle_sha256,
+    };
+    const grantedActor = actor({
+      role: "owner",
+      allowedReadScopes: ["projects.summary"],
+      enabledSkillVersions: [grant],
+    });
+    const capability = brokerCapability({
+      actor: grantedActor,
+      actorFingerprint: fingerprint(grantedActor),
+      allowedTools: ["xingyao_skill_view"],
+      scopes: ["projects.summary"],
+    });
+    const deps = dependencies({
+      loadCapability: vi.fn(async () => capability),
+      reauthorizeActor: vi.fn(async () => ({
+        actor: grantedActor,
+        actorFingerprint: capability.actorFingerprint,
+      })),
+      loadApprovedSkillArtifact: createHermesApprovedSkillArtifactLoader({
+        client: skillDraftClient([row]),
+        publicKeys: { [signingKey.private.keyId]: signingKey.publicKeyPem },
+      }),
+    });
+
+    await expect(
+      run(deps, skillViewRequest("risk-review")),
+    ).resolves.toMatchObject({
+      status: "ok",
+      data: {
+        skillId: "risk-review",
+        version: "1.0.0",
+        bundle: row.bundle,
+        bundleSha256: row.bundle_sha256,
+        source: "draft",
+      },
+    });
+
+    for (const badRow of [
+      { ...row, signature: "00" },
+      { ...row, bundle_sha256: "b".repeat(64) },
+      {
+        ...row,
+        organization_id: "99999999-9999-4999-8999-999999999999",
+      },
+      { ...row, status: "rejected" },
+    ]) {
+      const deniedDeps = dependencies({
+        loadCapability: vi.fn(async () => capability),
+        reauthorizeActor: vi.fn(async () => ({
+          actor: grantedActor,
+          actorFingerprint: capability.actorFingerprint,
+        })),
+        loadApprovedSkillArtifact: createHermesApprovedSkillArtifactLoader({
+          client: skillDraftClient([badRow]),
+          publicKeys: { [signingKey.private.keyId]: signingKey.publicKeyPem },
+        }),
+      });
+      await expect(
+        run(deniedDeps, skillViewRequest("risk-review")),
+      ).rejects.toMatchObject({ code: "permission_denied" });
+    }
+  });
 });
 
 function run(
@@ -1172,4 +1252,59 @@ function brokerEnvelope() {
     toolName: "xingyao_search_projects" as const,
     traceId: "trace-read",
   };
+}
+
+function approvedDraftRow(signingKey: ReturnType<typeof testSigningKey>) {
+  const manifest = {
+    skillId: "risk-review",
+    version: "1.0.0",
+    allowedRoles: ["owner"],
+    requiredReadScopes: ["projects.summary"],
+  };
+  const bundle = "# Risk review";
+  const bundleSha256 = computeHermesSkillBundleSha256(bundle);
+  const signed = signHermesSkillApproval({
+    manifest,
+    bundleSha256,
+    signingKey: signingKey.private,
+  });
+  return {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    organization_id: ORGANIZATION_ID,
+    owner_user_id: USER_ID,
+    skill_id: "risk-review",
+    version: 1,
+    manifest,
+    bundle,
+    bundle_sha256: bundleSha256,
+    status: "approved",
+    signing_key_id: signed.signingKeyId,
+    signature: signed.signature,
+  };
+}
+
+function skillDraftClient(rows: HermesSkillDraftApprovalRow[]) {
+  const query = {
+    eq: vi.fn(() => query),
+    order: vi.fn(async () => ({ data: rows, error: null })),
+  };
+  return {
+    from: vi.fn(() => ({
+      select: vi.fn(() => query),
+    })),
+  };
+}
+
+function testSigningKey(keyId: string) {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const privateKeyPem = privateKey.export({
+    type: "pkcs8",
+    format: "pem",
+  }) as string;
+  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }) as string;
+  const loaded = loadHermesSkillSigningKeyFromEnv({
+    XINGYAO_HERMES_SKILL_SIGNING_PRIVATE_KEY: privateKeyPem,
+    XINGYAO_HERMES_SKILL_SIGNING_KEY_ID: keyId,
+  });
+  return { private: loaded, publicKeyPem };
 }

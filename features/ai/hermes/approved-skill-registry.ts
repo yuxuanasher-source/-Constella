@@ -150,6 +150,28 @@ export type HermesSkillDraftApprovalRow = {
   signature: unknown;
 };
 
+export type HermesApprovedSkillDraftArtifact = {
+  skillId: string;
+  version: string;
+  bundle: string;
+  bundleSha256: string;
+  source: "draft";
+};
+
+export type HermesSkillDraftRegistryClient = {
+  from(table: "ai_hermes_skill_drafts"): {
+    select(columns: string): HermesSkillDraftRegistryQuery;
+  };
+};
+
+type HermesSkillDraftRegistryQuery = {
+  eq(column: string, value: unknown): HermesSkillDraftRegistryQuery;
+  order(
+    column: string,
+    options: { ascending: boolean },
+  ): PromiseLike<{ data: unknown; error: unknown }>;
+};
+
 type ActorGrantInput = {
   organizationId: string;
   userId: string;
@@ -256,6 +278,60 @@ export function resolveApprovedHermesSkillGrantsForActor({
   return grants.sort((left, right) => compareAscii(left.skillId, right.skillId));
 }
 
+export async function loadHermesSkillDraftApprovalRowsForActor({
+  client,
+  actor,
+}: {
+  client: HermesSkillDraftRegistryClient;
+  actor: { organizationId: string; userId: string };
+}): Promise<HermesSkillDraftApprovalRow[]> {
+  try {
+    const result = await client
+      .from("ai_hermes_skill_drafts")
+      .select(
+        "id, organization_id, owner_user_id, skill_id, version, manifest, bundle, bundle_sha256, status, signing_key_id, signature",
+      )
+      .eq("organization_id", actor.organizationId)
+      .eq("owner_user_id", actor.userId)
+      .order("updated_at", { ascending: false });
+    if (result.error || !Array.isArray(result.data)) return [];
+    return result.data.filter(isHermesSkillDraftApprovalRow);
+  } catch {
+    return [];
+  }
+}
+
+export function resolveApprovedHermesSkillArtifactForActor({
+  actor,
+  rows,
+  publicKeys,
+  skillId,
+}: {
+  actor: ActorGrantInput;
+  rows: readonly HermesSkillDraftApprovalRow[];
+  publicKeys: Record<string, string>;
+  skillId: string;
+}): HermesApprovedSkillDraftArtifact | null {
+  for (const row of rows) {
+    if (row.skill_id !== skillId) continue;
+    const grant = approvedRowToGrant(
+      row,
+      actor,
+      new Set(actor.allowedReadScopes),
+      publicKeys,
+    );
+    if (!grant || typeof row.bundle !== "string") continue;
+    return {
+      skillId: grant.skillId,
+      version: grant.version,
+      bundle: row.bundle,
+      bundleSha256: grant.bundleSha256,
+      source: "draft",
+    };
+  }
+  return null;
+}
+
 function approvedRowToGrant(
   row: HermesSkillDraftApprovalRow,
   actor: ActorGrantInput,
@@ -304,6 +380,25 @@ function approvedRowToGrant(
     version: manifest.version,
     bundleSha256: row.bundle_sha256.toLowerCase(),
   };
+}
+
+function isHermesSkillDraftApprovalRow(
+  value: unknown,
+): value is HermesSkillDraftApprovalRow {
+  return (
+    isPlainRecord(value) &&
+    Object.hasOwn(value, "id") &&
+    Object.hasOwn(value, "organization_id") &&
+    Object.hasOwn(value, "owner_user_id") &&
+    Object.hasOwn(value, "skill_id") &&
+    Object.hasOwn(value, "version") &&
+    Object.hasOwn(value, "manifest") &&
+    Object.hasOwn(value, "bundle") &&
+    Object.hasOwn(value, "bundle_sha256") &&
+    Object.hasOwn(value, "status") &&
+    Object.hasOwn(value, "signing_key_id") &&
+    Object.hasOwn(value, "signature")
+  );
 }
 
 function parseApprovedManifest(

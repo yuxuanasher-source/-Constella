@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import {
   computeHermesSkillBundleSha256,
   getHermesBuiltinSkillArtifact,
+  loadHermesSkillDraftApprovalRowsForActor,
+  resolveApprovedHermesSkillArtifactForActor,
+  type HermesSkillDraftRegistryClient,
 } from "./approved-skill-registry";
 import type { HermesActorProfile, HermesReadScope } from "./contracts";
 import {
@@ -111,6 +114,42 @@ export type HermesToolBrokerDependencies = {
     source: "builtin" | "draft";
   } | null>;
 };
+
+export function createHermesApprovedSkillArtifactLoader({
+  client,
+  publicKeys,
+}: {
+  client: HermesSkillDraftRegistryClient;
+  publicKeys: Record<string, string>;
+}): NonNullable<HermesToolBrokerDependencies["loadApprovedSkillArtifact"]> {
+  return async ({ actor, skillId }) => {
+    const builtin = getHermesBuiltinSkillArtifact(skillId);
+    if (builtin) {
+      return {
+        skillId: builtin.skillId,
+        version: builtin.version,
+        bundle: builtin.bundle,
+        bundleSha256: builtin.bundleSha256,
+        source: "builtin",
+      };
+    }
+    const rows = await loadHermesSkillDraftApprovalRowsForActor({
+      client,
+      actor: { organizationId: actor.organizationId, userId: actor.userId },
+    });
+    return resolveApprovedHermesSkillArtifactForActor({
+      actor: {
+        organizationId: actor.organizationId,
+        userId: actor.userId,
+        role: actor.role,
+        allowedReadScopes: actor.allowedReadScopes,
+      },
+      rows,
+      publicKeys,
+      skillId,
+    });
+  };
+}
 
 export async function executeHermesToolBrokerCall({
   capabilityToken,

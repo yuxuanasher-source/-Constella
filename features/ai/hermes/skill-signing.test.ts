@@ -102,6 +102,48 @@ describe("Hermes Skill signing", () => {
     expect(JSON.stringify(loaded)).not.toContain("PRIVATE KEY");
     expect(Object.keys(loaded)).not.toContain("privateKey");
   });
+
+  it("fails closed when the signing private key is not Ed25519", () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const privateKeyPem = privateKey.export({
+      type: "pkcs8",
+      format: "pem",
+    }) as string;
+
+    expect(() =>
+      loadHermesSkillSigningKeyFromEnv({
+        XINGYAO_HERMES_SKILL_SIGNING_PRIVATE_KEY: privateKeyPem,
+        XINGYAO_HERMES_SKILL_SIGNING_KEY_ID: "rsa-key",
+      }),
+    ).toThrow(/Ed25519/);
+  });
+
+  it("rejects non-Ed25519 public keys during verification", () => {
+    const key = testSigningKey("skill-key-2026-07");
+    const { publicKey: rsaPublicKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+    });
+    const approval = signHermesSkillApproval({
+      manifest: MANIFEST,
+      bundleSha256: BUNDLE_SHA256,
+      signingKey: key.private,
+    });
+
+    expect(
+      verifyHermesSkillApproval({
+        manifest: MANIFEST,
+        bundleSha256: BUNDLE_SHA256,
+        signature: approval.signature,
+        signingKeyId: approval.signingKeyId,
+        publicKeys: {
+          "skill-key-2026-07": rsaPublicKey.export({
+            type: "spki",
+            format: "pem",
+          }) as string,
+        },
+      }),
+    ).toBe(false);
+  });
 });
 
 function testSigningKey(keyId: string) {
