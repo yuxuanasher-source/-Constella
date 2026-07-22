@@ -551,6 +551,26 @@ begin
 end;
 $$;
 
+create or replace function public.revoke_ai_hermes_capabilities_for_terminal_invocation()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if old.status in ('started', 'queued')
+     and new.status in ('succeeded', 'failed', 'degraded') then
+    update public.ai_hermes_run_capabilities
+    set revoked_at = coalesce(revoked_at, now())
+    where invocation_id = new.id
+      and organization_id = new.organization_id
+      and owner_user_id = new.actor_user_id
+      and revoked_at is null;
+  end if;
+  return new;
+end;
+$$;
+
 create or replace function public.lock_and_validate_ai_hermes_capability_lineage(
   p_capability_id uuid,
   p_organization_id uuid,
@@ -773,6 +793,10 @@ create trigger ai_hermes_broker_calls_validate_identity
 before insert or update on public.ai_hermes_broker_calls
 for each row execute function public.validate_ai_hermes_broker_call_identity();
 
+create trigger ai_invocations_revoke_terminal_hermes_capabilities
+after update of status on public.ai_invocations
+for each row execute function public.revoke_ai_hermes_capabilities_for_terminal_invocation();
+
 create trigger ai_hermes_memories_touch_updated_at
 before update on public.ai_hermes_memories
 for each row execute function public.touch_updated_at();
@@ -980,17 +1004,31 @@ begin
     end if;
   end if;
 
-  if not exists (
-    select 1
-    from public.ai_invocations invocation
-    where invocation.id = p_invocation_id
-      and invocation.organization_id = p_organization_id
-      and invocation.actor_user_id = p_owner_user_id
-  ) then
+  perform 1
+  from public.ai_invocations invocation
+  where invocation.id = p_invocation_id
+    and invocation.organization_id = p_organization_id
+    and invocation.actor_user_id = p_owner_user_id
+    and invocation.status in ('started', 'queued')
+  for update;
+
+  if not found then
     raise exception 'capability_context_invalid';
   end if;
 
   if p_depth > 0 then
+    perform 1
+    from public.ai_invocations parent_invocation
+    where parent_invocation.id = p_parent_invocation_id
+      and parent_invocation.organization_id = p_organization_id
+      and parent_invocation.actor_user_id = p_owner_user_id
+      and parent_invocation.status in ('started', 'queued')
+    for update;
+
+    if not found then
+      raise exception 'capability_parent_invalid';
+    end if;
+
     select parent_capability.*
     into v_parent
     from public.ai_hermes_run_capabilities parent_capability
@@ -1241,6 +1279,18 @@ begin
 
   if not found then
     raise exception 'turn_lease_invalid';
+  end if;
+
+  perform 1
+  from public.ai_invocations capability_invocation
+  where capability_invocation.id = v_capability.invocation_id
+    and capability_invocation.organization_id = v_capability.organization_id
+    and capability_invocation.actor_user_id = v_capability.owner_user_id
+    and capability_invocation.status in ('started', 'queued')
+  for update;
+
+  if not found then
+    raise exception 'capability_invalid';
   end if;
 
   select capability.*
@@ -2481,6 +2531,7 @@ revoke all on function public.validate_ai_hermes_run_capability_identity() from 
 revoke all on function public.validate_ai_hermes_memory_identity() from public, anon, authenticated;
 revoke all on function public.validate_ai_hermes_skill_draft_identity() from public, anon, authenticated;
 revoke all on function public.validate_ai_hermes_broker_call_identity() from public, anon, authenticated;
+revoke all on function public.revoke_ai_hermes_capabilities_for_terminal_invocation() from public, anon, authenticated;
 revoke all on function public.lock_and_validate_ai_hermes_capability_lineage(
   uuid, uuid, uuid, uuid, uuid, uuid, text, integer
 ) from public, anon, authenticated;

@@ -299,6 +299,33 @@ describe("Hermes capability derivation route", () => {
     });
   });
 
+  it("hides a terminal parent invocation as unavailable", async () => {
+    const { client, queries } = persistenceClient({
+      terminalParentInvocation: true,
+    });
+    createSupabaseAdminClientMock.mockReturnValue(client);
+
+    const response = await POST(request(validBody(), PARENT_CAPABILITY));
+    const body = JSON.stringify(await response.json());
+    const invocationQuery = queries.find(
+      (query) => query.table === "ai_invocations",
+    );
+
+    expect(response.status).toBe(401);
+    expect(body).toBe('{"error":{"code":"parent_not_found"}}');
+    expect(body).not.toContain(PARENT_CAPABILITY);
+    expect(invocationQuery?.filters).toContainEqual([
+      "in",
+      "status",
+      ["started", "queued"],
+    ]);
+    expect(queries.map((query) => query.table)).toEqual([
+      "ai_hermes_run_capabilities",
+      "ai_chat_turns",
+      "ai_invocations",
+    ]);
+  });
+
   it("keeps genuinely inactive membership as actor_changed", async () => {
     const { client } = persistenceClient({ inactiveMembership: true });
     createSupabaseAdminClientMock.mockReturnValue(client);
@@ -386,6 +413,7 @@ type PersistenceClientOptions = {
   rejectTable?: PersistenceTable;
   missingParent?: boolean;
   inactiveMembership?: boolean;
+  terminalParentInvocation?: boolean;
   countError?: boolean;
   rejectCount?: boolean;
 };
@@ -446,6 +474,9 @@ function persistenceClient(
             data:
               table === "ai_hermes_run_capabilities" && options.missingParent
                 ? null
+                : table === "ai_invocations" &&
+                    options.terminalParentInvocation
+                  ? null
                 : table === "organization_members" &&
                     options.inactiveMembership
                   ? null

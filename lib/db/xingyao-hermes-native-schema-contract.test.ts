@@ -212,6 +212,47 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(claim).toContain("sanitized_response_envelope");
   });
 
+  it("revokes terminal invocation capabilities and rejects stale invocation use", () => {
+    const revokeTerminal = functionSql(
+      "revoke_ai_hermes_capabilities_for_terminal_invocation",
+    );
+    const issue = functionSql("issue_ai_hermes_run_capability");
+    const claim = functionSql("claim_ai_hermes_broker_call");
+
+    expect(revokeTerminal).toContain("returns trigger");
+    expect(revokeTerminal).toContain("old.status in ('started', 'queued')");
+    expect(revokeTerminal).toContain(
+      "new.status in ('succeeded', 'failed', 'degraded')",
+    );
+    expect(revokeTerminal).toContain(
+      "update public.ai_hermes_run_capabilities",
+    );
+    for (const fence of [
+      "invocation_id = new.id",
+      "organization_id = new.organization_id",
+      "owner_user_id = new.actor_user_id",
+      "revoked_at is null",
+    ]) {
+      expect(revokeTerminal).toContain(fence);
+    }
+    expect(migration).toMatch(
+      /create trigger ai_invocations_revoke_terminal_hermes_capabilities\s+after update of status on public\.ai_invocations\s+for each row execute function public\.revoke_ai_hermes_capabilities_for_terminal_invocation\(\)/,
+    );
+    expect(migration).toContain(
+      "revoke all on function public.revoke_ai_hermes_capabilities_for_terminal_invocation()",
+    );
+
+    expect(issue).toMatch(
+      /from public\.ai_invocations invocation[\s\S]*?invocation\.id = p_invocation_id[\s\S]*?invocation\.organization_id = p_organization_id[\s\S]*?invocation\.actor_user_id = p_owner_user_id[\s\S]*?invocation\.status in \('started', 'queued'\)[\s\S]*?for update/,
+    );
+    expect(issue).toMatch(
+      /from public\.ai_invocations parent_invocation[\s\S]*?parent_invocation\.id = p_parent_invocation_id[\s\S]*?parent_invocation\.organization_id = p_organization_id[\s\S]*?parent_invocation\.actor_user_id = p_owner_user_id[\s\S]*?parent_invocation\.status in \('started', 'queued'\)[\s\S]*?for update/,
+    );
+    expect(claim).toMatch(
+      /from public\.ai_invocations capability_invocation[\s\S]*?capability_invocation\.id = v_capability\.invocation_id[\s\S]*?capability_invocation\.organization_id = v_capability\.organization_id[\s\S]*?capability_invocation\.actor_user_id = v_capability\.owner_user_id[\s\S]*?capability_invocation\.status in \('started', 'queued'\)[\s\S]*?for update/,
+    );
+  });
+
   it("stores auditable owner memories with four approved types", () => {
     const table = tableSql("ai_hermes_memories");
 

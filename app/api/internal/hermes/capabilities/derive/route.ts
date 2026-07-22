@@ -35,6 +35,7 @@ const ACTIVE_TURN_STATUSES = [
   "generating",
   "validating",
 ] as const;
+const ACTIVE_INVOCATION_STATUSES = ["started", "queued"] as const;
 
 export type HermesCapabilityDeriveTransport = {
   childInvocationId: string;
@@ -204,6 +205,7 @@ async function loadParentCapability(
     .eq("id", invocationId)
     .eq("organization_id", organizationId)
     .eq("actor_user_id", userId)
+    .in("status", [...ACTIVE_INVOCATION_STATUSES])
     .maybeSingle();
   if (invocationResult.error) {
     throw new HermesRunCapabilityError("persistence_failed");
@@ -273,7 +275,7 @@ async function countActiveChildren(
     .gt("depth", 0)
     .is("revoked_at", null)
     .gt("expires_at", input.now.toISOString())
-    .in("child_invocation.status", ["started", "queued"]);
+    .in("child_invocation.status", [...ACTIVE_INVOCATION_STATUSES]);
   if (result.error || typeof result.count !== "number") {
     throw new HermesRunCapabilityError("persistence_failed");
   }

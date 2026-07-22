@@ -114,6 +114,7 @@ async function assertRunWideModeLimit(
   const depthTwoInvocationId = input.mode === "deep" ? randomUUID() : null;
   const overDepthInvocationId = randomUUID();
   const replacementInvocationId = randomUUID();
+  const staleDerivationInvocationId = randomUUID();
   const attemptedChildren = input.mode === "fast" ? 2 : 4;
   const childInvocationIds = Array.from({ length: attemptedChildren }, () =>
     randomUUID(),
@@ -124,6 +125,7 @@ async function assertRunWideModeLimit(
     ...(depthTwoInvocationId ? [depthTwoInvocationId] : []),
     overDepthInvocationId,
     replacementInvocationId,
+    staleDerivationInvocationId,
     ...childInvocationIds,
   ];
   const invocations = await client.from("ai_invocations").insert(
@@ -277,6 +279,61 @@ async function assertRunWideModeLimit(
     .eq("actor_user_id", input.userId);
   expect(completion.error).toBeNull();
 
+  const terminalCapabilities = await client
+    .from("ai_hermes_run_capabilities")
+    .select("token_sha256, revoked_at")
+    .in("token_sha256", [rootTokenSha256, seedTokenSha256]);
+  expect(terminalCapabilities.error).toBeNull();
+  const rootCapability = terminalCapabilities.data?.find(
+    (capability) => capability.token_sha256 === rootTokenSha256,
+  );
+  const seedCapability = terminalCapabilities.data?.find(
+    (capability) => capability.token_sha256 === seedTokenSha256,
+  );
+  expect(rootCapability?.revoked_at).toBeNull();
+  expect(seedCapability?.revoked_at).toEqual(expect.any(String));
+
+  const simulateDelayedRevocation = await client
+    .from("ai_hermes_run_capabilities")
+    .update({ revoked_at: null })
+    .eq("token_sha256", seedTokenSha256)
+    .eq("organization_id", input.organizationId)
+    .eq("owner_user_id", input.userId);
+  expect(simulateDelayedRevocation.error).toBeNull();
+
+  const staleBrokerClaim = await client.rpc("claim_ai_hermes_broker_call", {
+    p_organization_id: input.organizationId,
+    p_owner_user_id: input.userId,
+    p_token_sha256: seedTokenSha256,
+    p_actor_fingerprint: actorFingerprint,
+    p_claim_owner_id: randomUUID(),
+    p_tool_call_id: `stale-${input.mode}-${input.suffix}`,
+    p_tool_name: "xingyao_search_projects",
+    p_request_sha256: sha256(`stale-request:${input.mode}:${input.suffix}`),
+    p_sanitized_request_envelope: {},
+  });
+  expect(staleBrokerClaim.error?.message).toContain("capability_invalid");
+
+  const staleDerivation = await issueCapability(client, {
+    tokenSha256: sha256(`stale-child:${input.mode}:${input.suffix}`),
+    organizationId: input.organizationId,
+    userId: input.userId,
+    conversationId,
+    turnId,
+    invocationId: staleDerivationInvocationId,
+    parentInvocationId: seedInvocationId,
+    parentTokenSha256: seedTokenSha256,
+    actorFingerprint,
+    depth: 2,
+    expiresAt,
+    emptyArrayHash,
+  });
+  expect(staleDerivation.error?.message).toContain(
+    input.mode === "fast"
+      ? "capability_depth_limit"
+      : "capability_parent_invalid",
+  );
+
   const replacement = await issueCapability(client, {
     tokenSha256: sha256(`replacement:${input.mode}:${input.suffix}`),
     organizationId: input.organizationId,
@@ -292,6 +349,14 @@ async function assertRunWideModeLimit(
     emptyArrayHash,
   });
   expect(replacement.error).toBeNull();
+
+  const restoreRevocation = await client
+    .from("ai_hermes_run_capabilities")
+    .update({ revoked_at: new Date().toISOString() })
+    .eq("token_sha256", seedTokenSha256)
+    .eq("organization_id", input.organizationId)
+    .eq("owner_user_id", input.userId);
+  expect(restoreRevocation.error).toBeNull();
   await expect(countActiveSubagents(client, turnId)).resolves.toBe(
     expectedActiveSubagents,
   );
