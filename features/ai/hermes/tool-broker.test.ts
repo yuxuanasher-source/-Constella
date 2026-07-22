@@ -218,6 +218,8 @@ describe("Hermes Product Tool Broker", () => {
           "XINGYAO_READ_API_SERVICE_TOKEN=broker-service-token",
         ],
         actualSql: "SELECT id, name FROM projects",
+        singleIdentifierSql: "SELECT id FROM projects",
+        qualifiedIdentifierSql: "SELECT projects.id FROM public.projects;",
         rows: [
           {
             id: "project-1",
@@ -263,6 +265,8 @@ describe("Hermes Product Tool Broker", () => {
         businessInstruction: "Select one project from the current queue",
         credentialAssignments: ["[REDACTED]", "[REDACTED]", "[REDACTED]"],
         actualSql: "[REDACTED]",
+        singleIdentifierSql: "[REDACTED]",
+        qualifiedIdentifierSql: "[REDACTED]",
         rows: [
           { id: "project-1", sourceRef: "project:project-1" },
           { id: "unknown-source" },
@@ -286,6 +290,19 @@ describe("Hermes Product Tool Broker", () => {
         content: expect.stringContaining('"truncated":true'),
       }),
     );
+    const completionCall = vi.mocked(deps.repository.completeBrokerCall).mock
+      .calls[0];
+    const persistedEnvelopeAndAudit = JSON.stringify([
+      completionCall?.[5],
+      completionCall?.[6],
+    ]);
+    expect(completionCall?.[6]?.content).toContain(
+      '"singleIdentifierSql":"[REDACTED]"',
+    );
+    expect(persistedEnvelopeAndAudit).not.toContain("SELECT id FROM projects");
+    expect(persistedEnvelopeAndAudit).not.toContain(
+      "SELECT projects.id FROM public.projects",
+    );
 
     vi.mocked(deps.repository.claimBrokerCall).mockResolvedValueOnce({
       brokerCallId: BROKER_CALL_ID,
@@ -295,7 +312,12 @@ describe("Hermes Product Tool Broker", () => {
       fencingToken: 1,
       sanitizedResponseEnvelope: first,
     });
-    await expect(run(deps)).resolves.toEqual(first);
+    const replayed = await run(deps);
+    expect(replayed).toEqual(first);
+    expect(JSON.stringify(replayed)).not.toContain("SELECT id FROM projects");
+    expect(JSON.stringify(replayed)).not.toContain(
+      "SELECT projects.id FROM public.projects",
+    );
     expect(first.evidenceRefs).toEqual(validEvidenceRefs);
     expect(JSON.stringify(first)).not.toContain("private_payroll_rows");
     expect(JSON.stringify(first)).not.toContain("broker-source-secret");

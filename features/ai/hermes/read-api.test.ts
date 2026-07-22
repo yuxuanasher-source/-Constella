@@ -310,6 +310,7 @@ describe("Hermes product read API boundary", () => {
     const businessText = [
       "Select one project from the current queue",
       "Please select one project from the current queue",
+      "Select the active project from the review queue",
     ];
     const credentialAssignments = [
       "OPENAI_API_KEY=read-openai-secret",
@@ -322,8 +323,14 @@ describe("Hermes product read API boundary", () => {
       "SESSION_TOKEN=read-session-token",
     ];
     const sqlStatements = [
+      "SELECT id FROM projects",
+      "SELECT projects.id FROM public.projects",
+      'SELECT "projects"."id" FROM "public"."projects";',
+      "SELECT p.id FROM projects p",
       "SELECT * FROM projects",
       "SELECT id, name FROM projects",
+      "SELECT projects.id, projects.name FROM public.projects;",
+      "SELECT p.id, p.name FROM projects AS p WHERE p.id = 1;",
       "SELECT pg_sleep(10)",
       "SELECT id FROM projects WHERE status = 'active'",
       "SELECT projects.id FROM projects JOIN organizations ON organizations.id = projects.organization_id",

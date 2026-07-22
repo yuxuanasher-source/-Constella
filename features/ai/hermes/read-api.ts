@@ -640,6 +640,15 @@ function sanitizeHermesEvidenceRef(value: string): string | null {
     : null;
 }
 
+const HERMES_SQL_IDENTIFIER_SOURCE = String.raw`(?:"[A-Za-z_][A-Za-z0-9_$]*"|[A-Za-z_][A-Za-z0-9_$]*)`;
+const HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE = String.raw`${HERMES_SQL_IDENTIFIER_SOURCE}(?:\s*\.\s*${HERMES_SQL_IDENTIFIER_SOURCE})*`;
+const HERMES_SQL_SELECT_ITEM_SOURCE = String.raw`${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}(?:\s+as\s+${HERMES_SQL_IDENTIFIER_SOURCE})?`;
+const HERMES_SQL_CLAUSE_SOURCE = String.raw`(?:where|join|(?:inner|left|right|full|cross)\s+join|group\s+by|order\s+by|limit|offset|fetch|for\s+(?:update|share))\b`;
+const HERMES_SQL_IDENTIFIER_SELECT_PATTERN = new RegExp(
+  String.raw`\bselect\s+(?:distinct\s+)?${HERMES_SQL_SELECT_ITEM_SOURCE}(?:\s*,\s*${HERMES_SQL_SELECT_ITEM_SOURCE})*\s+from\s+${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}(?:\s+(?:as\s+)?${HERMES_SQL_IDENTIFIER_SOURCE})?(?=\s*(?:;|$|${HERMES_SQL_CLAUSE_SOURCE}))`,
+  "i",
+);
+
 function sanitizeHermesReadText(value: string): string {
   const normalized = value.slice(0, 20_000);
   if (
@@ -659,12 +668,7 @@ function sanitizeHermesReadText(value: string): string {
       normalized,
     ) ||
     /\bselect\s+pg_[a-z0-9_]+\s*\(/i.test(normalized) ||
-    /\bselect\s+(?:(?:"?[a-z_][a-z0-9_]*"?)(?:\.(?:"?[a-z_][a-z0-9_]*"?))?\s*,\s*)+(?:"?[a-z_][a-z0-9_]*"?)(?:\.(?:"?[a-z_][a-z0-9_]*"?))?\s+from\s+[a-z0-9_."]+/i.test(
-      normalized,
-    ) ||
-    /\bselect\s+[^;\r\n]{1,1000}\s+from\s+[a-z0-9_."]+[^;\r\n]{0,1000}\b(?:where|join|group\s+by|order\s+by|limit)\b/i.test(
-      normalized,
-    ) ||
+    HERMES_SQL_IDENTIFIER_SELECT_PATTERN.test(normalized) ||
     /\b(?:insert\s+into\b|update\s+[a-z0-9_."]+\s+set\b|delete\s+from\b|(?:alter|drop|create)\s+table\b)/i.test(
       normalized,
     ) ||
