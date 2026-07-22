@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getRouteContextMock = vi.fn();
 const createConversationTurnStreamMock = vi.fn();
-const createGatewayTurnExecutorMock = vi.fn();
+const executeNativeHermesAssistantMock = vi.fn();
 
 vi.mock("@/app/api/ai/conversation-route-context", () => ({
   getAiConversationRouteContext: getRouteContextMock,
@@ -17,8 +17,8 @@ vi.mock("@/features/ai/conversation-stream-adapter", () => ({
   createConversationTurnStream: createConversationTurnStreamMock,
 }));
 
-vi.mock("@/features/ai/native-assistant/gateway-executor", () => ({
-  createGatewayTurnExecutor: createGatewayTurnExecutorMock,
+vi.mock("@/features/ai/native-assistant/executor", () => ({
+  executeNativeHermesAssistant: executeNativeHermesAssistantMock,
 }));
 
 describe("POST /api/ai/turns/:turnId/retry", () => {
@@ -26,7 +26,7 @@ describe("POST /api/ai/turns/:turnId/retry", () => {
     vi.resetModules();
     getRouteContextMock.mockReset();
     createConversationTurnStreamMock.mockReset();
-    createGatewayTurnExecutorMock.mockReset();
+    executeNativeHermesAssistantMock.mockReset();
   });
 
   it("retries the source turn without accepting a new user message", async () => {
@@ -42,10 +42,9 @@ describe("POST /api/ai/turns/:turnId/retry", () => {
     const retryTurn = vi.fn().mockResolvedValue(retriedTurn);
     const acceptTurn = vi.fn();
     const service = { retryTurn, acceptTurn };
-    const executor = { execute: vi.fn() };
-    createGatewayTurnExecutorMock.mockReturnValue(executor);
     getRouteContextMock.mockResolvedValue({
       actor: { organizationId: "org-1", userId: "user-1" },
+      auth: { organizationId: "org-1", userId: "user-1", role: "finance" },
       service,
     });
     createConversationTurnStreamMock.mockReturnValue(new Response("stream"));
@@ -67,11 +66,12 @@ describe("POST /api/ai/turns/:turnId/retry", () => {
       expect.objectContaining({
         turn: retriedTurn,
         attachments: [],
-        executor,
+        executor: expect.objectContaining({ execute: expect.any(Function) }),
       }),
     );
-    expect(createGatewayTurnExecutorMock).toHaveBeenCalledWith(
-      expect.objectContaining({ service }),
+    expect(createConversationTurnStreamMock.mock.calls[0]?.[0]).not.toHaveProperty(
+      "executeLegacyChat",
     );
+    expect(executeNativeHermesAssistantMock).not.toHaveBeenCalled();
   });
 });

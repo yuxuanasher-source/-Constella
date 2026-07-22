@@ -647,6 +647,27 @@ export function createConversationService(
       });
     },
 
+    async getSourceGatewayCheckpoint(
+      actor: ConversationActor,
+      sourceTurnId: string,
+    ) {
+      const sourceTurn = await requireTurn(persistence, actor, sourceTurnId);
+      const checkpoint = parseGatewayCheckpoint(
+        sourceTurn.contextSnapshot?.gatewayContext?.invocationMetadata
+          ?.gatewayCheckpoint,
+      );
+      if (
+        !checkpoint ||
+        checkpoint.turnId !== sourceTurn.id ||
+        checkpoint.conversationId !== sourceTurn.conversationId ||
+        checkpoint.organizationId !== actor.organizationId ||
+        checkpoint.ownerUserId !== actor.userId
+      ) {
+        return null;
+      }
+      return checkpoint;
+    },
+
     async syncConversationSummary(
       actor: ConversationActor,
       conversationId: string,
@@ -701,6 +722,34 @@ function requireCreatedTurn(
     );
   }
   return turn;
+}
+
+function parseGatewayCheckpoint(value: unknown): {
+  sessionId: string;
+  checkpointId?: string;
+  turnId: string;
+  conversationId: string;
+  organizationId: string;
+  ownerUserId: string;
+} | null {
+  if (!isRecord(value)) return null;
+  const sessionId = nonEmptyString(value.sessionId);
+  const turnId = nonEmptyString(value.turnId);
+  const conversationId = nonEmptyString(value.conversationId);
+  const organizationId = nonEmptyString(value.organizationId);
+  const ownerUserId = nonEmptyString(value.ownerUserId);
+  const checkpointId = nonEmptyString(value.checkpointId);
+  if (!sessionId || !turnId || !conversationId || !organizationId || !ownerUserId) {
+    return null;
+  }
+  return {
+    sessionId,
+    turnId,
+    conversationId,
+    organizationId,
+    ownerUserId,
+    ...(checkpointId ? { checkpointId } : {}),
+  };
 }
 
 async function requireTransition(
@@ -1060,6 +1109,12 @@ function rejectUnsafeConversationContext(): never {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
 }
 
 function hashConversationSnapshot(

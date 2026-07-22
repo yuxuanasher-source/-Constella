@@ -54,6 +54,7 @@ export async function POST(
         auth: context.auth,
         provider: "hermes",
         model: "hermes-official-gateway",
+        sourceTurnId: turnId,
       }),
     });
   } catch (error) {
