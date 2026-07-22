@@ -362,6 +362,103 @@ describe("Hermes Gateway JSON-RPC client", () => {
     );
   });
 
+  it("resumes recorded and branched sessions instead of creating replacement sessions", async () => {
+    const { server, config } = await configuredGateway();
+    servers.push(server);
+    const branchedSessionId = "session-branched";
+    let createCount = 0;
+    server.on("connection", (socket) => {
+      socket.send(JSON.stringify(readyEvent()));
+      socket.on("message", (raw) => {
+        const command = JSON.parse(raw.toString()) as {
+          id: string;
+          method: string;
+          params: Record<string, unknown>;
+        };
+        if (command.method === "session.create") {
+          createCount += 1;
+          socket.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: command.id,
+              result: {
+                sessionId: createCount === 1 ? SESSION_ID : branchedSessionId,
+                invocationId: INVOCATION_ID,
+                actorFingerprint: ACTOR_FINGERPRINT,
+              },
+            }),
+          );
+        }
+        if (command.method === "session.resume") {
+          socket.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: command.id,
+              result: {
+                sessionId: command.params.sessionId,
+                invocationId: INVOCATION_ID,
+                actorFingerprint: ACTOR_FINGERPRINT,
+              },
+            }),
+          );
+        }
+        if (command.method === "session.branch") {
+          socket.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: command.id,
+              result: {
+                sessionId: branchedSessionId,
+                invocationId: INVOCATION_ID,
+                actorFingerprint: ACTOR_FINGERPRINT,
+              },
+            }),
+          );
+        }
+        if (command.method === "prompt.submit") {
+          socket.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: command.id,
+              result: { accepted: true, invocationId: INVOCATION_ID },
+            }),
+          );
+        }
+      });
+    });
+
+    const source = await createHermesGatewaySession(
+      sessionOptions(config, { sessionId: SESSION_ID }),
+    );
+    const branch = await source.branch(CONVERSATION_ID);
+    source.close();
+    const branched = await createHermesGatewaySession(
+      sessionOptions(config, {
+        sessionId: branchedSessionId,
+        prompt: "retry from checkpoint",
+      }),
+    );
+
+    expect(branch).toEqual({
+      sessionId: branchedSessionId,
+      invocationId: INVOCATION_ID,
+      actorFingerprint: ACTOR_FINGERPRINT,
+    });
+    expect(branched.sessionId).toBe(branchedSessionId);
+    expect(server.commands.map((command) => command.method)).toEqual([
+      "session.resume",
+      "session.branch",
+      "session.resume",
+      "prompt.submit",
+    ]);
+    expect(server.commands.map((command) => command.params.sessionId)).toEqual([
+      SESSION_ID,
+      SESSION_ID,
+      branchedSessionId,
+      branchedSessionId,
+    ]);
+  });
+
   it("does not resubmit prompt when the prompt response is lost after gateway receipt", async () => {
     const { server, config } = await configuredGateway();
     servers.push(server);
@@ -562,7 +659,7 @@ describe("Hermes Gateway JSON-RPC client", () => {
     servers.push(server);
     server.on("connection", (socket) => {
       socket.send(JSON.stringify(readyEvent()));
-      respondTo(socket, "session.create", { sessionId: "other-session" });
+      respondTo(socket, "session.resume", { sessionId: "other-session" });
     });
 
     await expect(

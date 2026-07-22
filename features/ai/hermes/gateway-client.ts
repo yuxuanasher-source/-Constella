@@ -175,10 +175,18 @@ class HermesGatewayClient implements HermesGatewaySession {
 
   async start(): Promise<void> {
     await this.connect();
-    const result = await this.rpc("session.create", {
-      conversationId: this.options.conversationId,
-    });
-    this.validateSessionResult(result, this.options.sessionId);
+    if (this.options.sessionId) {
+      this.sessionId = this.options.sessionId;
+      const result = await this.rpc("session.resume", {
+        conversationId: this.options.conversationId,
+      });
+      this.validateSessionResult(result, this.options.sessionId, true);
+    } else {
+      const result = await this.rpc("session.create", {
+        conversationId: this.options.conversationId,
+      });
+      this.validateSessionResult(result);
+    }
 
     if (this.options.prompt) {
       await this.submitPromptWithRetry();
