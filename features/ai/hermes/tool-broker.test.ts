@@ -199,6 +199,8 @@ describe("Hermes Product Tool Broker", () => {
       "live_report:report-1",
       "recording_review:review-1",
       "knowledge:document-1",
+      "knowledge:kb_mqu7f3_q42",
+      "live_report:123456",
       "settlement_batch:batch-1",
     ];
     const partialRead = {
@@ -225,6 +227,10 @@ describe("Hermes Product Tool Broker", () => {
         "private_payroll_rows:row-1",
         "knowledge:Bearer broker-evidence-secret",
         "recording_review:/api/internal/hermes/read",
+        "project:https://example.invalid/project/1",
+        "knowledge:select pg_sleep(10)",
+        "settlement_batch:batch-1?expand=items",
+        "live_report:report-1\nnext",
       ],
       sourceLabels: ["project_record"],
       missingData: ["older_projects_not_loaded"],
@@ -276,6 +282,10 @@ describe("Hermes Product Tool Broker", () => {
     expect(JSON.stringify(first)).not.toContain("private_payroll_rows");
     expect(JSON.stringify(first)).not.toContain("broker-source-secret");
     expect(JSON.stringify(first)).not.toContain("/api/internal/");
+    expect(JSON.stringify(first)).not.toContain("https://");
+    expect(JSON.stringify(first)).not.toContain("pg_sleep");
+    expect(JSON.stringify(first)).not.toContain("?expand=");
+    expect(JSON.stringify(first)).not.toContain("report-1\\nnext");
     expect(deps.executeRead).toHaveBeenCalledTimes(1);
     expect(deps.repository.completeBrokerCall).toHaveBeenCalledTimes(1);
   });

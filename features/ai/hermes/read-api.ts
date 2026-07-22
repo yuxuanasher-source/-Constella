@@ -621,12 +621,17 @@ function sanitizeHermesEvidenceRef(value: string): string | null {
   const separator = sanitized.indexOf(":");
   if (separator < 1) return null;
   const rawPrefix = sanitized.slice(0, separator).trim().toLowerCase();
-  const suffix = sanitized.slice(separator + 1).trim();
-  if (!/^[a-z][a-z0-9_]*$/.test(rawPrefix) || !suffix) return null;
+  const suffix = sanitized.slice(separator + 1);
+  if (
+    !/^[a-z][a-z0-9_]*$/.test(rawPrefix) ||
+    !/^[A-Za-z0-9._-]{1,256}$/.test(suffix)
+  ) {
+    return null;
+  }
 
   const prefix = HERMES_EVIDENCE_PREFIX_ALIASES[rawPrefix] ?? rawPrefix;
   if (!HERMES_PUBLIC_EVIDENCE_PREFIXES.has(prefix)) return null;
-  return `${prefix}:${suffix}`.slice(0, 160);
+  return `${prefix}:${suffix}`;
 }
 
 function sanitizeHermesReadText(value: string): string {

@@ -306,6 +306,60 @@ describe("Hermes product read API boundary", () => {
     }
   });
 
+  it("accepts only bounded opaque public evidence identifiers", () => {
+    const maxLengthId = "a".repeat(256);
+    const validRefs = [
+      `project:${PROJECT_ID}`,
+      "live_report:123456",
+      "knowledge:kb_mqu7f3_q42",
+      `conversation:${maxLengthId}`,
+    ];
+    const invalidRefs = [
+      "project:https://example.invalid/project/1",
+      "knowledge:select pg_sleep(10)",
+      "recording_review:folder/review-1",
+      "recording_review:folder\\review-1",
+      "settlement_batch:batch-1?expand=items",
+      "project:project-1#details",
+      "project:project:child",
+      "live_report:report-1\nnext",
+      `conversation:${"b".repeat(257)}`,
+    ];
+    const envelope = hermesReadSuccess(profile(), {
+      data: {
+        refs: [
+          ...validRefs.map((sourceRef) => ({ sourceRef })),
+          ...invalidRefs.map((sourceRef) => ({ sourceRef })),
+        ],
+      },
+      evidenceRefs: [...validRefs, ...invalidRefs],
+    });
+
+    expect(envelope).toMatchObject({
+      data: {
+        refs: [
+          ...validRefs.map((sourceRef) => ({ sourceRef })),
+          ...invalidRefs.map(() => ({})),
+        ],
+      },
+      evidenceRefs: validRefs,
+    });
+    const serialized = JSON.stringify(envelope);
+    for (const forbidden of [
+      "https://",
+      "pg_sleep",
+      "folder/review",
+      "folder\\\\review",
+      "?expand=",
+      "#details",
+      "project:child",
+      "report-1\\nnext",
+      "b".repeat(257),
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
   it("uses one authorization and execution core for HTTP and Broker callers", async () => {
     const client = supabaseDouble([
       { id: PROJECT_ID, name: "Canonical project", status: "active" },

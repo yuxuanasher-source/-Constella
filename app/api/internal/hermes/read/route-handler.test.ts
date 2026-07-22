@@ -45,6 +45,8 @@ describe("Hermes HTTP Read route handler", () => {
           stack: "Error: internal stack",
           sourceRef: `private_payroll_rows:${PROJECT_ID}`,
           publicEvidence: { sourceRef: `project:${PROJECT_ID}` },
+          numericEvidence: { sourceRef: "live_report:123456" },
+          knowledgeEvidence: { sourceRef: "knowledge:kb_mqu7f3_q42" },
           bearerEvidence: {
             sourceRef: "projects:Bearer route-source-secret",
           },
@@ -56,6 +58,18 @@ describe("Hermes HTTP Read route handler", () => {
           },
           sqlEvidence: {
             sourceRef: "live_report:select * from private_evidence",
+          },
+          urlEvidence: {
+            sourceRef: "project:https://example.invalid/project/1",
+          },
+          queryEvidence: {
+            sourceRef: "settlement_batch:batch-1?expand=items",
+          },
+          functionEvidence: {
+            sourceRef: "knowledge:select pg_sleep(10)",
+          },
+          controlEvidence: {
+            sourceRef: "live_report:report-1\nnext",
           },
         },
       ]),
@@ -92,6 +106,8 @@ describe("Hermes HTTP Read route handler", () => {
             id: PROJECT_ID,
             name: "Visible project",
             publicEvidence: { sourceRef: `project:${PROJECT_ID}` },
+            numericEvidence: { sourceRef: "live_report:123456" },
+            knowledgeEvidence: { sourceRef: "knowledge:kb_mqu7f3_q42" },
           },
         ],
       },
@@ -113,6 +129,10 @@ describe("Hermes HTTP Read route handler", () => {
       "eyJhbGciOiJSUzI1NiJ9",
       "private_evidence",
       "private_payroll_rows",
+      "https://",
+      "?expand=",
+      "pg_sleep",
+      "report-1\\nnext",
     ]) {
       expect(serialized).not.toContain(forbidden);
     }
