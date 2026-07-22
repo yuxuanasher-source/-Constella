@@ -141,8 +141,10 @@ export type ConversationStreamEvent =
       type: "clarify.requested";
       conversationId: string;
       turnId: string;
+      clarifyId: string;
       question: string;
       choices?: string[];
+      allowFreeText?: boolean;
     }
   | {
       type: "todo.updated";
@@ -302,8 +304,10 @@ export function isConversationStreamEvent(
       );
     case "clarify.requested":
       return (
+        nonEmptyString(value.clarifyId) &&
         nonEmptyString(value.question) &&
-        (value.choices == null || isStringArray(value.choices))
+        (value.choices == null || isStringArray(value.choices)) &&
+        (value.allowFreeText == null || typeof value.allowFreeText === "boolean")
       );
     case "todo.updated":
       return (

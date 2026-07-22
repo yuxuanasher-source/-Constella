@@ -51,6 +51,19 @@ export async function POST(
     if (!isAllowedClarifyAnswer(command.answer, pending)) {
       return NextResponse.json({ error: "Clarify answer is not allowed" }, { status: 422 });
     }
+    const answerSha256 = answerHash(command.answer);
+    const claim = await context.service.claimClarifyResponse(
+      context.actor,
+      conversationId,
+      turnId,
+      { clarifyId: command.clarifyId, answerSha256 },
+    );
+    if (claim.status === "duplicate") {
+      return NextResponse.json({ duplicate: true });
+    }
+    if (claim.status === "conflict") {
+      return NextResponse.json({ error: "Clarify response conflicts with the prior answer" }, { status: 409 });
+    }
 
     const local = await activeHermesRunRegistry.respondToClarify({
       actor: context.actor,
@@ -87,7 +100,6 @@ export async function POST(
       }
     }
 
-    await persistClarifyResponse(context.service, context.actor, conversationId, state, pending, command);
     return NextResponse.json({ accepted: true });
   } catch (error) {
     return conversationRouteErrorResponse(error);
@@ -145,28 +157,6 @@ function duplicateClarifyResponse(
 
 function isAllowedClarifyAnswer(answer: string, pending: PendingClarify): boolean {
   return pending.allowFreeText || pending.choices.includes(answer.trim());
-}
-
-async function persistClarifyResponse(
-  service: any,
-  actor: { organizationId: string; userId: string },
-  conversationId: string,
-  state: (Record<string, unknown> & { generation: number }) | null,
-  pending: PendingClarify,
-  command: ClarifyCommand,
-) {
-  if (!state || typeof service.compareAndSwapGatewayState !== "function") return;
-  await service.compareAndSwapGatewayState(actor, conversationId, state.generation, {
-    ...state,
-    generation: state.generation + 1,
-    pendingClarify: {
-      ...pending,
-      response: {
-        clarifyId: command.clarifyId,
-        answerSha256: answerHash(command.answer),
-      },
-    },
-  });
 }
 
 async function openControlSession({

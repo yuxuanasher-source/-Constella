@@ -8,7 +8,7 @@ import { parseRetryTurnCommand } from "@/features/ai/conversation-contracts";
 import { createConversationTurnStream } from "@/features/ai/conversation-stream-adapter";
 import { createGatewayTurnExecutor } from "@/features/ai/native-assistant/gateway-executor";
 
-export const maxDuration = 60;
+export const maxDuration = 330;
 
 export async function POST(
   request: Request,

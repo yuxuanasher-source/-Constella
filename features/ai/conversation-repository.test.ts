@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   cancelAiConversationTurnV2,
+  claimAiConversationClarifyResponse,
   compareAndSwapAiConversationGatewayState,
   completeAiConversationTurn,
   createAiConversation,
   createAiConversationTurn,
   finishAiConversationTurnV2,
   getAiConversationGatewayState,
+  verifyAiConversationTerminalState,
   listAiConversationMessages,
   listAiConversationTurns,
   listAiConversations,
@@ -410,6 +412,8 @@ describe("Xingyao conversation repository", () => {
         status: "cancelled",
         cancel_requested: true,
         already_terminal: false,
+        child_sessions: ["child-session"],
+        revoked_capability_ids: ["00000000-0000-4000-8000-000000000006"],
       },
       error: null,
     });
@@ -423,7 +427,12 @@ describe("Xingyao conversation repository", () => {
           turnId: v2Ids.turnId,
         },
       ),
-    ).resolves.toMatchObject({ outcome: "cancelled", cancelRequested: true });
+    ).resolves.toMatchObject({
+      outcome: "cancelled",
+      cancelRequested: true,
+      childSessions: ["child-session"],
+      revokedCapabilityIds: ["00000000-0000-4000-8000-000000000006"],
+    });
     expect(cancelRpc).toHaveBeenCalledWith("cancel_ai_chat_turn", {
       p_organization_id: v2Ids.organizationId,
       p_owner_user_id: v2Ids.ownerUserId,
@@ -477,7 +486,19 @@ describe("Xingyao conversation repository", () => {
   it("loads Gateway state and synchronizes official compression summary with tenant and version guards", async () => {
     const maybeSingle = vi.fn().mockResolvedValue({
       data: {
-        provider_state: { hermesGateway: { generation: 3, sessionId: "session-1" } },
+        provider_state: {
+          hermesGateway: {
+            generation: 3,
+            sessionId: "session-1",
+            pendingClarify: {
+              turnId: v2Ids.turnId,
+              clarifyId: "00000000-0000-4000-8000-000000000007",
+              requestId: "00000000-0000-4000-8000-000000000007",
+              choices: ["project", "streamer"],
+              allowFreeText: false,
+            },
+          },
+        },
         summary: { text: "old" },
         summary_version: 2,
       },
@@ -500,6 +521,13 @@ describe("Xingyao conversation repository", () => {
       sessionId: "session-1",
       summary: { text: "old" },
       summaryVersion: 2,
+      pendingClarify: {
+        turnId: v2Ids.turnId,
+        clarifyId: "00000000-0000-4000-8000-000000000007",
+        requestId: "00000000-0000-4000-8000-000000000007",
+        choices: ["project", "streamer"],
+        allowFreeText: false,
+      },
     });
 
     const returns = vi.fn().mockResolvedValue({ data: [{ id: "conversation-1" }], error: null });
@@ -527,5 +555,88 @@ describe("Xingyao conversation repository", () => {
       summary_version: 3,
     });
     expect(syncEqSummaryVersion).toHaveBeenCalledWith("summary_version", 2);
+  });
+
+  it("claims clarify responses atomically through the actor-scoped RPC before Gateway control", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        status: "claimed",
+        generation: 9,
+      },
+      error: null,
+    });
+
+    await expect(
+      claimAiConversationClarifyResponse(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          turnId: v2Ids.turnId,
+          clarifyId: "00000000-0000-4000-8000-000000000007",
+          answerSha256:
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      ),
+    ).resolves.toEqual({ status: "claimed", generation: 9 });
+
+    expect(rpc).toHaveBeenCalledWith("claim_ai_conversation_clarify_response", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_conversation_id: v2Ids.conversationId,
+      p_turn_id: v2Ids.turnId,
+      p_clarify_id: "00000000-0000-4000-8000-000000000007",
+      p_answer_sha256:
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+  });
+
+  it("verifies terminal SSE against an actor-owned persisted turn state", async () => {
+    const maybeSingle = vi.fn().mockResolvedValue({
+      data: {
+        status: "completed",
+        outcome: "partial",
+        assistant_message_id: "message-assistant-1",
+      },
+      error: null,
+    });
+    const eqOwner = vi.fn(() => ({ maybeSingle }));
+    const eqOrg = vi.fn(() => ({ eq: eqOwner }));
+    const eqId = vi.fn(() => ({ eq: eqOrg }));
+    const select = vi.fn(() => ({ eq: eqId }));
+    const from = vi.fn(() => ({ select }));
+
+    await expect(
+      verifyAiConversationTerminalState(
+        { from } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          turnId: v2Ids.turnId,
+          event: {
+            type: "response.completed",
+            conversationId: v2Ids.conversationId,
+            turnId: v2Ids.turnId,
+            messageId: "message-assistant-1",
+            content: "done",
+            outcome: "partial",
+            evidence: [],
+            missing: [],
+            observationTimes: {
+              firstObservedAt: null,
+              lastObservedAt: null,
+            },
+          },
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(select).toHaveBeenCalledWith(
+      "status, outcome, assistant_message_id",
+    );
+    expect(eqId).toHaveBeenCalledWith("id", v2Ids.turnId);
+    expect(eqOrg).toHaveBeenCalledWith("organization_id", v2Ids.organizationId);
+    expect(eqOwner).toHaveBeenCalledWith("owner_user_id", v2Ids.ownerUserId);
   });
 });

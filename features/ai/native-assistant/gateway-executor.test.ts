@@ -813,6 +813,119 @@ describe("native Hermes Gateway executor", () => {
     });
   });
 
+  it("persists official Gateway clarify requests before emitting answerable SSE", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+      gatewayGeneration: 6,
+    });
+    const clarifyId = "55555555-5555-4555-8555-555555555555";
+    const gateway = gatewayDouble([
+      officialEvent("clarify.request", {
+        requestId: clarifyId,
+        question: "Which project?",
+        choices: ["project", "streamer"],
+      }),
+      officialEvent("message.delta", { text: "answer" }),
+      officialEvent("turn.terminal", {
+        outcome: "complete",
+        message: "answer",
+        metadata: gatewayMetadata(),
+      }),
+    ]);
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+    });
+
+    const events = await collect(
+      executor.execute({
+        request: jsonRequest({ message: "hello", mode: "fast" }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      }),
+    );
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "clarify.requested",
+        clarifyId,
+        question: "Which project?",
+        choices: ["project", "streamer"],
+        allowFreeText: false,
+      }),
+    );
+    expect(service.compareAndSwapGatewayState).toHaveBeenCalledWith(
+      actor,
+      turn.conversationId,
+      7,
+      expect.objectContaining({
+        generation: 8,
+        pendingClarify: {
+          turnId: turn.turnId,
+          clarifyId,
+          requestId: clarifyId,
+          choices: ["project", "streamer"],
+          allowFreeText: false,
+        },
+      }),
+    );
+  });
+
+  it("interrupts the live Gateway session when the POST request aborts", async () => {
+    vi.useFakeTimers();
+    const abortController = new AbortController();
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    const interruptSession = vi.fn().mockResolvedValue({ interrupted: true });
+    const gateway = {
+      ...gatewayDouble([]),
+      interruptSession,
+      submitPrompt: vi.fn().mockImplementation(async function* () {
+        await new Promise(() => undefined);
+      }),
+    };
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+    });
+
+    const iterator = executor
+      .execute({
+        request: new Request("http://localhost/api/ai/turns", {
+          signal: abortController.signal,
+          body: JSON.stringify({ message: "hello", mode: "fast" }),
+          method: "POST",
+        }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      })
+      [Symbol.asyncIterator]();
+
+    await iterator.next();
+    await iterator.next();
+    abortController.abort();
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(interruptSession).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(interruptSession).toHaveBeenCalledWith({
+      sessionId: "session-rebuilt",
+    });
+    await iterator.return?.();
+    vi.useRealTimers();
+  });
+
   it("uses the official Gateway session adapter for production client calls", async () => {
     const session = {
       sessionId: "session-official",

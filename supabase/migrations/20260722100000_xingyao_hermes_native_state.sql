@@ -3389,6 +3389,9 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_turn public.ai_chat_turns%rowtype;
+  v_conversation_state jsonb;
+  v_revoked_capability_ids uuid[] := '{}';
+  v_child_sessions text[] := '{}';
 begin
   perform 1
   from public.ai_conversations conversation
@@ -3418,7 +3421,9 @@ begin
     return jsonb_build_object(
       'turn_id', v_turn.id,
       'status', v_turn.status,
-      'already_terminal', true
+      'already_terminal', true,
+      'child_sessions', jsonb_build_array(),
+      'revoked_capability_ids', jsonb_build_array()
     );
   end if;
   if v_turn.status not in ('accepted', 'grounding', 'generating', 'validating') then
@@ -3442,9 +3447,59 @@ begin
       completed_at = coalesce(completed_at, now())
   where id = v_turn.id;
 
-  update public.ai_hermes_run_capabilities
-  set revoked_at = coalesce(revoked_at, now())
-  where turn_id = v_turn.id;
+  with recursive capability_lineage as (
+    select capability.id,
+           capability.invocation_id,
+           capability.root_invocation_id
+    from public.ai_hermes_run_capabilities capability
+    where capability.turn_id = v_turn.id
+      and capability.organization_id = p_organization_id
+      and capability.owner_user_id = p_owner_user_id
+      and (
+        capability.invocation_id = v_turn.ai_invocation_id
+        or capability.root_invocation_id = v_turn.ai_invocation_id
+      )
+    union
+    select child.id,
+           child.invocation_id,
+           child.root_invocation_id
+    from public.ai_hermes_run_capabilities child
+    join capability_lineage parent
+      on child.parent_invocation_id = parent.invocation_id
+    where child.organization_id = p_organization_id
+      and child.owner_user_id = p_owner_user_id
+      and child.turn_id = v_turn.id
+  ),
+  revoked as (
+    update public.ai_hermes_run_capabilities capability
+    set revoked_at = coalesce(capability.revoked_at, now())
+    where capability.id in (select id from capability_lineage)
+    returning capability.id
+  )
+  select coalesce(array_agg(id order by id), '{}')
+  into v_revoked_capability_ids
+  from revoked;
+
+  select provider_state
+  into v_conversation_state
+  from public.ai_conversations
+  where id = v_turn.conversation_id
+  for update;
+
+  select coalesce(array_agg(distinct session_id), '{}')
+  into v_child_sessions
+  from (
+    select v_conversation_state #>> '{hermesGateway,sessionId}' as session_id
+    union all
+    select jsonb_array_elements_text(
+      coalesce(v_conversation_state #> '{hermesGateway,childSessions}', '[]'::jsonb)
+    )
+    union all
+    select jsonb_array_elements_text(
+      coalesce(v_conversation_state #> '{hermesGateway,checkpoint,childSessions}', '[]'::jsonb)
+    )
+  ) sessions
+  where session_id is not null and session_id <> '';
 
   update public.ai_conversations
   set last_message_at = now()
@@ -3454,7 +3509,114 @@ begin
     'turn_id', v_turn.id,
     'status', 'cancelled',
     'cancel_requested', true,
-    'already_terminal', false
+    'already_terminal', false,
+    'child_sessions', to_jsonb(v_child_sessions),
+    'revoked_capability_ids', to_jsonb(v_revoked_capability_ids)
+  );
+end;
+$$;
+
+create or replace function public.claim_ai_conversation_clarify_response(
+  p_organization_id uuid,
+  p_owner_user_id uuid,
+  p_conversation_id uuid,
+  p_turn_id uuid,
+  p_clarify_id text,
+  p_answer_sha256 text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_provider_state jsonb;
+  v_hermes_state jsonb;
+  v_pending jsonb;
+  v_generation integer;
+  v_existing_hash text;
+  v_next_generation integer;
+  v_next_hermes_state jsonb;
+begin
+  if p_clarify_id is null or btrim(p_clarify_id) = '' then
+    raise exception 'clarify_id_required';
+  end if;
+  if p_answer_sha256 is null or p_answer_sha256 !~ '^[0-9a-f]{64}$' then
+    raise exception 'answer_sha256_invalid';
+  end if;
+
+  select coalesce(provider_state, '{}'::jsonb)
+  into v_provider_state
+  from public.ai_conversations conversation
+  where conversation.id = p_conversation_id
+    and conversation.organization_id = p_organization_id
+    and conversation.owner_user_id = p_owner_user_id
+  for update;
+
+  if not found then
+    raise exception 'turn_not_found';
+  end if;
+
+  perform 1
+  from public.ai_chat_turns turn
+  where turn.id = p_turn_id
+    and turn.conversation_id = p_conversation_id
+    and turn.organization_id = p_organization_id
+    and turn.owner_user_id = p_owner_user_id
+    and turn.status in ('accepted', 'grounding', 'generating', 'validating')
+  for update;
+
+  if not found then
+    return jsonb_build_object('status', 'conflict');
+  end if;
+
+  v_hermes_state := coalesce(v_provider_state -> 'hermesGateway', '{}'::jsonb);
+  v_pending := v_hermes_state -> 'pendingClarify';
+  if v_pending is null
+     or v_pending ->> 'turnId' <> p_turn_id::text
+     or coalesce(v_pending ->> 'clarifyId', v_pending ->> 'requestId') <> p_clarify_id then
+    return jsonb_build_object('status', 'conflict');
+  end if;
+
+  v_existing_hash := v_pending #>> '{response,answerSha256}';
+  if v_existing_hash is not null then
+    if v_existing_hash = p_answer_sha256 then
+      return jsonb_build_object(
+        'status', 'duplicate',
+        'generation', coalesce((v_hermes_state ->> 'generation')::integer, 0)
+      );
+    end if;
+    return jsonb_build_object('status', 'conflict');
+  end if;
+
+  v_generation := coalesce((v_hermes_state ->> 'generation')::integer, 0);
+  v_next_generation := v_generation + 1;
+  v_next_hermes_state := jsonb_set(
+    jsonb_set(v_hermes_state, '{generation}', to_jsonb(v_next_generation), true),
+    '{pendingClarify,response}',
+    jsonb_build_object(
+      'clarifyId', p_clarify_id,
+      'answerSha256', p_answer_sha256,
+      'claimedAt', now()
+    ),
+    true
+  );
+
+  update public.ai_conversations
+  set provider_state = jsonb_set(
+        coalesce(provider_state, '{}'::jsonb),
+        '{hermesGateway}',
+        v_next_hermes_state,
+        true
+      ),
+      updated_at = now()
+  where id = p_conversation_id
+    and organization_id = p_organization_id
+    and owner_user_id = p_owner_user_id;
+
+  return jsonb_build_object(
+    'status', 'claimed',
+    'generation', v_next_generation
   );
 end;
 $$;
@@ -3759,6 +3921,9 @@ revoke all on function public.review_ai_hermes_skill_draft(
 revoke all on function public.cancel_ai_chat_turn(
   uuid, uuid, uuid, uuid
 ) from public, anon, authenticated;
+revoke all on function public.claim_ai_conversation_clarify_response(
+  uuid, uuid, uuid, uuid, text, text
+) from public, anon, authenticated;
 revoke all on function public.renew_ai_chat_turn_lease(
   uuid, uuid, uuid
 ) from public, anon, authenticated;
@@ -3809,6 +3974,9 @@ grant execute on function public.review_ai_hermes_skill_draft(
 ) to service_role;
 grant execute on function public.cancel_ai_chat_turn(
   uuid, uuid, uuid, uuid
+) to service_role;
+grant execute on function public.claim_ai_conversation_clarify_response(
+  uuid, uuid, uuid, uuid, text, text
 ) to service_role;
 grant execute on function public.renew_ai_chat_turn_lease(
   uuid, uuid, uuid

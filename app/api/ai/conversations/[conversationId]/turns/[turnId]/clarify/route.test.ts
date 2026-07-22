@@ -60,6 +60,25 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/clarify", () 
     expect(createSessionMock).not.toHaveBeenCalled();
   });
 
+  it("rejects durable pending clarify state owned by a different turn", async () => {
+    const service = serviceDouble({
+      getGatewayState: vi.fn().mockResolvedValue(
+        gatewayState({ turnId: "99999999-9999-4999-8999-999999999999" }),
+      ),
+    });
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      request({ clarifyId: CLARIFY_ID, answer: "project" }),
+      params(),
+    );
+
+    expect(response.status).toBe(409);
+    expect(service.claimClarifyResponse).not.toHaveBeenCalled();
+    expect(createSessionMock).not.toHaveBeenCalled();
+  });
+
   it("accepts free text only when pending clarify allows it", async () => {
     const session = { respondToClarify: vi.fn(), close: vi.fn() };
     const service = serviceDouble({
@@ -104,6 +123,31 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/clarify", () 
     expect(duplicate.status).toBe(200);
     await expect(duplicate.json()).resolves.toMatchObject({ duplicate: true });
     expect(changed.status).toBe(409);
+    expect(createSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("claims the clarify answer before Gateway RPC and suppresses conflicting races", async () => {
+    const service = serviceDouble({
+      claimClarifyResponse: vi.fn().mockResolvedValue({ status: "conflict" }),
+    });
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      request({ clarifyId: CLARIFY_ID, answer: "project" }),
+      params(),
+    );
+
+    expect(response.status).toBe(409);
+    expect(service.claimClarifyResponse).toHaveBeenCalledWith(
+      ACTOR,
+      CONVERSATION_ID,
+      TURN_ID,
+      {
+        clarifyId: CLARIFY_ID,
+        answerSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    );
     expect(createSessionMock).not.toHaveBeenCalled();
   });
 
@@ -202,6 +246,7 @@ function serviceDouble(overrides: Record<string, unknown> = {}) {
       invocationCapability: "fresh-capability",
       expiresAt: "2026-07-22T09:05:00.000Z",
     }),
+    claimClarifyResponse: vi.fn().mockResolvedValue({ status: "claimed" }),
     compareAndSwapGatewayState: vi.fn().mockResolvedValue(8),
     ...overrides,
   };

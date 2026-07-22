@@ -2,6 +2,7 @@ import type {
   AiConversationDto,
   AiConversationMessageDto,
   ConversationContextSnapshot,
+  ConversationStreamEvent,
   ConversationMessageRole,
   ConversationMessageStatus,
   ConversationTurnStatus,
@@ -113,6 +114,24 @@ export type ConversationGatewayState = {
   sessionId?: string;
   summary: Record<string, unknown>;
   summaryVersion: number;
+  pendingClarify?: ConversationGatewayPendingClarify;
+};
+
+export type ConversationGatewayPendingClarify = {
+  turnId: string;
+  clarifyId: string;
+  requestId: string;
+  choices: string[];
+  allowFreeText: boolean;
+  response?: {
+    clarifyId: string;
+    answerSha256?: string;
+  };
+};
+
+export type ConversationClarifyClaim = {
+  status: "claimed" | "duplicate" | "conflict";
+  generation?: number;
 };
 
 export async function createAiConversation(
@@ -217,11 +236,13 @@ export async function getAiConversationGatewayState(
     : {};
   const generation = numberValue(hermesGateway.generation) ?? 0;
   const sessionId = stringValue(hermesGateway.sessionId);
+  const pendingClarify = parsePendingClarify(hermesGateway.pendingClarify);
   const summary = isRecord(data.summary) ? data.summary : {};
   const summaryVersion = numberValue(data.summary_version) ?? 0;
   return {
     generation,
     ...(sessionId ? { sessionId } : {}),
+    ...(pendingClarify ? { pendingClarify } : {}),
     summary,
     summaryVersion,
   };
@@ -497,6 +518,84 @@ export async function compareAndSwapAiConversationGatewayState(
   );
 }
 
+export async function claimAiConversationClarifyResponse(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+    clarifyId: string;
+    answerSha256: string;
+  },
+): Promise<ConversationClarifyClaim> {
+  const { data, error } = await client.rpc(
+    "claim_ai_conversation_clarify_response",
+    {
+      p_organization_id: input.organizationId,
+      p_owner_user_id: input.ownerUserId,
+      p_conversation_id: input.conversationId,
+      p_turn_id: input.turnId,
+      p_clarify_id: input.clarifyId,
+      p_answer_sha256: input.answerSha256,
+    },
+  );
+  if (error || !isRecord(data)) {
+    throw error ?? new Error("clarify_claim_malformed");
+  }
+  if (!isClarifyClaimStatus(data.status)) {
+    throw new Error("clarify_claim_malformed");
+  }
+  const generation = numberValue(data.generation);
+  return {
+    status: data.status,
+    ...(generation !== null ? { generation } : {}),
+  };
+}
+
+export async function verifyAiConversationTerminalState(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    turnId: string;
+    event: ConversationStreamEvent;
+  },
+): Promise<boolean> {
+  const { data, error } = await client
+    .from("ai_chat_turns")
+    .select("status, outcome, assistant_message_id")
+    .eq("id", input.turnId)
+    .eq("organization_id", input.organizationId)
+    .eq("owner_user_id", input.ownerUserId)
+    .maybeSingle();
+
+  if (error || !isRecord(data)) return false;
+  const status = stringValue(data.status);
+  const outcome = stringValue(data.outcome);
+  const assistantMessageId = stringValue(data.assistant_message_id);
+  const event = input.event;
+
+  if (event.type === "response.completed") {
+    return (
+      status === "completed" &&
+      outcome === event.outcome &&
+      assistantMessageId === event.messageId
+    );
+  }
+  if (event.type === "response.failed") {
+    return status === "failed" && outcome === "failed";
+  }
+  if (event.type === "response.cancelled") {
+    return (
+      status === "cancelled" &&
+      outcome === "cancelled" &&
+      assistantMessageId === event.messageId
+    );
+  }
+  return false;
+}
+
 async function finishAiConversationTurn(
   client: ConversationRepositoryClient,
   input: {
@@ -655,6 +754,41 @@ function isTurnRow(value: unknown): value is TurnRow {
       stringValue(value.cancel_requested_at) !== null) &&
     typeof value.retryable === "boolean"
   );
+}
+
+function parsePendingClarify(
+  value: unknown,
+): ConversationGatewayPendingClarify | null {
+  if (!isRecord(value)) return null;
+  const turnId = stringValue(value.turnId);
+  const clarifyId = stringValue(value.clarifyId);
+  const requestId = stringValue(value.requestId) ?? clarifyId;
+  const choices = Array.isArray(value.choices)
+    ? value.choices.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  if (!turnId || !clarifyId || !requestId) return null;
+  const response = isRecord(value.response)
+    ? {
+        clarifyId: stringValue(value.response.clarifyId) ?? clarifyId,
+        ...(stringValue(value.response.answerSha256)
+          ? { answerSha256: stringValue(value.response.answerSha256)! }
+          : {}),
+      }
+    : undefined;
+  return {
+    turnId,
+    clarifyId,
+    requestId,
+    choices,
+    allowFreeText: value.allowFreeText === true,
+    ...(response ? { response } : {}),
+  };
+}
+
+function isClarifyClaimStatus(
+  value: unknown,
+): value is ConversationClarifyClaim["status"] {
+  return value === "claimed" || value === "duplicate" || value === "conflict";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

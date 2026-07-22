@@ -7,6 +7,7 @@ import type {
   AiConversationMessageDto,
   ConversationContextSnapshot,
   ConversationGatewayContext,
+  ConversationStreamEvent,
   CreateTurnCommand,
   RetryTurnCommand,
 } from "./conversation-contracts";
@@ -14,6 +15,7 @@ import type { AiMessage, AiProviderName } from "./contracts";
 import { createHermesActorFingerprint } from "./hermes/actor-fingerprint";
 import {
   cancelAiConversationTurnV2,
+  claimAiConversationClarifyResponse,
   compareAndSwapAiConversationGatewayState,
   completeAiConversationTurn,
   createAiConversation,
@@ -30,7 +32,9 @@ import {
   renewAiConversationTurnLeaseV2,
   syncAiConversationSummary,
   transitionAiConversationTurn,
+  verifyAiConversationTerminalState,
   type ConversationRepositoryClient,
+  type ConversationClarifyClaim,
   type ConversationGatewayState,
   type CreatedConversationTurn,
   type StoredConversationTurn,
@@ -125,6 +129,20 @@ export type ConversationPersistence = {
     ownerUserId: string;
     conversationId: string;
   }): Promise<ConversationGatewayState | null>;
+  claimClarifyResponse?(input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+    clarifyId: string;
+    answerSha256: string;
+  }): Promise<ConversationClarifyClaim>;
+  verifyTerminalState?(input: {
+    organizationId: string;
+    ownerUserId: string;
+    turnId: string;
+    event: ConversationStreamEvent;
+  }): Promise<boolean>;
   syncConversationSummary?(input: {
     organizationId: string;
     ownerUserId: string;
@@ -175,6 +193,10 @@ export function createSupabaseConversationPersistence(
     compareAndSwapGatewayState: (input) =>
       compareAndSwapAiConversationGatewayState(client, input),
     getGatewayState: (input) => getAiConversationGatewayState(client, input),
+    claimClarifyResponse: (input) =>
+      claimAiConversationClarifyResponse(client, input),
+    verifyTerminalState: (input) =>
+      verifyAiConversationTerminalState(client, input),
     syncConversationSummary: (input) => syncAiConversationSummary(client, input),
     issueRunCapability: (actorSnapshot, turn, binding, expiresAt) =>
       createHermesStateRepository(client).issueRunCapability(
@@ -660,6 +682,43 @@ export function createConversationService(
         organizationId: actor.organizationId,
         ownerUserId: actor.userId,
         conversationId,
+      });
+    },
+
+    async claimClarifyResponse(
+      actor: ConversationActor,
+      conversationId: string,
+      turnId: string,
+      input: { clarifyId: string; answerSha256: string },
+    ) {
+      if (!persistence.claimClarifyResponse) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        return await persistence.claimClarifyResponse({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          conversationId,
+          turnId,
+          clarifyId: input.clarifyId,
+          answerSha256: input.answerSha256,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async verifyTerminalState(
+      actor: ConversationActor,
+      turnId: string,
+      event: ConversationStreamEvent,
+    ) {
+      if (!persistence.verifyTerminalState) return false;
+      return persistence.verifyTerminalState({
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        turnId,
+        event,
       });
     },
 

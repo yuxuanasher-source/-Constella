@@ -10,7 +10,7 @@ import {
 export type ConversationTurnStreamService = {
   renewLease?(actor: ConversationActor, turnId: string): Promise<void>;
   renewLeaseV2?(actor: ConversationActor, turnId: string): Promise<void>;
-  verifyTerminalState?(
+  verifyTerminalState(
     actor: ConversationActor,
     turnId: string,
     event: ConversationStreamEvent,
@@ -45,7 +45,7 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
   turn: CreatedConversationTurn;
   attachments: AiAttachment[];
   service: TService;
-  executor?: ConversationTurnExecutor<TService>;
+  executor?: ConversationTurnExecutor<any>;
   executeLegacyChat?: ExecuteLegacyChat;
   activeRun?: {
     sessionId: string;
@@ -128,7 +128,7 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
               turn.turnId,
               event,
             );
-            if (verified === false) {
+            if (verified !== true) {
               throw new Error("AI terminal state could not be persisted");
             }
           }

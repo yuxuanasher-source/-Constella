@@ -24,6 +24,7 @@ import {
   type HermesGatewayEvent,
   type HermesToolResultMetadata,
 } from "../hermes/gateway-contracts";
+import { activeHermesRunRegistry } from "../hermes/active-run-registry";
 import { HERMES_READ_ENDPOINTS } from "../hermes/read-api";
 import {
   createHermesActorAssertionForRun,
@@ -64,6 +65,13 @@ type GatewayService = {
     sessionId?: string;
     summary?: Record<string, unknown>;
     summaryVersion?: number;
+    pendingClarify?: {
+      turnId: string;
+      clarifyId: string;
+      requestId?: string;
+      choices: string[];
+      allowFreeText: boolean;
+    };
   } | null>;
   compareAndSwapGatewayState(
     actor: ConversationActor,
@@ -117,6 +125,13 @@ type GatewayClient = {
   createSession(input: Record<string, unknown>): Promise<{ sessionId: string }>;
   branchSession?(input: Record<string, unknown>): Promise<{ sessionId: string }>;
   submitPrompt(input: Record<string, unknown>): AsyncIterable<unknown>;
+  interruptSession?(input: { sessionId: string }): Promise<unknown>;
+  respondToClarify?(input: {
+    sessionId: string;
+    requestId: string;
+    answer: string;
+  }): Promise<unknown>;
+  closeSession?(input: { sessionId: string }): void;
 };
 
 type GatewayRuntimeEvent =
@@ -213,6 +228,9 @@ export function createGatewayTurnExecutor(
       const now = options.now ?? (() => new Date());
       let content = "";
       let state: Awaited<ReturnType<NonNullable<GatewayService["getGatewayState"]>>> | null = null;
+      let unregisterActiveRun: (() => void) | null = null;
+      let abortListener: (() => void) | null = null;
+      let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
       yield started(input.turn);
 
@@ -261,6 +279,33 @@ export function createGatewayTurnExecutor(
         if (!sessionSetup.session.sessionId) {
           throw new GatewayExecutionError("gateway_checkpoint_invalid");
         }
+        const sessionId = sessionSetup.session.sessionId;
+        unregisterActiveRun = activeHermesRunRegistry.register({
+          actor: input.actor,
+          conversationId: input.turn.conversationId,
+          turnId: input.turn.turnId,
+          sessionId,
+          session: {
+            interrupt: () =>
+              gateway.interruptSession?.({ sessionId }) ?? Promise.resolve(),
+            respondToClarify: ({ requestId, answer }) =>
+              gateway.respondToClarify?.({ sessionId, requestId, answer }) ??
+              Promise.resolve(),
+            close: () => gateway.closeSession?.({ sessionId }),
+          },
+          ...(parentTurnId(input.turn)
+            ? { parentTurnId: parentTurnId(input.turn)! }
+            : {}),
+        });
+        abortListener = () => {
+          if (disconnectTimer) return;
+          disconnectTimer = setTimeout(() => {
+            void gateway.interruptSession?.({ sessionId }).catch(() => undefined);
+          }, 2_000);
+        };
+        input.request.signal.addEventListener("abort", abortListener, {
+          once: true,
+        });
 
         yield {
           type: "context.ready",
@@ -284,20 +329,25 @@ export function createGatewayTurnExecutor(
 
         if (!frozen) {
           const nextGeneration = state.generation + 1;
+          const nextState = {
+            generation: nextGeneration,
+            sessionId: sessionSetup.session.sessionId,
+            provider: options.provider,
+            model: options.model,
+            rebuiltAt: now().toISOString(),
+            checkpoint: sessionSetup.checkpoint,
+          };
           try {
             await service.compareAndSwapGatewayState(
               input.actor,
               input.turn.conversationId,
               state.generation,
-              {
-                generation: nextGeneration,
-                sessionId: sessionSetup.session.sessionId,
-                provider: options.provider,
-                model: options.model,
-                rebuiltAt: now().toISOString(),
-                checkpoint: sessionSetup.checkpoint,
-              },
+              nextState,
             );
+            state = {
+              ...state,
+              ...nextState,
+            };
           } catch {
             throw new GatewayExecutionError("gateway_state_conflict");
           }
@@ -379,6 +429,15 @@ export function createGatewayTurnExecutor(
 
             const event = normalizeGatewayEvent(gatewayEvent, input.turn);
             if (!event) continue;
+            if (event.type === "clarify.requested") {
+              state = await persistGatewayClarifyRequest({
+                service,
+                actor: input.actor,
+                turn: input.turn,
+                state,
+                event,
+              });
+            }
             if (event.type === "response.delta") content += event.delta;
             if (event.type === "tool.completed") {
               observations.push({
@@ -417,6 +476,12 @@ export function createGatewayTurnExecutor(
           throw new Error("AI terminal state could not be persisted");
         }
         yield failedEvent(input.turn, code, true);
+      } finally {
+        if (abortListener) {
+          input.request.signal.removeEventListener("abort", abortListener);
+        }
+        if (disconnectTimer) clearTimeout(disconnectTimer);
+        unregisterActiveRun?.();
       }
     },
   };
@@ -891,6 +956,13 @@ function checkpointFromMetadata(value: unknown): GatewayCheckpoint | null {
   };
 }
 
+function parentTurnId(turn: CreatedConversationTurn): string | null {
+  return (
+    stringValue(recordValue(turn, "retryOfTurnId")) ??
+    stringValue(recordValue(turn, "regenerateOfTurnId"))
+  );
+}
+
 function isUsableCheckpoint(
   checkpoint: GatewayCheckpoint | null,
   actor: ConversationActor,
@@ -999,6 +1071,35 @@ export function createHermesGatewayClient({
         mode: input.mode === "deep" ? "deep" : "fast",
       });
       yield* session.events;
+    },
+    async interruptSession(input) {
+      const sessionId = stringValue(input.sessionId);
+      if (!sessionId || !session || session.sessionId !== sessionId) {
+        throw new GatewayExecutionError("gateway_checkpoint_invalid");
+      }
+      return session.interrupt();
+    },
+    async respondToClarify(input) {
+      const sessionId = stringValue(input.sessionId);
+      const requestId = stringValue(input.requestId);
+      const answer = stringValue(input.answer);
+      if (
+        !sessionId ||
+        !requestId ||
+        !answer ||
+        !session ||
+        session.sessionId !== sessionId
+      ) {
+        throw new GatewayExecutionError("gateway_checkpoint_invalid");
+      }
+      return session.respondToClarify({ requestId, answer });
+    },
+    closeSession(input) {
+      const sessionId = stringValue(input.sessionId);
+      if (sessionId && session?.sessionId === sessionId) {
+        session.close();
+        session = null;
+      }
     },
   };
 }
@@ -1254,6 +1355,59 @@ function normalizeGatewayEvent(
   return null;
 }
 
+async function persistGatewayClarifyRequest({
+  service,
+  actor,
+  turn,
+  state,
+  event,
+}: {
+  service: GatewayService;
+  actor: ConversationActor;
+  turn: CreatedConversationTurn;
+  state: Awaited<
+    ReturnType<NonNullable<GatewayService["getGatewayState"]>>
+  > | null;
+  event: Extract<ConversationStreamEvent, { type: "clarify.requested" }>;
+}) {
+  if (!state) throw new GatewayExecutionError("gateway_state_conflict");
+  const pendingClarify = {
+    turnId: turn.turnId,
+    clarifyId: event.clarifyId,
+    requestId: event.clarifyId,
+    choices: event.choices ?? [],
+    allowFreeText: event.allowFreeText === true,
+  };
+  const nextGeneration = state.generation + 1;
+  try {
+    await service.compareAndSwapGatewayState(
+      actor,
+      turn.conversationId,
+      state.generation,
+      {
+        ...state,
+        generation: nextGeneration,
+        pendingClarify,
+      },
+    );
+  } catch {
+    throw new GatewayExecutionError("gateway_state_conflict");
+  }
+  activeHermesRunRegistry.setPendingClarify({
+    actor,
+    conversationId: turn.conversationId,
+    turnId: turn.turnId,
+    clarifyId: event.clarifyId,
+    choices: pendingClarify.choices,
+    allowFreeText: pendingClarify.allowFreeText,
+  });
+  return {
+    ...state,
+    generation: nextGeneration,
+    pendingClarify,
+  };
+}
+
 function normalizeOfficialGatewayEvent(
   event: HermesGatewayEvent,
   turn: CreatedConversationTurn,
@@ -1335,8 +1489,10 @@ function normalizeOfficialGatewayEvent(
         type: "clarify.requested",
         conversationId: turn.conversationId,
         turnId: turn.turnId,
+        clarifyId: payload.requestId,
         question: payload.question,
         choices: payload.choices,
+        allowFreeText: payload.allowFreeText === true,
       };
     case "subagent.start":
       return {

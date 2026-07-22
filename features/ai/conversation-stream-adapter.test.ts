@@ -325,7 +325,7 @@ describe("conversation stream adapter", () => {
       actor: { organizationId: "org-1", userId: "user-1" },
       turn,
       attachments: [],
-      service,
+      service: service as any,
       executor,
     });
 
@@ -335,6 +335,32 @@ describe("conversation stream adapter", () => {
       "turn-1",
       expect.objectContaining({ type: "response.completed" }),
     );
+  });
+
+  it("requires terminal-state verification for native terminal SSE", async () => {
+    const { verifyTerminalState: _verifyTerminalState, ...unverifiedService } =
+      serviceDouble({ callOrder: [] });
+    const executor = {
+      execute: vi.fn().mockImplementation(async function* () {
+        yield {
+          type: "response.cancelled",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          messageId: "message-assistant-1",
+        };
+      }),
+    };
+
+    const response = createConversationTurnStream({
+      request: new Request("http://localhost/api/ai/turns"),
+      actor: { organizationId: "org-1", userId: "user-1" },
+      turn,
+      attachments: [],
+      service: unverifiedService as any,
+      executor,
+    });
+
+    await expect(response.text()).rejects.toThrow("terminal state");
   });
 });
 
@@ -373,6 +399,7 @@ function serviceDouble({ callOrder }: { callOrder: string[] }) {
       callOrder.push("fail");
     }),
     renewLease: vi.fn().mockResolvedValue(undefined),
+    verifyTerminalState: vi.fn().mockResolvedValue(true),
     captureGatewayContext: vi.fn().mockImplementation(async () => {
       callOrder.push("capture");
     }),

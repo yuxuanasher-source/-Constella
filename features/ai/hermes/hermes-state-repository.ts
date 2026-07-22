@@ -215,6 +215,8 @@ export type HermesTurnCancellation = {
   outcome: "cancelled" | null;
   cancelRequested: boolean;
   alreadyTerminal: boolean;
+  childSessions: string[];
+  revokedCapabilityIds: string[];
 };
 
 export type HermesStateRepository = {
@@ -879,6 +881,8 @@ function parseTurnCancellation(value: unknown): HermesTurnCancellation {
     outcome: value.status === "cancelled" ? "cancelled" : null,
     cancelRequested,
     alreadyTerminal: value.already_terminal,
+    childSessions: optionalStringList(value.child_sessions),
+    revokedCapabilityIds: optionalUuidList(value.revoked_capability_ids),
   };
 }
 
@@ -1090,6 +1094,21 @@ function requiredString(value: unknown): string {
 function requiredUuid(value: unknown): string {
   if (typeof value !== "string" || !isUuid(value)) malformedPayload();
   return value;
+}
+
+function optionalUuidList(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) malformedPayload();
+  return value.map(requiredUuid);
+}
+
+function optionalStringList(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) malformedPayload();
+  return value.map((item) => {
+    if (typeof item !== "string" || !item.trim()) malformedPayload();
+    return item;
+  });
 }
 
 function requiredDateString(value: unknown): string {

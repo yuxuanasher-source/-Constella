@@ -177,7 +177,13 @@ describe("Xingyao conversation protocol contracts", () => {
       { type: "activity.updated", label: "Reading", status: "running" },
       { type: "tool.started", toolCallId: "tool-1", toolName: "projects.search", label: "Project search" },
       { type: "tool.completed", toolCallId: "tool-1", toolName: "projects.search", status: "completed", label: "Project search" },
-      { type: "clarify.requested", question: "Which project?", choices: ["A", "B"] },
+      {
+        type: "clarify.requested",
+        clarifyId: "55555555-5555-4555-8555-555555555555",
+        question: "Which project?",
+        choices: ["A", "B"],
+        allowFreeText: false,
+      },
       { type: "todo.updated", items: [{ id: "todo-1", label: "Check", status: "done" }] },
       { type: "subagent.updated", subagentId: "subagent-1", label: "Research", status: "running" },
       { type: "response.cancelled", messageId: "message-1" },
@@ -191,6 +197,18 @@ describe("Xingyao conversation protocol contracts", () => {
         }),
       ).toBe(true);
     }
+  });
+
+  it("requires public clarify SSE events to expose the Gateway request id", () => {
+    expect(
+      isConversationStreamEvent({
+        type: "clarify.requested",
+        conversationId: "conversation-1",
+        turnId: "turn-1",
+        question: "Which project?",
+        choices: ["A", "B"],
+      }),
+    ).toBe(false);
   });
 
   it("does not accept punctuation-only output as meaningful content", () => {

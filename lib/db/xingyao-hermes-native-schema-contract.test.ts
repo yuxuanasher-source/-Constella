@@ -48,6 +48,7 @@ const serviceOnlyFunctions = [
   "write_ai_hermes_skill_draft",
   "review_ai_hermes_skill_draft",
   "cancel_ai_chat_turn",
+  "claim_ai_conversation_clarify_response",
   "renew_ai_chat_turn_lease",
   "finish_ai_chat_turn_v2",
 ] as const;
@@ -1185,6 +1186,10 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
     expect(cancel).toContain("'already_terminal', true");
     expect(cancel).toContain("'status', 'cancelled'");
+    expect(cancel).toContain("revoked_capability_ids");
+    expect(cancel).toContain("child_sessions");
+    expect(cancel).toMatch(/recursive\s+capability_lineage/i);
+    expect(cancel).toContain("root_invocation_id = v_turn.ai_invocation_id");
 
     expect(finishV2).toContain(
       "when v_turn.cancel_requested_at is not null then 'cancelled'",
@@ -1194,6 +1199,23 @@ describe("Xingyao Hermes native state schema contract", () => {
       "jsonb_build_object('outcome', v_effective_outcome)",
     );
     expect(finishV2).toContain("outcome = v_effective_outcome");
+  });
+
+  it("claims clarify responses atomically in provider state before Gateway RPC", () => {
+    const claim = functionSql("claim_ai_conversation_clarify_response");
+
+    expect(claim).toContain("for update");
+    expect(claim).toContain("p_organization_id uuid");
+    expect(claim).toContain("p_owner_user_id uuid");
+    expect(claim).toContain("p_conversation_id uuid");
+    expect(claim).toContain("p_turn_id uuid");
+    expect(claim).toContain("p_clarify_id text");
+    expect(claim).toContain("p_answer_sha256 text");
+    expect(claim).toContain("pendingclarify");
+    expect(claim).toContain("'status', 'claimed'");
+    expect(claim).toContain("'status', 'duplicate'");
+    expect(claim).toContain("'status', 'conflict'");
+    expect(claim).toContain("jsonb_set");
   });
 
   it("keeps atomic broker audit and standalone tool append locked", () => {
@@ -1234,7 +1256,7 @@ describe("Xingyao Hermes native state schema contract", () => {
       );
     }
     expect(migration).not.toMatch(
-      /grant execute on function public\.(issue_ai_hermes|claim_ai_hermes|complete_ai_hermes|append_ai_hermes|update_ai_conversation_hermes|write_ai_hermes|review_ai_hermes|cancel_ai_chat_turn|renew_ai_chat_turn_lease|finish_ai_chat_turn_v2)[^;]*to (anon|authenticated);/,
+      /grant execute on function public\.(issue_ai_hermes|claim_ai_hermes|complete_ai_hermes|append_ai_hermes|update_ai_conversation_hermes|write_ai_hermes|review_ai_hermes|cancel_ai_chat_turn|claim_ai_conversation_clarify_response|renew_ai_chat_turn_lease|finish_ai_chat_turn_v2)[^;]*to (anon|authenticated);/,
     );
   });
 

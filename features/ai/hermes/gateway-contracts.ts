@@ -173,7 +173,12 @@ export type HermesGatewayEvent =
   | SessionEvent<"todo.updated", { todos: HermesTodo[] }>
   | SessionEvent<
       "clarify.request",
-      { requestId: string; question: string; choices: string[] }
+      {
+        requestId: string;
+        question: string;
+        choices: string[];
+        allowFreeText?: boolean;
+      }
     >
   | SessionEvent<
       "subagent.start",
@@ -492,10 +497,18 @@ function isEventPayload(
       );
     case "clarify.request":
       return (
-        hasExactKeys(payload, ["choices", "question", "requestId"]) &&
+        (hasExactKeys(payload, ["choices", "question", "requestId"]) ||
+          hasExactKeys(payload, [
+            "allowFreeText",
+            "choices",
+            "question",
+            "requestId",
+          ])) &&
         isUuid(payload.requestId) &&
         isBoundedText(payload.question, 2_000) &&
-        isUniqueStringArray(payload.choices, 20, 500, true)
+        isUniqueStringArray(payload.choices, 20, 500, true) &&
+        (payload.allowFreeText === undefined ||
+          typeof payload.allowFreeText === "boolean")
       );
     case "subagent.start":
       return (
