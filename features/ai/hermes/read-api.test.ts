@@ -6,6 +6,7 @@ import { signHermesActorAssertion } from "./actor-assertion";
 import type { HermesActorProfile } from "./contracts";
 import {
   HERMES_READ_ENDPOINTS,
+  authorizeAndExecuteHermesReadTool,
   authenticateHermesReadRequest,
   executeHermesReadTool,
   hermesReadSuccess,
@@ -59,13 +60,16 @@ describe("Hermes product read API boundary", () => {
     );
 
     const result = await authenticateHermesReadRequest(
-      new Request("http://localhost/api/internal/hermes/read/live-reports/search", {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer read-service-token-that-is-long-enough",
-          "X-Xingyao-Actor": token,
+      new Request(
+        "http://localhost/api/internal/hermes/read/live-reports/search",
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer read-service-token-that-is-long-enough",
+            "X-Xingyao-Actor": token,
+          },
         },
-      }),
+      ),
       HERMES_READ_ENDPOINTS.xingyao_search_live_reports,
       {
         XINGYAO_READ_API_SERVICE_TOKEN:
@@ -119,7 +123,12 @@ describe("Hermes product read API boundary", () => {
       "select",
       "id, name, status, started_at:starts_at, ended_at:ends_at, created_at, updated_at",
     ]);
-    expect(client.calls).toContainEqual(["projects", "eq", "organization_id", ORG_ID]);
+    expect(client.calls).toContainEqual([
+      "projects",
+      "eq",
+      "organization_id",
+      ORG_ID,
+    ]);
     expect(client.calls).not.toContainEqual([
       "projects",
       "eq",
@@ -185,6 +194,73 @@ describe("Hermes product read API boundary", () => {
       status: "ok",
       toolInvocationId: INVOCATION_ID,
       truncated: false,
+    });
+  });
+
+  it("uses one authorization and execution core for HTTP and Broker callers", async () => {
+    const client = supabaseDouble([
+      { id: PROJECT_ID, name: "Canonical project", status: "active" },
+    ]);
+
+    const result = await authorizeAndExecuteHermesReadTool(
+      client as never,
+      profile(),
+      "xingyao_search_projects",
+      { query: "Canonical", limit: 5 },
+    );
+
+    expect(result).toMatchObject({
+      status: 200,
+      envelope: {
+        status: "ok",
+        data: { rows: [{ id: PROJECT_ID, name: "Canonical project" }] },
+        evidenceRefs: [`projects:${PROJECT_ID}`],
+        sourceLabels: ["project_record"],
+        missingData: [],
+        permissionDenials: [],
+        truncated: false,
+        toolInvocationId: INVOCATION_ID,
+      },
+    });
+    expect(client.from).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps shared role and scope denials identical and dispatch-free", async () => {
+    const client = supabaseDouble([]);
+    const result = await authorizeAndExecuteHermesReadTool(
+      client as never,
+      profile({ role: "finance", allowedReadScopes: ["context.read"] }),
+      "xingyao_search_live_reports",
+      {},
+    );
+
+    expect(result).toMatchObject({
+      status: 403,
+      envelope: {
+        status: "error",
+        error: { code: "permission_denied" },
+        toolInvocationId: INVOCATION_ID,
+      },
+    });
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it("returns upstream_unavailable as a scoped tool envelope", async () => {
+    const client = supabaseErrorDouble();
+    const result = await authorizeAndExecuteHermesReadTool(
+      client as never,
+      profile(),
+      "xingyao_search_projects",
+      {},
+    );
+
+    expect(result).toMatchObject({
+      status: 503,
+      envelope: {
+        status: "error",
+        error: { code: "upstream_unavailable" },
+        toolInvocationId: INVOCATION_ID,
+      },
     });
   });
 });
@@ -269,5 +345,21 @@ function supabaseDouble(rows: unknown[]) {
       calls.push([table, "from"]);
       return builder;
     }),
+  };
+}
+
+function supabaseErrorDouble() {
+  const builder = {
+    select: vi.fn(() => builder),
+    eq: vi.fn(() => builder),
+    ilike: vi.fn(() => builder),
+    order: vi.fn(() => builder),
+    limit: vi.fn(async () => ({
+      data: null,
+      error: { message: "database unavailable" },
+    })),
+  };
+  return {
+    from: vi.fn(() => builder),
   };
 }

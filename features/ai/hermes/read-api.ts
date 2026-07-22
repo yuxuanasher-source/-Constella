@@ -110,7 +110,7 @@ type ReadAuthResult =
   | { ok: true; actor: HermesActorProfile; actorFingerprint: string }
   | { ok: false; status: number; envelope: HermesReadEnvelope };
 
-type ReadExecutionResult = {
+export type HermesReadExecutionResult = {
   data: unknown;
   evidenceRefs?: string[];
   sourceLabels?: string[];
@@ -129,8 +129,14 @@ type QueryBuilder = {
   then?: Promise<QueryResult>["then"];
 };
 
-type QueryResult = { data?: unknown[] | null; error?: { message?: string } | null };
-type SingleQueryResult = { data?: unknown | null; error?: { message?: string } | null };
+type QueryResult = {
+  data?: unknown[] | null;
+  error?: { message?: string } | null;
+};
+type SingleQueryResult = {
+  data?: unknown | null;
+  error?: { message?: string } | null;
+};
 export type HermesReadDbClient = { from(table: string): QueryBuilder };
 
 export async function authenticateHermesReadRequest(
@@ -170,8 +176,7 @@ export async function authenticateHermesReadRequest(
     });
     if (
       verified.header.kid !== expectedKid ||
-      !verified.actor.allowedReadScopes.includes(spec.requiredScope) ||
-      !spec.allowedRoles.includes(verified.actor.role)
+      authorizeHermesReadActor(verified.actor, spec) !== null
     ) {
       return {
         ok: false,
@@ -198,7 +203,7 @@ export async function authenticateHermesReadRequest(
 
 export function hermesReadSuccess(
   actor: HermesActorProfile,
-  result: ReadExecutionResult,
+  result: HermesReadExecutionResult,
 ): HermesReadEnvelope {
   return {
     status: result.truncated ? "partial" : "ok",
@@ -226,12 +231,68 @@ export function hermesReadError(
   };
 }
 
+export function authorizeHermesReadActor(
+  actor: HermesActorProfile,
+  spec: HermesReadEndpointSpec,
+): "permission_denied" | null {
+  return actor.allowedReadScopes.includes(spec.requiredScope) &&
+    spec.allowedRoles.includes(actor.role)
+    ? null
+    : "permission_denied";
+}
+
+export async function authorizeAndExecuteHermesReadTool(
+  client: HermesReadDbClient,
+  actor: HermesActorProfile,
+  toolName: HermesReadToolName,
+  filters: unknown,
+): Promise<{ status: number; envelope: HermesReadEnvelope }> {
+  const authorizationError = authorizeHermesReadActor(
+    actor,
+    HERMES_READ_ENDPOINTS[toolName],
+  );
+  if (authorizationError) {
+    return {
+      status: statusForHermesReadError(authorizationError),
+      envelope: hermesReadError(actor.invocationId, authorizationError),
+    };
+  }
+
+  const result = await executeHermesReadTool(client, actor, toolName, filters);
+  if (typeof result === "string") {
+    return {
+      status: statusForHermesReadError(result),
+      envelope: hermesReadError(actor.invocationId, result),
+    };
+  }
+  return { status: 200, envelope: hermesReadSuccess(actor, result) };
+}
+
+export function statusForHermesReadError(code: HermesReadErrorCode): number {
+  switch (code) {
+    case "unauthorized":
+      return 401;
+    case "permission_denied":
+      return 403;
+    case "not_found":
+      return 404;
+    case "invalid_request":
+      return 400;
+    case "rate_limited":
+      return 429;
+    case "upstream_unavailable":
+      return 503;
+    case "internal_error":
+      return 500;
+  }
+}
+
 export async function executeHermesReadTool(
   client: HermesReadDbClient,
   actor: HermesActorProfile,
   toolName: HermesReadToolName,
   filters: unknown,
-): Promise<ReadExecutionResult | HermesReadErrorCode> {
+): Promise<HermesReadExecutionResult | HermesReadErrorCode> {
   const input = readFilters(filters);
   if (!input) return "invalid_request";
 
@@ -321,7 +382,7 @@ async function querySingleProject(
   client: HermesReadDbClient,
   actor: HermesActorProfile,
   projectId: string | undefined,
-): Promise<ReadExecutionResult | HermesReadErrorCode> {
+): Promise<HermesReadExecutionResult | HermesReadErrorCode> {
   if (!projectId) return "invalid_request";
   const builder = client
     .from("projects")
@@ -363,7 +424,7 @@ async function queryRows({
   queryColumn?: string;
   limit: number;
   sourceLabel: string;
-}): Promise<ReadExecutionResult | HermesReadErrorCode> {
+}): Promise<HermesReadExecutionResult | HermesReadErrorCode> {
   let builder = client
     .from(table)
     .select(select)
@@ -371,10 +432,13 @@ async function queryRows({
   if (projectId) builder = builder.eq?.("project_id", projectId) ?? builder;
   if (streamerId) builder = builder.eq?.("streamer_id", streamerId) ?? builder;
   if (query && queryColumn) {
-    builder = builder.ilike?.(queryColumn, `%${escapeIlike(query)}%`) ?? builder;
+    builder =
+      builder.ilike?.(queryColumn, `%${escapeIlike(query)}%`) ?? builder;
   }
   builder = builder.order?.("updated_at", { ascending: false }) ?? builder;
-  const result = await (builder.limit?.(limit) as Promise<QueryResult> | undefined);
+  const result = await (builder.limit?.(limit) as
+    | Promise<QueryResult>
+    | undefined);
   if (!result) return "internal_error";
   if (result.error) return "upstream_unavailable";
   const rows = Array.isArray(result.data) ? result.data : [];
@@ -390,7 +454,7 @@ async function queryKnowledge(
   actor: HermesActorProfile,
   query: string | undefined,
   limit: number,
-): Promise<ReadExecutionResult | HermesReadErrorCode> {
+): Promise<HermesReadExecutionResult | HermesReadErrorCode> {
   if (!query) return "invalid_request";
   const passages = await searchKnowledgeDocuments(
     client as unknown as KnowledgeClient,
