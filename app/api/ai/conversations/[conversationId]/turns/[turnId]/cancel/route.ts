@@ -58,7 +58,7 @@ export async function POST(
         interrupted += 1;
       }
     }
-    if (state?.sessionId) {
+    if (state?.sessionId && !local.parentInterrupted) {
       const parentInterrupted = await interruptDurableSession({
         context,
         conversationId,

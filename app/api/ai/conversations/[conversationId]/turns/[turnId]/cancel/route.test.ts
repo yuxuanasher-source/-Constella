@@ -33,11 +33,15 @@ vi.mock("@/features/ai/hermes/runtime-client", () => ({
 }));
 
 describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     getRouteContextMock.mockReset();
     createSessionMock.mockReset();
     issueAssertionMock.mockReset().mockResolvedValue("actor-jws");
+    const { activeHermesRunRegistry } = await import(
+      "@/features/ai/hermes/active-run-registry"
+    );
+    activeHermesRunRegistry.clear();
   });
 
   it("marks cancel_requested_at before interrupting the native session", async () => {
@@ -186,6 +190,49 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
 
     expect(response.status).toBe(200);
     expect(interrupts).toEqual(["child-session", "session-owned"]);
+  });
+
+  it("skips durable parent interrupt when the live registry parent was already interrupted", async () => {
+    const { activeHermesRunRegistry } = await import(
+      "@/features/ai/hermes/active-run-registry"
+    );
+    const parentInterrupt = vi.fn().mockResolvedValue({ interrupted: true });
+    activeHermesRunRegistry.register({
+      actor: ACTOR,
+      conversationId: CONVERSATION_ID,
+      turnId: TURN_ID,
+      sessionId: "session-owned",
+      session: {
+        interrupt: parentInterrupt,
+        respondToClarify: vi.fn(),
+        close: vi.fn(),
+      },
+    });
+    const service = serviceDouble();
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(200);
+    expect(parentInterrupt).toHaveBeenCalledTimes(1);
+    expect(createSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("durable-interrupts the parent session when the registry misses the live run", async () => {
+    const session = { interrupt: vi.fn(), close: vi.fn() };
+    const service = serviceDouble();
+    createSessionMock.mockResolvedValue(session);
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(200);
+    expect(createSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-owned" }),
+    );
+    expect(session.interrupt).toHaveBeenCalledTimes(1);
   });
 });
 

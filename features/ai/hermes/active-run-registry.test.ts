@@ -159,7 +159,7 @@ describe("Hermes active run registry", () => {
 
     await expect(
       registry.interruptTree({ actor, conversationId, turnId }),
-    ).resolves.toEqual({ interrupted: 2 });
+    ).resolves.toEqual({ interrupted: 2, parentInterrupted: true });
     expect(order).toEqual(["child", "parent"]);
   });
 });

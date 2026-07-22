@@ -122,6 +122,7 @@ export function createActiveRunRegistry() {
           entry.parentTurnId === input.turnId,
       );
       let interrupted = 0;
+      let parentInterrupted = false;
       for (const child of children) {
         await child.session.interrupt();
         interrupted += 1;
@@ -130,8 +131,9 @@ export function createActiveRunRegistry() {
       if (parent) {
         await parent.session.interrupt();
         interrupted += 1;
+        parentInterrupted = true;
       }
-      return { interrupted };
+      return { interrupted, parentInterrupted };
     },
 
     clear() {
