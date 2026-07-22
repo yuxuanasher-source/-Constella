@@ -651,11 +651,21 @@ function sanitizeHermesReadText(value: string): string {
       normalized,
     ) ||
     /\b(?:Set-Cookie|Cookie)\s*:\s*\S+/i.test(normalized) ||
-    /(?:^|[\s;,])(?:api[_-]?key|api[_-]?secret|client[_-]?secret|password|passwd|private[_-]?key|secret|token)\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s;,]+)/i.test(
+    /(?:^|[\s;,])(?:[a-z][a-z0-9]*[_-])*(?:api[_-]?(?:key|secret)|access[_-]?key[_-]?id|secret[_-]?access[_-]?key|client[_-]?secret|password|passwd|private[_-]?key|token|secret)\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s;,]+)/i.test(
       normalized,
     ) ||
     /https?:\/\/[^\s/:@]+:[^\s/@]+@/i.test(normalized) ||
-    /\b(?:select\s+(?:\*|pg_[a-z0-9_]+\s*\(|[a-z0-9_.,"\s]+\s+from\b)|insert\s+into\b|update\s+[a-z0-9_."]+\s+set\b|delete\s+from\b|(?:alter|drop|create)\s+table\b)/i.test(
+    /\bselect\s+(?:[a-z_][a-z0-9_]*\.)?\*\s+from\s+[a-z0-9_."]+/i.test(
+      normalized,
+    ) ||
+    /\bselect\s+pg_[a-z0-9_]+\s*\(/i.test(normalized) ||
+    /\bselect\s+(?:(?:"?[a-z_][a-z0-9_]*"?)(?:\.(?:"?[a-z_][a-z0-9_]*"?))?\s*,\s*)+(?:"?[a-z_][a-z0-9_]*"?)(?:\.(?:"?[a-z_][a-z0-9_]*"?))?\s+from\s+[a-z0-9_."]+/i.test(
+      normalized,
+    ) ||
+    /\bselect\s+[^;\r\n]{1,1000}\s+from\s+[a-z0-9_."]+[^;\r\n]{0,1000}\b(?:where|join|group\s+by|order\s+by|limit)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:insert\s+into\b|update\s+[a-z0-9_."]+\s+set\b|delete\s+from\b|(?:alter|drop|create)\s+table\b)/i.test(
       normalized,
     ) ||
     /(?:localhost|127\.0\.0\.1|\/api\/internal\/)/i.test(normalized) ||

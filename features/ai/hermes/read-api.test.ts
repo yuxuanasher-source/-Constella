@@ -306,6 +306,61 @@ describe("Hermes product read API boundary", () => {
     }
   });
 
+  it("distinguishes env credential assignments from select business prose", () => {
+    const businessText = [
+      "Select one project from the current queue",
+      "Please select one project from the current queue",
+    ];
+    const credentialAssignments = [
+      "OPENAI_API_KEY=read-openai-secret",
+      "AWS_ACCESS_KEY_ID=read-aws-access-id",
+      "AWS_SECRET_ACCESS_KEY=read-aws-secret",
+      "XINGYAO_READ_API_SERVICE_TOKEN=read-service-token",
+      "VENDOR_CLIENT_SECRET=read-client-secret",
+      "DATABASE_PASSWORD=read-database-password",
+      "SIGNING_PRIVATE_KEY=read-private-key",
+      "SESSION_TOKEN=read-session-token",
+    ];
+    const sqlStatements = [
+      "SELECT * FROM projects",
+      "SELECT id, name FROM projects",
+      "SELECT pg_sleep(10)",
+      "SELECT id FROM projects WHERE status = 'active'",
+      "SELECT projects.id FROM projects JOIN organizations ON organizations.id = projects.organization_id",
+      "SELECT status FROM projects GROUP BY status",
+      "SELECT id FROM projects ORDER BY updated_at",
+      "SELECT id FROM projects LIMIT 1",
+      "INSERT INTO projects (id) VALUES ('project-1')",
+      "UPDATE projects SET status = 'active'",
+      "DELETE FROM projects WHERE id = 'project-1'",
+      "DROP TABLE private_projects",
+    ];
+    const envelope = hermesReadSuccess(profile(), {
+      data: { businessText, credentialAssignments, sqlStatements },
+    });
+    const serialized = JSON.stringify(envelope);
+
+    expect(envelope).toMatchObject({
+      data: {
+        businessText,
+        credentialAssignments: credentialAssignments.map(() => "[REDACTED]"),
+        sqlStatements: sqlStatements.map(() => "[REDACTED]"),
+      },
+    });
+    for (const secret of [
+      "read-openai-secret",
+      "read-aws-access-id",
+      "read-aws-secret",
+      "read-service-token",
+      "read-client-secret",
+      "read-database-password",
+      "read-private-key",
+      "read-session-token",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
   it("preserves authorized current-context identity and page fields", async () => {
     const actor = profile({
       allowedReadScopes: ["context.read"],

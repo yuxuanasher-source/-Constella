@@ -211,6 +211,13 @@ describe("Hermes Product Tool Broker", () => {
       ...readSuccess(),
       status: "partial" as const,
       data: {
+        businessInstruction: "Select one project from the current queue",
+        credentialAssignments: [
+          "OPENAI_API_KEY=broker-openai-secret",
+          "AWS_ACCESS_KEY_ID=broker-aws-access-id",
+          "XINGYAO_READ_API_SERVICE_TOKEN=broker-service-token",
+        ],
+        actualSql: "SELECT id, name FROM projects",
         rows: [
           {
             id: "project-1",
@@ -253,6 +260,9 @@ describe("Hermes Product Tool Broker", () => {
     expect(first).toMatchObject({
       status: "partial",
       data: {
+        businessInstruction: "Select one project from the current queue",
+        credentialAssignments: ["[REDACTED]", "[REDACTED]", "[REDACTED]"],
+        actualSql: "[REDACTED]",
         rows: [
           { id: "project-1", sourceRef: "project:project-1" },
           { id: "unknown-source" },
@@ -289,6 +299,9 @@ describe("Hermes Product Tool Broker", () => {
     expect(first.evidenceRefs).toEqual(validEvidenceRefs);
     expect(JSON.stringify(first)).not.toContain("private_payroll_rows");
     expect(JSON.stringify(first)).not.toContain("broker-source-secret");
+    expect(JSON.stringify(first)).not.toContain("broker-openai-secret");
+    expect(JSON.stringify(first)).not.toContain("broker-aws-access-id");
+    expect(JSON.stringify(first)).not.toContain("broker-service-token");
     expect(JSON.stringify(first)).not.toContain("/api/internal/");
     expect(JSON.stringify(first)).not.toContain("https://");
     expect(JSON.stringify(first)).not.toContain("pg_sleep");
