@@ -14,12 +14,6 @@ const REQUEST_KEYS = [
   "toolCallId",
   "toolName",
 ] as const;
-const READ_ARGUMENT_KEYS = new Set([
-  "limit",
-  "projectId",
-  "query",
-  "streamerId",
-]);
 const TOOL_CALL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const ENVELOPE_METADATA_KEYS = [
   "evidenceRefs",
@@ -296,10 +290,49 @@ function isToolArguments(
   toolName: HermesToolBrokerToolName,
   value: Record<string, unknown>,
 ): boolean {
-  if (Object.hasOwn(HERMES_READ_ENDPOINTS, toolName)) {
-    return Object.keys(value).every((key) => READ_ARGUMENT_KEYS.has(key));
-  }
   switch (toolName) {
+    case "xingyao_get_current_context":
+      return hasExactKeys(value, []);
+    case "xingyao_search_projects":
+      return (
+        hasArgumentKeys(value, [], ["limit", "query"]) &&
+        hasValidOptionalLimit(value) &&
+        hasValidOptionalQuery(value)
+      );
+    case "xingyao_get_project_summary":
+      return hasExactKeys(value, ["projectId"]) && isUuid(value.projectId);
+    case "xingyao_get_streamer_project_profile":
+    case "xingyao_search_live_reports":
+      return (
+        hasArgumentKeys(value, [], ["limit", "projectId", "streamerId"]) &&
+        hasValidOptionalLimit(value) &&
+        hasValidOptionalUuid(value, "projectId") &&
+        hasValidOptionalUuid(value, "streamerId")
+      );
+    case "xingyao_search_recording_reviews":
+      return (
+        hasArgumentKeys(
+          value,
+          [],
+          ["limit", "projectId", "query", "streamerId"],
+        ) &&
+        hasValidOptionalLimit(value) &&
+        hasValidOptionalQuery(value) &&
+        hasValidOptionalUuid(value, "projectId") &&
+        hasValidOptionalUuid(value, "streamerId")
+      );
+    case "xingyao_search_knowledge":
+      return (
+        hasArgumentKeys(value, ["query"], ["limit"]) &&
+        isQuery(value.query) &&
+        hasValidOptionalLimit(value)
+      );
+    case "xingyao_get_settlement_summary":
+      return (
+        hasArgumentKeys(value, [], ["limit", "projectId"]) &&
+        hasValidOptionalLimit(value) &&
+        hasValidOptionalUuid(value, "projectId")
+      );
     case "xingyao_memory_list":
       return hasExactKeys(value, []);
     case "xingyao_memory_remember":
@@ -322,6 +355,37 @@ function isToolArguments(
   }
 }
 
+function hasArgumentKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+): boolean {
+  const allowed = new Set([...required, ...optional]);
+  return (
+    required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key))
+  );
+}
+
+function hasValidOptionalLimit(value: Record<string, unknown>): boolean {
+  return !Object.hasOwn(value, "limit") || Number.isInteger(value.limit);
+}
+
+function hasValidOptionalQuery(value: Record<string, unknown>): boolean {
+  return !Object.hasOwn(value, "query") || isQuery(value.query);
+}
+
+function hasValidOptionalUuid(
+  value: Record<string, unknown>,
+  key: "projectId" | "streamerId",
+): boolean {
+  return !Object.hasOwn(value, key) || isUuid(value[key]);
+}
+
+function isQuery(value: unknown): value is string {
+  return typeof value === "string" && Boolean(value.trim());
+}
+
 function isRememberArguments(value: Record<string, unknown>): boolean {
   const createKeys = [
     "content",
@@ -329,11 +393,7 @@ function isRememberArguments(value: Record<string, unknown>): boolean {
     "parentInvocationId",
     "sourceMessageId",
   ] as const;
-  const updateKeys = [
-    ...createKeys,
-    "expectedRevision",
-    "memoryKey",
-  ] as const;
+  const updateKeys = [...createKeys, "expectedRevision", "memoryKey"] as const;
   const isCreate = hasExactKeys(value, createKeys);
   const isUpdate = hasExactKeys(value, updateKeys);
   return (

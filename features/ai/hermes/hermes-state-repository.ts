@@ -10,6 +10,12 @@ import {
 
 export type { HermesMemoryType } from "./memory-policy";
 
+const CHILD_FORBIDDEN_STATE_TOOLS = new Set([
+  "xingyao_memory_remember",
+  "xingyao_memory_forget",
+  "xingyao_skill_draft",
+]);
+
 type RepositoryResult<T> = { data: T | null; error: unknown };
 
 type HermesStateQuery = PromiseLike<RepositoryResult<unknown>> & {
@@ -227,7 +233,10 @@ export type HermesStateRepository = {
     turnId: string,
     auditMessage: { content: string; metadata?: Record<string, unknown> },
   ): Promise<AppendedHermesToolMessage>;
-  loadActiveMemories(actor: HermesStateOwnerActor): Promise<HermesMemory[]>;
+  loadActiveMemories(
+    actor: HermesStateOwnerActor,
+    memorySnapshotAt: string,
+  ): Promise<HermesMemory[]>;
   rememberMemory(
     actor: HermesStateActor,
     authority: HermesMemoryWriteAuthority,
@@ -290,6 +299,14 @@ export function createHermesStateRepository(
       if (binding.depth === 0 && binding.parentCapability) invalidInput();
       if (binding.depth > 0 && !binding.parentCapability) invalidInput();
       if (binding.depth > 0 && binding.aiStateWritesAllowed) invalidInput();
+      if (
+        binding.depth > 0 &&
+        allowedTools.some((toolName) =>
+          CHILD_FORBIDDEN_STATE_TOOLS.has(toolName),
+        )
+      ) {
+        invalidInput();
+      }
       if (binding.parentCapability) {
         requireUuidInput(binding.parentCapability.invocationId);
         requireHash(binding.parentCapability.tokenSha256);
@@ -406,20 +423,14 @@ export function createHermesStateRepository(
       return parseAppendedToolMessage(data);
     },
 
-    async loadActiveMemories(actor) {
+    async loadActiveMemories(actor, memorySnapshotAt) {
       requireIdentity(actor);
-      const { data, error } = (await client
-        .from("ai_hermes_memories")
-        .select(
-          "id, memory_key, memory_type, content, content_hash, revision, source_conversation_id, source_message_id, source_invocation_id, created_at, updated_at",
-        )
-        .eq("organization_id", actor.organizationId)
-        .eq("owner_user_id", actor.userId)
-        .eq("active", true)
-        .order("updated_at", {
-          ascending: false,
-        })) as RepositoryResult<unknown>;
-      if (error) throw mapHermesStateRepositoryError(error);
+      requireDateStringInput(memorySnapshotAt);
+      const data = await callRpc(client, "load_ai_hermes_memory_snapshot", {
+        p_organization_id: actor.organizationId,
+        p_owner_user_id: actor.userId,
+        p_snapshot_at: memorySnapshotAt,
+      });
       if (!Array.isArray(data)) malformedPayload();
       return data.map(parseMemory);
     },
@@ -990,12 +1001,21 @@ function requiredUuid(value: unknown): string {
 }
 
 function requiredDateString(value: unknown): string {
-  const text = requiredString(value);
+  if (!isDateString(value)) malformedPayload();
+  return value;
+}
+
+function requireDateStringInput(value: unknown): asserts value is string {
+  if (!isDateString(value)) invalidInput();
+}
+
+function isDateString(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim()) return false;
   const match =
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}:\d{2})$/.exec(
-      text,
+      value,
     );
-  if (!match) malformedPayload();
+  if (!match) return false;
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
@@ -1012,7 +1032,7 @@ function requiredDateString(value: unknown): string {
     minute > 59 ||
     second > 59
   ) {
-    malformedPayload();
+    return false;
   }
   const zone = match[8];
   if (zone !== "Z") {
@@ -1023,11 +1043,10 @@ function requiredDateString(value: unknown): string {
       offsetMinute > 59 ||
       (offsetHour === 14 && offsetMinute !== 0)
     ) {
-      malformedPayload();
+      return false;
     }
   }
-  if (!Number.isFinite(Date.parse(text))) malformedPayload();
-  return text;
+  return Number.isFinite(Date.parse(value));
 }
 
 function daysInMonth(year: number, month: number): number {

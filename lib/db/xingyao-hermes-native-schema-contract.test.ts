@@ -41,6 +41,7 @@ const serviceOnlyFunctions = [
   "complete_ai_hermes_broker_call",
   "append_ai_hermes_tool_message",
   "update_ai_conversation_hermes_state",
+  "load_ai_hermes_memory_snapshot",
   "write_ai_hermes_memory_revision",
   "forget_ai_hermes_memory",
   "write_ai_hermes_skill_draft",
@@ -86,6 +87,7 @@ describe("Xingyao Hermes native state schema contract", () => {
       "skill_grants_hash text not null",
       "depth integer not null",
       "ai_state_writes_allowed boolean not null",
+      "memory_snapshot_at timestamptz not null",
       "expires_at timestamptz not null",
       "revoked_at timestamptz",
       "last_used_at timestamptz",
@@ -95,6 +97,40 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(table).toContain("unique (token_sha256)");
     expect(table).toContain("depth >= 0 and depth <= 2");
     expect(table).not.toContain("depth <= 3");
+  });
+
+  it("binds root and child capabilities to one immutable turn memory snapshot", () => {
+    const table = tableSql("ai_hermes_run_capabilities");
+    const issue = functionSql("issue_ai_hermes_run_capability");
+
+    expect(migration).toContain(
+      "add column if not exists memory_snapshot_at timestamptz",
+    );
+    expect(migration).toContain("alter column memory_snapshot_at set not null");
+    expect(table).toContain("memory_snapshot_at timestamptz not null");
+    expect(issue).toContain(
+      "v_memory_snapshot_at := v_turn.memory_snapshot_at",
+    );
+    expect(issue).toContain(
+      "v_parent.memory_snapshot_at is distinct from v_turn.memory_snapshot_at",
+    );
+    expect(issue).toContain(
+      "v_memory_snapshot_at := v_parent.memory_snapshot_at",
+    );
+    expect(issue).toContain(
+      "p_depth > 0 and v_allowed_tools && array[",
+    );
+    for (const childForbiddenTool of [
+      "xingyao_memory_remember",
+      "xingyao_memory_forget",
+      "xingyao_skill_draft",
+    ]) {
+      expect(issue).toContain(`'${childForbiddenTool}'`);
+    }
+    expect(issue).toContain("capability_delegation_invalid");
+    expect(issue).toMatch(
+      /insert into public\.ai_hermes_run_capabilities[\s\S]*?memory_snapshot_at[\s\S]*?v_memory_snapshot_at/,
+    );
   });
 
   it("canonically binds capability tool, scope, and approved skill lists", () => {
@@ -225,6 +261,20 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
   });
 
+  it("claims capability-listed memory writes before the write RPC decides authority", () => {
+    const claim = functionSql("claim_ai_hermes_broker_call");
+
+    expect(claim).toContain(
+      "if p_tool_name = 'xingyao_skill_draft' and not v_capability.ai_state_writes_allowed",
+    );
+    expect(claim).not.toMatch(
+      /if p_tool_name = any\(array\[[\s\S]*?'xingyao_memory_remember'[\s\S]*?capability_state_write_not_allowed/,
+    );
+    expect(claim).not.toMatch(
+      /if p_tool_name = any\(array\[[\s\S]*?'xingyao_memory_forget'[\s\S]*?capability_state_write_not_allowed/,
+    );
+  });
+
   it("uses one documented global lock order for Broker and tool messages", () => {
     const claim = functionSql("claim_ai_hermes_broker_call");
     const complete = functionSql("complete_ai_hermes_broker_call");
@@ -320,6 +370,33 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(table).toContain("revision > 0");
   });
 
+  it("loads the latest actor-owned memory revision active at a turn snapshot", () => {
+    const snapshot = functionSql("load_ai_hermes_memory_snapshot");
+
+    expect(snapshot).toContain("p_organization_id uuid");
+    expect(snapshot).toContain("p_owner_user_id uuid");
+    expect(snapshot).toContain("p_snapshot_at timestamptz");
+    expect(snapshot).toContain("security definer");
+    expect(snapshot).toContain("set search_path = pg_catalog, public");
+    expect(snapshot).toContain("memory.organization_id = p_organization_id");
+    expect(snapshot).toContain("memory.owner_user_id = p_owner_user_id");
+    expect(snapshot).toContain("memory.created_at <= p_snapshot_at");
+    expect(snapshot).toContain(
+      "memory.deactivated_at is null or memory.deactivated_at > p_snapshot_at",
+    );
+    expect(snapshot).toContain("distinct on (memory.memory_key)");
+    expect(snapshot).toContain("memory.memory_key, memory.revision desc");
+    expect(migration).toContain(
+      "revoke all on function public.load_ai_hermes_memory_snapshot(",
+    );
+    expect(migration).toContain(
+      "grant execute on function public.load_ai_hermes_memory_snapshot(",
+    );
+    expect(migration).not.toMatch(
+      /grant execute on function public\.load_ai_hermes_memory_snapshot[^;]*to (anon|authenticated);/,
+    );
+  });
+
   it("validates memory provenance against the exact owner user message", () => {
     const writeMemory = functionSql("write_ai_hermes_memory_revision");
     const forgetMemory = functionSql("forget_ai_hermes_memory");
@@ -332,9 +409,7 @@ describe("Xingyao Hermes native state schema contract", () => {
         "memory_capability.token_sha256 = lower(p_capability_token_sha256)",
       );
       expect(memoryFunction).toContain("v_capability.depth <> 0");
-      expect(memoryFunction).toContain(
-        "v_capability.ai_state_writes_allowed",
-      );
+      expect(memoryFunction).toContain("v_capability.ai_state_writes_allowed");
       expect(memoryFunction).toContain(
         "v_capability.root_invocation_id <> p_parent_invocation_id",
       );
@@ -351,9 +426,7 @@ describe("Xingyao Hermes native state schema contract", () => {
       expect(memoryFunction).toContain(
         "source_message.conversation_id = p_source_conversation_id",
       );
-      expect(memoryFunction).toContain(
-        "from public.ai_chat_turns source_turn",
-      );
+      expect(memoryFunction).toContain("from public.ai_chat_turns source_turn");
       expect(memoryFunction).toContain(
         "source_turn.user_message_id = p_source_message_id",
       );
@@ -364,6 +437,70 @@ describe("Xingyao Hermes native state schema contract", () => {
     }
     expect(writeMemory).toContain("expected_revision");
     expect(writeMemory).toContain("deactivated_at");
+  });
+
+  it("locks and revalidates memory source authority in the global order", () => {
+    const writeMemory = functionSql("write_ai_hermes_memory_revision");
+    const forgetMemory = functionSql("forget_ai_hermes_memory");
+    const lockOrder =
+      "hermes memory lock order: conversation -> turn -> invocation -> capability -> source_message -> memory";
+
+    for (const memoryFunction of [writeMemory, forgetMemory]) {
+      expect(memoryFunction).toContain(lockOrder);
+      expectSqlOrder(memoryFunction, [
+        "from public.ai_conversations locked_conversation",
+        "from public.ai_chat_turns source_turn",
+        "from public.ai_invocations source_invocation",
+        "from public.ai_hermes_run_capabilities memory_capability",
+        "from public.ai_chat_messages source_message",
+        "pg_advisory_xact_lock",
+      ]);
+      for (const alias of [
+        "locked_conversation",
+        "source_turn",
+        "source_invocation",
+        "memory_capability",
+        "source_message",
+      ]) {
+        expect(memoryFunction).toMatch(
+          new RegExp(`from public\\.[a-z_]+ ${alias}[\\s\\S]*?for update`),
+        );
+      }
+      expect(memoryFunction).toContain(
+        "source_turn.user_message_id = p_source_message_id",
+      );
+      expect(memoryFunction).toContain(
+        "source_turn.memory_snapshot_at = v_capability.memory_snapshot_at",
+      );
+    }
+  });
+
+  it("prevents a committed memory source from being invalidated later", () => {
+    const protectSource = functionSql("protect_ai_hermes_memory_source");
+
+    expect(protectSource).toContain("returns trigger");
+    expect(protectSource).toContain("from public.ai_hermes_memories memory");
+    expect(protectSource).toContain("memory.source_message_id = old.id");
+    for (const field of [
+      "id",
+      "organization_id",
+      "owner_user_id",
+      "conversation_id",
+      "role",
+      "status",
+      "content",
+    ]) {
+      expect(protectSource).toContain(
+        `new.${field} is distinct from old.${field}`,
+      );
+    }
+    expect(protectSource).toContain("memory_source_immutable");
+    expect(migration).toMatch(
+      /create trigger ai_chat_messages_protect_hermes_memory_source\s+before update of[\s\S]*?on public\.ai_chat_messages\s+for each row execute function public\.protect_ai_hermes_memory_source\(\)/,
+    );
+    expect(migration).toContain(
+      "revoke all on function public.protect_ai_hermes_memory_source()",
+    );
   });
 
   it("soft-deactivates actor-owned memory as a new retry-safe revision", () => {

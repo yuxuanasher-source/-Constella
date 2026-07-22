@@ -419,6 +419,34 @@ describe("Hermes run capabilities", () => {
       }),
     ).rejects.toMatchObject({ code: "actor_changed" });
   });
+
+  it.each(["xingyao_memory_remember", "xingyao_memory_forget"] as const)(
+    "never exposes %s through a child capability even when the parent has it",
+    async (toolName) => {
+      const parent = parentCapability({
+        allowedTools: [
+          "xingyao_search_projects",
+          "xingyao_memory_remember",
+          "xingyao_memory_forget",
+        ],
+      });
+      const dependencies = derivationDependencies(parent, 0);
+
+      await expect(
+        deriveHermesChildRunCapability({
+          parentCapabilityToken: "p".repeat(43),
+          request: {
+            ...derivationRequest(),
+            requestedToolNames: [toolName],
+          },
+          dependencies,
+          now: NOW,
+        }),
+      ).rejects.toMatchObject({ code: "authority_expansion" });
+      expect(dependencies.createChildInvocation).not.toHaveBeenCalled();
+      expect(dependencies.repository.issueRunCapability).not.toHaveBeenCalled();
+    },
+  );
 });
 
 function profile(patch: Partial<HermesActorProfile> = {}): HermesActorProfile {

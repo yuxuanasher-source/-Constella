@@ -46,6 +46,7 @@ export type HermesBrokerCapability = {
   scopes: readonly HermesReadScope[];
   depth: number;
   aiStateWritesAllowed: boolean;
+  memorySnapshotAt: string;
 };
 
 export type HermesToolBrokerErrorCode =
@@ -162,6 +163,7 @@ export async function executeHermesToolBrokerCall({
         dependencies,
         actor: live.actor,
         capabilityTokenSha256: tokenSha256,
+        memorySnapshotAt: capability.memorySnapshotAt,
         request,
         now,
       })
@@ -334,12 +336,14 @@ async function executeMemoryTool({
   dependencies,
   actor,
   capabilityTokenSha256,
+  memorySnapshotAt,
   request,
   now,
 }: {
   dependencies: HermesToolBrokerDependencies;
   actor: HermesActorProfile;
   capabilityTokenSha256: string;
+  memorySnapshotAt: string;
   request: Extract<
     HermesToolBrokerRequest,
     { toolName: (typeof HERMES_MEMORY_TOOL_NAMES)[number] }
@@ -349,33 +353,28 @@ async function executeMemoryTool({
   try {
     switch (request.toolName) {
       case "xingyao_memory_list": {
-        const memories = await dependencies.repository.loadActiveMemories({
-          organizationId: actor.organizationId,
-          userId: actor.userId,
-        });
-        return memoryBrokerEnvelope(
-          request,
-          now,
-          "ok",
+        const memories = await dependencies.repository.loadActiveMemories(
           {
-            memories: memories.map((memory) => ({
-              memoryKey: memory.memoryKey,
-              memoryType: memory.memoryType,
-              content: memory.content,
-              revision: memory.revision,
-              updatedAt: memory.updatedAt,
-            })),
+            organizationId: actor.organizationId,
+            userId: actor.userId,
           },
+          memorySnapshotAt,
         );
+        return memoryBrokerEnvelope(request, now, "ok", {
+          memories: memories.map((memory) => ({
+            memoryKey: memory.memoryKey,
+            memoryType: memory.memoryType,
+            content: memory.content,
+            revision: memory.revision,
+            updatedAt: memory.updatedAt,
+          })),
+        });
       }
       case "xingyao_memory_remember": {
         const prepared = prepareHermesMemoryContent(request.arguments.content);
         const revision = await dependencies.repository.rememberMemory(
           stateActor(actor),
-          memoryAuthority(
-            request,
-            capabilityTokenSha256,
-          ),
+          memoryAuthority(request, capabilityTokenSha256),
           {
             memoryKey: request.arguments.memoryKey ?? null,
             expectedRevision: request.arguments.expectedRevision ?? 0,
@@ -408,12 +407,7 @@ async function executeMemoryTool({
     }
     if (error instanceof HermesStateRepositoryError) {
       if (error.code === "permission_denied" || error.code === "not_found") {
-        return memoryBrokerEnvelope(
-          request,
-          now,
-          "error",
-          "permission_denied",
-        );
+        return memoryBrokerEnvelope(request, now, "error", "permission_denied");
       }
       throw mapRepositoryError(error, "complete");
     }
@@ -580,15 +574,8 @@ function authorizeToolRequest(
   request: HermesToolBrokerRequest,
 ): void {
   if (isMemoryToolRequest(request)) {
-    if (
-      request.toolName !== "xingyao_memory_list" &&
-      (capability.depth !== 0 ||
-        !capability.aiStateWritesAllowed ||
-        capability.invocationId !== capability.rootInvocationId ||
-        request.arguments.parentInvocationId !== capability.rootInvocationId)
-    ) {
-      throw new HermesToolBrokerError("permission_denied");
-    }
+    // A capability-listed state call is claimed before the write RPC makes the
+    // final authority decision, so denials remain tool-local and auditable.
     return;
   }
   const spec = HERMES_READ_ENDPOINTS[request.toolName];

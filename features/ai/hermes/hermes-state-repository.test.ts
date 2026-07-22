@@ -32,6 +32,8 @@ const TOKEN_SHA256 = "a".repeat(64);
 const PARENT_TOKEN_SHA256 = "b".repeat(64);
 const ACTOR_FINGERPRINT = "c".repeat(64);
 const REQUEST_SHA256 = "d".repeat(64);
+const MEMORY_SNAPSHOT_AT = "2026-07-22T05:00:00.000Z";
+const NEXT_MEMORY_SNAPSHOT_AT = "2026-07-22T05:10:00.000Z";
 
 const actor: HermesStateActor = {
   organizationId: ORGANIZATION_ID,
@@ -207,6 +209,30 @@ describe("Hermes state repository", () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "xingyao_memory_remember",
+    "xingyao_memory_forget",
+    "xingyao_skill_draft",
+  ])("rejects child capability state tool %s before persistence", async (toolName) => {
+    const { client, rpc } = rpcClient({
+      data: {
+        capability_id: CAPABILITY_ID,
+        expires_at: "2026-07-22T05:05:00.000Z",
+      },
+      error: null,
+    });
+
+    await expect(
+      createHermesStateRepository(client).issueRunCapability(
+        actorSnapshot,
+        { id: TURN_ID, conversationId: CONVERSATION_ID },
+        { ...capabilityBinding, allowedTools: [toolName] },
+        new Date("2026-07-22T05:05:00.000Z"),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it("claims and completes broker calls with claim ownership and fencing", async () => {
     const claimClient = rpcClient({
       data: {
@@ -320,8 +346,8 @@ describe("Hermes state repository", () => {
     });
   });
 
-  it("loads only active memories for the actor owner", async () => {
-    const query = memoryQuery({
+  it("loads memories active at the actor capability snapshot", async () => {
+    const { client, rpc } = rpcClient({
       data: [
         {
           id: MEMORY_ID,
@@ -339,14 +365,12 @@ describe("Hermes state repository", () => {
       ],
       error: null,
     });
-    const from = vi.fn(() => query.builder);
-    const client = {
-      from,
-      rpc: vi.fn(),
-    } as unknown as HermesStateRepositoryClient;
 
     await expect(
-      createHermesStateRepository(client).loadActiveMemories(actor),
+      createHermesStateRepository(client).loadActiveMemories(
+        actor,
+        MEMORY_SNAPSHOT_AT,
+      ),
     ).resolves.toEqual([
       expect.objectContaining({
         id: MEMORY_ID,
@@ -355,18 +379,58 @@ describe("Hermes state repository", () => {
         revision: 2,
       }),
     ]);
-    expect(from).toHaveBeenCalledWith("ai_hermes_memories");
-    expect(query.select).toHaveBeenCalledTimes(1);
-    expect(query.eq).toHaveBeenNthCalledWith(
-      1,
-      "organization_id",
-      ORGANIZATION_ID,
-    );
-    expect(query.eq).toHaveBeenNthCalledWith(2, "owner_user_id", USER_ID);
-    expect(query.eq).toHaveBeenNthCalledWith(3, "active", true);
-    expect(query.order).toHaveBeenCalledWith("updated_at", {
-      ascending: false,
+    expect(rpc).toHaveBeenCalledWith("load_ai_hermes_memory_snapshot", {
+      p_organization_id: ORGANIZATION_ID,
+      p_owner_user_id: USER_ID,
+      p_snapshot_at: MEMORY_SNAPSHOT_AT,
     });
+  });
+
+  it("keeps an updated memory on its prior revision until the next snapshot", async () => {
+    const rpc = vi.fn(async (_fn: string, args: Record<string, unknown>) => ({
+      data: [
+        memoryRow({
+          revision: args.p_snapshot_at === MEMORY_SNAPSHOT_AT ? 1 : 2,
+          content:
+            args.p_snapshot_at === MEMORY_SNAPSHOT_AT
+              ? "Prefer concise answers"
+              : "Prefer concise weekly answers",
+        }),
+      ],
+      error: null,
+    }));
+    const repository = createHermesStateRepository({
+      from: vi.fn(),
+      rpc,
+    } as unknown as HermesStateRepositoryClient);
+
+    await expect(
+      repository.loadActiveMemories(actor, MEMORY_SNAPSHOT_AT),
+    ).resolves.toEqual([expect.objectContaining({ revision: 1 })]);
+    await expect(
+      repository.loadActiveMemories(actor, NEXT_MEMORY_SNAPSHOT_AT),
+    ).resolves.toEqual([expect.objectContaining({ revision: 2 })]);
+  });
+
+  it("keeps a forgotten memory visible until the next snapshot", async () => {
+    const rpc = vi.fn(async (_fn: string, args: Record<string, unknown>) => ({
+      data:
+        args.p_snapshot_at === MEMORY_SNAPSHOT_AT
+          ? [memoryRow({ revision: 2 })]
+          : [],
+      error: null,
+    }));
+    const repository = createHermesStateRepository({
+      from: vi.fn(),
+      rpc,
+    } as unknown as HermesStateRepositoryClient);
+
+    await expect(
+      repository.loadActiveMemories(actor, MEMORY_SNAPSHOT_AT),
+    ).resolves.toHaveLength(1);
+    await expect(
+      repository.loadActiveMemories(actor, NEXT_MEMORY_SNAPSHOT_AT),
+    ).resolves.toEqual([]);
   });
 
   it("remembers canonical content with capability and source lineage authority", async () => {
@@ -502,21 +566,24 @@ describe("Hermes state repository", () => {
     "memory_parent_invocation_invalid",
     "memory_actor_mismatch",
     "capability_state_write_not_allowed",
-  ])("maps private memory authority failures to permission_denied", async (message) => {
-    const { client } = rpcClient({ data: null, error: { message } });
+  ])(
+    "maps private memory authority failures to permission_denied",
+    async (message) => {
+      const { client } = rpcClient({ data: null, error: { message } });
 
-    await expect(
-      createHermesStateRepository(client).forgetMemory(
-        actor,
-        {
-          capabilityTokenSha256: TOKEN_SHA256,
-          parentInvocationId: INVOCATION_ID,
-          sourceMessageId: MESSAGE_ID,
-        },
-        { memoryKey: MEMORY_KEY, expectedRevision: 2 },
-      ),
-    ).rejects.toEqual(new HermesStateRepositoryError("permission_denied"));
-  });
+      await expect(
+        createHermesStateRepository(client).forgetMemory(
+          actor,
+          {
+            capabilityTokenSha256: TOKEN_SHA256,
+            parentInvocationId: INVOCATION_ID,
+            sourceMessageId: MESSAGE_ID,
+          },
+          { memoryKey: MEMORY_KEY, expectedRevision: 2 },
+        ),
+      ).rejects.toEqual(new HermesStateRepositoryError("permission_denied"));
+    },
+  );
 
   it("writes Skill proposals without accepting payload identity", async () => {
     const skillClient = rpcClient({
@@ -1059,14 +1126,13 @@ describe("Hermes state repository", () => {
       updated_at: "2026-07-22T05:01:00.000Z",
       [field]: "not-a-uuid",
     };
-    const query = memoryQuery({ data: [row], error: null });
-    const client = {
-      from: vi.fn(() => query.builder),
-      rpc: vi.fn(),
-    } as unknown as HermesStateRepositoryClient;
+    const { client } = rpcClient({ data: [row], error: null });
 
     await expect(
-      createHermesStateRepository(client).loadActiveMemories(actor),
+      createHermesStateRepository(client).loadActiveMemories(
+        actor,
+        MEMORY_SNAPSHOT_AT,
+      ),
     ).rejects.toMatchObject({ code: "state_conflict" });
   });
 
@@ -1152,13 +1218,26 @@ function rpcClient(result: { data: unknown; error: unknown }) {
   return { calls, client, rpc };
 }
 
-function memoryQuery(result: { data: unknown; error: unknown }) {
-  const order = vi.fn().mockResolvedValue(result);
-  const builder: Record<string, unknown> = {};
-  const select = vi.fn(() => builder);
-  const eq = vi.fn(() => builder);
-  Object.assign(builder, { eq, order, select });
-  return { builder, eq, order, select };
+function memoryRow(
+  overrides: Partial<{
+    revision: number;
+    content: string;
+  }> = {},
+) {
+  return {
+    id: MEMORY_ID,
+    memory_key: MEMORY_KEY,
+    memory_type: "preference",
+    content: "Prefer concise answers",
+    content_hash: "e".repeat(64),
+    revision: 1,
+    source_conversation_id: CONVERSATION_ID,
+    source_message_id: MESSAGE_ID,
+    source_invocation_id: INVOCATION_ID,
+    created_at: "2026-07-22T04:59:00.000Z",
+    updated_at: "2026-07-22T04:59:00.000Z",
+    ...overrides,
+  };
 }
 
 function postgresArrayHash(values: string[]): string {

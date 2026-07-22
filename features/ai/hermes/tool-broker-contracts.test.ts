@@ -8,12 +8,135 @@ import {
 } from "./tool-broker-contracts";
 
 const INVOCATION_ID = "11111111-1111-4111-8111-111111111111";
+const PROJECT_ID = "22222222-2222-4222-8222-222222222222";
+const STREAMER_ID = "33333333-3333-4333-8333-333333333333";
 
 describe("Hermes Tool Broker contracts", () => {
   it("accepts only the four-key Broker request", () => {
     expect(parseHermesToolBrokerRequest(validRequest())).toEqual(
       validRequest(),
     );
+  });
+
+  it.each([
+    ["xingyao_get_current_context", {}],
+    ["xingyao_search_projects", {}],
+    ["xingyao_search_projects", { query: "Project", limit: 5 }],
+    ["xingyao_get_project_summary", { projectId: PROJECT_ID }],
+    [
+      "xingyao_get_streamer_project_profile",
+      { projectId: PROJECT_ID, streamerId: STREAMER_ID, limit: 10 },
+    ],
+    [
+      "xingyao_search_live_reports",
+      { projectId: PROJECT_ID, streamerId: STREAMER_ID, limit: 10 },
+    ],
+    [
+      "xingyao_search_recording_reviews",
+      {
+        projectId: PROJECT_ID,
+        streamerId: STREAMER_ID,
+        query: "approved",
+        limit: 10,
+      },
+    ],
+    ["xingyao_search_knowledge", { query: "onboarding", limit: 4 }],
+    ["xingyao_get_settlement_summary", { projectId: PROJECT_ID, limit: 20 }],
+  ] as const)("accepts valid filters for %s", (toolName, argumentsValue) => {
+    const value = readRequest(toolName, argumentsValue);
+    expect(parseHermesToolBrokerRequest(value)).toEqual(value);
+  });
+
+  it.each([
+    ["xingyao_get_current_context", { projectId: PROJECT_ID }],
+    ["xingyao_get_current_context", { query: "irrelevant" }],
+    ["xingyao_search_projects", { streamerId: STREAMER_ID }],
+    ["xingyao_get_project_summary", {}],
+    ["xingyao_get_project_summary", { projectId: PROJECT_ID, limit: 5 }],
+    ["xingyao_get_streamer_project_profile", { query: "irrelevant" }],
+    ["xingyao_search_live_reports", { query: "irrelevant" }],
+    ["xingyao_search_knowledge", {}],
+    ["xingyao_search_knowledge", { query: "knowledge", projectId: PROJECT_ID }],
+    ["xingyao_get_settlement_summary", { streamerId: STREAMER_ID }],
+  ] as const)(
+    "rejects missing or irrelevant filters for %s",
+    (toolName, argumentsValue) => {
+      expect(
+        parseHermesToolBrokerRequest(readRequest(toolName, argumentsValue)),
+      ).toBeNull();
+    },
+  );
+
+  it.each([
+    ["xingyao_search_projects", { query: 7 }],
+    ["xingyao_search_projects", { limit: 1.5 }],
+    ["xingyao_get_project_summary", { projectId: "not-a-uuid" }],
+    ["xingyao_search_live_reports", { streamerId: "not-a-uuid" }],
+    ["xingyao_search_knowledge", { query: "   " }],
+  ] as const)(
+    "rejects malformed filters for %s",
+    (toolName, argumentsValue) => {
+      expect(
+        parseHermesToolBrokerRequest(readRequest(toolName, argumentsValue)),
+      ).toBeNull();
+    },
+  );
+
+  it.each([
+    "xingyao_get_current_context",
+    "xingyao_search_projects",
+    "xingyao_get_project_summary",
+    "xingyao_get_streamer_project_profile",
+    "xingyao_search_live_reports",
+    "xingyao_search_recording_reviews",
+    "xingyao_search_knowledge",
+    "xingyao_get_settlement_summary",
+    "xingyao_memory_list",
+    "xingyao_memory_remember",
+    "xingyao_memory_forget",
+  ] as const)("rejects authority fields for %s", (toolName) => {
+    const base =
+      toolName === "xingyao_memory_remember"
+        ? memoryRequest(toolName, {
+            memoryType: "preference",
+            content: "Prefer concise answers",
+            parentInvocationId: PROJECT_ID,
+            sourceMessageId: STREAMER_ID,
+          })
+        : toolName === "xingyao_memory_forget"
+          ? memoryRequest(toolName, {
+              memoryKey: INVOCATION_ID,
+              expectedRevision: 1,
+              parentInvocationId: PROJECT_ID,
+              sourceMessageId: STREAMER_ID,
+            })
+          : toolName === "xingyao_memory_list"
+            ? memoryRequest(toolName, {})
+            : readRequest(
+                toolName,
+                toolName === "xingyao_get_project_summary"
+                  ? { projectId: PROJECT_ID }
+                  : toolName === "xingyao_search_knowledge"
+                    ? { query: "knowledge" }
+                    : {},
+              );
+    const baseArguments = base.arguments as Record<string, unknown>;
+
+    for (const field of [
+      "authority",
+      "model",
+      "provider",
+      "url",
+      "table",
+      "sql",
+    ]) {
+      expect(
+        parseHermesToolBrokerRequest({
+          ...base,
+          arguments: { ...baseArguments, [field]: "client-controlled" },
+        }),
+      ).toBeNull();
+    }
   });
 
   it("accepts only the three named memory tools with strict per-tool arguments", () => {
@@ -85,7 +208,9 @@ describe("Hermes Tool Broker contracts", () => {
       },
     ],
   ])("rejects malformed memory tool arguments for %s", (toolName, args) => {
-    expect(parseHermesToolBrokerRequest(memoryRequest(toolName, args))).toBeNull();
+    expect(
+      parseHermesToolBrokerRequest(memoryRequest(toolName, args)),
+    ).toBeNull();
   });
 
   it.each(["authority", "model", "provider", "url", "table", "sql"])(
@@ -262,6 +387,15 @@ function memoryRequest(toolName: string, argumentsValue: unknown) {
   return {
     invocationId: INVOCATION_ID,
     toolCallId: "memory-call-1",
+    toolName,
+    arguments: argumentsValue,
+  };
+}
+
+function readRequest(toolName: string, argumentsValue: unknown) {
+  return {
+    invocationId: INVOCATION_ID,
+    toolCallId: "read-call-1",
     toolName,
     arguments: argumentsValue,
   };

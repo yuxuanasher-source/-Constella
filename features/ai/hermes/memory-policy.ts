@@ -11,24 +11,25 @@ export type HermesMemoryType = (typeof HERMES_MEMORY_TYPES)[number];
 export type HermesMemoryPolicyErrorCode = "memory_content_rejected";
 
 const MONEY_VALUE_PATTERNS = [
-  /(?:[$¥€£￥]|\b(?:usd|cny|rmb|eur|gbp|jpy)\b)\s*[-+]?\d/iu,
-  /[-+]?\d(?:[\d,.]*\d)?\s*(?:[$¥€£￥]|\b(?:usd|cny|rmb|eur|gbp|jpy|yuan)\b|元)/iu,
+  /(?:[$¥€£￥]|\b(?:usd|cny|rmb|eur|gbp|jpy|dollars?|euros?|pounds?|yen|yuan)\b)\s*[-+]?\d/iu,
+  /[-+]?\d(?:[\d,.]*\d)?\s*(?:[$¥€£￥]|\b(?:usd|cny|rmb|eur|gbp|jpy|dollars?|euros?|pounds?|yen|yuan)\b|元)/iu,
   /\b\d(?:[\d,.]*\d)?\s*(?:%|％|percent(?:age)?\b|bps\b|basis\s+points?\b)/iu,
   /\broi\b[^\r\n\d]{0,24}[-+]?\d/iu,
   /\bsettlement(?:[_\s-]+(?:amount|value|rate|total|balance))?\b[^\r\n\d]{0,24}[-+]?\d/iu,
 ];
 
 const PRIVATE_OBJECT_ID_PATTERN =
-  /\b(?:project|streamer|report|settlement(?:[_\s-]*batch)?|organization|knowledge(?:[_\s-]*(?:document|chunk))?)[_\s-]*(?:id)?\s*(?::|=|\bis\b)\s*["']?[a-z0-9][a-z0-9_.:/#-]{2,}/iu;
+  /\b(?:project|streamer|(?:live[_\s-]*)?report|settlement(?:[_\s-]*batch)?|org(?:anization)?|knowledge(?:[_\s-]*(?:base|document|chunk))?|document|chunk)[_\s-]*(?:(?:object[_\s-]*)?(?:id|uuid))?\s*(?::|=|\bis\b)\s*["']?[a-z0-9][a-z0-9_.:/#-]{2,}/iu;
 const PROVENANCE_PATTERNS = [
   /\bevidence[_\s-]*refs?\b/iu,
-  /\btool\s+(?:output|outputs|result|results|response|responses|call|calls)\b/iu,
+  /\btool[_\s-]+(?:output|outputs|result|results|response|responses|call|calls)\b/iu,
   /\bknowledge\s+chunks?\b/iu,
 ];
 const CREDENTIAL_PATTERNS = [
   /https?:\/\/[^\s/:@]+:[^\s/@]+@/iu,
   /https?:\/\/\S+[?&](?:x-amz-(?:credential|signature)|access[_-]?token|api[_-]?key|auth|credential|password|secret|signature|token)=/iu,
   /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----/u,
+  /\bbearer\s+(?=[^\s]*[0-9._~+/=-])[a-z0-9._~+/=-]{8,}\b/iu,
   /\b(?:api[_\s-]*key|access[_\s-]*token|refresh[_\s-]*token|auth(?:orization)?[_\s-]*(?:header|token)?|bearer|password|passwd|cookie|private[_\s-]*key|secret[_\s-]*(?:key|token))\b\s*(?::|=|\bis\b)\s*\S+/iu,
   /\b(?:sk|pk|ghp|github_pat)_[a-z0-9_-]{8,}\b/iu,
   /\bsk-[a-z0-9_-]{8,}\b/iu,
@@ -56,9 +57,7 @@ export class HermesMemoryPolicyError extends Error {
   }
 }
 
-export function isHermesMemoryType(
-  value: unknown,
-): value is HermesMemoryType {
+export function isHermesMemoryType(value: unknown): value is HermesMemoryType {
   return HERMES_MEMORY_TYPES.includes(value as HermesMemoryType);
 }
 
@@ -68,7 +67,10 @@ export function canonicalizeHermesMemoryContent(content: unknown): string {
     .normalize("NFC")
     .replace(/\r\n?/gu, "\n")
     .trim();
-  if (!canonicalContent || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(canonicalContent)) {
+  if (
+    !canonicalContent ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(canonicalContent)
+  ) {
     rejectMemoryContent();
   }
   return canonicalContent;
@@ -79,7 +81,9 @@ export function prepareHermesMemoryContent(content: unknown): {
   contentHash: string;
 } {
   const canonicalContent = canonicalizeHermesMemoryContent(content);
-  if (REJECTED_CONTENT_PATTERNS.some((pattern) => pattern.test(canonicalContent))) {
+  if (
+    REJECTED_CONTENT_PATTERNS.some((pattern) => pattern.test(canonicalContent))
+  ) {
     rejectMemoryContent();
   }
   return {

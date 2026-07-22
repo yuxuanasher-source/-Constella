@@ -30,6 +30,7 @@ const SOURCE_MESSAGE_ID = "88888888-8888-4888-8888-888888888888";
 const MEMORY_ID = "99999999-9999-4999-8999-999999999998";
 const MEMORY_KEY = "99999999-9999-4999-8999-999999999997";
 const NOW = new Date("2026-07-22T00:00:00.000Z");
+const MEMORY_SNAPSHOT_AT = "2026-07-21T23:55:00.000Z";
 
 describe("Hermes Product Tool Broker", () => {
   it.each(["missing", "expired", "revoked", "inactive invocation"])(
@@ -493,10 +494,13 @@ describe("Hermes Product Tool Broker", () => {
         ],
       },
     });
-    expect(memoryRepository(deps).loadActiveMemories).toHaveBeenCalledWith({
-      organizationId: ORGANIZATION_ID,
-      userId: USER_ID,
-    });
+    expect(memoryRepository(deps).loadActiveMemories).toHaveBeenCalledWith(
+      {
+        organizationId: ORGANIZATION_ID,
+        userId: USER_ID,
+      },
+      MEMORY_SNAPSHOT_AT,
+    );
     expect(deps.executeRead).not.toHaveBeenCalled();
   });
 
@@ -631,12 +635,13 @@ describe("Hermes Product Tool Broker", () => {
     { depth: 1, aiStateWritesAllowed: false },
     { depth: 0, aiStateWritesAllowed: false },
   ])(
-    "denies remember and forget when write authority is absent: %o",
+    "claims and audits a tool-level denial when write authority is absent: %o",
     async ({ depth, aiStateWritesAllowed }) => {
       for (const toolName of [
         "xingyao_memory_remember",
         "xingyao_memory_forget",
       ] as const) {
+        const rejectedContent = "Prefer concise reviewer answers";
         const capability = brokerCapability({
           allowedTools: [toolName],
           depth,
@@ -649,11 +654,20 @@ describe("Hermes Product Tool Broker", () => {
             actorFingerprint: capability.actorFingerprint,
           })),
         });
+        const repositoryMethod =
+          memoryRepository(deps)[
+            toolName === "xingyao_memory_remember"
+              ? "rememberMemory"
+              : "forgetMemory"
+          ];
+        repositoryMethod.mockRejectedValueOnce(
+          new HermesStateRepositoryError("permission_denied"),
+        );
         const args =
           toolName === "xingyao_memory_remember"
             ? {
                 memoryType: "preference",
-                content: "Prefer concise answers",
+                content: rejectedContent,
                 parentInvocationId: ROOT_INVOCATION_ID,
                 sourceMessageId: SOURCE_MESSAGE_ID,
               }
@@ -666,10 +680,36 @@ describe("Hermes Product Tool Broker", () => {
 
         await expect(
           run(deps, memoryRequest(toolName, args)),
-        ).rejects.toMatchObject({ code: "permission_denied" });
-        expect(deps.repository.claimBrokerCall).not.toHaveBeenCalled();
-        expect(memoryRepository(deps).rememberMemory).not.toHaveBeenCalled();
-        expect(memoryRepository(deps).forgetMemory).not.toHaveBeenCalled();
+        ).resolves.toMatchObject({
+          toolCallId: "gateway-call-1",
+          toolName,
+          invocationId: INVOCATION_ID,
+          status: "error",
+          error: { code: "permission_denied" },
+        });
+        expect(deps.repository.claimBrokerCall).toHaveBeenCalledOnce();
+        expect(repositoryMethod).toHaveBeenCalledOnce();
+        expect(deps.repository.completeBrokerCall).toHaveBeenCalledWith(
+          { organizationId: ORGANIZATION_ID, userId: USER_ID },
+          BROKER_CALL_ID,
+          expect.any(String),
+          1,
+          "denied",
+          expect.objectContaining({
+            status: "error",
+            error: { code: "permission_denied" },
+          }),
+          expect.objectContaining({
+            metadata: {
+              hermesTool: expect.objectContaining({ status: "error" }),
+            },
+          }),
+        );
+        const persisted = JSON.stringify([
+          vi.mocked(deps.repository.claimBrokerCall).mock.calls,
+          vi.mocked(deps.repository.completeBrokerCall).mock.calls,
+        ]);
+        expect(persisted).not.toContain(rejectedContent);
       }
     },
   );
@@ -802,6 +842,7 @@ function brokerCapability(
     scopes: ["projects.search"],
     depth: 0,
     aiStateWritesAllowed: true,
+    memorySnapshotAt: MEMORY_SNAPSHOT_AT,
     ...overrides,
   };
 }
