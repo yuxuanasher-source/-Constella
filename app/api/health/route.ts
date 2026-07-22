@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 
+import {
+  hermesRuntimeConfigurationErrorHealth,
+  parseHermesRuntimeSelectionConfig,
+  summarizeHermesRuntimeHealth,
+} from "@/features/ai/hermes/runtime-selection";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 // 健康检查端点（阶段0 整改 R3）：供外部探活/监控轮询。
@@ -9,10 +14,11 @@ import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  let db = false;
   try {
     const client = createSupabaseAdminClient();
     if (!client) {
-      return NextResponse.json({ ok: false, db: false }, { status: 503 });
+      return healthResponse(false, false);
     }
 
     const { error } = await client
@@ -20,11 +26,34 @@ export async function GET() {
       .select("id", { count: "exact", head: true })
       .limit(1);
     if (error) {
-      return NextResponse.json({ ok: false, db: false }, { status: 503 });
+      return healthResponse(false, false);
     }
 
-    return NextResponse.json({ ok: true, db: true }, { status: 200 });
+    db = true;
+    return healthResponse(true, db);
   } catch {
-    return NextResponse.json({ ok: false, db: false }, { status: 503 });
+    return healthResponse(false, db);
+  }
+}
+
+function healthResponse(dbOk: boolean, db: boolean) {
+  try {
+    const hermesRuntime = summarizeHermesRuntimeHealth(
+      parseHermesRuntimeSelectionConfig(process.env),
+    );
+    const ok = dbOk && hermesRuntime.compatibilityStatus !== "runtime_disabled";
+    return NextResponse.json(
+      { ok, db, hermesRuntime },
+      { status: ok ? 200 : 503 },
+    );
+  } catch {
+    return NextResponse.json(
+      {
+        ok: false,
+        db,
+        hermesRuntime: hermesRuntimeConfigurationErrorHealth(),
+      },
+      { status: 503 },
+    );
   }
 }

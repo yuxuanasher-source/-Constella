@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET } from "./route";
 
@@ -20,18 +20,46 @@ function fakeAdminClient({ error = null }: { error?: Error | null }) {
 }
 
 describe("/api/health", () => {
+  const originalEnv = process.env;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env = { ...originalEnv };
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
   });
 
   it("returns ok with a healthy database", async () => {
     const client = fakeAdminClient({});
     vi.mocked(createSupabaseAdminClient).mockReturnValue(client as never);
+    process.env.XINGYAO_HERMES_GATEWAY_ENABLED = "true";
+    process.env.XINGYAO_HERMES_GATEWAY_ALLOWLIST =
+      "11111111-1111-4111-8111-111111111111/22222222-2222-4222-8222-222222222222";
+    process.env.XINGYAO_HERMES_GATEWAY_BASE_URL = "ws://127.0.0.1:8788";
+    process.env.XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN =
+      "gateway-service-token-that-is-long-enough";
+    process.env.XINGYAO_HERMES_LEGACY_RUNTIME_ENABLED = "true";
 
     const response = await GET();
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true, db: true });
+    const body = await response.json();
+    expect(body).toEqual({
+      ok: true,
+      db: true,
+      hermesRuntime: {
+        gatewayEnabled: true,
+        gatewayConfigured: true,
+        gatewayAllowlistConfigured: true,
+        legacyEnabled: true,
+        compatibilityStatus: "gateway_v2_ready",
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("127.0.0.1");
+    expect(JSON.stringify(body)).not.toContain("gateway-service-token");
+    expect(JSON.stringify(body)).not.toContain("11111111-1111");
     expect(client.from).toHaveBeenCalledWith("organizations");
     // head 计数：探活不拉任何业务行。
     expect(client.select).toHaveBeenCalledWith("id", {
@@ -51,7 +79,7 @@ describe("/api/health", () => {
 
     expect(response.status).toBe(503);
     const body = await response.json();
-    expect(body).toEqual({ ok: false, db: false });
+    expect(body).toMatchObject({ ok: false, db: false });
     expect(JSON.stringify(body)).not.toContain("10.0.0.5");
   });
 
@@ -61,6 +89,38 @@ describe("/api/health", () => {
     const response = await GET();
 
     expect(response.status).toBe(503);
-    await expect(response.json()).resolves.toEqual({ ok: false, db: false });
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      db: false,
+    });
+  });
+
+  it("returns a redacted 503 when Hermes runtime configuration is malformed", async () => {
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(fakeAdminClient({}) as never);
+    process.env.XINGYAO_HERMES_GATEWAY_ENABLED = "true";
+    process.env.XINGYAO_HERMES_GATEWAY_ALLOWLIST =
+      "11111111-1111-4111-8111-111111111111/not-a-user";
+    process.env.XINGYAO_HERMES_GATEWAY_BASE_URL = "ws://127.0.0.1:8788";
+    process.env.XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN =
+      "gateway-service-token-that-is-long-enough";
+
+    const response = await GET();
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toEqual({
+      ok: false,
+      db: true,
+      hermesRuntime: {
+        gatewayEnabled: false,
+        gatewayConfigured: false,
+        gatewayAllowlistConfigured: false,
+        legacyEnabled: false,
+        compatibilityStatus: "configuration_error",
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("not-a-user");
+    expect(JSON.stringify(body)).not.toContain("127.0.0.1");
+    expect(JSON.stringify(body)).not.toContain("gateway-service-token");
   });
 });

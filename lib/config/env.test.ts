@@ -31,10 +31,24 @@ describe("parseServerEnv", () => {
       )({
         SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
         STORAGE_BUCKET_PRIVATE: "jy-private",
+        XINGYAO_HERMES_GATEWAY_ENABLED: "true",
+        XINGYAO_HERMES_GATEWAY_ALLOWLIST:
+          "11111111-1111-4111-8111-111111111111/*",
+        XINGYAO_HERMES_GATEWAY_BASE_URL: "ws://127.0.0.1:8788",
+        XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN:
+          "gateway-service-token-that-is-long-enough",
+        XINGYAO_HERMES_LEGACY_RUNTIME_ENABLED: "false",
       }),
-    ).toEqual({
+    ).toMatchObject({
       SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
       STORAGE_BUCKET_PRIVATE: "jy-private",
+      XINGYAO_HERMES_GATEWAY_ENABLED: true,
+      XINGYAO_HERMES_GATEWAY_ALLOWLIST:
+        "11111111-1111-4111-8111-111111111111/*",
+      XINGYAO_HERMES_GATEWAY_BASE_URL: "ws://127.0.0.1:8788",
+      XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN:
+        "gateway-service-token-that-is-long-enough",
+      XINGYAO_HERMES_LEGACY_RUNTIME_ENABLED: false,
     });
   });
 
@@ -48,10 +62,42 @@ describe("parseServerEnv", () => {
       parseServerEnv({
         SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
       }),
-    ).toEqual({
+    ).toMatchObject({
       SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
       STORAGE_BUCKET_PRIVATE: "jy-private",
+      XINGYAO_HERMES_GATEWAY_ENABLED: false,
+      XINGYAO_HERMES_GATEWAY_ALLOWLIST: "",
+      XINGYAO_HERMES_GATEWAY_BASE_URL: null,
+      XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN: null,
+      XINGYAO_HERMES_LEGACY_RUNTIME_ENABLED: false,
     });
+  });
+
+  it("rejects malformed Hermes Gateway server-only env instead of silently defaulting", () => {
+    const parseServerEnv = (envConfig as Record<string, unknown>)
+      .parseServerEnv as (
+      env: Record<string, string | undefined>,
+    ) => Record<string, unknown>;
+
+    expect(() =>
+      parseServerEnv({
+        SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        XINGYAO_HERMES_GATEWAY_ENABLED: "yes",
+      }),
+    ).toThrow();
+    expect(() =>
+      parseServerEnv({
+        SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        XINGYAO_HERMES_GATEWAY_ALLOWLIST:
+          "11111111-1111-4111-8111-111111111111",
+      }),
+    ).toThrow();
+    expect(() =>
+      parseServerEnv({
+        SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        XINGYAO_HERMES_GATEWAY_BASE_URL: "not-a-url",
+      }),
+    ).toThrow();
   });
 });
 
