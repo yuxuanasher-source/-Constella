@@ -3,6 +3,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { computeHermesSkillGrantsHash } from "@/features/ai/hermes/actor-fingerprint";
 import {
+  loadHermesSkillDraftApprovalRowsForActor,
+  type HermesSkillDraftRegistryClient,
+} from "@/features/ai/hermes/approved-skill-registry";
+import {
   isHermesActorProfile,
   isHermesReadScope,
   isSha256,
@@ -27,12 +31,13 @@ import {
   HermesToolBrokerError,
   type HermesBrokerCapability,
   type HermesToolBrokerErrorCode,
+  type HermesToolBrokerDependencies,
 } from "@/features/ai/hermes/tool-broker";
+import { evaluateHermesSkillGrantsForActor } from "@/features/ai/hermes/skill-governance";
 import {
   hermesSkillSigningPublicKeysToRecord,
   getHermesSkillSigningPublicKeysFromPublicEnv,
 } from "@/features/ai/hermes/skill-signing";
-import type { HermesSkillDraftRegistryClient } from "@/features/ai/hermes/approved-skill-registry";
 import {
   parseHermesToolBrokerRequest,
   type HermesToolBrokerEnvelope,
@@ -111,33 +116,68 @@ async function executeWithProductPersistence(input: {
 
   return executeHermesToolBrokerCall({
     ...input,
-    dependencies: {
-      repository: createHermesStateRepository(
-        client as unknown as HermesStateRepositoryClient,
-      ),
-      loadCapability: (loadInput) => loadBrokerCapability(client, loadInput),
-      reauthorizeActor: (authorizationInput) =>
-        authorizeLiveHermesActor({
-          client: client as unknown as HermesLiveActorAuthorizationClient,
-          ...authorizationInput,
-        }),
-      executeRead: async ({ actor, toolName, arguments: toolArguments }) => {
-        const result = await authorizeAndExecuteHermesReadTool(
-          client as unknown as HermesReadDbClient,
-          actor,
-          toolName,
-          toolArguments,
-        );
-        return result.envelope;
-      },
-      loadApprovedSkillArtifact: createHermesApprovedSkillArtifactLoader({
-        client: client as unknown as HermesSkillDraftRegistryClient,
-        publicKeys: hermesSkillSigningPublicKeysToRecord(
-          getHermesSkillSigningPublicKeysFromPublicEnv(),
-        ),
-      }),
-    },
+    dependencies: createHermesProductToolBrokerDependencies({ client }),
   });
+}
+
+export function createHermesProductToolBrokerDependencies({
+  client,
+  publicKeys = hermesSkillSigningPublicKeysToRecord(
+    getHermesSkillSigningPublicKeysFromPublicEnv(),
+  ),
+}: {
+  client: unknown;
+  publicKeys?: Record<string, string>;
+}): HermesToolBrokerDependencies {
+  const registryClient = client as HermesSkillDraftRegistryClient;
+  return {
+    repository: createHermesStateRepository(
+      client as HermesStateRepositoryClient,
+    ),
+    loadCapability: (loadInput) =>
+      loadBrokerCapability(client as SupabaseClient, loadInput),
+    reauthorizeActor: (authorizationInput) =>
+      authorizeLiveHermesActor({
+        client: client as HermesLiveActorAuthorizationClient,
+        ...authorizationInput,
+        resolveSkillGrants: async ({
+          role,
+          allowedReadScopes,
+          actorSnapshot,
+        }) => {
+          const rows = await loadHermesSkillDraftApprovalRowsForActor({
+            client: registryClient,
+            actor: {
+              organizationId: actorSnapshot.organizationId,
+              userId: actorSnapshot.userId,
+            },
+          });
+          return evaluateHermesSkillGrantsForActor({
+            role,
+            allowedReadScopes,
+            actor: {
+              organizationId: actorSnapshot.organizationId,
+              userId: actorSnapshot.userId,
+            },
+            approvedDraftRows: rows,
+            publicKeys,
+          }).enabledSkillVersions;
+        },
+      }),
+    executeRead: async ({ actor, toolName, arguments: toolArguments }) => {
+      const result = await authorizeAndExecuteHermesReadTool(
+        client as HermesReadDbClient,
+        actor,
+        toolName,
+        toolArguments,
+      );
+      return result.envelope;
+    },
+    loadApprovedSkillArtifact: createHermesApprovedSkillArtifactLoader({
+      client: registryClient,
+      publicKeys,
+    }),
+  };
 }
 
 async function loadBrokerCapability(
