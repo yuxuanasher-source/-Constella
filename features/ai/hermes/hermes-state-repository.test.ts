@@ -81,6 +81,7 @@ function persistedJsonOperations(
         1,
         "completed",
         payload,
+        { content: "Tool completed", metadata: payload },
       ),
     (repository) =>
       repository.appendToolMessage(actor, TURN_ID, {
@@ -109,10 +110,7 @@ function persistedJsonOperations(
   ];
 }
 
-function payloadShapes(
-  key: string,
-  value: unknown,
-): Record<string, unknown>[] {
+function payloadShapes(key: string, value: unknown): Record<string, unknown>[] {
   const ownKeyObject = (): Record<string, unknown> => {
     const payload: Record<string, unknown> = {};
     Object.defineProperty(payload, key, {
@@ -256,20 +254,32 @@ describe("Hermes state repository", () => {
         status: "completed",
         reused: false,
         fencing_token: 7,
+        message_id: MESSAGE_ID,
+        sequence_no: 9,
       },
       error: null,
     });
     const completeRepository = createHermesStateRepository(
       completeClient.client,
     );
-    await completeRepository.completeBrokerCall(
-      actor,
-      BROKER_CALL_ID,
-      CLAIM_OWNER_ID,
-      7,
-      "completed",
-      { status: "ok" },
-    );
+    await expect(
+      completeRepository.completeBrokerCall(
+        actor,
+        BROKER_CALL_ID,
+        CLAIM_OWNER_ID,
+        7,
+        "completed",
+        { status: "ok" },
+        {
+          content: "Sanitized tool result",
+          metadata: { toolCallId: "tool-call-1", truncated: false },
+        },
+      ),
+    ).resolves.toMatchObject({
+      brokerCallId: BROKER_CALL_ID,
+      messageId: MESSAGE_ID,
+      sequence: 9,
+    });
     expect(completeClient.rpc).toHaveBeenCalledWith(
       "complete_ai_hermes_broker_call",
       {
@@ -281,6 +291,8 @@ describe("Hermes state repository", () => {
         p_status: "completed",
         p_sanitized_response_envelope: { status: "ok" },
         p_error_code: null,
+        p_tool_content: "Sanitized tool result",
+        p_tool_metadata: { toolCallId: "tool-call-1", truncated: false },
       },
     );
   });
@@ -795,6 +807,7 @@ describe("Hermes state repository", () => {
           1,
           "completed",
           {},
+          { content: "Tool completed", metadata: {} },
         ),
     },
     {
@@ -878,32 +891,34 @@ describe("Hermes state repository", () => {
       invoke: (repository: HermesStateRepository) =>
         repository.cancelTurn(actor, CONVERSATION_ID, TURN_ID),
     },
-  ])("fails closed on malformed success UUID $name", async ({ data, invoke }) => {
-    const { client } = rpcClient({ data, error: null });
-    await expect(invoke(createHermesStateRepository(client))).rejects.toMatchObject(
-      { code: "state_conflict" },
-    );
-  });
+  ])(
+    "fails closed on malformed success UUID $name",
+    async ({ data, invoke }) => {
+      const { client } = rpcClient({ data, error: null });
+      await expect(
+        invoke(createHermesStateRepository(client)),
+      ).rejects.toMatchObject({ code: "state_conflict" });
+    },
+  );
 
-  it.each([
-    "2026-07-22",
-    "2026-02-30T05:05:00.000Z",
-    "not-an-iso-date",
-  ])("fails closed on malformed success timestamp %s", async (expiresAt) => {
-    const { client } = rpcClient({
-      data: { capability_id: CAPABILITY_ID, expires_at: expiresAt },
-      error: null,
-    });
+  it.each(["2026-07-22", "2026-02-30T05:05:00.000Z", "not-an-iso-date"])(
+    "fails closed on malformed success timestamp %s",
+    async (expiresAt) => {
+      const { client } = rpcClient({
+        data: { capability_id: CAPABILITY_ID, expires_at: expiresAt },
+        error: null,
+      });
 
-    await expect(
-      createHermesStateRepository(client).issueRunCapability(
-        actorSnapshot,
-        { id: TURN_ID, conversationId: CONVERSATION_ID },
-        capabilityBinding,
-        new Date("2026-07-22T05:05:00.000Z"),
-      ),
-    ).rejects.toMatchObject({ code: "state_conflict" });
-  });
+      await expect(
+        createHermesStateRepository(client).issueRunCapability(
+          actorSnapshot,
+          { id: TURN_ID, conversationId: CONVERSATION_ID },
+          capabilityBinding,
+          new Date("2026-07-22T05:05:00.000Z"),
+        ),
+      ).rejects.toMatchObject({ code: "state_conflict" });
+    },
+  );
 
   it.each([
     "id",

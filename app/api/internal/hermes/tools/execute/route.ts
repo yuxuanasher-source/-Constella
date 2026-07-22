@@ -289,8 +289,6 @@ function statusForBrokerError(code: HermesToolBrokerErrorCode): number {
       return 409;
     case "persistence_unavailable":
       return 503;
-    case "upstream_unavailable":
-      return 502;
     case "internal_error":
       return 500;
   }

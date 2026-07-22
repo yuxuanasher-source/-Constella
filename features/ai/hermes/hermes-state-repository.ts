@@ -137,6 +137,8 @@ export type CompletedHermesBrokerCall = {
   status: "completed" | "failed" | "denied";
   reused: boolean;
   fencingToken: number;
+  messageId: string;
+  sequence: number;
 };
 
 export type AppendedHermesToolMessage = {
@@ -209,6 +211,7 @@ export type HermesStateRepository = {
     fencingToken: number,
     status: "completed" | "failed" | "denied",
     sanitizedEnvelope: Record<string, unknown>,
+    auditMessage: { content: string; metadata?: Record<string, unknown> },
   ): Promise<CompletedHermesBrokerCall>;
   appendToolMessage(
     actor: HermesStateActor,
@@ -346,6 +349,7 @@ export function createHermesStateRepository(
       fencingToken,
       status,
       sanitizedEnvelope,
+      auditMessage,
     ) {
       requireIdentity(actor);
       requireUuidInput(claimId);
@@ -353,6 +357,8 @@ export function createHermesStateRepository(
       if (!isPositiveInteger(fencingToken)) invalidInput();
       if (!isBrokerTerminalStatus(status)) invalidInput();
       const envelope = copySanitizedObject(sanitizedEnvelope);
+      requireNonEmpty(auditMessage.content);
+      const metadata = copySanitizedObject(auditMessage.metadata ?? {});
       const data = await callRpc(client, "complete_ai_hermes_broker_call", {
         p_organization_id: actor.organizationId,
         p_owner_user_id: actor.userId,
@@ -362,6 +368,8 @@ export function createHermesStateRepository(
         p_status: status,
         p_sanitized_response_envelope: envelope,
         p_error_code: null,
+        p_tool_content: auditMessage.content,
+        p_tool_metadata: metadata,
       });
       return parseBrokerCompletion(data);
     },
@@ -629,6 +637,8 @@ function parseBrokerCompletion(value: unknown): CompletedHermesBrokerCall {
     status: value.status,
     reused: value.reused,
     fencingToken: requiredPositiveInteger(value.fencing_token),
+    messageId: requiredUuid(value.message_id),
+    sequence: requiredPositiveInteger(value.sequence_no),
   };
 }
 
@@ -732,11 +742,7 @@ const FORBIDDEN_PAYLOAD_KEYS = new Set([
   "userid",
 ]);
 
-const PROTOTYPE_CONTROL_KEYS = new Set([
-  "constructor",
-  "proto",
-  "prototype",
-]);
+const PROTOTYPE_CONTROL_KEYS = new Set(["constructor", "proto", "prototype"]);
 
 function copySanitizedObject(value: unknown): Record<string, unknown> {
   const copied = copySanitizedValue(value, new WeakSet<object>(), 0);
@@ -776,11 +782,7 @@ function copySanitizedValue(
       invalidInput();
     }
     validatePayloadProperty(key, descriptor.value);
-    const copiedValue = copySanitizedValue(
-      descriptor.value,
-      seen,
-      depth + 1,
-    );
+    const copiedValue = copySanitizedValue(descriptor.value, seen, depth + 1);
     Object.defineProperty(copy, key, {
       value: copiedValue,
       enumerable: true,

@@ -82,7 +82,6 @@ describe("Hermes Tool Broker execute route", () => {
     ["idempotency_conflict", 409],
     ["lease_unavailable", 409],
     ["persistence_unavailable", 503],
-    ["upstream_unavailable", 502],
     ["internal_error", 500],
   ] as const)(
     "maps %s without leaking tenancy or internals",

@@ -11,6 +11,9 @@ import {
   HERMES_READ_ENDPOINTS,
   authorizeHermesReadActor,
   hermesReadError,
+  normalizeHermesEvidenceRefs,
+  sanitizeHermesReadMetadata,
+  sanitizeHermesReadValue,
   type HermesReadEnvelope,
 } from "./read-api";
 import {
@@ -40,7 +43,6 @@ export type HermesToolBrokerErrorCode =
   | "idempotency_conflict"
   | "lease_unavailable"
   | "persistence_unavailable"
-  | "upstream_unavailable"
   | "internal_error";
 
 const ERROR_MESSAGES: Record<HermesToolBrokerErrorCode, string> = {
@@ -49,7 +51,6 @@ const ERROR_MESSAGES: Record<HermesToolBrokerErrorCode, string> = {
   idempotency_conflict: "Hermes Tool Broker request conflicts with a replay",
   lease_unavailable: "Hermes Tool Broker lease is unavailable",
   persistence_unavailable: "Hermes Tool Broker persistence is unavailable",
-  upstream_unavailable: "Hermes Tool Broker upstream is unavailable",
   internal_error: "Hermes Tool Broker failed",
 };
 
@@ -63,7 +64,7 @@ export class HermesToolBrokerError extends Error {
 export type HermesToolBrokerDependencies = {
   repository: Pick<
     HermesStateRepository,
-    "claimBrokerCall" | "completeBrokerCall" | "appendToolMessage"
+    "claimBrokerCall" | "completeBrokerCall"
   >;
   loadCapability(input: {
     tokenSha256: string;
@@ -153,6 +154,11 @@ export async function executeHermesToolBrokerCall({
     response as unknown as Record<string, unknown>,
   ) as unknown as HermesToolBrokerEnvelope;
   const completionStatus = response.status === "error" ? "failed" : "completed";
+  const auditMessage = toolAuditMessage(
+    request,
+    sanitizedRequest,
+    sanitizedResponse,
+  );
 
   await completeBrokerCall(dependencies, {
     owner,
@@ -161,11 +167,7 @@ export async function executeHermesToolBrokerCall({
     fencingToken: claim.fencingToken,
     completionStatus,
     sanitizedResponse,
-  });
-
-  await appendToolMessage(dependencies, capability, live.actor, request, {
-    request: sanitizedRequest,
-    response: sanitizedResponse,
+    auditMessage,
   });
   return sanitizedResponse;
 }
@@ -245,6 +247,7 @@ async function completeBrokerCall(
     fencingToken: number;
     completionStatus: "completed" | "failed";
     sanitizedResponse: HermesToolBrokerEnvelope;
+    auditMessage: { content: string; metadata: Record<string, unknown> };
   },
 ): Promise<void> {
   try {
@@ -255,52 +258,35 @@ async function completeBrokerCall(
       input.fencingToken,
       input.completionStatus,
       input.sanitizedResponse as unknown as Record<string, unknown>,
+      input.auditMessage,
     );
   } catch (error) {
     throw mapRepositoryError(error, "complete");
   }
 }
 
-async function appendToolMessage(
-  dependencies: HermesToolBrokerDependencies,
-  capability: HermesBrokerCapability,
-  actor: HermesActorProfile,
+function toolAuditMessage(
   request: HermesToolBrokerRequest,
-  audit: {
-    request: Record<string, unknown>;
-    response: HermesToolBrokerEnvelope;
-  },
-): Promise<void> {
+  sanitizedRequest: Record<string, unknown>,
+  sanitizedResponse: HermesToolBrokerEnvelope,
+): { content: string; metadata: Record<string, unknown> } {
   const content = JSON.stringify({
     toolName: request.toolName,
     toolCallId: request.toolCallId,
-    arguments: audit.request.arguments,
-    result: audit.response,
+    arguments: sanitizedRequest.arguments,
+    result: sanitizedResponse,
   });
-  try {
-    await dependencies.repository.appendToolMessage(
-      {
-        organizationId: actor.organizationId,
-        userId: actor.userId,
-        conversationId: actor.conversationId,
-        invocationId: capability.rootInvocationId,
+  return {
+    content,
+    metadata: {
+      hermesTool: {
+        toolName: request.toolName,
+        toolCallId: request.toolCallId,
+        invocationId: request.invocationId,
+        status: sanitizedResponse.status,
       },
-      capability.turnId,
-      {
-        content,
-        metadata: {
-          hermesTool: {
-            toolName: request.toolName,
-            toolCallId: request.toolCallId,
-            invocationId: request.invocationId,
-            status: audit.response.status,
-          },
-        },
-      },
-    );
-  } catch (error) {
-    throw mapRepositoryError(error, "append");
-  }
+    },
+  };
 }
 
 async function executeReadTool(
@@ -325,7 +311,7 @@ function brokerEnvelope(
   now: Date,
 ): HermesToolBrokerEnvelope {
   const metadata = {
-    evidenceRefs: metadataList(
+    evidenceRefs: normalizeHermesEvidenceRefs(
       "evidenceRefs" in envelope ? envelope.evidenceRefs : [],
     ),
     sourceLabels: metadataList(
@@ -353,112 +339,25 @@ function brokerEnvelope(
   }
   return {
     status: envelope.status,
-    data: sanitizeValue(envelope.data),
+    data: sanitizeHermesReadValue(envelope.data),
     ...metadata,
   };
 }
 
 function metadataList(values: readonly string[]): string[] {
-  return [
-    ...new Set(values.map((value) => sanitizeText(value.trim().slice(0, 160)))),
-  ]
-    .filter((value) => Boolean(value) && value !== "[REDACTED]")
-    .slice(0, 100);
+  return sanitizeHermesReadMetadata(values);
 }
 
 function sanitizeRecord(
   value: Record<string, unknown>,
 ): Record<string, unknown> {
-  const sanitized = sanitizeValue(value);
+  const sanitized = sanitizeHermesReadValue(value);
   return isRecord(sanitized) ? sanitized : {};
-}
-
-function sanitizeValue(value: unknown, depth = 0): unknown {
-  if (depth > 32) return "[REDACTED]";
-  if (value === null || typeof value === "boolean") return value;
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value === "string") return sanitizeText(value);
-  if (Array.isArray(value)) {
-    return value.slice(0, 200).map((item) => sanitizeValue(item, depth + 1));
-  }
-  if (!isRecord(value)) return null;
-  const result: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (isSensitiveKey(key)) continue;
-    result[key] = sanitizeValue(item, depth + 1);
-  }
-  return result;
-}
-
-function sanitizeText(value: string): string {
-  const normalized = value.slice(0, 20_000);
-  if (
-    /\bBearer\s+[A-Za-z0-9._~-]+/i.test(normalized) ||
-    /\b(select|insert|update|delete|alter|drop|create)\b[\s\S]*\b(from|into|table|where)\b/i.test(
-      normalized,
-    ) ||
-    /(?:^|[^A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?:$|[^A-Za-z0-9_-])/.test(
-      normalized,
-    ) ||
-    /(?:localhost|127\.0\.0\.1|\/api\/internal\/)/i.test(normalized) ||
-    /\b(?:capability|secret|authorization|private\s+key|actor\s+jws)\b/i.test(
-      normalized,
-    ) ||
-    /\b(?:eyJ[A-Za-z0-9_-]*|signed)\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(
-      normalized,
-    )
-  ) {
-    return "[REDACTED]";
-  }
-  return normalized;
-}
-
-function isSensitiveKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-  return (
-    [
-      "actorassertion",
-      "actorjws",
-      "authorization",
-      "bearer",
-      "capability",
-      "cookie",
-      "internalroute",
-      "method",
-      "model",
-      "operation",
-      "organizationid",
-      "owneruserid",
-      "password",
-      "privatekey",
-      "provider",
-      "rawcapability",
-      "secret",
-      "sessionid",
-      "sql",
-      "stack",
-      "table",
-      "token",
-      "url",
-      "userid",
-    ].includes(normalized) ||
-    normalized.includes("authorization") ||
-    normalized.includes("bearer") ||
-    normalized.includes("cookie") ||
-    normalized.endsWith("token") ||
-    normalized.endsWith("apikey") ||
-    normalized.endsWith("password") ||
-    normalized.endsWith("privatekey") ||
-    normalized.endsWith("secretkey") ||
-    normalized.endsWith("secret") ||
-    normalized.endsWith("jws") ||
-    normalized.endsWith("jwt")
-  );
 }
 
 function mapRepositoryError(
   error: unknown,
-  phase: "claim" | "complete" | "append",
+  phase: "claim" | "complete",
 ): HermesToolBrokerError {
   if (error instanceof HermesToolBrokerError) return error;
   if (error instanceof HermesStateRepositoryError) {

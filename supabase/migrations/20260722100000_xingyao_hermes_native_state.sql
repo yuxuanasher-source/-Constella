@@ -351,6 +351,7 @@ create table public.ai_hermes_broker_calls (
   status text not null default 'claimed',
   sanitized_response_envelope jsonb,
   error_code text,
+  tool_message_id uuid references public.ai_chat_messages(id) on delete restrict,
   claim_owner_id uuid not null,
   claim_lease_expires_at timestamptz not null,
   claim_attempt integer not null default 1,
@@ -361,6 +362,8 @@ create table public.ai_hermes_broker_calls (
   updated_at timestamptz not null default now(),
   constraint ai_hermes_broker_calls_tool_call_key
     unique (capability_id, tool_call_id),
+  constraint ai_hermes_broker_calls_tool_message_key
+    unique (tool_message_id),
   constraint ai_hermes_broker_calls_capability_tenant_fkey
     foreign key (capability_id, organization_id, owner_user_id)
     references public.ai_hermes_run_capabilities(id, organization_id, owner_user_id)
@@ -380,11 +383,17 @@ create table public.ai_hermes_broker_calls (
     claim_lease_expires_at > claimed_at
   ),
   constraint ai_hermes_broker_calls_response_check check (
-    (status = 'claimed' and sanitized_response_envelope is null and completed_at is null)
+    (
+      status = 'claimed'
+      and sanitized_response_envelope is null
+      and tool_message_id is null
+      and completed_at is null
+    )
     or (
       status in ('completed', 'failed', 'denied')
       and sanitized_response_envelope is not null
       and jsonb_typeof(sanitized_response_envelope) = 'object'
+      and tool_message_id is not null
       and completed_at is not null
     )
   )
@@ -1467,6 +1476,19 @@ begin
     and owner_user_id = p_owner_user_id;
 
   if v_existing.status in ('completed', 'failed', 'denied') then
+    if v_existing.tool_message_id is null or not exists (
+      select 1
+      from public.ai_chat_messages tool_message
+      where tool_message.id = v_existing.tool_message_id
+        and tool_message.organization_id = v_existing.organization_id
+        and tool_message.owner_user_id = v_existing.owner_user_id
+        and tool_message.conversation_id = v_capability.conversation_id
+        and tool_message.ai_invocation_id = v_capability.root_invocation_id
+        and tool_message.role = 'tool'
+        and tool_message.status = 'completed'
+    ) then
+      raise exception 'broker_call_audit_missing';
+    end if;
     return jsonb_build_object(
       'broker_call_id', v_existing.id,
       'status', v_existing.status,
@@ -1527,6 +1549,9 @@ $$;
 drop function if exists public.complete_ai_hermes_broker_call(
   uuid, uuid, bigint, text, jsonb, text
 );
+drop function if exists public.complete_ai_hermes_broker_call(
+  uuid, uuid, uuid, uuid, bigint, text, jsonb, text
+);
 
 create or replace function public.complete_ai_hermes_broker_call(
   p_organization_id uuid,
@@ -1536,7 +1561,9 @@ create or replace function public.complete_ai_hermes_broker_call(
   p_fencing_token bigint,
   p_status text,
   p_sanitized_response_envelope jsonb,
-  p_error_code text
+  p_error_code text,
+  p_tool_content text,
+  p_tool_metadata jsonb
 )
 returns jsonb
 language plpgsql
@@ -1545,6 +1572,11 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_call public.ai_hermes_broker_calls%rowtype;
+  v_capability public.ai_hermes_run_capabilities%rowtype;
+  v_message_id uuid;
+  v_message_sequence bigint;
+  v_existing_content text;
+  v_existing_metadata jsonb;
 begin
   if p_organization_id is null
      or p_owner_user_id is null
@@ -1553,7 +1585,9 @@ begin
      or p_fencing_token <= 0
      or p_status is null
      or p_status not in ('completed', 'failed', 'denied')
-     or jsonb_typeof(coalesce(p_sanitized_response_envelope, '{}'::jsonb)) <> 'object' then
+     or jsonb_typeof(coalesce(p_sanitized_response_envelope, '{}'::jsonb)) <> 'object'
+     or nullif(trim(coalesce(p_tool_content, '')), '') is null
+     or jsonb_typeof(coalesce(p_tool_metadata, '{}'::jsonb)) <> 'object' then
     raise exception 'broker_call_completion_invalid';
   end if;
 
@@ -1573,6 +1607,17 @@ begin
     raise exception 'broker_call_fence_invalid';
   end if;
 
+  select capability.*
+  into v_capability
+  from public.ai_hermes_run_capabilities capability
+  where capability.id = v_call.capability_id
+    and capability.organization_id = p_organization_id
+    and capability.owner_user_id = p_owner_user_id;
+
+  if not found then
+    raise exception 'capability_invalid';
+  end if;
+
   if v_call.status <> 'claimed' then
     if v_call.status = p_status
        and v_call.sanitized_response_envelope = coalesce(
@@ -1580,11 +1625,41 @@ begin
          '{}'::jsonb
        )
        and v_call.error_code is not distinct from nullif(trim(coalesce(p_error_code, '')), '') then
+      if v_call.tool_message_id is null then
+        raise exception 'broker_call_audit_missing';
+      end if;
+      select
+        tool_message.id,
+        tool_message.sequence_no,
+        tool_message.content,
+        tool_message.metadata
+      into
+        v_message_id,
+        v_message_sequence,
+        v_existing_content,
+        v_existing_metadata
+      from public.ai_chat_messages tool_message
+      where tool_message.id = v_call.tool_message_id
+        and tool_message.organization_id = p_organization_id
+        and tool_message.owner_user_id = p_owner_user_id
+        and tool_message.conversation_id = v_capability.conversation_id
+        and tool_message.ai_invocation_id = v_capability.root_invocation_id
+        and tool_message.role = 'tool'
+        and tool_message.status = 'completed';
+      if not found then
+        raise exception 'broker_call_audit_missing';
+      end if;
+      if v_existing_content is distinct from p_tool_content
+         or v_existing_metadata is distinct from coalesce(p_tool_metadata, '{}'::jsonb) then
+        raise exception 'broker_call_completion_conflict';
+      end if;
       return jsonb_build_object(
         'broker_call_id', v_call.id,
         'status', v_call.status,
         'reused', true,
-        'fencing_token', v_call.fencing_token
+        'fencing_token', v_call.fencing_token,
+        'message_id', v_message_id,
+        'sequence_no', v_message_sequence
       );
     end if;
     raise exception 'broker_call_completion_conflict';
@@ -1593,6 +1668,62 @@ begin
     raise exception 'broker_call_fence_invalid';
   end if;
 
+  perform 1
+  from public.ai_conversations conversation
+  where conversation.id = v_capability.conversation_id
+    and conversation.organization_id = p_organization_id
+    and conversation.owner_user_id = p_owner_user_id
+    and conversation.status = 'active'
+  for update;
+
+  if not found then
+    raise exception 'conversation_not_found';
+  end if;
+
+  perform 1
+  from public.ai_chat_turns turn
+  where turn.id = v_capability.turn_id
+    and turn.organization_id = p_organization_id
+    and turn.owner_user_id = p_owner_user_id
+    and turn.conversation_id = v_capability.conversation_id
+    and turn.ai_invocation_id = v_capability.root_invocation_id
+    and turn.status in ('accepted', 'grounding', 'generating', 'validating')
+    and turn.lease_expires_at > now()
+    and turn.cancel_requested_at is null
+  for update;
+
+  if not found then
+    raise exception 'turn_lease_invalid';
+  end if;
+
+  select coalesce(max(sequence_no), 0) + 1
+  into v_message_sequence
+  from public.ai_chat_messages
+  where conversation_id = v_capability.conversation_id;
+
+  insert into public.ai_chat_messages (
+    organization_id,
+    owner_user_id,
+    conversation_id,
+    sequence_no,
+    role,
+    status,
+    content,
+    ai_invocation_id,
+    metadata
+  ) values (
+    p_organization_id,
+    p_owner_user_id,
+    v_capability.conversation_id,
+    v_message_sequence,
+    'tool',
+    'completed',
+    p_tool_content,
+    v_capability.root_invocation_id,
+    coalesce(p_tool_metadata, '{}'::jsonb)
+  )
+  returning id into v_message_id;
+
   update public.ai_hermes_broker_calls
   set status = p_status,
       sanitized_response_envelope = coalesce(
@@ -1600,6 +1731,7 @@ begin
         '{}'::jsonb
       ),
       error_code = nullif(trim(coalesce(p_error_code, '')), ''),
+      tool_message_id = v_message_id,
       completed_at = now()
   where id = v_call.id
     and organization_id = p_organization_id
@@ -1607,11 +1739,23 @@ begin
     and claim_owner_id = p_claim_owner_id
     and fencing_token = p_fencing_token;
 
+  if not found then
+    raise exception 'broker_call_fence_invalid';
+  end if;
+
+  update public.ai_conversations
+  set last_message_at = now()
+  where id = v_capability.conversation_id
+    and organization_id = p_organization_id
+    and owner_user_id = p_owner_user_id;
+
   return jsonb_build_object(
     'broker_call_id', v_call.id,
     'status', p_status,
     'reused', false,
-    'fencing_token', v_call.fencing_token
+    'fencing_token', v_call.fencing_token,
+    'message_id', v_message_id,
+    'sequence_no', v_message_sequence
   );
 end;
 $$;
@@ -2542,7 +2686,7 @@ revoke all on function public.claim_ai_hermes_broker_call(
   uuid, uuid, text, text, uuid, text, text, text, jsonb
 ) from public, anon, authenticated;
 revoke all on function public.complete_ai_hermes_broker_call(
-  uuid, uuid, uuid, uuid, bigint, text, jsonb, text
+  uuid, uuid, uuid, uuid, bigint, text, jsonb, text, text, jsonb
 ) from public, anon, authenticated;
 revoke all on function public.append_ai_hermes_tool_message(
   uuid, uuid, uuid, uuid, uuid, text, jsonb
@@ -2583,7 +2727,7 @@ grant execute on function public.claim_ai_hermes_broker_call(
   uuid, uuid, text, text, uuid, text, text, text, jsonb
 ) to service_role;
 grant execute on function public.complete_ai_hermes_broker_call(
-  uuid, uuid, uuid, uuid, bigint, text, jsonb, text
+  uuid, uuid, uuid, uuid, bigint, text, jsonb, text, text, jsonb
 ) to service_role;
 grant execute on function public.append_ai_hermes_tool_message(
   uuid, uuid, uuid, uuid, uuid, text, jsonb

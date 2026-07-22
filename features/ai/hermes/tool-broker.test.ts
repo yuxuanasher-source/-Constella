@@ -137,7 +137,6 @@ describe("Hermes Product Tool Broker", () => {
     await expect(run(deps)).resolves.toEqual(replay);
     expect(deps.executeRead).not.toHaveBeenCalled();
     expect(deps.repository.completeBrokerCall).not.toHaveBeenCalled();
-    expect(deps.repository.appendToolMessage).not.toHaveBeenCalled();
   });
 
   it("maps a changed replay to idempotency_conflict before dispatch", async () => {
@@ -182,7 +181,61 @@ describe("Hermes Product Tool Broker", () => {
       1,
       "failed",
       expect.objectContaining({ error: { code: "upstream_unavailable" } }),
+      expect.objectContaining({
+        content: expect.stringContaining('"upstream_unavailable"'),
+        metadata: expect.objectContaining({
+          hermesTool: expect.objectContaining({ status: "error" }),
+        }),
+      }),
     );
+  });
+
+  it("persists partial metadata atomically and replays it without redispatch", async () => {
+    const partialRead = {
+      ...readSuccess(),
+      status: "partial" as const,
+      evidenceRefs: ["project:project-1"],
+      sourceLabels: ["project_record"],
+      missingData: ["older_projects_not_loaded"],
+      permissionDenials: ["private_budget"],
+      truncated: true,
+    };
+    const deps = dependencies({
+      executeRead: vi.fn(async () => partialRead),
+    });
+
+    const first = await run(deps);
+    expect(first).toMatchObject({
+      status: "partial",
+      evidenceRefs: partialRead.evidenceRefs,
+      sourceLabels: partialRead.sourceLabels,
+      missingData: partialRead.missingData,
+      permissionDenials: partialRead.permissionDenials,
+      truncated: true,
+    });
+    expect(deps.repository.completeBrokerCall).toHaveBeenCalledWith(
+      expect.any(Object),
+      BROKER_CALL_ID,
+      expect.any(String),
+      1,
+      "completed",
+      first,
+      expect.objectContaining({
+        content: expect.stringContaining('"truncated":true'),
+      }),
+    );
+
+    vi.mocked(deps.repository.claimBrokerCall).mockResolvedValueOnce({
+      brokerCallId: BROKER_CALL_ID,
+      status: "completed",
+      execute: false,
+      reused: true,
+      fencingToken: 1,
+      sanitizedResponseEnvelope: first,
+    });
+    await expect(run(deps)).resolves.toEqual(first);
+    expect(deps.executeRead).toHaveBeenCalledTimes(1);
+    expect(deps.repository.completeBrokerCall).toHaveBeenCalledTimes(1);
   });
 
   it("normalizes evidence metadata and persists only sanitized args/results", async () => {
@@ -212,7 +265,6 @@ describe("Hermes Product Tool Broker", () => {
     const persisted = JSON.stringify([
       vi.mocked(deps.repository.claimBrokerCall).mock.calls,
       vi.mocked(deps.repository.completeBrokerCall).mock.calls,
-      vi.mocked(deps.repository.appendToolMessage).mock.calls,
     ]);
 
     expect(result).toMatchObject({
@@ -317,8 +369,6 @@ function dependencies(
       status: "completed" as const,
       reused: false,
       fencingToken: 1,
-    })),
-    appendToolMessage: vi.fn(async () => ({
       messageId: "99999999-9999-4999-8999-999999999999",
       sequence: 3,
     })),

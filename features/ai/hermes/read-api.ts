@@ -207,8 +207,8 @@ export function hermesReadSuccess(
 ): HermesReadEnvelope {
   return {
     status: result.truncated ? "partial" : "ok",
-    data: result.data,
-    evidenceRefs: metadataList(result.evidenceRefs),
+    data: sanitizeHermesReadValue(result.data),
+    evidenceRefs: normalizeHermesEvidenceRefs(result.evidenceRefs),
     sourceLabels: metadataList(result.sourceLabels),
     updatedAt: new Date().toISOString(),
     missingData: metadataList(result.missingData),
@@ -320,6 +320,7 @@ export async function executeHermesReadTool(
         query: input.query,
         queryColumn: "name",
         limit: input.limit,
+        evidenceLabel: "project",
         sourceLabel: "project_record",
       });
     case "xingyao_get_project_summary":
@@ -334,6 +335,7 @@ export async function executeHermesReadTool(
         projectId: input.projectId,
         streamerId: input.streamerId,
         limit: input.limit,
+        evidenceLabel: "streamer_project_profile",
         sourceLabel: "project_streamer_record",
       });
     case "xingyao_search_live_reports":
@@ -346,6 +348,7 @@ export async function executeHermesReadTool(
         projectId: input.projectId,
         streamerId: input.streamerId,
         limit: input.limit,
+        evidenceLabel: "live_report",
         sourceLabel: "live_report_record",
       });
     case "xingyao_search_recording_reviews":
@@ -360,6 +363,7 @@ export async function executeHermesReadTool(
         query: input.query,
         queryColumn: "title",
         limit: input.limit,
+        evidenceLabel: "recording_review",
         sourceLabel: "recording_asset_record",
       });
     case "xingyao_search_knowledge":
@@ -373,6 +377,7 @@ export async function executeHermesReadTool(
           "id, project_id, batch_type, status, title, period_start, period_end, computed_amount, manual_amount, adjustment_amount, evidence_summary, updated_at",
         projectId: input.projectId,
         limit: input.limit,
+        evidenceLabel: "settlement_batch",
         sourceLabel: "settlement_batch_record",
       });
   }
@@ -412,6 +417,7 @@ async function queryRows({
   query,
   queryColumn,
   limit,
+  evidenceLabel,
   sourceLabel,
 }: {
   client: HermesReadDbClient;
@@ -423,6 +429,7 @@ async function queryRows({
   query?: string;
   queryColumn?: string;
   limit: number;
+  evidenceLabel: string;
   sourceLabel: string;
 }): Promise<HermesReadExecutionResult | HermesReadErrorCode> {
   let builder = client
@@ -436,16 +443,21 @@ async function queryRows({
       builder.ilike?.(queryColumn, `%${escapeIlike(query)}%`) ?? builder;
   }
   builder = builder.order?.("updated_at", { ascending: false }) ?? builder;
-  const result = await (builder.limit?.(limit) as
+  const result = await (builder.limit?.(limit + 1) as
     | Promise<QueryResult>
     | undefined);
   if (!result) return "internal_error";
   if (result.error) return "upstream_unavailable";
-  const rows = Array.isArray(result.data) ? result.data : [];
+  const availableRows = Array.isArray(result.data) ? result.data : [];
+  const truncated = availableRows.length > limit;
+  const rows = availableRows.slice(0, limit);
   return {
     data: { rows },
-    evidenceRefs: rows.map((row) => evidenceRef(table, row)).filter(Boolean),
+    evidenceRefs: rows
+      .map((row) => evidenceRef(evidenceLabel, row))
+      .filter(Boolean),
     sourceLabels: [sourceLabel],
+    truncated,
   };
 }
 
@@ -520,16 +532,142 @@ function limitValue(value: unknown): number | null {
   return Math.max(1, Math.min(value, 20));
 }
 
-function metadataList(values: readonly string[] | undefined): string[] {
-  return [...new Set(values ?? [])]
-    .map((value) => value.trim().slice(0, 160))
-    .filter(Boolean)
+export function sanitizeHermesReadValue(value: unknown, depth = 0): unknown {
+  if (depth > 32) return "[REDACTED]";
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") return sanitizeHermesReadText(value);
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, 200)
+      .map((item) => sanitizeHermesReadValue(item, depth + 1));
+  }
+  if (!isPlainRecord(value)) return null;
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (isSensitiveReadKey(key)) continue;
+    result[key] =
+      key.toLowerCase().replace(/[^a-z0-9]/g, "") === "sourceref" &&
+      typeof item === "string"
+        ? normalizeHermesEvidenceRef(item)
+        : sanitizeHermesReadValue(item, depth + 1);
+  }
+  return result;
+}
+
+export function sanitizeHermesReadMetadata(
+  values: readonly string[] | undefined,
+): string[] {
+  return [
+    ...new Set(
+      (values ?? []).map((value) =>
+        sanitizeHermesReadText(value.trim().slice(0, 160)),
+      ),
+    ),
+  ]
+    .filter((value) => Boolean(value) && value !== "[REDACTED]")
     .slice(0, 100);
 }
 
-function evidenceRef(table: string, row: unknown): string {
+export function normalizeHermesEvidenceRefs(
+  values: readonly string[] | undefined,
+): string[] {
+  return sanitizeHermesReadMetadata(
+    (values ?? []).map(normalizeHermesEvidenceRef),
+  );
+}
+
+function metadataList(values: readonly string[] | undefined): string[] {
+  return sanitizeHermesReadMetadata(values);
+}
+
+function normalizeHermesEvidenceRef(value: string): string {
+  const separator = value.indexOf(":");
+  if (separator < 1) return value;
+  const prefix = value.slice(0, separator);
+  const suffix = value.slice(separator + 1);
+  const publicPrefix: Record<string, string> = {
+    projects: "project",
+    project_streamers: "streamer_project_profile",
+    live_reports: "live_report",
+    recording_assets: "recording_review",
+    recording_ai_analyses: "recording_review",
+    settlement_batches: "settlement_batch",
+    knowledge_documents: "knowledge_document",
+  };
+  return `${publicPrefix[prefix] ?? prefix}:${suffix}`;
+}
+
+function sanitizeHermesReadText(value: string): string {
+  const normalized = value.slice(0, 20_000);
+  if (
+    /\bBearer\s+[A-Za-z0-9._~-]+/i.test(normalized) ||
+    /\b(select|insert|update|delete|alter|drop|create)\b[\s\S]*\b(from|into|table|where)\b/i.test(
+      normalized,
+    ) ||
+    /(?:localhost|127\.0\.0\.1|\/api\/internal\/)/i.test(normalized) ||
+    /\b(?:capability|secret|authorization|password|cookie|private\s+key|actor\s+jws)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:eyJ[A-Za-z0-9_-]*|signed)\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(
+      normalized,
+    ) ||
+    /(?:^|[^A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?:$|[^A-Za-z0-9_-])/.test(
+      normalized,
+    ) ||
+    /(?:^|\s)(?:error:|at\s+\S+\s*\([^)]*:\d+:\d+\))/i.test(normalized)
+  ) {
+    return "[REDACTED]";
+  }
+  return normalized;
+}
+
+function isSensitiveReadKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (
+    [
+      "actorassertion",
+      "actorjws",
+      "authorization",
+      "bearer",
+      "capability",
+      "cookie",
+      "internalroute",
+      "method",
+      "model",
+      "operation",
+      "organizationid",
+      "owneruserid",
+      "password",
+      "privatekey",
+      "provider",
+      "rawcapability",
+      "secret",
+      "sessionid",
+      "sql",
+      "stack",
+      "table",
+      "token",
+      "url",
+      "userid",
+    ].includes(normalized) ||
+    normalized.includes("authorization") ||
+    normalized.includes("bearer") ||
+    normalized.includes("cookie") ||
+    normalized.endsWith("token") ||
+    normalized.endsWith("apikey") ||
+    normalized.endsWith("password") ||
+    normalized.endsWith("privatekey") ||
+    normalized.endsWith("secretkey") ||
+    normalized.endsWith("secret") ||
+    normalized.endsWith("jws") ||
+    normalized.endsWith("jwt")
+  );
+}
+
+function evidenceRef(label: string, row: unknown): string {
   if (!isPlainRecord(row) || typeof row.id !== "string") return "";
-  return `${table}:${row.id}`.slice(0, 160);
+  return `${label}:${row.id}`.slice(0, 160);
 }
 
 function escapeIlike(value: string): string {

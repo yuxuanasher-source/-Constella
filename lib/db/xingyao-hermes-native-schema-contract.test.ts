@@ -175,6 +175,8 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(table).toContain("request_sha256 text not null");
     expect(table).toContain("status text not null");
     expect(table).toContain("sanitized_response_envelope jsonb");
+    expect(table).toContain("tool_message_id uuid");
+    expect(table).toContain("unique (tool_message_id)");
     expect(table).toContain("claim_owner_id uuid not null");
     expect(table).toContain("claim_lease_expires_at timestamptz not null");
     expect(table).toContain("claim_attempt integer not null");
@@ -210,6 +212,10 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(claim).toContain("broker_call_request_conflict");
     expect(claim).toContain("'reused', true");
     expect(claim).toContain("sanitized_response_envelope");
+    expect(claim).toContain("v_existing.tool_message_id is null");
+    expect(claim).toMatch(
+      /from public\.ai_chat_messages tool_message[\s\S]*?tool_message\.id = v_existing\.tool_message_id[\s\S]*?tool_message\.role = 'tool'/,
+    );
   });
 
   it("revokes terminal invocation capabilities and rejects stale invocation use", () => {
@@ -406,9 +412,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(parentLocked).toBeGreaterThan(parentLock);
     expect(parallelCount).toBeGreaterThan(parentLocked);
     expect(capabilityInsert).toBeGreaterThan(parallelCount);
-    expect(issue).toContain(
-      "join public.ai_invocations subagent_invocation",
-    );
+    expect(issue).toContain("join public.ai_invocations subagent_invocation");
     for (const fence of [
       "subagent_capability.organization_id = p_organization_id",
       "subagent_capability.owner_user_id = p_owner_user_id",
@@ -438,9 +442,7 @@ describe("Xingyao Hermes native state schema contract", () => {
   });
 
   it("enforces Fast depth 1 and Deep depth 2 in the table and issuer", () => {
-    const identity = functionSql(
-      "validate_ai_hermes_run_capability_identity",
-    );
+    const identity = functionSql("validate_ai_hermes_run_capability_identity");
     const issue = functionSql("issue_ai_hermes_run_capability");
     const lineage = functionSql(
       "lock_and_validate_ai_hermes_capability_lineage",
@@ -581,6 +583,8 @@ describe("Xingyao Hermes native state schema contract", () => {
       /broker_call\.id = p_broker_call_id\s+and broker_call\.organization_id = p_organization_id\s+and broker_call\.owner_user_id = p_owner_user_id/,
     );
     expect(complete).toContain("p_fencing_token bigint");
+    expect(complete).toContain("p_tool_content text");
+    expect(complete).toContain("p_tool_metadata jsonb");
     expect(complete).toMatch(
       /v_call\.claim_owner_id is distinct from p_claim_owner_id\s+or v_call\.fencing_token is distinct from p_fencing_token/,
     );
@@ -589,6 +593,17 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
     expect(complete).toContain("broker_call_fence_invalid");
     expect(complete).toContain("'fencing_token', v_call.fencing_token");
+    expect(complete).toMatch(
+      /from public\.ai_conversations conversation[\s\S]*?for update/,
+    );
+    expect(complete).toContain("coalesce(max(sequence_no), 0) + 1");
+    expect(complete).toMatch(
+      /insert into public\.ai_chat_messages[\s\S]*?'tool'[\s\S]*?'completed'/,
+    );
+    expect(complete).toContain("tool_message_id = v_message_id");
+    expect(complete).toContain("v_call.tool_message_id is null");
+    expect(complete).toContain("'message_id', v_message_id");
+    expect(complete).toContain("'sequence_no', v_message_sequence");
   });
 
   it("serializes memory idempotency and compares the complete request", () => {
@@ -796,7 +811,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     const claimSignature =
       "uuid, uuid, text, text, uuid, text, text, text, jsonb";
     const completeSignature =
-      "uuid, uuid, uuid, uuid, bigint, text, jsonb, text";
+      "uuid, uuid, uuid, uuid, bigint, text, jsonb, text, text, jsonb";
     const memorySignature =
       "uuid, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid";
 
@@ -877,9 +892,15 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(finishV2).toContain("outcome = v_effective_outcome");
   });
 
-  it("keeps tool append locked and provider-state updates compare-and-swap", () => {
+  it("keeps atomic broker audit and standalone tool append locked", () => {
+    const complete = functionSql("complete_ai_hermes_broker_call");
     const appendTool = functionSql("append_ai_hermes_tool_message");
     const updateState = functionSql("update_ai_conversation_hermes_state");
+
+    expect(complete).toContain("from public.ai_conversations");
+    expect(complete).toContain("for update");
+    expect(complete).toContain("coalesce(max(sequence_no), 0) + 1");
+    expect(complete).toContain("tool_message_id = v_message_id");
 
     expect(appendTool).toContain("from public.ai_conversations");
     expect(appendTool).toContain("for update");
