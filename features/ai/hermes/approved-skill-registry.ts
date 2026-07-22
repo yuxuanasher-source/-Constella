@@ -30,6 +30,9 @@ const SCRIPT_EXTENSIONS = new Set([
   ".ts",
   ".wasm",
 ]);
+const SKILL_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+const SEMVER_PATTERN =
+  /^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)([.](0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?([+][0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?$/;
 
 export type HermesBuiltinApprovedSkill = {
   skillId: string;
@@ -413,9 +416,10 @@ function parseApprovedManifest(
   const { skillId, version, allowedRoles, requiredReadScopes } = value;
   if (
     typeof skillId !== "string" ||
-    !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(skillId) ||
+    !SKILL_ID_PATTERN.test(skillId) ||
     typeof version !== "string" ||
-    !/^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)/.test(version) ||
+    version.length > 64 ||
+    !SEMVER_PATTERN.test(version) ||
     !Array.isArray(allowedRoles) ||
     !Array.isArray(requiredReadScopes) ||
     !allowedRoles.every(isHermesAuthRole) ||
@@ -493,7 +497,9 @@ function normalizeBundlePath(value: string): string | null {
   if (
     normalized.startsWith("/") ||
     /^[A-Za-z]:\//.test(normalized) ||
-    normalized.split("/").some((part) => part === "" || part === "..")
+    normalized
+      .split("/")
+      .some((part) => part === "" || part === "." || part === "..")
   ) {
     return null;
   }
@@ -513,9 +519,14 @@ function isForbiddenFilePath(value: string): boolean {
 
 function isExecutableMode(mode: unknown): boolean {
   if (mode === undefined) return false;
-  const text = String(mode);
+  if (typeof mode === "number") {
+    return !Number.isInteger(mode) || mode < 0 || (mode & 0o111) !== 0;
+  }
+  if (typeof mode !== "string") return true;
+  const text = mode.trim();
+  if (!/^(?:0o)?[0-7]+$/.test(text)) return true;
   const parsed = Number.parseInt(text.replace(/^0o/, ""), 8);
-  return Number.isFinite(parsed) && (parsed & 0o111) !== 0;
+  return (parsed & 0o111) !== 0;
 }
 
 function containsForbiddenEnvRef(content: string): boolean {

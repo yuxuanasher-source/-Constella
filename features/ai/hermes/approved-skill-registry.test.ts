@@ -43,6 +43,8 @@ describe("Hermes approved Skill registry", () => {
     ["symlink", bundle([{ path: "SKILL.md", content: "x", type: "symlink" }])],
     ["hardlink", bundle([{ path: "SKILL.md", content: "x", type: "hardlink" }])],
     ["executable", bundle([{ path: "SKILL.md", content: "x", mode: "100755" }])],
+    ["numeric executable", bundle([{ path: "SKILL.md", content: "x", mode: 493 }])],
+    ["invalid mode format", bundle([{ path: "SKILL.md", content: "x", mode: "493" }])],
     ["script", bundle([{ path: "scripts/run.sh", content: "echo hi" }])],
     ["native", bundle([{ path: "addon.node", content: "x" }])],
     ["wasm", bundle([{ path: "tool.wasm", content: "x" }])],
@@ -53,6 +55,13 @@ describe("Hermes approved Skill registry", () => {
       bundle([
         { path: "SKILL.md", content: "one" },
         { path: "SKILL.md", content: "two" },
+      ]),
+    ],
+    [
+      "dot segment duplicate",
+      bundle([
+        { path: "dir/file.md", content: "one" },
+        { path: "dir/./file.md", content: "two" },
       ]),
     ],
     [
@@ -110,18 +119,47 @@ describe("Hermes approved Skill registry", () => {
       },
     ]);
   });
+
+  it("does not grant approved rows whose manifest version is not a complete semver", () => {
+    const key = testSigningKey("skill-key-2026-07");
+    const manifest = approvedManifest({ version: "1.0.0-not-semver?" });
+    const bundleSha256 = computeHermesSkillBundleSha256("# Skill");
+    const row = approvedRow({
+      manifest,
+      signingKeyId: key.keyId,
+      signature: signHermesSkillApproval({
+        manifest,
+        bundleSha256,
+        signingKey: key,
+      }).signature,
+    });
+
+    expect(
+      resolveApprovedHermesSkillGrantsForActor({
+        actor: {
+          organizationId: ORG_ID,
+          userId: USER_ID,
+          role: "owner",
+          allowedReadScopes: ["projects.summary", "knowledge.search"],
+        },
+        rows: [row],
+        publicKeys: { [key.keyId]: key.publicKeyPem },
+      }),
+    ).toEqual([]);
+  });
 });
 
 function bundle(files: Array<Record<string, unknown>>) {
   return JSON.stringify({ files });
 }
 
-function approvedManifest() {
+function approvedManifest(overrides: Record<string, unknown> = {}) {
   return {
     skillId: "risk-review",
     version: "1.0.0",
     allowedRoles: ["owner"],
     requiredReadScopes: ["projects.summary", "knowledge.search"],
+    ...overrides,
   };
 }
 
