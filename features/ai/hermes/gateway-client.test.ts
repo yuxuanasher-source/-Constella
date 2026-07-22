@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 
-import { WebSocketServer, type WebSocket } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createHermesActorFingerprint } from "./actor-fingerprint";
 import {
   HERMES_CAPABILITY_MANIFEST_SHA256,
   HERMES_PROFILE_VERSION,
@@ -98,6 +99,23 @@ describe("Hermes Gateway JSON-RPC client", () => {
     );
   });
 
+  it("rejects unsafe direct config URLs before opening a WebSocket", async () => {
+    const { server, config } = await configuredGateway();
+    servers.push(server);
+
+    await expect(
+      createHermesGatewaySession(
+        sessionOptions({
+          ...config,
+          url: "ws://192.168.1.5:9000",
+        }),
+      ),
+    ).rejects.toThrow("hermes_gateway_invalid_loopback_url");
+
+    expect(server.handshakeHeaders).toEqual([]);
+    expect(server.commands).toEqual([]);
+  });
+
   it("requires a pinned gateway.ready before creating a session", async () => {
     const { server, config } = await configuredGateway();
     servers.push(server);
@@ -117,6 +135,12 @@ describe("Hermes Gateway JSON-RPC client", () => {
     ).rejects.toThrow("hermes_gateway_ready_mismatch");
 
     expect(server.commands).toEqual([]);
+    await waitForServerClients(
+      server,
+      (client) =>
+        client.readyState === WebSocket.CLOSED ||
+        client.readyState === WebSocket.CLOSING,
+    );
   });
 
   it("correlates concurrent JSON-RPC responses and preserves ordered events", async () => {
@@ -243,23 +267,26 @@ describe("Hermes Gateway JSON-RPC client", () => {
       socket.send(JSON.stringify(readyEvent()));
       respondTo(socket, "session.create", { sessionId: SESSION_ID });
       respondTo(socket, "clarify.respond", { accepted: true });
-      respondTo(socket, "session.interrupt", { interrupted: true });
+      respondTo(socket, "session.interrupt", { interrupted: true }, () => {
+        socket.send(
+          JSON.stringify(event("reasoning.delta", 2, { text: "no" })),
+        );
+        socket.send(
+          JSON.stringify(
+            event("turn.terminal", 3, {
+              outcome: "timed_out",
+              message: "drift",
+              metadata: metadata(),
+            }),
+          ),
+        );
+      });
       socket.send(
         JSON.stringify(
           event("clarify.request", 1, {
             requestId: CLARIFY_REQUEST_ID,
             question: "Which evidence?",
             choices: ["Project", "Settlement"],
-          }),
-        ),
-      );
-      socket.send(JSON.stringify(event("reasoning.delta", 2, { text: "no" })));
-      socket.send(
-        JSON.stringify(
-          event("turn.terminal", 3, {
-            outcome: "timed_out",
-            message: "drift",
-            metadata: metadata(),
           }),
         ),
       );
@@ -276,6 +303,9 @@ describe("Hermes Gateway JSON-RPC client", () => {
     await expect(session.interrupt()).resolves.toEqual({ interrupted: true });
 
     await expect(collectEvents(session.events, 1)).rejects.toThrow(
+      "hermes_gateway_event_schema_mismatch",
+    );
+    await expect(session.info()).rejects.toThrow(
       "hermes_gateway_event_schema_mismatch",
     );
     expect(clarify?.params.type).toBe("clarify.request");
@@ -327,6 +357,47 @@ describe("Hermes Gateway JSON-RPC client", () => {
     );
   });
 
+  it("does not resubmit prompt when the prompt response is lost after gateway receipt", async () => {
+    const { server, config } = await configuredGateway();
+    servers.push(server);
+    let connection = 0;
+    server.on("connection", (socket) => {
+      connection += 1;
+      socket.send(JSON.stringify(readyEvent()));
+      if (connection === 1) {
+        respondTo(socket, "session.create", { sessionId: SESSION_ID });
+        closeOn(socket, "prompt.submit");
+        return;
+      }
+      respondTo(socket, "session.resume", {
+        sessionId: SESSION_ID,
+        invocationId: INVOCATION_ID,
+        actorFingerprint: ACTOR_FINGERPRINT,
+      });
+      respondTo(socket, "session.info", {
+        sessionId: SESSION_ID,
+        invocationId: INVOCATION_ID,
+        actorFingerprint: ACTOR_FINGERPRINT,
+        status: "accepted",
+      });
+    });
+
+    const session = await createHermesGatewaySession(
+      sessionOptions(config, { prompt: "Compare project evidence" }),
+    );
+    await session.waitForAccepted();
+
+    expect(
+      server.commands.filter((command) => command.method === "prompt.submit"),
+    ).toHaveLength(1);
+    expect(server.commands.map((command) => command.method)).toContain(
+      "session.resume",
+    );
+    expect(server.commands.map((command) => command.method)).toContain(
+      "session.info",
+    );
+  });
+
   it("may retry safely when the connection drops before prompt acceptance", async () => {
     const { server, config } = await configuredGateway();
     servers.push(server);
@@ -355,6 +426,69 @@ describe("Hermes Gateway JSON-RPC client", () => {
     expect(
       server.commands.filter((command) => command.method === "prompt.submit"),
     ).toHaveLength(1);
+  });
+
+  it("validates resume and session.info results against the same session and invocation", async () => {
+    const sessionMismatch = await configuredGateway();
+    servers.push(sessionMismatch.server);
+    let sessionMismatchConnection = 0;
+    sessionMismatch.server.on("connection", (socket) => {
+      sessionMismatchConnection += 1;
+      socket.send(JSON.stringify(readyEvent()));
+      if (sessionMismatchConnection === 1) {
+        respondTo(socket, "session.create", { sessionId: SESSION_ID });
+        respondTo(
+          socket,
+          "prompt.submit",
+          { accepted: true, invocationId: INVOCATION_ID },
+          () => socket.close(),
+        );
+        return;
+      }
+      respondTo(socket, "session.resume", { sessionId: "other-session" });
+    });
+    const session = await createHermesGatewaySession(
+      sessionOptions(sessionMismatch.config, {
+        prompt: "Compare project evidence",
+      }),
+    );
+    await expect(session.recover()).rejects.toThrow(
+      "hermes_gateway_session_mismatch",
+    );
+
+    const actorMismatch = await configuredGateway();
+    servers.push(actorMismatch.server);
+    let actorMismatchConnection = 0;
+    actorMismatch.server.on("connection", (socket) => {
+      actorMismatchConnection += 1;
+      socket.send(JSON.stringify(readyEvent()));
+      if (actorMismatchConnection === 1) {
+        respondTo(socket, "session.create", { sessionId: SESSION_ID });
+        respondTo(
+          socket,
+          "prompt.submit",
+          { accepted: true, invocationId: INVOCATION_ID },
+          () => socket.close(),
+        );
+        return;
+      }
+      respondTo(socket, "session.resume", {
+        sessionId: SESSION_ID,
+        invocationId: INVOCATION_ID,
+      });
+      respondTo(socket, "session.info", {
+        sessionId: SESSION_ID,
+        invocationId: "99999999-9999-4999-8999-999999999999",
+      });
+    });
+    const actorSession = await createHermesGatewaySession(
+      sessionOptions(actorMismatch.config, {
+        prompt: "Compare project evidence",
+      }),
+    );
+    await expect(actorSession.recover()).rejects.toThrow(
+      "hermes_gateway_actor_mismatch",
+    );
   });
 
   it("fails closed on Actor/session mismatch and redacts capability from errors", async () => {
@@ -387,6 +521,63 @@ describe("Hermes Gateway JSON-RPC client", () => {
         invocationCapability: "super-secret-capability",
       }),
     ).rejects.not.toThrow("super-secret-capability");
+  });
+
+  it("redacts configured sensitive values and maps unsafe upstream errors", async () => {
+    const { server, config } = await configuredGateway();
+    servers.push(server);
+    const serviceToken = "sk_live_secret_gateway_token_1234567890";
+    const actorAssertion = "signed.actor.assertion.with.secret";
+    const invocationCapability = "hcap_abc123secret";
+    const opaqueCapability = "opaque-runtime-capability-secret";
+    server.on("connection", (socket) => {
+      socket.send(JSON.stringify(readyEvent()));
+      respondWithError(socket, "session.create", {
+        code: `leaked ${serviceToken}`,
+        message: `${actorAssertion} ${invocationCapability} ${opaqueCapability}`,
+      });
+    });
+
+    await expect(
+      createHermesGatewaySession({
+        ...sessionOptions({
+          ...config,
+          serviceToken,
+          opaqueCapability,
+        }),
+        actorAssertion,
+        invocationCapability,
+      }),
+    ).rejects.toThrow("hermes_gateway_rpc_failed");
+    await expect(
+      createHermesGatewaySession({
+        ...sessionOptions({
+          ...config,
+          serviceToken,
+          opaqueCapability,
+        }),
+        actorAssertion,
+        invocationCapability,
+      }),
+    ).rejects.not.toThrow(serviceToken);
+  });
+
+  it("handles pre-open connection failures without unhandled ready rejection", async () => {
+    await expect(
+      createHermesGatewaySession(
+        sessionOptions({
+          url: "ws://127.0.0.1:9",
+          serviceToken: "gateway-service-token-that-is-long-enough",
+          timeouts: {
+            connectMs: 50,
+            readyMs: 50,
+            rpcMs: 50,
+            idleMs: 50,
+            heartbeatMs: 50,
+          },
+        }),
+      ),
+    ).rejects.toThrow(/hermes_gateway_(connect_failed|connect_timeout)/);
   });
 
   it("bounds connect, heartbeat, RPC, and idle timeouts and close clears listeners and timers", async () => {
@@ -424,6 +615,7 @@ const TOOL_CALL_ID = "66666666-6666-4666-8666-666666666666";
 const CLARIFY_REQUEST_ID = "77777777-7777-4777-8777-777777777777";
 const ATTACHMENT_ID = "88888888-8888-4888-8888-888888888888";
 const ACTOR_ASSERTION = "signed.actor.assertion";
+const ACTOR_FINGERPRINT = createHermesActorFingerprint(profile());
 const INVOCATION_CAPABILITY = "opaque-invocation-capability";
 
 function sessionOptions(
@@ -536,7 +728,11 @@ function respondTo(
   });
 }
 
-function respondWithError(socket: WebSocket, method: string, code: string) {
+function respondWithError(
+  socket: WebSocket,
+  method: string,
+  error: string | { code: string; message?: string },
+) {
   socket.on("message", (raw) => {
     const command = JSON.parse(raw.toString()) as {
       id: string;
@@ -547,11 +743,36 @@ function respondWithError(socket: WebSocket, method: string, code: string) {
         JSON.stringify({
           jsonrpc: "2.0",
           id: command.id,
-          error: { code },
+          error: typeof error === "string" ? { code: error } : error,
         }),
       );
     }
   });
+}
+
+function closeOn(socket: WebSocket, method: string) {
+  socket.on("message", (raw) => {
+    const command = JSON.parse(raw.toString()) as {
+      method: string;
+    };
+    if (command.method === method) {
+      socket.close();
+    }
+  });
+}
+
+async function waitForServerClients(
+  server: WebSocketServer,
+  predicate: (client: WebSocket) => boolean,
+) {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if ([...server.clients].every(predicate)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  expect([...server.clients].map((client) => client.readyState)).toEqual(
+    expect.arrayContaining([WebSocket.CLOSED]),
+  );
 }
 
 function readyEvent(overrides: Record<string, unknown> = {}) {
