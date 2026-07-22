@@ -354,6 +354,40 @@ describe("Hermes Tool Broker contracts", () => {
       ),
     ).toBeNull();
   });
+
+  it("accepts a saved memory state-conflict envelope for exact replay", () => {
+    const request = parseHermesToolBrokerRequest({
+      invocationId: INVOCATION_ID,
+      toolCallId: "memory-conflict-1",
+      toolName: "xingyao_memory_forget",
+      arguments: {
+        memoryKey: PROJECT_ID,
+        expectedRevision: 2,
+        parentInvocationId: INVOCATION_ID,
+        sourceMessageId: STREAMER_ID,
+      },
+    });
+    if (!request) throw new Error("memory request fixture was rejected");
+    const envelope = {
+      status: "error" as const,
+      error: { code: "state_conflict" as const },
+      evidenceRefs: [],
+      sourceLabels: ["actor_private_memory"],
+      updatedAt: "2026-07-22T00:00:00.000Z",
+      observedAt: "2026-07-22T00:00:00.000Z",
+      missingData: [],
+      permissionDenials: ["state_conflict"],
+      truncated: false,
+      invocationId: INVOCATION_ID,
+      toolCallId: "memory-conflict-1",
+      toolName: "xingyao_memory_forget" as const,
+      traceId: "memory-conflict-1",
+    };
+
+    expect(parseStoredHermesToolBrokerEnvelope(envelope, request)).toEqual(
+      envelope,
+    );
+  });
 });
 
 function storedEnvelope(evidenceRefs: string[]) {

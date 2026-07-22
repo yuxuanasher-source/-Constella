@@ -1,18 +1,80 @@
 -- Product-owned Hermes state, invocation capabilities, and durable tool audit.
 -- Raw capabilities and unsanitized provider/tool payloads must never be stored.
 
+create table public.ai_hermes_memory_owner_clocks (
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  owner_user_id uuid not null references public.profiles(id) on delete cascade,
+  generation bigint not null default 0,
+  updated_at timestamptz not null default now(),
+  primary key (organization_id, owner_user_id),
+  constraint ai_hermes_memory_owner_clocks_generation_check check (
+    generation >= 0
+  )
+);
+
 alter table public.ai_chat_turns
   add column if not exists outcome text,
   add column if not exists cancel_requested_at timestamptz,
-  add column if not exists memory_snapshot_at timestamptz;
+  add column if not exists memory_snapshot_at timestamptz,
+  add column if not exists memory_snapshot_generation bigint;
+
+insert into public.ai_hermes_memory_owner_clocks (
+  organization_id,
+  owner_user_id,
+  generation
+)
+select distinct organization_id, owner_user_id, 0
+from public.ai_chat_turns
+on conflict (organization_id, owner_user_id) do nothing;
 
 update public.ai_chat_turns
-set memory_snapshot_at = coalesce(memory_snapshot_at, created_at, now())
-where memory_snapshot_at is null;
+set memory_snapshot_at = coalesce(memory_snapshot_at, created_at, now()),
+    memory_snapshot_generation = coalesce(memory_snapshot_generation, 0)
+where memory_snapshot_at is null
+   or memory_snapshot_generation is null;
 
 alter table public.ai_chat_turns
   alter column memory_snapshot_at set default now(),
-  alter column memory_snapshot_at set not null;
+  alter column memory_snapshot_at set not null,
+  alter column memory_snapshot_generation set default 0,
+  alter column memory_snapshot_generation set not null;
+
+create or replace function public.capture_ai_hermes_memory_snapshot_generation()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_generation bigint;
+begin
+  insert into public.ai_hermes_memory_owner_clocks (
+    organization_id,
+    owner_user_id,
+    generation
+  ) values (
+    new.organization_id,
+    new.owner_user_id,
+    0
+  )
+  on conflict (organization_id, owner_user_id) do nothing;
+
+  select owner_clock.generation
+  into v_generation
+  from public.ai_hermes_memory_owner_clocks owner_clock
+  where owner_clock.organization_id = new.organization_id
+    and owner_clock.owner_user_id = new.owner_user_id
+  for update;
+
+  new.memory_snapshot_generation := v_generation;
+  new.memory_snapshot_at := now();
+  return new;
+end;
+$$;
+
+create trigger ai_chat_turns_capture_hermes_memory_generation
+before insert on public.ai_chat_turns
+for each row execute function public.capture_ai_hermes_memory_snapshot_generation();
 
 alter table public.ai_chat_turns
   add constraint ai_chat_turns_outcome_check check (
@@ -117,6 +179,8 @@ create table public.ai_hermes_memories (
   source_conversation_id uuid not null,
   source_message_id uuid not null,
   source_invocation_id uuid not null references public.ai_invocations(id),
+  effective_generation bigint not null,
+  deactivated_generation bigint,
   deactivated_at timestamptz,
   deactivated_by_invocation_id uuid references public.ai_invocations(id),
   created_at timestamptz not null default now(),
@@ -160,14 +224,25 @@ create table public.ai_hermes_memories (
     content_hash ~ '^[0-9a-f]{64}$'
   ),
   constraint ai_hermes_memories_revision_check check (revision > 0),
+  constraint ai_hermes_memories_generation_check check (
+    effective_generation > 0
+    and (
+      deactivated_generation is null
+      or deactivated_generation >= effective_generation
+    )
+  ),
   constraint ai_hermes_memories_requested_revision_check check (
     requested_expected_revision >= 0
     and revision = requested_expected_revision + 1
     and (requested_memory_key is null or requested_memory_key = memory_key)
   ),
   constraint ai_hermes_memories_deactivation_check check (
-    (active and deactivated_at is null)
-    or (not active and deactivated_at is not null)
+    (active and deactivated_at is null and deactivated_generation is null)
+    or (
+      not active
+      and deactivated_at is not null
+      and deactivated_generation is not null
+    )
   )
 );
 
@@ -180,7 +255,7 @@ create index ai_hermes_memories_owner_active_idx
     organization_id,
     owner_user_id,
     active,
-    updated_at desc
+    effective_generation desc
   );
 
 create table public.ai_hermes_skill_drafts (
@@ -270,6 +345,7 @@ create table public.ai_hermes_run_capabilities (
   depth integer not null default 0,
   ai_state_writes_allowed boolean not null default false,
   memory_snapshot_at timestamptz not null,
+  memory_snapshot_generation bigint not null,
   expires_at timestamptz not null,
   revoked_at timestamptz,
   last_used_at timestamptz,
@@ -345,6 +421,7 @@ create table public.ai_hermes_run_capabilities (
   ),
   constraint ai_hermes_run_capabilities_snapshot_check check (
     memory_snapshot_at <= created_at
+    and memory_snapshot_generation >= 0
   )
 );
 
@@ -874,6 +951,7 @@ for each row execute function public.touch_updated_at();
 alter table public.ai_hermes_run_capabilities enable row level security;
 alter table public.ai_hermes_broker_calls enable row level security;
 alter table public.ai_hermes_memories enable row level security;
+alter table public.ai_hermes_memory_owner_clocks enable row level security;
 alter table public.ai_hermes_skill_drafts enable row level security;
 
 create policy ai_hermes_memories_owner_read
@@ -927,6 +1005,7 @@ declare
   v_skill_grants_hash text;
   v_root_invocation_id uuid;
   v_memory_snapshot_at timestamptz;
+  v_memory_snapshot_generation bigint;
   v_active_subagents bigint;
 begin
   if lower(coalesce(p_token_sha256, '')) !~ '^[0-9a-f]{64}$'
@@ -1068,6 +1147,7 @@ begin
     raise exception 'capability_depth_limit';
   end if;
   v_memory_snapshot_at := v_turn.memory_snapshot_at;
+  v_memory_snapshot_generation := v_turn.memory_snapshot_generation;
   if p_depth = 0 then
     v_root_invocation_id := p_invocation_id;
     if v_turn.ai_invocation_id is not null
@@ -1118,6 +1198,8 @@ begin
        or v_parent.turn_id is distinct from p_turn_id
        or v_parent.invocation_id is distinct from p_parent_invocation_id
        or v_parent.memory_snapshot_at is distinct from v_turn.memory_snapshot_at
+       or v_parent.memory_snapshot_generation is distinct from
+          v_turn.memory_snapshot_generation
        or p_depth <> v_parent.depth + 1
        or lower(p_actor_fingerprint) is distinct from v_parent.actor_fingerprint
        or not (v_allowed_tools <@ v_parent.allowed_tools)
@@ -1129,6 +1211,7 @@ begin
     end if;
     v_root_invocation_id := v_parent.root_invocation_id;
     v_memory_snapshot_at := v_parent.memory_snapshot_at;
+    v_memory_snapshot_generation := v_parent.memory_snapshot_generation;
     perform public.lock_and_validate_ai_hermes_capability_lineage(
       v_parent.id,
       p_organization_id,
@@ -1255,6 +1338,7 @@ begin
     depth,
     ai_state_writes_allowed,
     memory_snapshot_at,
+    memory_snapshot_generation,
     expires_at
   ) values (
     lower(p_token_sha256),
@@ -1276,6 +1360,7 @@ begin
     p_depth,
     p_ai_state_writes_allowed,
     v_memory_snapshot_at,
+    v_memory_snapshot_generation,
     p_expires_at
   )
   returning id into v_capability_id;
@@ -1293,7 +1378,7 @@ $$;
 create or replace function public.load_ai_hermes_memory_snapshot(
   p_organization_id uuid,
   p_owner_user_id uuid,
-  p_snapshot_at timestamptz
+  p_snapshot_generation bigint
 )
 returns table (
   id uuid,
@@ -1342,9 +1427,10 @@ as $$
     from public.ai_hermes_memories memory
     where memory.organization_id = p_organization_id
       and memory.owner_user_id = p_owner_user_id
-      and memory.created_at <= p_snapshot_at
+      and memory.effective_generation <= p_snapshot_generation
       and (
-        memory.deactivated_at is null or memory.deactivated_at > p_snapshot_at
+        memory.deactivated_generation is null
+        or memory.deactivated_generation > p_snapshot_generation
       )
     order by memory.memory_key, memory.revision desc
   ) snapshot
@@ -2144,6 +2230,7 @@ declare
   v_idempotent public.ai_hermes_memories%rowtype;
   v_memory_key uuid;
   v_next_revision integer;
+  v_effective_generation bigint;
   v_created_id uuid;
 begin
   if p_active is distinct from true
@@ -2187,7 +2274,7 @@ begin
     raise exception 'memory_capability_invalid';
   end if;
 
-  -- Hermes memory lock order: conversation -> turn -> invocation -> capability -> source_message -> memory.
+  -- Hermes memory lock order: conversation -> turn -> invocation -> capability -> source_message -> memory -> owner_clock.
   perform 1
   from public.ai_conversations locked_conversation
   where locked_conversation.id = p_source_conversation_id
@@ -2210,6 +2297,8 @@ begin
     and source_turn.user_message_id = p_source_message_id
     and source_turn.ai_invocation_id = v_capability.root_invocation_id
     and source_turn.memory_snapshot_at = v_capability.memory_snapshot_at
+    and source_turn.memory_snapshot_generation =
+        v_capability.memory_snapshot_generation
     and source_turn.status in ('accepted', 'grounding', 'generating', 'validating')
     and source_turn.cancel_requested_at is null
     and source_turn.lease_expires_at > now()
@@ -2245,6 +2334,8 @@ begin
      or v_capability.expires_at <= now()
      or v_capability.turn_id is distinct from v_source_turn.id
      or v_capability.memory_snapshot_at is distinct from v_source_turn.memory_snapshot_at
+     or v_capability.memory_snapshot_generation is distinct from
+        v_source_turn.memory_snapshot_generation
      or v_capability.conversation_id <> p_source_conversation_id
      or v_capability.invocation_id <> p_source_invocation_id
      or v_capability.root_invocation_id <> p_source_invocation_id
@@ -2353,19 +2444,38 @@ begin
       raise exception 'memory_expected_revision_conflict';
     end if;
     v_next_revision := v_existing.revision + 1;
-
-    if v_existing.active then
-      update public.ai_hermes_memories
-      set active = false,
-          deactivated_at = now(),
-          deactivated_by_invocation_id = p_source_invocation_id
-      where id = v_existing.id;
-    end if;
   else
     if p_expected_revision <> 0 then
       raise exception 'memory_expected_revision_conflict';
     end if;
     v_next_revision := 1;
+  end if;
+
+  insert into public.ai_hermes_memory_owner_clocks (
+    organization_id,
+    owner_user_id,
+    generation
+  ) values (
+    p_organization_id,
+    p_owner_user_id,
+    0
+  )
+  on conflict (organization_id, owner_user_id) do nothing;
+
+  update public.ai_hermes_memory_owner_clocks owner_clock
+  set generation = owner_clock.generation + 1,
+      updated_at = now()
+  where owner_clock.organization_id = p_organization_id
+    and owner_clock.owner_user_id = p_owner_user_id
+  returning owner_clock.generation into v_effective_generation;
+
+  if v_existing.id is not null and v_existing.active then
+    update public.ai_hermes_memories
+    set active = false,
+        deactivated_generation = v_effective_generation,
+        deactivated_at = now(),
+        deactivated_by_invocation_id = p_source_invocation_id
+    where id = v_existing.id;
   end if;
 
   insert into public.ai_hermes_memories (
@@ -2383,6 +2493,8 @@ begin
     source_conversation_id,
     source_message_id,
     source_invocation_id,
+    effective_generation,
+    deactivated_generation,
     deactivated_at,
     deactivated_by_invocation_id
   ) values (
@@ -2400,6 +2512,8 @@ begin
     p_source_conversation_id,
     p_source_message_id,
     p_source_invocation_id,
+    v_effective_generation,
+    case when p_active then null else v_effective_generation end,
     case when p_active then null else now() end,
     case when p_active then null else p_source_invocation_id end
   )
@@ -2438,6 +2552,7 @@ declare
   v_idempotent public.ai_hermes_memories%rowtype;
   v_idempotency_key text;
   v_next_revision integer;
+  v_effective_generation bigint;
   v_created_id uuid;
 begin
   if p_organization_id is null
@@ -2471,7 +2586,7 @@ begin
     raise exception 'memory_capability_invalid';
   end if;
 
-  -- Hermes memory lock order: conversation -> turn -> invocation -> capability -> source_message -> memory.
+  -- Hermes memory lock order: conversation -> turn -> invocation -> capability -> source_message -> memory -> owner_clock.
   perform 1
   from public.ai_conversations locked_conversation
   where locked_conversation.id = p_source_conversation_id
@@ -2494,6 +2609,8 @@ begin
     and source_turn.user_message_id = p_source_message_id
     and source_turn.ai_invocation_id = v_capability.root_invocation_id
     and source_turn.memory_snapshot_at = v_capability.memory_snapshot_at
+    and source_turn.memory_snapshot_generation =
+        v_capability.memory_snapshot_generation
     and source_turn.status in ('accepted', 'grounding', 'generating', 'validating')
     and source_turn.cancel_requested_at is null
     and source_turn.lease_expires_at > now()
@@ -2529,6 +2646,8 @@ begin
      or v_capability.expires_at <= now()
      or v_capability.turn_id is distinct from v_source_turn.id
      or v_capability.memory_snapshot_at is distinct from v_source_turn.memory_snapshot_at
+     or v_capability.memory_snapshot_generation is distinct from
+        v_source_turn.memory_snapshot_generation
      or v_capability.conversation_id <> p_source_conversation_id
      or v_capability.invocation_id <> p_source_invocation_id
      or v_capability.root_invocation_id <> p_source_invocation_id
@@ -2636,8 +2755,27 @@ begin
 
   v_next_revision := v_existing.revision + 1;
 
+  insert into public.ai_hermes_memory_owner_clocks (
+    organization_id,
+    owner_user_id,
+    generation
+  ) values (
+    p_organization_id,
+    p_owner_user_id,
+    0
+  )
+  on conflict (organization_id, owner_user_id) do nothing;
+
+  update public.ai_hermes_memory_owner_clocks owner_clock
+  set generation = owner_clock.generation + 1,
+      updated_at = now()
+  where owner_clock.organization_id = p_organization_id
+    and owner_clock.owner_user_id = p_owner_user_id
+  returning owner_clock.generation into v_effective_generation;
+
   update public.ai_hermes_memories
   set active = false,
+      deactivated_generation = v_effective_generation,
       deactivated_at = now(),
       deactivated_by_invocation_id = p_source_invocation_id
   where id = v_existing.id;
@@ -2657,6 +2795,8 @@ begin
     source_conversation_id,
     source_message_id,
     source_invocation_id,
+    effective_generation,
+    deactivated_generation,
     deactivated_at,
     deactivated_by_invocation_id
   ) values (
@@ -2674,6 +2814,8 @@ begin
     p_source_conversation_id,
     p_source_message_id,
     p_source_invocation_id,
+    v_effective_generation,
+    v_effective_generation,
     now(),
     p_source_invocation_id
   )
@@ -2685,6 +2827,340 @@ begin
     'revision', v_next_revision,
     'active', false,
     'reused', false
+  );
+end;
+$$;
+
+create or replace function public.complete_ai_hermes_memory_broker_call(
+  p_organization_id uuid,
+  p_owner_user_id uuid,
+  p_broker_call_id uuid,
+  p_claim_owner_id uuid,
+  p_fencing_token bigint,
+  p_observed_at timestamptz,
+  p_operation text,
+  p_capability_token_sha256 text,
+  p_parent_invocation_id uuid,
+  p_memory_key uuid,
+  p_expected_revision integer,
+  p_memory_type text,
+  p_content text,
+  p_content_hash text,
+  p_source_conversation_id uuid,
+  p_source_message_id uuid,
+  p_source_invocation_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_broker_call public.ai_hermes_broker_calls%rowtype;
+  v_capability public.ai_hermes_run_capabilities%rowtype;
+  v_memory_result jsonb;
+  v_response jsonb;
+  v_terminal_status text;
+  v_error_code text;
+  v_message_id uuid;
+  v_sequence integer;
+  v_audit_content text;
+  v_audit_metadata jsonb;
+begin
+  if p_organization_id is null
+     or p_owner_user_id is null
+     or p_broker_call_id is null
+     or p_claim_owner_id is null
+     or p_fencing_token is null
+     or p_fencing_token < 1
+     or p_observed_at is null
+     or p_operation not in ('remember', 'forget') then
+    raise exception 'memory_broker_completion_invalid';
+  end if;
+
+  select broker_call.*
+  into v_broker_call
+  from public.ai_hermes_broker_calls broker_call
+  where broker_call.id = p_broker_call_id
+    and broker_call.organization_id = p_organization_id
+    and broker_call.owner_user_id = p_owner_user_id;
+
+  if not found then
+    raise exception 'broker_call_not_found';
+  end if;
+
+  if v_broker_call.status in ('completed', 'failed', 'denied') then
+    select message.sequence_no
+    into v_sequence
+    from public.ai_chat_messages message
+    where message.id = v_broker_call.tool_message_id;
+    return jsonb_build_object(
+      'broker_call_id', v_broker_call.id,
+      'status', v_broker_call.status,
+      'reused', true,
+      'fencing_token', v_broker_call.fencing_token,
+      'message_id', v_broker_call.tool_message_id,
+      'sequence_no', v_sequence,
+      'sanitized_response_envelope',
+        v_broker_call.sanitized_response_envelope
+    );
+  end if;
+
+  select capability.*
+  into v_capability
+  from public.ai_hermes_run_capabilities capability
+  where capability.id = v_broker_call.capability_id
+    and capability.organization_id = p_organization_id
+    and capability.owner_user_id = p_owner_user_id;
+
+  if not found then
+    raise exception 'memory_capability_invalid';
+  end if;
+
+  -- Match broker claim lock order before taking the broker row fence.
+  perform 1
+  from public.ai_conversations conversation
+  where conversation.id = v_capability.conversation_id
+    and conversation.organization_id = p_organization_id
+    and conversation.owner_user_id = p_owner_user_id
+    and conversation.status = 'active'
+  for update;
+  if not found then raise exception 'memory_source_invalid'; end if;
+
+  perform 1
+  from public.ai_chat_turns turn
+  where turn.id = v_capability.turn_id
+    and turn.organization_id = p_organization_id
+    and turn.owner_user_id = p_owner_user_id
+    and turn.conversation_id = v_capability.conversation_id
+    and turn.status in ('accepted', 'grounding', 'generating', 'validating')
+    and turn.cancel_requested_at is null
+    and turn.lease_expires_at > now()
+  for update;
+  if not found then raise exception 'broker_claim_lease_expired'; end if;
+
+  perform 1
+  from public.ai_invocations invocation
+  where invocation.id = v_capability.invocation_id
+    and invocation.organization_id = p_organization_id
+    and invocation.actor_user_id = p_owner_user_id
+    and invocation.status in ('started', 'queued')
+  for update;
+  if not found then raise exception 'broker_claim_lease_expired'; end if;
+
+  select capability.*
+  into v_capability
+  from public.ai_hermes_run_capabilities capability
+  where capability.id = v_broker_call.capability_id
+    and capability.organization_id = p_organization_id
+    and capability.owner_user_id = p_owner_user_id
+  for update;
+
+  select broker_call.*
+  into v_broker_call
+  from public.ai_hermes_broker_calls broker_call
+  where broker_call.id = p_broker_call_id
+    and broker_call.organization_id = p_organization_id
+    and broker_call.owner_user_id = p_owner_user_id
+  for update;
+
+  if v_broker_call.status in ('completed', 'failed', 'denied') then
+    select message.sequence_no
+    into v_sequence
+    from public.ai_chat_messages message
+    where message.id = v_broker_call.tool_message_id;
+    return jsonb_build_object(
+      'broker_call_id', v_broker_call.id,
+      'status', v_broker_call.status,
+      'reused', true,
+      'fencing_token', v_broker_call.fencing_token,
+      'message_id', v_broker_call.tool_message_id,
+      'sequence_no', v_sequence,
+      'sanitized_response_envelope',
+        v_broker_call.sanitized_response_envelope
+    );
+  end if;
+
+  if v_broker_call.status <> 'claimed'
+     or v_broker_call.claim_owner_id <> p_claim_owner_id
+     or v_broker_call.fencing_token <> p_fencing_token
+     or v_broker_call.claim_lease_expires_at <= now() then
+    raise exception 'broker_claim_fence_invalid';
+  end if;
+
+  if (p_operation = 'remember'
+       and v_broker_call.tool_name <> 'xingyao_memory_remember')
+     or (p_operation = 'forget'
+       and v_broker_call.tool_name <> 'xingyao_memory_forget') then
+    v_error_code := 'permission_denied';
+  else
+    begin
+      if p_operation = 'remember' then
+        v_memory_result := public.write_ai_hermes_memory_revision(
+          p_organization_id,
+          p_owner_user_id,
+          p_capability_token_sha256,
+          p_parent_invocation_id,
+          p_source_invocation_id::text || ':' || lower(p_content_hash),
+          p_memory_key,
+          p_expected_revision,
+          p_memory_type,
+          p_content,
+          p_content_hash,
+          true,
+          p_source_conversation_id,
+          p_source_message_id,
+          p_source_invocation_id
+        );
+      else
+        v_memory_result := public.forget_ai_hermes_memory(
+          p_organization_id,
+          p_owner_user_id,
+          p_capability_token_sha256,
+          p_parent_invocation_id,
+          p_memory_key,
+          p_expected_revision,
+          p_source_conversation_id,
+          p_source_message_id,
+          p_source_invocation_id
+        );
+      end if;
+    exception
+      when others then
+        if sqlerrm = any(array[
+          'memory_expected_revision_conflict',
+          'memory_idempotency_conflict',
+          'memory_not_found'
+        ]::text[]) then
+          v_error_code := 'state_conflict';
+        elsif sqlerrm = any(array[
+          'memory_capability_invalid',
+          'memory_source_invalid'
+        ]::text[]) then
+          v_error_code := 'permission_denied';
+        else
+          raise;
+        end if;
+    end;
+  end if;
+
+  if v_error_code is null then
+    v_terminal_status := 'completed';
+    v_response := jsonb_build_object(
+      'status', 'ok',
+      'data', jsonb_build_object(
+        'memoryKey', v_memory_result -> 'memory_key',
+        'revision', v_memory_result -> 'revision',
+        'active', v_memory_result -> 'active',
+        'reused', v_memory_result -> 'reused'
+      ),
+      'evidenceRefs', '[]'::jsonb,
+      'sourceLabels', jsonb_build_array('actor_private_memory'),
+      'updatedAt', to_jsonb(p_observed_at),
+      'observedAt', to_jsonb(p_observed_at),
+      'missingData', '[]'::jsonb,
+      'permissionDenials', '[]'::jsonb,
+      'truncated', false,
+      'invocationId', v_capability.invocation_id,
+      'toolCallId', v_broker_call.tool_call_id,
+      'toolName', v_broker_call.tool_name,
+      'traceId', v_broker_call.tool_call_id
+    );
+  else
+    v_terminal_status := case
+      when v_error_code = 'permission_denied' then 'denied'
+      else 'failed'
+    end;
+    v_response := jsonb_build_object(
+      'status', 'error',
+      'error', jsonb_build_object('code', v_error_code),
+      'evidenceRefs', '[]'::jsonb,
+      'sourceLabels', jsonb_build_array('actor_private_memory'),
+      'updatedAt', to_jsonb(p_observed_at),
+      'observedAt', to_jsonb(p_observed_at),
+      'missingData', '[]'::jsonb,
+      'permissionDenials', jsonb_build_array(v_error_code),
+      'truncated', false,
+      'invocationId', v_capability.invocation_id,
+      'toolCallId', v_broker_call.tool_call_id,
+      'toolName', v_broker_call.tool_name,
+      'traceId', v_broker_call.tool_call_id
+    );
+  end if;
+
+  v_audit_content := jsonb_build_object(
+    'toolName', v_broker_call.tool_name,
+    'toolCallId', v_broker_call.tool_call_id,
+    'arguments', coalesce(
+      v_broker_call.sanitized_request_envelope -> 'arguments',
+      '{}'::jsonb
+    ),
+    'result', v_response
+  )::text;
+  v_audit_metadata := jsonb_build_object(
+    'hermesTool', jsonb_build_object(
+      'toolName', v_broker_call.tool_name,
+      'toolCallId', v_broker_call.tool_call_id,
+      'invocationId', v_capability.invocation_id,
+      'status', v_response ->> 'status'
+    )
+  );
+
+  select coalesce(max(message.sequence_no), 0) + 1
+  into v_sequence
+  from public.ai_chat_messages message
+  where message.conversation_id = v_capability.conversation_id;
+
+  insert into public.ai_chat_messages (
+    organization_id,
+    owner_user_id,
+    conversation_id,
+    sequence_no,
+    role,
+    status,
+    content,
+    ai_invocation_id,
+    metadata
+  ) values (
+    p_organization_id,
+    p_owner_user_id,
+    v_capability.conversation_id,
+    v_sequence,
+    'tool',
+    'completed',
+    v_audit_content,
+    v_capability.invocation_id,
+    v_audit_metadata
+  )
+  returning id into v_message_id;
+
+  update public.ai_conversations
+  set last_message_at = now()
+  where id = v_capability.conversation_id;
+
+  update public.ai_hermes_broker_calls
+  set status = v_terminal_status,
+      sanitized_response_envelope = v_response,
+      error_code = v_error_code,
+      tool_message_id = v_message_id,
+      completed_at = now()
+  where id = v_broker_call.id
+    and status = 'claimed'
+    and claim_owner_id = p_claim_owner_id
+    and fencing_token = p_fencing_token;
+
+  if not found then
+    raise exception 'broker_claim_fence_invalid';
+  end if;
+
+  return jsonb_build_object(
+    'broker_call_id', v_broker_call.id,
+    'status', v_terminal_status,
+    'reused', false,
+    'fencing_token', p_fencing_token,
+    'message_id', v_message_id,
+    'sequence_no', v_sequence,
+    'sanitized_response_envelope', v_response
   );
 end;
 $$;
@@ -3231,6 +3707,7 @@ end;
 $$;
 
 revoke all on function public.refresh_ai_chat_turn_lease() from public, anon, authenticated;
+revoke all on function public.capture_ai_hermes_memory_snapshot_generation() from public, anon, authenticated;
 revoke all on function public.ai_hermes_canonical_text_array_sha256(
   text[]
 ) from public, anon, authenticated;
@@ -3255,6 +3732,9 @@ revoke all on function public.claim_ai_hermes_broker_call(
 revoke all on function public.complete_ai_hermes_broker_call(
   uuid, uuid, uuid, uuid, bigint, text, jsonb, text, text, jsonb
 ) from public, anon, authenticated;
+revoke all on function public.complete_ai_hermes_memory_broker_call(
+  uuid, uuid, uuid, uuid, bigint, timestamptz, text, text, uuid, uuid, integer, text, text, text, uuid, uuid, uuid
+) from public, anon, authenticated;
 revoke all on function public.append_ai_hermes_tool_message(
   uuid, uuid, uuid, uuid, uuid, text, jsonb
 ) from public, anon, authenticated;
@@ -3262,7 +3742,7 @@ revoke all on function public.update_ai_conversation_hermes_state(
   uuid, uuid, uuid, integer, jsonb
 ) from public, anon, authenticated;
 revoke all on function public.load_ai_hermes_memory_snapshot(
-  uuid, uuid, timestamptz
+  uuid, uuid, bigint
 ) from public, anon, authenticated;
 revoke all on function public.write_ai_hermes_memory_revision(
   uuid, uuid, text, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid
@@ -3290,6 +3770,7 @@ grant execute on function public.issue_ai_hermes_run_capability(
   text, uuid, uuid, uuid, uuid, uuid, uuid, text, text, text[], text, text[], text, text, uuid[], integer, boolean, timestamptz
 ) to service_role;
 grant execute on function public.refresh_ai_chat_turn_lease() to service_role;
+grant execute on function public.capture_ai_hermes_memory_snapshot_generation() to service_role;
 grant execute on function public.ai_hermes_canonical_text_array_sha256(
   text[]
 ) to service_role;
@@ -3302,6 +3783,9 @@ grant execute on function public.claim_ai_hermes_broker_call(
 grant execute on function public.complete_ai_hermes_broker_call(
   uuid, uuid, uuid, uuid, bigint, text, jsonb, text, text, jsonb
 ) to service_role;
+grant execute on function public.complete_ai_hermes_memory_broker_call(
+  uuid, uuid, uuid, uuid, bigint, timestamptz, text, text, uuid, uuid, integer, text, text, text, uuid, uuid, uuid
+) to service_role;
 grant execute on function public.append_ai_hermes_tool_message(
   uuid, uuid, uuid, uuid, uuid, text, jsonb
 ) to service_role;
@@ -3309,7 +3793,7 @@ grant execute on function public.update_ai_conversation_hermes_state(
   uuid, uuid, uuid, integer, jsonb
 ) to service_role;
 grant execute on function public.load_ai_hermes_memory_snapshot(
-  uuid, uuid, timestamptz
+  uuid, uuid, bigint
 ) to service_role;
 grant execute on function public.write_ai_hermes_memory_revision(
   uuid, uuid, text, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid
@@ -3336,6 +3820,7 @@ grant execute on function public.finish_ai_chat_turn_v2(
 revoke all on table public.ai_hermes_run_capabilities from anon, authenticated;
 revoke all on table public.ai_hermes_broker_calls from anon, authenticated;
 revoke all on table public.ai_hermes_memories from anon, authenticated;
+revoke all on table public.ai_hermes_memory_owner_clocks from anon, authenticated;
 revoke all on table public.ai_hermes_skill_drafts from anon, authenticated;
 
 grant select on table public.ai_hermes_memories to authenticated;
@@ -3344,4 +3829,5 @@ grant select on table public.ai_hermes_skill_drafts to authenticated;
 grant all on table public.ai_hermes_run_capabilities to service_role;
 grant all on table public.ai_hermes_broker_calls to service_role;
 grant all on table public.ai_hermes_memories to service_role;
+grant all on table public.ai_hermes_memory_owner_clocks to service_role;
 grant all on table public.ai_hermes_skill_drafts to service_role;

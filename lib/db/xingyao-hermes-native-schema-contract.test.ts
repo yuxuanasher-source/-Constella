@@ -42,6 +42,7 @@ const serviceOnlyFunctions = [
   "append_ai_hermes_tool_message",
   "update_ai_conversation_hermes_state",
   "load_ai_hermes_memory_snapshot",
+  "complete_ai_hermes_memory_broker_call",
   "write_ai_hermes_memory_revision",
   "forget_ai_hermes_memory",
   "write_ai_hermes_skill_draft",
@@ -88,6 +89,7 @@ describe("Xingyao Hermes native state schema contract", () => {
       "depth integer not null",
       "ai_state_writes_allowed boolean not null",
       "memory_snapshot_at timestamptz not null",
+      "memory_snapshot_generation bigint not null",
       "expires_at timestamptz not null",
       "revoked_at timestamptz",
       "last_used_at timestamptz",
@@ -108,6 +110,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
     expect(migration).toContain("alter column memory_snapshot_at set not null");
     expect(table).toContain("memory_snapshot_at timestamptz not null");
+    expect(table).toContain("memory_snapshot_generation bigint not null");
     expect(issue).toContain(
       "v_memory_snapshot_at := v_turn.memory_snapshot_at",
     );
@@ -118,8 +121,12 @@ describe("Xingyao Hermes native state schema contract", () => {
       "v_memory_snapshot_at := v_parent.memory_snapshot_at",
     );
     expect(issue).toContain(
-      "p_depth > 0 and v_allowed_tools && array[",
+      "v_memory_snapshot_generation := v_turn.memory_snapshot_generation",
     );
+    expect(issue).toContain(
+      "v_memory_snapshot_generation := v_parent.memory_snapshot_generation",
+    );
+    expect(issue).toContain("p_depth > 0 and v_allowed_tools && array[");
     for (const childForbiddenTool of [
       "xingyao_memory_remember",
       "xingyao_memory_forget",
@@ -130,6 +137,9 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(issue).toContain("capability_delegation_invalid");
     expect(issue).toMatch(
       /insert into public\.ai_hermes_run_capabilities[\s\S]*?memory_snapshot_at[\s\S]*?v_memory_snapshot_at/,
+    );
+    expect(issue).toMatch(
+      /insert into public\.ai_hermes_run_capabilities[\s\S]*?memory_snapshot_generation[\s\S]*?v_memory_snapshot_generation/,
     );
   });
 
@@ -361,6 +371,8 @@ describe("Xingyao Hermes native state schema contract", () => {
       "source_message_id uuid not null",
       "source_invocation_id uuid not null",
       "deactivated_at timestamptz",
+      "effective_generation bigint not null",
+      "deactivated_generation bigint",
     ]) {
       expect(table).toContain(column);
     }
@@ -370,19 +382,41 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(table).toContain("revision > 0");
   });
 
-  it("loads the latest actor-owned memory revision active at a turn snapshot", () => {
+  it("captures commit-safe owner memory generations for turns and capabilities", () => {
+    const clock = tableSql("ai_hermes_memory_owner_clocks");
+    const capability = tableSql("ai_hermes_run_capabilities");
+    const capture = functionSql("capture_ai_hermes_memory_snapshot_generation");
+
+    expect(clock).toContain("organization_id uuid not null");
+    expect(clock).toContain("owner_user_id uuid not null");
+    expect(clock).toContain("generation bigint not null default 0");
+    expect(migration).toContain(
+      "add column if not exists memory_snapshot_generation bigint",
+    );
+    expect(capability).toContain("memory_snapshot_generation bigint not null");
+    expect(capture).toContain("for update");
+    expect(capture).toContain("new.memory_snapshot_generation :=");
+    expect(migration).toMatch(
+      /create trigger ai_chat_turns_capture_hermes_memory_generation[\s\S]*?before insert on public\.ai_chat_turns/,
+    );
+  });
+
+  it("loads the latest actor-owned memory revision active at a generation snapshot", () => {
     const snapshot = functionSql("load_ai_hermes_memory_snapshot");
 
     expect(snapshot).toContain("p_organization_id uuid");
     expect(snapshot).toContain("p_owner_user_id uuid");
-    expect(snapshot).toContain("p_snapshot_at timestamptz");
+    expect(snapshot).toContain("p_snapshot_generation bigint");
     expect(snapshot).toContain("security definer");
     expect(snapshot).toContain("set search_path = pg_catalog, public");
     expect(snapshot).toContain("memory.organization_id = p_organization_id");
     expect(snapshot).toContain("memory.owner_user_id = p_owner_user_id");
-    expect(snapshot).toContain("memory.created_at <= p_snapshot_at");
     expect(snapshot).toContain(
-      "memory.deactivated_at is null or memory.deactivated_at > p_snapshot_at",
+      "memory.effective_generation <= p_snapshot_generation",
+    );
+    expect(snapshot).toContain("memory.deactivated_generation is null");
+    expect(snapshot).toContain(
+      "memory.deactivated_generation > p_snapshot_generation",
     );
     expect(snapshot).toContain("distinct on (memory.memory_key)");
     expect(snapshot).toContain("memory.memory_key, memory.revision desc");
@@ -392,6 +426,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
     expect(snapshot).not.toContain("memory.updated_at");
     expect(snapshot).not.toContain("snapshot.updated_at desc");
+    expect(snapshot).not.toContain("p_snapshot_at");
     expect(migration).toContain(
       "revoke all on function public.load_ai_hermes_memory_snapshot(",
     );
@@ -400,6 +435,40 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
     expect(migration).not.toMatch(
       /grant execute on function public\.load_ai_hermes_memory_snapshot[^;]*to (anon|authenticated);/,
+    );
+  });
+
+  it("atomically mutates memory, persists one response, appends one audit, and completes the fenced claim", () => {
+    const atomic = functionSql("complete_ai_hermes_memory_broker_call");
+
+    expect(atomic).toContain("p_broker_call_id uuid");
+    expect(atomic).toContain("p_fencing_token bigint");
+    expect(atomic).toContain("for update");
+    expect(atomic).toContain("claim_lease_expires_at <= now()");
+    expect(atomic).toContain("write_ai_hermes_memory_revision(");
+    expect(atomic).toContain("forget_ai_hermes_memory(");
+    expect(atomic).toContain("state_conflict");
+    expect(atomic).toContain("sanitized_response_envelope");
+    expect(atomic).toContain("insert into public.ai_chat_messages");
+    expect(atomic).toContain("'tool'");
+    expect(atomic).toContain("update public.ai_hermes_broker_calls");
+    expectSqlOrder(atomic, [
+      "from public.ai_hermes_broker_calls broker_call",
+      "write_ai_hermes_memory_revision(",
+      "insert into public.ai_chat_messages",
+      "update public.ai_hermes_broker_calls",
+    ]);
+    expect(atomic).toMatch(
+      /if v_broker_call\.status in \('completed', 'failed', 'denied'\)[\s\S]*?return jsonb_build_object/,
+    );
+    expect(atomic).toMatch(
+      /if v_broker_call\.status <> 'claimed'[\s\S]*?claim_lease_expires_at <= now\(\)[\s\S]*?raise exception 'broker_claim_fence_invalid';[\s\S]*?end if;\s+if \(p_operation = 'remember'/,
+    );
+    expect(atomic).not.toContain(
+      "or v_capability.revoked_at is not null",
+    );
+    expect(atomic).not.toContain(
+      "or v_capability.expires_at <= now()",
     );
   });
 
@@ -477,6 +546,9 @@ describe("Xingyao Hermes native state schema contract", () => {
       );
       expect(memoryFunction).toContain(
         "source_turn.memory_snapshot_at = v_capability.memory_snapshot_at",
+      );
+      expect(memoryFunction).toContain(
+        "source_turn.memory_snapshot_generation =",
       );
     }
   });

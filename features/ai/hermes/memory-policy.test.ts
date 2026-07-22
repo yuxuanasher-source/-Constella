@@ -33,6 +33,19 @@ describe("Hermes personal memory policy", () => {
     });
   });
 
+  it("canonicalizes compatibility forms and removes zero-width format characters before hashing", () => {
+    const canonicalContent = "Prefer concise answers";
+
+    expect(
+      prepareHermesMemoryContent("  Ｐｒｅｆｅｒ\u200B concise answers  "),
+    ).toEqual({
+      canonicalContent,
+      contentHash: createHash("sha256")
+        .update(canonicalContent, "utf8")
+        .digest("hex"),
+    });
+  });
+
   it.each([
     "Remember that my budget is USD 1,000",
     "My preferred commission is 12%",
@@ -70,6 +83,13 @@ describe("Hermes personal memory policy", () => {
     "bearer abcdefghijklmnopqrstuvwxyzabcdefghijklmnopq",
     "bEaReR abcdefghijklmnopqrstuvwxyzabcdefghijklmnopq",
     "BEARER abcdefghijklmnopqrstuvwxyzabcdefghijklmnopq",
+    "Ｂｅａｒｅｒ abcdefghijklmnopqrstuvwxyzabcdefghijklmnopq",
+    "Bea\u200Brer abcdefghijklmnopqrstuvwxyzabcdefghijklmnopq",
+    "１２％ is my preferred rate",
+    "11111111-1111-4111-8111-111111111111",
+    "019f7b28-aa96-7e91-8612-1090221b578a",
+    "00000000-0000-0000-0000-000000000000",
+    "organizationId=11111111-1111-4111-8111-111111111111",
     "org_id=org-private",
     "org-id:org-private",
     "project_id=project-private",
@@ -116,6 +136,7 @@ describe("Hermes personal memory policy", () => {
     "Report blockers early",
     "Use tools only when necessary",
     "Organize identifiers consistently",
+    "When a project is urgent, alert me",
   ])("accepts ordinary personal guidance: %s", (content) => {
     expect(prepareHermesMemoryContent(content)).toMatchObject({
       canonicalContent: content,

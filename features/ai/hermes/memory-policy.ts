@@ -18,8 +18,19 @@ const MONEY_VALUE_PATTERNS = [
   /\bsettlement(?:[_\s-]+(?:amount|value|rate|total|balance))?\b[^\r\n\d]{0,24}[-+]?\d/iu,
 ];
 
-const PRIVATE_OBJECT_ID_PATTERN =
-  /\b(?:project|streamer|(?:live[_\s-]*)?report|settlement(?:[_\s-]*batch)?|org(?:anization)?|knowledge(?:[_\s-]*(?:base|document|chunk))?|document|chunk)[_\s-]*(?:(?:object[_\s-]*)?(?:id|uuid))?\s*(?::|=|\bis\b)\s*["']?[a-z0-9][a-z0-9_.:/#-]{2,}/iu;
+const PRIVATE_OBJECT_CONTEXT = String.raw`(?:project|streamer|(?:live[_\s-]*)?report|settlement(?:[_\s-]*batch)?|org(?:anization)?|knowledge(?:[_\s-]*(?:base|document|chunk))?|document|chunk)`;
+const PRIVATE_OBJECT_ID_PATTERNS = [
+  new RegExp(
+    String.raw`\b${PRIVATE_OBJECT_CONTEXT}[_\s-]*(?:object[_\s-]*)?(?:id|uuid)\s*(?::|=|\bis\b)?\s*["']?[a-z0-9][a-z0-9_.:/#-]{2,}`,
+    "iu",
+  ),
+  new RegExp(
+    String.raw`\b${PRIVATE_OBJECT_CONTEXT}\s*(?::|=)\s*["']?[a-z0-9][a-z0-9_.:/#-]{2,}`,
+    "iu",
+  ),
+  /\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/iu,
+  /\b(?:project|streamer|report|settlement|org(?:anization)?|knowledge|document|chunk)_[a-z0-9][a-z0-9_-]{5,}\b/iu,
+];
 const PROVENANCE_PATTERNS = [
   /\bevidence[_\s-]*refs?\b/iu,
   /\btool[_\s-]+(?:output|outputs|result|results|response|responses|call|calls)\b/iu,
@@ -42,7 +53,7 @@ const PERMISSION_BYPASS_PATTERNS = [
 
 const REJECTED_CONTENT_PATTERNS = [
   ...MONEY_VALUE_PATTERNS,
-  PRIVATE_OBJECT_ID_PATTERN,
+  ...PRIVATE_OBJECT_ID_PATTERNS,
   ...PROVENANCE_PATTERNS,
   ...CREDENTIAL_PATTERNS,
   ...PERMISSION_BYPASS_PATTERNS,
@@ -64,7 +75,8 @@ export function isHermesMemoryType(value: unknown): value is HermesMemoryType {
 export function canonicalizeHermesMemoryContent(content: unknown): string {
   if (typeof content !== "string") rejectMemoryContent();
   const canonicalContent = content
-    .normalize("NFC")
+    .normalize("NFKC")
+    .replace(/\p{Cf}/gu, "")
     .replace(/\r\n?/gu, "\n")
     .trim();
   if (

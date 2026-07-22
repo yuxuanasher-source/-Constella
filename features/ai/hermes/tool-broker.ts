@@ -4,7 +4,6 @@ import type { HermesActorProfile, HermesReadScope } from "./contracts";
 import {
   assertHermesSanitizedObject,
   HermesStateRepositoryError,
-  type HermesMemoryRevision,
   type HermesStateRepository,
 } from "./hermes-state-repository";
 import { HermesLiveActorAuthorizationError } from "./live-actor-authorization";
@@ -46,7 +45,7 @@ export type HermesBrokerCapability = {
   scopes: readonly HermesReadScope[];
   depth: number;
   aiStateWritesAllowed: boolean;
-  memorySnapshotAt: string;
+  memorySnapshotGeneration: number;
 };
 
 export type HermesToolBrokerErrorCode =
@@ -78,6 +77,7 @@ export type HermesToolBrokerDependencies = {
     HermesStateRepository,
     | "claimBrokerCall"
     | "completeBrokerCall"
+    | "completeMemoryBrokerCall"
     | "forgetMemory"
     | "loadActiveMemories"
     | "rememberMemory"
@@ -158,20 +158,48 @@ export async function executeHermesToolBrokerCall({
     return replay;
   }
 
-  const response = isMemoryToolRequest(request)
-    ? await executeMemoryTool({
+  let response: HermesToolBrokerEnvelope;
+  if (isMemoryMutationRequest(request)) {
+    try {
+      return await executeAtomicMemoryMutation({
         dependencies,
         actor: live.actor,
         capabilityTokenSha256: tokenSha256,
-        memorySnapshotAt: capability.memorySnapshotAt,
+        claim: {
+          brokerCallId: claim.brokerCallId,
+          claimOwnerId,
+          fencingToken: claim.fencingToken,
+          observedAt: now.toISOString(),
+        },
         request,
-        now,
-      })
-    : brokerEnvelope(
-        await executeReadTool(dependencies, live.actor, request),
-        request,
-        now,
-      );
+      });
+    } catch (error) {
+      if (error instanceof HermesMemoryPolicyError) {
+        response = memoryBrokerEnvelope(
+          request,
+          now,
+          "error",
+          "memory_content_rejected",
+        );
+      } else {
+        throw mapRepositoryError(error, "complete");
+      }
+    }
+  } else if (request.toolName === "xingyao_memory_list") {
+    response = await executeMemoryListTool({
+      dependencies,
+      actor: live.actor,
+      memorySnapshotGeneration: capability.memorySnapshotGeneration,
+      request,
+      now,
+    });
+  } else {
+    response = brokerEnvelope(
+      await executeReadTool(dependencies, live.actor, request),
+      request,
+      now,
+    );
+  }
   const sanitizedResponse = assertHermesSanitizedObject(
     response as unknown as Record<string, unknown>,
   ) as unknown as HermesToolBrokerEnvelope;
@@ -332,103 +360,92 @@ async function executeReadTool(
   }
 }
 
-async function executeMemoryTool({
+async function executeMemoryListTool({
   dependencies,
   actor,
-  capabilityTokenSha256,
-  memorySnapshotAt,
+  memorySnapshotGeneration,
   request,
   now,
 }: {
   dependencies: HermesToolBrokerDependencies;
   actor: HermesActorProfile;
-  capabilityTokenSha256: string;
-  memorySnapshotAt: string;
+  memorySnapshotGeneration: number;
   request: Extract<
     HermesToolBrokerRequest,
-    { toolName: (typeof HERMES_MEMORY_TOOL_NAMES)[number] }
+    { toolName: "xingyao_memory_list" }
   >;
   now: Date;
 }): Promise<HermesToolBrokerEnvelope> {
   try {
-    switch (request.toolName) {
-      case "xingyao_memory_list": {
-        const memories = await dependencies.repository.loadActiveMemories(
-          {
-            organizationId: actor.organizationId,
-            userId: actor.userId,
-          },
-          memorySnapshotAt,
-        );
-        return memoryBrokerEnvelope(request, now, "ok", {
-          memories: memories.map((memory) => ({
-            memoryKey: memory.memoryKey,
-            memoryType: memory.memoryType,
-            content: memory.content,
-            revision: memory.revision,
-            updatedAt: memory.updatedAt,
-          })),
-        });
-      }
-      case "xingyao_memory_remember": {
-        const prepared = prepareHermesMemoryContent(request.arguments.content);
-        const revision = await dependencies.repository.rememberMemory(
-          stateActor(actor),
-          memoryAuthority(request, capabilityTokenSha256),
-          {
-            memoryKey: request.arguments.memoryKey ?? null,
-            expectedRevision: request.arguments.expectedRevision ?? 0,
-            memoryType: request.arguments.memoryType,
-            content: prepared.canonicalContent,
-          },
-        );
-        return memoryRevisionEnvelope(request, now, revision);
-      }
-      case "xingyao_memory_forget": {
-        const revision = await dependencies.repository.forgetMemory(
-          stateActor(actor),
-          memoryAuthority(request, capabilityTokenSha256),
-          {
-            memoryKey: request.arguments.memoryKey,
-            expectedRevision: request.arguments.expectedRevision,
-          },
-        );
-        return memoryRevisionEnvelope(request, now, revision);
-      }
-    }
+    const memories = await dependencies.repository.loadActiveMemories(
+      {
+        organizationId: actor.organizationId,
+        userId: actor.userId,
+      },
+      memorySnapshotGeneration,
+    );
+    return memoryBrokerEnvelope(request, now, "ok", {
+      memories: memories.map((memory) => ({
+        memoryKey: memory.memoryKey,
+        memoryType: memory.memoryType,
+        content: memory.content,
+        revision: memory.revision,
+        updatedAt: memory.updatedAt,
+      })),
+    });
   } catch (error) {
-    if (error instanceof HermesMemoryPolicyError) {
-      return memoryBrokerEnvelope(
-        request,
-        now,
-        "error",
-        "memory_content_rejected",
-      );
-    }
-    if (error instanceof HermesStateRepositoryError) {
-      if (error.code === "permission_denied" || error.code === "not_found") {
-        return memoryBrokerEnvelope(request, now, "error", "permission_denied");
-      }
-      throw mapRepositoryError(error, "complete");
-    }
     throw new HermesToolBrokerError("persistence_unavailable");
   }
 }
 
-function memoryRevisionEnvelope(
+async function executeAtomicMemoryMutation({
+  dependencies,
+  actor,
+  capabilityTokenSha256,
+  claim,
+  request,
+}: {
+  dependencies: HermesToolBrokerDependencies;
+  actor: HermesActorProfile;
+  capabilityTokenSha256: string;
+  claim: {
+    brokerCallId: string;
+    claimOwnerId: string;
+    fencingToken: number;
+    observedAt: string;
+  };
   request: Extract<
     HermesToolBrokerRequest,
     { toolName: "xingyao_memory_remember" | "xingyao_memory_forget" }
-  >,
-  now: Date,
-  revision: HermesMemoryRevision,
-): HermesToolBrokerEnvelope {
-  return memoryBrokerEnvelope(request, now, "ok", {
-    memoryKey: revision.memoryKey,
-    revision: revision.revision,
-    active: revision.active,
-    reused: revision.reused,
-  });
+  >;
+}): Promise<HermesToolBrokerEnvelope> {
+  const mutation =
+    request.toolName === "xingyao_memory_remember"
+      ? {
+          operation: "remember" as const,
+          memoryKey: request.arguments.memoryKey ?? null,
+          expectedRevision: request.arguments.expectedRevision ?? 0,
+          memoryType: request.arguments.memoryType,
+          content: prepareHermesMemoryContent(request.arguments.content)
+            .canonicalContent,
+        }
+      : {
+          operation: "forget" as const,
+          memoryKey: request.arguments.memoryKey,
+          expectedRevision: request.arguments.expectedRevision,
+        };
+  const completion = await dependencies.repository.completeMemoryBrokerCall(
+    stateActor(actor),
+    claim,
+    memoryAuthority(request, capabilityTokenSha256),
+    mutation,
+  );
+  const response = parseStoredHermesToolBrokerEnvelope(
+    completion.sanitizedResponseEnvelope,
+    request,
+  );
+  if (!response) throw new HermesToolBrokerError("persistence_unavailable");
+  return response;
 }
 
 function memoryBrokerEnvelope(
@@ -600,6 +617,18 @@ function isMemoryToolRequest(
   { toolName: (typeof HERMES_MEMORY_TOOL_NAMES)[number] }
 > {
   return isMemoryToolName(request.toolName);
+}
+
+function isMemoryMutationRequest(
+  request: HermesToolBrokerRequest,
+): request is Extract<
+  HermesToolBrokerRequest,
+  { toolName: "xingyao_memory_remember" | "xingyao_memory_forget" }
+> {
+  return (
+    request.toolName === "xingyao_memory_remember" ||
+    request.toolName === "xingyao_memory_forget"
+  );
 }
 
 function mapRepositoryError(

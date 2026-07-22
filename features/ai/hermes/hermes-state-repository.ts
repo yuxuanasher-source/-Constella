@@ -82,6 +82,17 @@ export type HermesForgetMemoryCommand = {
   expectedRevision: number;
 };
 
+export type HermesMemoryBrokerMutation =
+  | ({ operation: "remember" } & HermesRememberMemoryProposal)
+  | ({ operation: "forget" } & HermesForgetMemoryCommand);
+
+export type HermesMemoryBrokerClaim = {
+  brokerCallId: string;
+  claimOwnerId: string;
+  fencingToken: number;
+  observedAt: string;
+};
+
 export type HermesSkillDraftProposal = {
   skillId: string;
   version: number;
@@ -156,6 +167,10 @@ export type CompletedHermesBrokerCall = {
   sequence: number;
 };
 
+export type CompletedHermesMemoryBrokerCall = CompletedHermesBrokerCall & {
+  sanitizedResponseEnvelope: Record<string, unknown>;
+};
+
 export type AppendedHermesToolMessage = {
   messageId: string;
   sequence: number;
@@ -228,6 +243,12 @@ export type HermesStateRepository = {
     sanitizedEnvelope: Record<string, unknown>,
     auditMessage: { content: string; metadata?: Record<string, unknown> },
   ): Promise<CompletedHermesBrokerCall>;
+  completeMemoryBrokerCall(
+    actor: HermesStateActor,
+    claim: HermesMemoryBrokerClaim,
+    authority: HermesMemoryWriteAuthority,
+    mutation: HermesMemoryBrokerMutation,
+  ): Promise<CompletedHermesMemoryBrokerCall>;
   appendToolMessage(
     actor: HermesStateActor,
     turnId: string,
@@ -235,7 +256,7 @@ export type HermesStateRepository = {
   ): Promise<AppendedHermesToolMessage>;
   loadActiveMemories(
     actor: HermesStateOwnerActor,
-    memorySnapshotAt: string,
+    memorySnapshotGeneration: number,
   ): Promise<HermesMemory[]>;
   rememberMemory(
     actor: HermesStateActor,
@@ -406,6 +427,63 @@ export function createHermesStateRepository(
       return parseBrokerCompletion(data);
     },
 
+    async completeMemoryBrokerCall(actor, claim, authority, mutation) {
+      requireActor(actor);
+      requireMemoryWriteAuthority(actor, authority);
+      requireUuidInput(claim.brokerCallId);
+      requireUuidInput(claim.claimOwnerId);
+      if (!isPositiveInteger(claim.fencingToken)) invalidInput();
+      requireDateStringInput(claim.observedAt);
+
+      let memoryType: HermesMemoryType | null = null;
+      let content: string | null = null;
+      let contentHash: string | null = null;
+      if (mutation.operation === "remember") {
+        if (mutation.memoryKey !== null) requireUuidInput(mutation.memoryKey);
+        if (
+          (mutation.memoryKey === null && mutation.expectedRevision !== 0) ||
+          (mutation.memoryKey !== null &&
+            !isPositiveInteger(mutation.expectedRevision))
+        ) {
+          invalidInput();
+        }
+        if (!isHermesMemoryType(mutation.memoryType)) invalidInput();
+        const prepared = prepareHermesMemoryContent(mutation.content);
+        memoryType = mutation.memoryType;
+        content = prepared.canonicalContent;
+        contentHash = prepared.contentHash;
+      } else {
+        requireUuidInput(mutation.memoryKey);
+        if (!isPositiveInteger(mutation.expectedRevision)) invalidInput();
+      }
+
+      const data = await callRpc(
+        client,
+        "complete_ai_hermes_memory_broker_call",
+        {
+          p_organization_id: actor.organizationId,
+          p_owner_user_id: actor.userId,
+          p_broker_call_id: claim.brokerCallId,
+          p_claim_owner_id: claim.claimOwnerId,
+          p_fencing_token: claim.fencingToken,
+          p_observed_at: claim.observedAt,
+          p_operation: mutation.operation,
+          p_capability_token_sha256:
+            authority.capabilityTokenSha256.toLowerCase(),
+          p_parent_invocation_id: authority.parentInvocationId,
+          p_memory_key: mutation.memoryKey,
+          p_expected_revision: mutation.expectedRevision,
+          p_memory_type: memoryType,
+          p_content: content,
+          p_content_hash: contentHash,
+          p_source_conversation_id: actor.conversationId,
+          p_source_message_id: authority.sourceMessageId,
+          p_source_invocation_id: actor.invocationId,
+        },
+      );
+      return parseMemoryBrokerCompletion(data);
+    },
+
     async appendToolMessage(actor, turnId, auditMessage) {
       requireActor(actor);
       requireUuidInput(turnId);
@@ -423,13 +501,13 @@ export function createHermesStateRepository(
       return parseAppendedToolMessage(data);
     },
 
-    async loadActiveMemories(actor, memorySnapshotAt) {
+    async loadActiveMemories(actor, memorySnapshotGeneration) {
       requireIdentity(actor);
-      requireDateStringInput(memorySnapshotAt);
+      if (!isNonNegativeInteger(memorySnapshotGeneration)) invalidInput();
       const data = await callRpc(client, "load_ai_hermes_memory_snapshot", {
         p_organization_id: actor.organizationId,
         p_owner_user_id: actor.userId,
-        p_snapshot_at: memorySnapshotAt,
+        p_snapshot_generation: memorySnapshotGeneration,
       });
       if (!Array.isArray(data)) malformedPayload();
       return data.map(parseMemory);
@@ -695,6 +773,20 @@ function parseBrokerCompletion(value: unknown): CompletedHermesBrokerCall {
     fencingToken: requiredPositiveInteger(value.fencing_token),
     messageId: requiredUuid(value.message_id),
     sequence: requiredPositiveInteger(value.sequence_no),
+  };
+}
+
+function parseMemoryBrokerCompletion(
+  value: unknown,
+): CompletedHermesMemoryBrokerCall {
+  if (!isRecord(value)) malformedPayload();
+  const completion = parseBrokerCompletion(value);
+  if (!isRecord(value.sanitized_response_envelope)) malformedPayload();
+  return {
+    ...completion,
+    sanitizedResponseEnvelope: copySanitizedObject(
+      value.sanitized_response_envelope,
+    ),
   };
 }
 

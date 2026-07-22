@@ -30,7 +30,7 @@ const SOURCE_MESSAGE_ID = "88888888-8888-4888-8888-888888888888";
 const MEMORY_ID = "99999999-9999-4999-8999-999999999998";
 const MEMORY_KEY = "99999999-9999-4999-8999-999999999997";
 const NOW = new Date("2026-07-22T00:00:00.000Z");
-const MEMORY_SNAPSHOT_AT = "2026-07-21T23:55:00.000Z";
+const MEMORY_SNAPSHOT_GENERATION = 7;
 
 describe("Hermes Product Tool Broker", () => {
   it.each(["missing", "expired", "revoked", "inactive invocation"])(
@@ -499,7 +499,7 @@ describe("Hermes Product Tool Broker", () => {
         organizationId: ORGANIZATION_ID,
         userId: USER_ID,
       },
-      MEMORY_SNAPSHOT_AT,
+      MEMORY_SNAPSHOT_GENERATION,
     );
     expect(deps.executeRead).not.toHaveBeenCalled();
   });
@@ -518,13 +518,16 @@ describe("Hermes Product Tool Broker", () => {
         actorFingerprint: capability.actorFingerprint,
       })),
     });
-    memoryRepository(deps).rememberMemory.mockResolvedValueOnce({
-      memoryId: MEMORY_ID,
-      memoryKey: MEMORY_KEY,
-      revision: 1,
-      active: true,
-      reused: false,
-    });
+    memoryRepository(deps).completeMemoryBrokerCall.mockResolvedValueOnce(
+      atomicMemoryCompletion(
+        memorySuccessEnvelope({
+          memoryKey: MEMORY_KEY,
+          revision: 1,
+          active: true,
+          reused: false,
+        }),
+      ),
+    );
 
     const result = await run(
       deps,
@@ -545,7 +548,9 @@ describe("Hermes Product Tool Broker", () => {
         reused: false,
       },
     });
-    expect(memoryRepository(deps).rememberMemory).toHaveBeenCalledWith(
+    expect(
+      memoryRepository(deps).completeMemoryBrokerCall,
+    ).toHaveBeenCalledWith(
       {
         organizationId: ORGANIZATION_ID,
         userId: USER_ID,
@@ -553,17 +558,26 @@ describe("Hermes Product Tool Broker", () => {
         invocationId: INVOCATION_ID,
       },
       {
+        brokerCallId: BROKER_CALL_ID,
+        claimOwnerId: expect.any(String),
+        fencingToken: 1,
+        observedAt: NOW.toISOString(),
+      },
+      {
         capabilityTokenSha256: hashHermesCapabilityToken(CAPABILITY),
         parentInvocationId: INVOCATION_ID,
         sourceMessageId: SOURCE_MESSAGE_ID,
       },
       {
+        operation: "remember",
         memoryKey: null,
         expectedRevision: 0,
         memoryType: "preference",
         content: "Prefer caf\u00e9 summaries.",
       },
     );
+    expect(memoryRepository(deps).rememberMemory).not.toHaveBeenCalled();
+    expect(deps.repository.completeBrokerCall).not.toHaveBeenCalled();
     expect(memoryRepository(deps).loadActiveMemories).not.toHaveBeenCalled();
     expect(deps.executeRead).not.toHaveBeenCalled();
 
@@ -654,14 +668,11 @@ describe("Hermes Product Tool Broker", () => {
             actorFingerprint: capability.actorFingerprint,
           })),
         });
-        const repositoryMethod =
-          memoryRepository(deps)[
-            toolName === "xingyao_memory_remember"
-              ? "rememberMemory"
-              : "forgetMemory"
-          ];
-        repositoryMethod.mockRejectedValueOnce(
-          new HermesStateRepositoryError("permission_denied"),
+        memoryRepository(deps).completeMemoryBrokerCall.mockResolvedValueOnce(
+          atomicMemoryCompletion(
+            memoryErrorEnvelope("permission_denied", toolName),
+            "denied",
+          ),
         );
         const args =
           toolName === "xingyao_memory_remember"
@@ -688,23 +699,10 @@ describe("Hermes Product Tool Broker", () => {
           error: { code: "permission_denied" },
         });
         expect(deps.repository.claimBrokerCall).toHaveBeenCalledOnce();
-        expect(repositoryMethod).toHaveBeenCalledOnce();
-        expect(deps.repository.completeBrokerCall).toHaveBeenCalledWith(
-          { organizationId: ORGANIZATION_ID, userId: USER_ID },
-          BROKER_CALL_ID,
-          expect.any(String),
-          1,
-          "denied",
-          expect.objectContaining({
-            status: "error",
-            error: { code: "permission_denied" },
-          }),
-          expect.objectContaining({
-            metadata: {
-              hermesTool: expect.objectContaining({ status: "error" }),
-            },
-          }),
-        );
+        expect(
+          memoryRepository(deps).completeMemoryBrokerCall,
+        ).toHaveBeenCalledOnce();
+        expect(deps.repository.completeBrokerCall).not.toHaveBeenCalled();
         const persisted = JSON.stringify([
           vi.mocked(deps.repository.claimBrokerCall).mock.calls,
           vi.mocked(deps.repository.completeBrokerCall).mock.calls,
@@ -728,13 +726,19 @@ describe("Hermes Product Tool Broker", () => {
         actorFingerprint: capability.actorFingerprint,
       })),
     });
-    memoryRepository(deps).forgetMemory.mockResolvedValueOnce({
-      memoryId: MEMORY_ID,
-      memoryKey: MEMORY_KEY,
-      revision: 3,
-      active: false,
-      reused: false,
-    });
+    memoryRepository(deps).completeMemoryBrokerCall.mockResolvedValueOnce(
+      atomicMemoryCompletion(
+        memorySuccessEnvelope(
+          {
+            memoryKey: MEMORY_KEY,
+            revision: 3,
+            active: false,
+            reused: false,
+          },
+          "xingyao_memory_forget",
+        ),
+      ),
+    );
 
     await expect(
       run(
@@ -754,7 +758,9 @@ describe("Hermes Product Tool Broker", () => {
         active: false,
       },
     });
-    expect(memoryRepository(deps).forgetMemory).toHaveBeenCalledWith(
+    expect(
+      memoryRepository(deps).completeMemoryBrokerCall,
+    ).toHaveBeenCalledWith(
       {
         organizationId: ORGANIZATION_ID,
         userId: USER_ID,
@@ -762,12 +768,107 @@ describe("Hermes Product Tool Broker", () => {
         invocationId: INVOCATION_ID,
       },
       {
+        brokerCallId: BROKER_CALL_ID,
+        claimOwnerId: expect.any(String),
+        fencingToken: 1,
+        observedAt: NOW.toISOString(),
+      },
+      {
         capabilityTokenSha256: hashHermesCapabilityToken(CAPABILITY),
         parentInvocationId: INVOCATION_ID,
         sourceMessageId: SOURCE_MESSAGE_ID,
       },
-      { memoryKey: MEMORY_KEY, expectedRevision: 2 },
+      {
+        operation: "forget",
+        memoryKey: MEMORY_KEY,
+        expectedRevision: 2,
+      },
     );
+    expect(memoryRepository(deps).forgetMemory).not.toHaveBeenCalled();
+    expect(deps.repository.completeBrokerCall).not.toHaveBeenCalled();
+  });
+
+  it("returns and audits an atomic state-conflict envelope without stranding the claim", async () => {
+    const capability = brokerCapability({
+      rootInvocationId: INVOCATION_ID,
+      allowedTools: ["xingyao_memory_forget"],
+      depth: 0,
+      aiStateWritesAllowed: true,
+    });
+    const deps = dependencies({
+      loadCapability: vi.fn(async () => capability),
+      reauthorizeActor: vi.fn(async () => ({
+        actor: capability.actor,
+        actorFingerprint: capability.actorFingerprint,
+      })),
+    });
+    const conflict = memoryErrorEnvelope("state_conflict");
+    memoryRepository(deps).completeMemoryBrokerCall.mockResolvedValueOnce(
+      atomicMemoryCompletion(conflict, "failed"),
+    );
+
+    await expect(
+      run(
+        deps,
+        memoryRequest("xingyao_memory_forget", {
+          memoryKey: MEMORY_KEY,
+          expectedRevision: 2,
+          parentInvocationId: INVOCATION_ID,
+          sourceMessageId: SOURCE_MESSAGE_ID,
+        }),
+      ),
+    ).resolves.toEqual(conflict);
+    expect(deps.repository.completeBrokerCall).not.toHaveBeenCalled();
+    expect(memoryRepository(deps).forgetMemory).not.toHaveBeenCalled();
+  });
+
+  it("returns the exact saved memory mutation replay without mutating or auditing twice", async () => {
+    const capability = brokerCapability({
+      rootInvocationId: INVOCATION_ID,
+      allowedTools: ["xingyao_memory_remember"],
+      depth: 0,
+      aiStateWritesAllowed: true,
+    });
+    const deps = dependencies({
+      loadCapability: vi.fn(async () => capability),
+      reauthorizeActor: vi.fn(async () => ({
+        actor: capability.actor,
+        actorFingerprint: capability.actorFingerprint,
+      })),
+    });
+    const saved = memorySuccessEnvelope({
+      memoryKey: MEMORY_KEY,
+      revision: 1,
+      active: true,
+      reused: false,
+    });
+    memoryRepository(deps).completeMemoryBrokerCall.mockResolvedValueOnce(
+      atomicMemoryCompletion(saved),
+    );
+    const request = memoryRequest("xingyao_memory_remember", {
+      memoryType: "preference",
+      content: "Prefer exact replay",
+      parentInvocationId: INVOCATION_ID,
+      sourceMessageId: SOURCE_MESSAGE_ID,
+    });
+
+    const first = await run(deps, request);
+    vi.mocked(deps.repository.claimBrokerCall).mockResolvedValueOnce({
+      brokerCallId: BROKER_CALL_ID,
+      status: "completed",
+      execute: false,
+      reused: true,
+      fencingToken: 1,
+      sanitizedResponseEnvelope: saved,
+    });
+    const replay = await run(deps, request);
+
+    expect(replay).toEqual(first);
+    expect(
+      memoryRepository(deps).completeMemoryBrokerCall,
+    ).toHaveBeenCalledOnce();
+    expect(deps.repository.completeBrokerCall).not.toHaveBeenCalled();
+    expect(memoryRepository(deps).rememberMemory).not.toHaveBeenCalled();
   });
 });
 
@@ -842,7 +943,7 @@ function brokerCapability(
     scopes: ["projects.search"],
     depth: 0,
     aiStateWritesAllowed: true,
-    memorySnapshotAt: MEMORY_SNAPSHOT_AT,
+    memorySnapshotGeneration: MEMORY_SNAPSHOT_GENERATION,
     ...overrides,
   };
 }
@@ -868,6 +969,7 @@ function dependencies(
       messageId: "99999999-9999-4999-8999-999999999999",
       sequence: 3,
     })),
+    completeMemoryBrokerCall: vi.fn(),
     loadActiveMemories: vi.fn(async () => []),
     rememberMemory: vi.fn(),
     forgetMemory: vi.fn(),
@@ -886,9 +988,73 @@ function dependencies(
 
 function memoryRepository(deps: HermesToolBrokerDependencies) {
   return deps.repository as HermesToolBrokerDependencies["repository"] & {
+    completeMemoryBrokerCall: ReturnType<typeof vi.fn>;
     loadActiveMemories: ReturnType<typeof vi.fn>;
     rememberMemory: ReturnType<typeof vi.fn>;
     forgetMemory: ReturnType<typeof vi.fn>;
+  };
+}
+
+function atomicMemoryCompletion(
+  sanitizedResponseEnvelope: ReturnType<
+    typeof memorySuccessEnvelope | typeof memoryErrorEnvelope
+  >,
+  status: "completed" | "failed" | "denied" = "completed",
+) {
+  return {
+    brokerCallId: BROKER_CALL_ID,
+    status,
+    reused: false,
+    fencingToken: 1,
+    messageId: "99999999-9999-4999-8999-999999999999",
+    sequence: 3,
+    sanitizedResponseEnvelope,
+  };
+}
+
+function memorySuccessEnvelope(
+  data: Record<string, unknown>,
+  toolName:
+    | "xingyao_memory_remember"
+    | "xingyao_memory_forget" = "xingyao_memory_remember",
+) {
+  return {
+    status: "ok" as const,
+    data,
+    evidenceRefs: [],
+    sourceLabels: ["actor_private_memory"],
+    updatedAt: NOW.toISOString(),
+    observedAt: NOW.toISOString(),
+    missingData: [],
+    permissionDenials: [],
+    truncated: false,
+    invocationId: INVOCATION_ID,
+    toolCallId: "gateway-call-1",
+    toolName,
+    traceId: "gateway-call-1",
+  };
+}
+
+function memoryErrorEnvelope(
+  code: "state_conflict" | "permission_denied",
+  toolName:
+    | "xingyao_memory_remember"
+    | "xingyao_memory_forget" = "xingyao_memory_forget",
+) {
+  return {
+    status: "error" as const,
+    error: { code },
+    evidenceRefs: [],
+    sourceLabels: ["actor_private_memory"],
+    updatedAt: NOW.toISOString(),
+    observedAt: NOW.toISOString(),
+    missingData: [],
+    permissionDenials: [code],
+    truncated: false,
+    invocationId: INVOCATION_ID,
+    toolCallId: "gateway-call-1",
+    toolName,
+    traceId: "gateway-call-1",
   };
 }
 

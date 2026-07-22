@@ -135,7 +135,7 @@ async function loadBrokerCapability(
   const capabilityResult = await client
     .from("ai_hermes_run_capabilities")
     .select(
-      "organization_id, owner_user_id, conversation_id, turn_id, invocation_id, parent_invocation_id, root_invocation_id, actor_fingerprint, allowed_tools, scopes, depth, ai_state_writes_allowed, memory_snapshot_at, expires_at",
+      "organization_id, owner_user_id, conversation_id, turn_id, invocation_id, parent_invocation_id, root_invocation_id, actor_fingerprint, allowed_tools, scopes, depth, ai_state_writes_allowed, memory_snapshot_generation, expires_at",
     )
     .eq("token_sha256", tokenSha256)
     .is("revoked_at", null)
@@ -160,7 +160,9 @@ async function loadBrokerCapability(
   const scopes = scopeArray(capability.scopes);
   const depth = boundedDepth(capability.depth);
   const aiStateWritesAllowed = capability.ai_state_writes_allowed;
-  const memorySnapshotAt = timestampValue(capability.memory_snapshot_at);
+  const memorySnapshotGeneration = nonNegativeIntegerValue(
+    capability.memory_snapshot_generation,
+  );
   if (
     !isUuid(organizationId) ||
     !isUuid(userId) ||
@@ -170,7 +172,7 @@ async function loadBrokerCapability(
     !isUuid(rootInvocationId) ||
     depth === null ||
     typeof aiStateWritesAllowed !== "boolean" ||
-    memorySnapshotAt === null ||
+    memorySnapshotGeneration === null ||
     (depth === 0 &&
       (parentInvocationId !== null || rootInvocationId !== invocationId)) ||
     (depth > 0 && (!isUuid(parentInvocationId) || aiStateWritesAllowed)) ||
@@ -183,7 +185,7 @@ async function loadBrokerCapability(
 
   const turnResult = await client
     .from("ai_chat_turns")
-    .select("context_snapshot, ai_invocation_id, memory_snapshot_at")
+    .select("context_snapshot, ai_invocation_id, memory_snapshot_generation")
     .eq("id", turnId)
     .eq("organization_id", organizationId)
     .eq("owner_user_id", userId)
@@ -198,7 +200,7 @@ async function loadBrokerCapability(
   if (
     !isRecord(turnResult.data) ||
     turnResult.data.ai_invocation_id !== rootInvocationId ||
-    turnResult.data.memory_snapshot_at !== memorySnapshotAt
+    turnResult.data.memory_snapshot_generation !== memorySnapshotGeneration
   ) {
     return null;
   }
@@ -242,7 +244,7 @@ async function loadBrokerCapability(
     scopes,
     depth,
     aiStateWritesAllowed,
-    memorySnapshotAt,
+    memorySnapshotGeneration,
   };
 }
 
@@ -324,10 +326,8 @@ function nullableStringValue(value: unknown): string | null {
   return value === null ? null : stringValue(value);
 }
 
-function timestampValue(value: unknown): string | null {
-  return typeof value === "string" && Number.isFinite(Date.parse(value))
-    ? value
-    : null;
+function nonNegativeIntegerValue(value: unknown): number | null {
+  return Number.isInteger(value) && Number(value) >= 0 ? Number(value) : null;
 }
 
 function boundedDepth(value: unknown): number | null {

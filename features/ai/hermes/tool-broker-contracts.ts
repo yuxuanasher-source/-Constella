@@ -42,7 +42,8 @@ export type HermesToolBrokerToolName =
   | HermesMemoryToolName;
 export type HermesToolBrokerErrorEnvelopeCode =
   | HermesReadErrorCode
-  | "memory_content_rejected";
+  | "memory_content_rejected"
+  | "state_conflict";
 
 type HermesReadToolBrokerRequest = {
   invocationId: string;
@@ -274,6 +275,7 @@ function isHermesToolBrokerErrorEnvelopeCode(
     "upstream_unavailable",
     "internal_error",
     "memory_content_rejected",
+    "state_conflict",
   ].includes(String(value));
 }
 
