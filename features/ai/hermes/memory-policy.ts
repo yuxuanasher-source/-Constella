@@ -29,7 +29,7 @@ const CREDENTIAL_PATTERNS = [
   /https?:\/\/[^\s/:@]+:[^\s/@]+@/iu,
   /https?:\/\/\S+[?&](?:x-amz-(?:credential|signature)|access[_-]?token|api[_-]?key|auth|credential|password|secret|signature|token)=/iu,
   /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----/u,
-  /\bBearer\s+\S+/u,
+  /\bBearer\s+\S+/iu,
   /\b(?:api[_\s-]*key|access[_\s-]*token|refresh[_\s-]*token|auth(?:orization)?[_\s-]*(?:header|token)?|bearer|password|passwd|cookie|private[_\s-]*key|secret[_\s-]*(?:key|token))\b\s*(?::|=|\bis\b)\s*\S+/iu,
   /\b(?:sk|pk|ghp|github_pat)_[a-z0-9_-]{8,}\b/iu,
   /\bsk-[a-z0-9_-]{8,}\b/iu,
