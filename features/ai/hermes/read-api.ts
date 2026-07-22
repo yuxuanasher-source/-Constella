@@ -640,14 +640,32 @@ function sanitizeHermesEvidenceRef(value: string): string | null {
     : null;
 }
 
-const HERMES_SQL_IDENTIFIER_SOURCE = String.raw`(?:"[A-Za-z_][A-Za-z0-9_$]*"|[A-Za-z_][A-Za-z0-9_$]*)`;
+const HERMES_SQL_IDENTIFIER_SOURCE = String.raw`(?:"(?:[^"\r\n]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
 const HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE = String.raw`${HERMES_SQL_IDENTIFIER_SOURCE}(?:\s*\.\s*${HERMES_SQL_IDENTIFIER_SOURCE})*`;
-const HERMES_SQL_SELECT_ITEM_SOURCE = String.raw`${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}(?:\s+as\s+${HERMES_SQL_IDENTIFIER_SOURCE})?`;
-const HERMES_SQL_CLAUSE_SOURCE = String.raw`(?:where|join|(?:inner|left|right|full|cross)\s+join|group\s+by|order\s+by|limit|offset|fetch|for\s+(?:update|share))\b`;
-const HERMES_SQL_IDENTIFIER_SELECT_PATTERN = new RegExp(
-  String.raw`\bselect\s+(?:distinct\s+)?${HERMES_SQL_SELECT_ITEM_SOURCE}(?:\s*,\s*${HERMES_SQL_SELECT_ITEM_SOURCE})*\s+from\s+${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}(?:\s+(?:as\s+)?${HERMES_SQL_IDENTIFIER_SOURCE})?(?=\s*(?:;|$|${HERMES_SQL_CLAUSE_SOURCE}))`,
+const HERMES_SQL_LITERAL_SOURCE = String.raw`(?:\d+(?:\.\d+)?|'(?:''|[^'\r\n])*')`;
+const HERMES_SQL_FUNCTION_ARGUMENT_SOURCE = String.raw`(?:\*|${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}|${HERMES_SQL_LITERAL_SOURCE})`;
+const HERMES_SQL_FUNCTION_CALL_SOURCE = String.raw`${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}\s*\(\s*(?:distinct\s+)?(?:${HERMES_SQL_FUNCTION_ARGUMENT_SOURCE}(?:\s*,\s*${HERMES_SQL_FUNCTION_ARGUMENT_SOURCE})*)?\s*\)`;
+const HERMES_SQL_SELECT_EXPRESSION_SOURCE = String.raw`(?:${HERMES_SQL_FUNCTION_CALL_SOURCE}|${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}(?:\s*\.\s*\*)?|\*)`;
+const HERMES_SQL_SELECT_ITEM_SOURCE = String.raw`${HERMES_SQL_SELECT_EXPRESSION_SOURCE}(?:\s+(?:as\s+)?${HERMES_SQL_IDENTIFIER_SOURCE})?`;
+const HERMES_SQL_SELECT_LIST_SOURCE = String.raw`${HERMES_SQL_SELECT_ITEM_SOURCE}(?:\s*,\s*${HERMES_SQL_SELECT_ITEM_SOURCE})*`;
+const HERMES_SQL_TABLE_REFERENCE_SOURCE = String.raw`${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}(?:\s+(?:as\s+)?${HERMES_SQL_IDENTIFIER_SOURCE})?`;
+const HERMES_SQL_CLAUSE_START_SOURCE = String.raw`(?:where|having|join|(?:inner|cross)\s+join|(?:left|right|full)(?:\s+outer)?\s+join|group\s+by|order\s+by|limit|offset|fetch(?:\s+(?:first|next))?|for\s+(?:update|share))\b`;
+const HERMES_SQL_CLAUSE_BODY_SOURCE = String.raw`[A-Za-z0-9_$\."'(),=*<>!+\-/%?:\s]+`;
+const HERMES_SQL_SELECT_FROM_PATTERN = new RegExp(
+  String.raw`^\s*select\s+(?:distinct\s+)?${HERMES_SQL_SELECT_LIST_SOURCE}\s+from\s+${HERMES_SQL_TABLE_REFERENCE_SOURCE}(?:\s+${HERMES_SQL_CLAUSE_START_SOURCE}(?:\s+${HERMES_SQL_CLAUSE_BODY_SOURCE})?)?\s*;?\s*$`,
   "i",
 );
+const HERMES_SQL_FUNCTION_SELECT_PATTERN = new RegExp(
+  String.raw`^\s*select\s+${HERMES_SQL_FUNCTION_CALL_SOURCE}(?:\s+(?:as\s+)?${HERMES_SQL_IDENTIFIER_SOURCE})?(?:\s*,\s*${HERMES_SQL_FUNCTION_CALL_SOURCE}(?:\s+(?:as\s+)?${HERMES_SQL_IDENTIFIER_SOURCE})?)*\s*;?\s*$`,
+  "i",
+);
+
+function isHermesSqlShapedSelect(value: string): boolean {
+  return (
+    HERMES_SQL_SELECT_FROM_PATTERN.test(value) ||
+    HERMES_SQL_FUNCTION_SELECT_PATTERN.test(value)
+  );
+}
 
 function sanitizeHermesReadText(value: string): string {
   const normalized = value.slice(0, 20_000);
@@ -664,11 +682,7 @@ function sanitizeHermesReadText(value: string): string {
       normalized,
     ) ||
     /https?:\/\/[^\s/:@]+:[^\s/@]+@/i.test(normalized) ||
-    /\bselect\s+(?:[a-z_][a-z0-9_]*\.)?\*\s+from\s+[a-z0-9_."]+/i.test(
-      normalized,
-    ) ||
-    /\bselect\s+pg_[a-z0-9_]+\s*\(/i.test(normalized) ||
-    HERMES_SQL_IDENTIFIER_SELECT_PATTERN.test(normalized) ||
+    isHermesSqlShapedSelect(normalized) ||
     /\b(?:insert\s+into\b|update\s+[a-z0-9_."]+\s+set\b|delete\s+from\b|(?:alter|drop|create)\s+table\b)/i.test(
       normalized,
     ) ||

@@ -311,6 +311,8 @@ describe("Hermes product read API boundary", () => {
       "Select one project from the current queue",
       "Please select one project from the current queue",
       "Select the active project from the review queue",
+      "select one project from the current queue",
+      "Select id from projects for the current queue",
     ];
     const credentialAssignments = [
       "OPENAI_API_KEY=read-openai-secret",
@@ -324,6 +326,10 @@ describe("Hermes product read API boundary", () => {
     ];
     const sqlStatements = [
       "SELECT id FROM projects",
+      "select id from projects",
+      "SELECT id project_id FROM projects",
+      "SELECT count(*) FROM projects",
+      "select p.id project_id from public.projects p;",
       "SELECT projects.id FROM public.projects",
       'SELECT "projects"."id" FROM "public"."projects";',
       "SELECT p.id FROM projects p",

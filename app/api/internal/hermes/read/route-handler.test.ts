@@ -44,8 +44,13 @@ describe("Hermes HTTP Read route handler", () => {
           note: "select * from projects at /api/internal/hermes/read",
           businessInstruction: "Select one project from the current queue",
           businessSelection: "Select the active project from the review queue",
+          sqlLikeBusinessInstruction:
+            "Select id from projects for the current queue",
           singleIdentifierSql: "SELECT id FROM projects",
           qualifiedIdentifierSql: "SELECT projects.id FROM public.projects;",
+          implicitAliasSql: "SELECT id project_id FROM projects",
+          aggregateSql: "SELECT count(*) FROM projects",
+          lowercaseSql: "select p.id project_id from public.projects p;",
           credentialAssignments: [
             "OPENAI_API_KEY=route-openai-secret",
             "AWS_SECRET_ACCESS_KEY=route-aws-secret",
@@ -117,8 +122,13 @@ describe("Hermes HTTP Read route handler", () => {
             businessInstruction: "Select one project from the current queue",
             businessSelection:
               "Select the active project from the review queue",
+            sqlLikeBusinessInstruction:
+              "Select id from projects for the current queue",
             singleIdentifierSql: "[REDACTED]",
             qualifiedIdentifierSql: "[REDACTED]",
+            implicitAliasSql: "[REDACTED]",
+            aggregateSql: "[REDACTED]",
+            lowercaseSql: "[REDACTED]",
             credentialAssignments: ["[REDACTED]", "[REDACTED]", "[REDACTED]"],
             publicEvidence: { sourceRef: `project:${PROJECT_ID}` },
             numericEvidence: { sourceRef: "live_report:123456" },
@@ -137,6 +147,9 @@ describe("Hermes HTTP Read route handler", () => {
       "route-service-token",
       "SELECT id FROM projects",
       "SELECT projects.id FROM public.projects",
+      "SELECT id project_id FROM projects",
+      "SELECT count(*) FROM projects",
+      "select p.id project_id from public.projects p",
       "select *",
       "projects:",
       "/api/internal/",

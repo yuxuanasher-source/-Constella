@@ -212,6 +212,8 @@ describe("Hermes Product Tool Broker", () => {
       status: "partial" as const,
       data: {
         businessInstruction: "Select one project from the current queue",
+        sqlLikeBusinessInstruction:
+          "Select id from projects for the current queue",
         credentialAssignments: [
           "OPENAI_API_KEY=broker-openai-secret",
           "AWS_ACCESS_KEY_ID=broker-aws-access-id",
@@ -220,6 +222,9 @@ describe("Hermes Product Tool Broker", () => {
         actualSql: "SELECT id, name FROM projects",
         singleIdentifierSql: "SELECT id FROM projects",
         qualifiedIdentifierSql: "SELECT projects.id FROM public.projects;",
+        implicitAliasSql: "SELECT id project_id FROM projects",
+        aggregateSql: "SELECT count(*) FROM projects",
+        lowercaseSql: "select p.id project_id from public.projects p;",
         rows: [
           {
             id: "project-1",
@@ -263,10 +268,15 @@ describe("Hermes Product Tool Broker", () => {
       status: "partial",
       data: {
         businessInstruction: "Select one project from the current queue",
+        sqlLikeBusinessInstruction:
+          "Select id from projects for the current queue",
         credentialAssignments: ["[REDACTED]", "[REDACTED]", "[REDACTED]"],
         actualSql: "[REDACTED]",
         singleIdentifierSql: "[REDACTED]",
         qualifiedIdentifierSql: "[REDACTED]",
+        implicitAliasSql: "[REDACTED]",
+        aggregateSql: "[REDACTED]",
+        lowercaseSql: "[REDACTED]",
         rows: [
           { id: "project-1", sourceRef: "project:project-1" },
           { id: "unknown-source" },
@@ -299,10 +309,19 @@ describe("Hermes Product Tool Broker", () => {
     expect(completionCall?.[6]?.content).toContain(
       '"singleIdentifierSql":"[REDACTED]"',
     );
-    expect(persistedEnvelopeAndAudit).not.toContain("SELECT id FROM projects");
-    expect(persistedEnvelopeAndAudit).not.toContain(
-      "SELECT projects.id FROM public.projects",
+    expect(completionCall?.[6]?.content).toContain(
+      '"sqlLikeBusinessInstruction":"Select id from projects for the current queue"',
     );
+    for (const rawSql of [
+      "SELECT id FROM projects",
+      "SELECT projects.id FROM public.projects",
+      "SELECT id project_id FROM projects",
+      "SELECT count(*) FROM projects",
+      "select p.id project_id from public.projects p",
+    ]) {
+      expect(persistedEnvelopeAndAudit).not.toContain(rawSql);
+      expect(completionCall?.[6]?.content).not.toContain(rawSql);
+    }
 
     vi.mocked(deps.repository.claimBrokerCall).mockResolvedValueOnce({
       brokerCallId: BROKER_CALL_ID,
@@ -314,10 +333,21 @@ describe("Hermes Product Tool Broker", () => {
     });
     const replayed = await run(deps);
     expect(replayed).toEqual(first);
-    expect(JSON.stringify(replayed)).not.toContain("SELECT id FROM projects");
-    expect(JSON.stringify(replayed)).not.toContain(
+    expect(replayed).toMatchObject({
+      data: {
+        sqlLikeBusinessInstruction:
+          "Select id from projects for the current queue",
+      },
+    });
+    for (const rawSql of [
+      "SELECT id FROM projects",
       "SELECT projects.id FROM public.projects",
-    );
+      "SELECT id project_id FROM projects",
+      "SELECT count(*) FROM projects",
+      "select p.id project_id from public.projects p",
+    ]) {
+      expect(JSON.stringify(replayed)).not.toContain(rawSql);
+    }
     expect(first.evidenceRefs).toEqual(validEvidenceRefs);
     expect(JSON.stringify(first)).not.toContain("private_payroll_rows");
     expect(JSON.stringify(first)).not.toContain("broker-source-secret");
