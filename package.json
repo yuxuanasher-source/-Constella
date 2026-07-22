@@ -17,6 +17,7 @@
     "test:api-integration-smoke": "node scripts/api-integration-smoke.mjs",
     "test:manual-acceptance-smoke": "node scripts/manual-acceptance-smoke.mjs",
     "verify:xingyao-hermes-release": "node scripts/verify-xingyao-hermes-release.mjs",
+    "test:xingyao-hermes-e2e": "node scripts/test-xingyao-hermes-e2e.mjs --local",
     "test:ops-visual": "playwright test tests/visual/arco-redesign.spec.ts",
     "test:dto-contracts": "vitest run features/dto-contracts/api-dto-contract.test.ts",
     "test:golden": "vitest run features/regression/settlement-golden-path.test.ts",
