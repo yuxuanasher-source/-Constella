@@ -29,6 +29,12 @@ function functionSql(functionName: string) {
   return end < 0 ? migration.slice(start) : migration.slice(start, end + 4);
 }
 
+function expectSqlOrder(sql: string, markers: string[]) {
+  const positions = markers.map((marker) => sql.indexOf(marker));
+  expect(positions).not.toContain(-1);
+  expect(positions).toEqual([...positions].sort((left, right) => left - right));
+}
+
 const serviceOnlyFunctions = [
   "issue_ai_hermes_run_capability",
   "claim_ai_hermes_broker_call",
@@ -188,7 +194,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(claim).toContain("p_organization_id uuid");
     expect(claim).toContain("p_owner_user_id uuid");
     expect(claim).toMatch(
-      /capability\.token_sha256 = lower\(p_token_sha256\)\s+and capability\.organization_id = p_organization_id\s+and capability\.owner_user_id = p_owner_user_id/,
+      /discovered_capability\.token_sha256 = lower\(p_token_sha256\)\s+and discovered_capability\.organization_id = p_organization_id\s+and discovered_capability\.owner_user_id = p_owner_user_id/,
     );
     expect(claim).toMatch(/token_sha256\s*=\s*lower\(p_token_sha256\)/);
     expect(claim).toMatch(/revoked_at\s+is\s+null/);
@@ -216,6 +222,36 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(claim).toMatch(
       /from public\.ai_chat_messages tool_message[\s\S]*?tool_message\.id = v_existing\.tool_message_id[\s\S]*?tool_message\.role = 'tool'/,
     );
+  });
+
+  it("uses one documented global lock order for Broker and tool messages", () => {
+    const claim = functionSql("claim_ai_hermes_broker_call");
+    const complete = functionSql("complete_ai_hermes_broker_call");
+    const append = functionSql("append_ai_hermes_tool_message");
+    const lockOrder =
+      "hermes lock order: conversation -> turn -> invocation -> capability -> broker_call";
+
+    for (const sql of [claim, complete, append]) {
+      expect(sql).toContain(lockOrder);
+    }
+    expectSqlOrder(claim, [
+      "from public.ai_conversations locked_conversation",
+      "from public.ai_chat_turns locked_turn",
+      "from public.ai_invocations locked_invocation",
+      "from public.ai_hermes_run_capabilities locked_capability",
+      "from public.ai_hermes_broker_calls locked_broker_call",
+    ]);
+    expectSqlOrder(complete, [
+      "from public.ai_conversations locked_conversation",
+      "from public.ai_chat_turns locked_turn",
+      "from public.ai_invocations locked_invocation",
+      "from public.ai_hermes_run_capabilities locked_capability",
+      "from public.ai_hermes_broker_calls locked_broker_call",
+    ]);
+    expectSqlOrder(append, [
+      "from public.ai_conversations locked_conversation",
+      "from public.ai_chat_turns locked_turn",
+    ]);
   });
 
   it("revokes terminal invocation capabilities and rejects stale invocation use", () => {
@@ -255,7 +291,7 @@ describe("Xingyao Hermes native state schema contract", () => {
       /from public\.ai_invocations parent_invocation[\s\S]*?parent_invocation\.id = p_parent_invocation_id[\s\S]*?parent_invocation\.organization_id = p_organization_id[\s\S]*?parent_invocation\.actor_user_id = p_owner_user_id[\s\S]*?parent_invocation\.status in \('started', 'queued'\)[\s\S]*?for update/,
     );
     expect(claim).toMatch(
-      /from public\.ai_invocations capability_invocation[\s\S]*?capability_invocation\.id = v_capability\.invocation_id[\s\S]*?capability_invocation\.organization_id = v_capability\.organization_id[\s\S]*?capability_invocation\.actor_user_id = v_capability\.owner_user_id[\s\S]*?capability_invocation\.status in \('started', 'queued'\)[\s\S]*?for update/,
+      /from public\.ai_invocations locked_invocation[\s\S]*?locked_invocation\.id = v_capability\.invocation_id[\s\S]*?locked_invocation\.organization_id = v_capability\.organization_id[\s\S]*?locked_invocation\.actor_user_id = v_capability\.owner_user_id[\s\S]*?locked_invocation\.status in \('started', 'queued'\)[\s\S]*?for update/,
     );
   });
 
@@ -580,7 +616,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(complete).toContain("p_organization_id uuid");
     expect(complete).toContain("p_owner_user_id uuid");
     expect(complete).toMatch(
-      /broker_call\.id = p_broker_call_id\s+and broker_call\.organization_id = p_organization_id\s+and broker_call\.owner_user_id = p_owner_user_id/,
+      /locked_broker_call\.id = p_broker_call_id[\s\S]*?locked_broker_call\.capability_id = v_capability\.id[\s\S]*?locked_broker_call\.organization_id = p_organization_id[\s\S]*?locked_broker_call\.owner_user_id = p_owner_user_id/,
     );
     expect(complete).toContain("p_fencing_token bigint");
     expect(complete).toContain("p_tool_content text");
@@ -594,7 +630,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(complete).toContain("broker_call_fence_invalid");
     expect(complete).toContain("'fencing_token', v_call.fencing_token");
     expect(complete).toMatch(
-      /from public\.ai_conversations conversation[\s\S]*?for update/,
+      /from public\.ai_conversations locked_conversation[\s\S]*?for update/,
     );
     expect(complete).toContain("coalesce(max(sequence_no), 0) + 1");
     expect(complete).toMatch(

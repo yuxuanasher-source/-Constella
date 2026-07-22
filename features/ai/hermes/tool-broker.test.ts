@@ -202,6 +202,7 @@ describe("Hermes Product Tool Broker", () => {
       "live_report:report-1",
       "recording_review:review-1",
       "knowledge:document-1",
+      "knowledge:doc-1#chunk-1",
       "knowledge:kb_mqu7f3_q42",
       "live_report:123456",
       "settlement_batch:batch-1",
@@ -226,7 +227,11 @@ describe("Hermes Product Tool Broker", () => {
         ],
       },
       evidenceRefs: [
-        ...validEvidenceRefs,
+        ...validEvidenceRefs.map((evidenceRef) =>
+          evidenceRef === "knowledge:doc-1#chunk-1"
+            ? "knowledge_base:doc-1#chunk-1"
+            : evidenceRef,
+        ),
         "private_payroll_rows:row-1",
         "knowledge:Bearer broker-evidence-secret",
         "recording_review:/api/internal/hermes/read",

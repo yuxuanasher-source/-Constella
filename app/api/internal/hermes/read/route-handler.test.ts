@@ -137,10 +137,55 @@ describe("Hermes HTTP Read route handler", () => {
       expect(serialized).not.toContain(forbidden);
     }
   });
+
+  it("keeps current-context fields identical to the shared Read core", async () => {
+    const keys = rsaKeyPair();
+    vi.stubEnv("XINGYAO_READ_API_SERVICE_TOKEN", SERVICE_TOKEN);
+    vi.stubEnv("XINGYAO_ACTOR_JWS_PUBLIC_KEY", keys.publicKeyPem);
+    vi.stubEnv("XINGYAO_ACTOR_JWS_KEY_ID", "kid-read");
+    createSupabaseAdminClientMock.mockReturnValue(supabaseDouble([]));
+    const actor = profile({
+      allowedReadScopes: ["context.read"],
+      pageContext: { pageType: "project", objectIds: [PROJECT_ID] },
+    });
+    const actorJws = await signHermesActorAssertion(actor, {
+      privateKeyPem: keys.privateKeyPem,
+      kid: "kid-read",
+      now: new Date(),
+    });
+
+    const response = await handleHermesReadRoute(
+      new Request("http://localhost/api/internal/hermes/read/context", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${SERVICE_TOKEN}`,
+          "x-xingyao-actor": actorJws,
+          "content-type": "application/json",
+        },
+        body: "{}",
+      }),
+      "xingyao_get_current_context",
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "ok",
+      data: {
+        organizationId: ORGANIZATION_ID,
+        role: "owner",
+        conversationId: CONVERSATION_ID,
+        pageContext: { pageType: "project", objectIds: [PROJECT_ID] },
+        allowedReadScopes: ["context.read"],
+      },
+      evidenceRefs: [`conversation:${CONVERSATION_ID}`],
+    });
+  });
 });
 
-function profile(): HermesActorProfile {
-  const enabledSkillVersions: HermesActorProfile["enabledSkillVersions"] = [];
+function profile(
+  overrides: Partial<HermesActorProfile> = {},
+): HermesActorProfile {
+  const enabledSkillVersions = overrides.enabledSkillVersions ?? [];
   return {
     userId: USER_ID,
     organizationId: ORGANIZATION_ID,
@@ -152,6 +197,7 @@ function profile(): HermesActorProfile {
     skillGrantsHash: computeHermesSkillGrantsHash(enabledSkillVersions),
     profileVersion: "hermes-xingyao-v1+skills.c1755ec71e802748",
     pageContext: { pageType: "projects", objectIds: [] },
+    ...overrides,
   };
 }
 

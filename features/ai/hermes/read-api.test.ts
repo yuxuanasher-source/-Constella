@@ -235,6 +235,105 @@ describe("Hermes product read API boundary", () => {
     expect(serialized).not.toContain("private_table");
   });
 
+  it("preserves one safe knowledge chunk fragment while rejecting malformed fragments", () => {
+    const envelope = hermesReadSuccess(profile(), {
+      data: {
+        passages: [
+          { sourceRef: "knowledge_base:doc-1#chunk-1" },
+          { sourceRef: "knowledge_base:doc-1#chunk-1#extra" },
+          { sourceRef: "knowledge_base:#chunk-1" },
+          { sourceRef: "knowledge_base:doc-1#" },
+        ],
+      },
+      evidenceRefs: [
+        "knowledge_base:doc-1#chunk-1",
+        "knowledge_base:doc-1#chunk-1#extra",
+        "knowledge_base:#chunk-1",
+        "knowledge_base:doc-1#",
+      ],
+    });
+
+    expect(envelope).toMatchObject({
+      data: {
+        passages: [{ sourceRef: "knowledge:doc-1#chunk-1" }, {}, {}, {}],
+      },
+      evidenceRefs: ["knowledge:doc-1#chunk-1"],
+    });
+  });
+
+  it("keeps ordinary business text while redacting actual credential patterns", () => {
+    const ordinaryText = [
+      "Password rotation SOP",
+      "Authorization workflow policy",
+      "Secret shopper campaign",
+      "Cookie consent policy",
+    ];
+    const envelope = hermesReadSuccess(profile(), {
+      data: {
+        ordinaryText,
+        bearer: "Bearer actual-credential-value",
+        jwt: "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+        pem: "-----BEGIN PRIVATE KEY-----\nmaterial\n-----END PRIVATE KEY-----",
+        passwordAssignment: "password=hunter2",
+        secretAssignment: "api_secret: actual-secret-value",
+        authorizationHeader: "Authorization: Basic dXNlcjpwYXNz",
+        credentialUrl: "https://user:pass@example.invalid/path",
+        internalRoute: "POST /api/internal/hermes/read",
+        sql: "select * from private_table where id = 1",
+        stack: "Error: failed\n at handler (server.ts:10:2)",
+        authorization: "sensitive-key-value",
+        sessionToken: "sensitive-token-value",
+      },
+    });
+    const serialized = JSON.stringify(envelope);
+
+    expect(envelope).toMatchObject({ data: { ordinaryText } });
+    for (const secret of [
+      "actual-credential-value",
+      "eyJhbGciOiJSUzI1NiJ9",
+      "BEGIN PRIVATE KEY",
+      "hunter2",
+      "actual-secret-value",
+      "dXNlcjpwYXNz",
+      "user:pass",
+      "/api/internal/",
+      "private_table",
+      "server.ts:10:2",
+      "sensitive-key-value",
+      "sensitive-token-value",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  it("preserves authorized current-context identity and page fields", async () => {
+    const actor = profile({
+      allowedReadScopes: ["context.read"],
+      pageContext: { pageType: "project", objectIds: [PROJECT_ID] },
+    });
+    const result = await authorizeAndExecuteHermesReadTool(
+      supabaseDouble([]) as never,
+      actor,
+      "xingyao_get_current_context",
+      {},
+    );
+
+    expect(result).toMatchObject({
+      status: 200,
+      envelope: {
+        status: "ok",
+        data: {
+          organizationId: ORG_ID,
+          role: "owner",
+          conversationId: CONVERSATION_ID,
+          pageContext: { pageType: "project", objectIds: [PROJECT_ID] },
+          allowedReadScopes: ["context.read"],
+        },
+        evidenceRefs: [`conversation:${CONVERSATION_ID}`],
+      },
+    });
+  });
+
   it("sanitizes evidence content before allowing only public domain prefixes", () => {
     const validRefs = [
       `conversation:${CONVERSATION_ID}`,
@@ -326,7 +425,6 @@ describe("Hermes product read API boundary", () => {
       "recording_review:folder/review-1",
       "recording_review:folder\\review-1",
       "settlement_batch:batch-1?expand=items",
-      "project:project-1#details",
       "project:project:child",
       "live_report:report-1\nnext",
       `${conversationPrefix}${"b".repeat(
@@ -359,7 +457,6 @@ describe("Hermes product read API boundary", () => {
       "folder/review",
       "folder\\\\review",
       "?expand=",
-      "#details",
       "project:child",
       "report-1\\nnext",
       "b".repeat(

@@ -1261,29 +1261,42 @@ begin
     raise exception 'broker_call_invalid';
   end if;
 
-  select capability.*
+  select discovered_capability.*
   into v_capability
-  from public.ai_hermes_run_capabilities capability
-  where capability.token_sha256 = lower(p_token_sha256)
-    and capability.organization_id = p_organization_id
-    and capability.owner_user_id = p_owner_user_id
-    and capability.revoked_at is null
-    and capability.expires_at > now();
+  from public.ai_hermes_run_capabilities discovered_capability
+  where discovered_capability.token_sha256 = lower(p_token_sha256)
+    and discovered_capability.organization_id = p_organization_id
+    and discovered_capability.owner_user_id = p_owner_user_id
+    and discovered_capability.revoked_at is null
+    and discovered_capability.expires_at > now();
+
+  if not found then
+    raise exception 'capability_invalid';
+  end if;
+
+  -- Hermes lock order: conversation -> turn -> invocation -> capability -> broker_call.
+  perform 1
+  from public.ai_conversations locked_conversation
+  where locked_conversation.id = v_capability.conversation_id
+    and locked_conversation.organization_id = v_capability.organization_id
+    and locked_conversation.owner_user_id = v_capability.owner_user_id
+    and locked_conversation.status = 'active'
+  for update;
 
   if not found then
     raise exception 'capability_invalid';
   end if;
 
   perform 1
-  from public.ai_chat_turns turn
-  where turn.id = v_capability.turn_id
-    and turn.organization_id = v_capability.organization_id
-    and turn.owner_user_id = v_capability.owner_user_id
-    and turn.conversation_id = v_capability.conversation_id
-    and turn.ai_invocation_id = v_capability.root_invocation_id
-    and turn.status in ('accepted', 'grounding', 'generating', 'validating')
-    and turn.lease_expires_at > now()
-    and turn.cancel_requested_at is null
+  from public.ai_chat_turns locked_turn
+  where locked_turn.id = v_capability.turn_id
+    and locked_turn.organization_id = v_capability.organization_id
+    and locked_turn.owner_user_id = v_capability.owner_user_id
+    and locked_turn.conversation_id = v_capability.conversation_id
+    and locked_turn.ai_invocation_id = v_capability.root_invocation_id
+    and locked_turn.status in ('accepted', 'grounding', 'generating', 'validating')
+    and locked_turn.lease_expires_at > now()
+    and locked_turn.cancel_requested_at is null
   for update;
 
   if not found then
@@ -1291,26 +1304,26 @@ begin
   end if;
 
   perform 1
-  from public.ai_invocations capability_invocation
-  where capability_invocation.id = v_capability.invocation_id
-    and capability_invocation.organization_id = v_capability.organization_id
-    and capability_invocation.actor_user_id = v_capability.owner_user_id
-    and capability_invocation.status in ('started', 'queued')
+  from public.ai_invocations locked_invocation
+  where locked_invocation.id = v_capability.invocation_id
+    and locked_invocation.organization_id = v_capability.organization_id
+    and locked_invocation.actor_user_id = v_capability.owner_user_id
+    and locked_invocation.status in ('started', 'queued')
   for update;
 
   if not found then
     raise exception 'capability_invalid';
   end if;
 
-  select capability.*
+  select locked_capability.*
   into v_capability
-  from public.ai_hermes_run_capabilities capability
-  where capability.id = v_capability.id
-    and capability.token_sha256 = lower(p_token_sha256)
-    and capability.organization_id = p_organization_id
-    and capability.owner_user_id = p_owner_user_id
-    and capability.revoked_at is null
-    and capability.expires_at > now()
+  from public.ai_hermes_run_capabilities locked_capability
+  where locked_capability.id = v_capability.id
+    and locked_capability.token_sha256 = lower(p_token_sha256)
+    and locked_capability.organization_id = p_organization_id
+    and locked_capability.owner_user_id = p_owner_user_id
+    and locked_capability.revoked_at is null
+    and locked_capability.expires_at > now()
   for update;
 
   if not found then
@@ -1450,13 +1463,13 @@ begin
     );
   end if;
 
-  select broker_call.*
+  select locked_broker_call.*
   into v_existing
-  from public.ai_hermes_broker_calls broker_call
-  where broker_call.capability_id = v_capability.id
-    and broker_call.organization_id = p_organization_id
-    and broker_call.owner_user_id = p_owner_user_id
-    and broker_call.tool_call_id = p_tool_call_id
+  from public.ai_hermes_broker_calls locked_broker_call
+  where locked_broker_call.capability_id = v_capability.id
+    and locked_broker_call.organization_id = p_organization_id
+    and locked_broker_call.owner_user_id = p_owner_user_id
+    and locked_broker_call.tool_call_id = p_tool_call_id
   for update;
 
   if not found then
@@ -1591,12 +1604,83 @@ begin
     raise exception 'broker_call_completion_invalid';
   end if;
 
-  select broker_call.*
+  select discovered_call.*
   into v_call
-  from public.ai_hermes_broker_calls broker_call
-  where broker_call.id = p_broker_call_id
-    and broker_call.organization_id = p_organization_id
-    and broker_call.owner_user_id = p_owner_user_id
+  from public.ai_hermes_broker_calls discovered_call
+  where discovered_call.id = p_broker_call_id
+    and discovered_call.organization_id = p_organization_id
+    and discovered_call.owner_user_id = p_owner_user_id;
+
+  if not found then
+    raise exception 'broker_call_not_found';
+  end if;
+
+  select discovered_capability.*
+  into v_capability
+  from public.ai_hermes_run_capabilities discovered_capability
+  where discovered_capability.id = v_call.capability_id
+    and discovered_capability.organization_id = p_organization_id
+    and discovered_capability.owner_user_id = p_owner_user_id;
+
+  if not found then
+    raise exception 'capability_invalid';
+  end if;
+
+  -- Hermes lock order: conversation -> turn -> invocation -> capability -> broker_call.
+  perform 1
+  from public.ai_conversations locked_conversation
+  where locked_conversation.id = v_capability.conversation_id
+    and locked_conversation.organization_id = p_organization_id
+    and locked_conversation.owner_user_id = p_owner_user_id
+  for update;
+
+  if not found then
+    raise exception 'conversation_not_found';
+  end if;
+
+  perform 1
+  from public.ai_chat_turns locked_turn
+  where locked_turn.id = v_capability.turn_id
+    and locked_turn.organization_id = p_organization_id
+    and locked_turn.owner_user_id = p_owner_user_id
+    and locked_turn.conversation_id = v_capability.conversation_id
+    and locked_turn.ai_invocation_id = v_capability.root_invocation_id
+  for update;
+
+  if not found then
+    raise exception 'turn_lease_invalid';
+  end if;
+
+  perform 1
+  from public.ai_invocations locked_invocation
+  where locked_invocation.id = v_capability.invocation_id
+    and locked_invocation.organization_id = p_organization_id
+    and locked_invocation.actor_user_id = p_owner_user_id
+  for update;
+
+  if not found then
+    raise exception 'capability_invalid';
+  end if;
+
+  select locked_capability.*
+  into v_capability
+  from public.ai_hermes_run_capabilities locked_capability
+  where locked_capability.id = v_capability.id
+    and locked_capability.organization_id = p_organization_id
+    and locked_capability.owner_user_id = p_owner_user_id
+  for update;
+
+  if not found then
+    raise exception 'capability_invalid';
+  end if;
+
+  select locked_broker_call.*
+  into v_call
+  from public.ai_hermes_broker_calls locked_broker_call
+  where locked_broker_call.id = p_broker_call_id
+    and locked_broker_call.capability_id = v_capability.id
+    and locked_broker_call.organization_id = p_organization_id
+    and locked_broker_call.owner_user_id = p_owner_user_id
   for update;
 
   if not found then
@@ -1605,17 +1689,6 @@ begin
   if v_call.claim_owner_id is distinct from p_claim_owner_id
      or v_call.fencing_token is distinct from p_fencing_token then
     raise exception 'broker_call_fence_invalid';
-  end if;
-
-  select capability.*
-  into v_capability
-  from public.ai_hermes_run_capabilities capability
-  where capability.id = v_call.capability_id
-    and capability.organization_id = p_organization_id
-    and capability.owner_user_id = p_owner_user_id;
-
-  if not found then
-    raise exception 'capability_invalid';
   end if;
 
   if v_call.status <> 'claimed' then
@@ -1668,31 +1741,29 @@ begin
     raise exception 'broker_call_fence_invalid';
   end if;
 
-  perform 1
-  from public.ai_conversations conversation
-  where conversation.id = v_capability.conversation_id
-    and conversation.organization_id = p_organization_id
-    and conversation.owner_user_id = p_owner_user_id
-    and conversation.status = 'active'
-  for update;
-
-  if not found then
+  if not exists (
+    select 1
+    from public.ai_conversations conversation
+    where conversation.id = v_capability.conversation_id
+      and conversation.organization_id = p_organization_id
+      and conversation.owner_user_id = p_owner_user_id
+      and conversation.status = 'active'
+  ) then
     raise exception 'conversation_not_found';
   end if;
 
-  perform 1
-  from public.ai_chat_turns turn
-  where turn.id = v_capability.turn_id
-    and turn.organization_id = p_organization_id
-    and turn.owner_user_id = p_owner_user_id
-    and turn.conversation_id = v_capability.conversation_id
-    and turn.ai_invocation_id = v_capability.root_invocation_id
-    and turn.status in ('accepted', 'grounding', 'generating', 'validating')
-    and turn.lease_expires_at > now()
-    and turn.cancel_requested_at is null
-  for update;
-
-  if not found then
+  if not exists (
+    select 1
+    from public.ai_chat_turns turn
+    where turn.id = v_capability.turn_id
+      and turn.organization_id = p_organization_id
+      and turn.owner_user_id = p_owner_user_id
+      and turn.conversation_id = v_capability.conversation_id
+      and turn.ai_invocation_id = v_capability.root_invocation_id
+      and turn.status in ('accepted', 'grounding', 'generating', 'validating')
+      and turn.lease_expires_at > now()
+      and turn.cancel_requested_at is null
+  ) then
     raise exception 'turn_lease_invalid';
   end if;
 
@@ -1783,12 +1854,13 @@ begin
     raise exception 'tool_message_invalid';
   end if;
 
+  -- Hermes lock order: conversation -> turn -> invocation -> capability -> broker_call.
   perform 1
-  from public.ai_conversations conversation
-  where conversation.id = p_conversation_id
-    and conversation.organization_id = p_organization_id
-    and conversation.owner_user_id = p_owner_user_id
-    and conversation.status = 'active'
+  from public.ai_conversations locked_conversation
+  where locked_conversation.id = p_conversation_id
+    and locked_conversation.organization_id = p_organization_id
+    and locked_conversation.owner_user_id = p_owner_user_id
+    and locked_conversation.status = 'active'
   for update;
 
   if not found then
@@ -1796,15 +1868,15 @@ begin
   end if;
 
   perform 1
-  from public.ai_chat_turns turn
-  where turn.id = p_turn_id
-    and turn.organization_id = p_organization_id
-    and turn.owner_user_id = p_owner_user_id
-    and turn.conversation_id = p_conversation_id
-    and turn.ai_invocation_id = p_invocation_id
-    and turn.status in ('accepted', 'grounding', 'generating', 'validating')
-    and turn.lease_expires_at > now()
-    and turn.cancel_requested_at is null
+  from public.ai_chat_turns locked_turn
+  where locked_turn.id = p_turn_id
+    and locked_turn.organization_id = p_organization_id
+    and locked_turn.owner_user_id = p_owner_user_id
+    and locked_turn.conversation_id = p_conversation_id
+    and locked_turn.ai_invocation_id = p_invocation_id
+    and locked_turn.status in ('accepted', 'grounding', 'generating', 'validating')
+    and locked_turn.lease_expires_at > now()
+    and locked_turn.cancel_requested_at is null
   for update;
 
   if not found then

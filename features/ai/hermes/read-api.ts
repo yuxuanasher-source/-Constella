@@ -627,7 +627,7 @@ function sanitizeHermesEvidenceRef(value: string): string | null {
   const suffix = sanitized.slice(separator + 1);
   if (
     !/^[a-z][a-z0-9_]*$/.test(rawPrefix) ||
-    !/^[A-Za-z0-9._-]{1,256}$/.test(suffix)
+    !/^[A-Za-z0-9._-]{1,256}(?:#[A-Za-z0-9._-]{1,256})?$/.test(suffix)
   ) {
     return null;
   }
@@ -644,13 +644,21 @@ function sanitizeHermesReadText(value: string): string {
   const normalized = value.slice(0, 20_000);
   if (
     /\bBearer\s+[A-Za-z0-9._~-]+/i.test(normalized) ||
-    /\b(select|insert|update|delete|alter|drop|create)\b[\s\S]*\b(from|into|table|where)\b/i.test(
+    /-----BEGIN (?:ENCRYPTED |RSA |EC |OPENSSH )?PRIVATE KEY-----/i.test(
+      normalized,
+    ) ||
+    /\bAuthorization\s*:\s*(?:Basic|Bearer|Digest|Negotiate)\s+\S+/i.test(
+      normalized,
+    ) ||
+    /\b(?:Set-Cookie|Cookie)\s*:\s*\S+/i.test(normalized) ||
+    /(?:^|[\s;,])(?:api[_-]?key|api[_-]?secret|client[_-]?secret|password|passwd|private[_-]?key|secret|token)\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s;,]+)/i.test(
+      normalized,
+    ) ||
+    /https?:\/\/[^\s/:@]+:[^\s/@]+@/i.test(normalized) ||
+    /\b(?:select\s+(?:\*|pg_[a-z0-9_]+\s*\(|[a-z0-9_.,"\s]+\s+from\b)|insert\s+into\b|update\s+[a-z0-9_."]+\s+set\b|delete\s+from\b|(?:alter|drop|create)\s+table\b)/i.test(
       normalized,
     ) ||
     /(?:localhost|127\.0\.0\.1|\/api\/internal\/)/i.test(normalized) ||
-    /\b(?:capability|secret|authorization|password|cookie|private\s+key|actor\s+jws)\b/i.test(
-      normalized,
-    ) ||
     /\b(?:eyJ[A-Za-z0-9_-]*|signed)\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(
       normalized,
     ) ||
@@ -678,13 +686,14 @@ function isSensitiveReadKey(key: string): boolean {
       "method",
       "model",
       "operation",
-      "organizationid",
       "owneruserid",
       "password",
+      "pem",
       "privatekey",
       "provider",
       "rawcapability",
       "secret",
+      "session",
       "sessionid",
       "sql",
       "stack",
@@ -693,9 +702,14 @@ function isSensitiveReadKey(key: string): boolean {
       "url",
       "userid",
     ].includes(normalized) ||
-    normalized.includes("authorization") ||
-    normalized.includes("bearer") ||
-    normalized.includes("cookie") ||
+    normalized === "authorizationheader" ||
+    normalized === "bearertoken" ||
+    normalized === "cookieheader" ||
+    normalized === "cookies" ||
+    normalized === "setcookie" ||
+    normalized.startsWith("model") ||
+    normalized.startsWith("provider") ||
+    normalized.startsWith("session") ||
     normalized.endsWith("token") ||
     normalized.endsWith("apikey") ||
     normalized.endsWith("password") ||
