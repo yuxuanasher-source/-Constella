@@ -1502,6 +1502,165 @@ describe("OverviewBoard AI panel", () => {
     expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
   });
 
+  it("redacts unsafe restored assistant content and failed turn summaries", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversations: [{ id: "conversation-unsafe-restore" }],
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-unsafe-restore") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-unsafe-restore" },
+              messages: [
+                {
+                  id: "message-user-unsafe-restore",
+                  role: "user",
+                  status: "completed",
+                  content: "Stored failure",
+                },
+                {
+                  id: "message-assistant-unsafe-restore",
+                  role: "assistant",
+                  status: "failed",
+                  content:
+                    "Hermes Gateway provider model stack at /api/internal/ai {\"args\":true}",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-unsafe-restore",
+                  assistantMessageId: "message-assistant-unsafe-restore",
+                  status: "failed",
+                  retryable: true,
+                  errorSummary:
+                    "DeepSeek model stack at /api/internal/retry with chain-of-thought",
+                },
+              ],
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: "not found" }),
+      });
+    });
+    localStorage.setItem(
+      "jingying-cabin.dashboard.ai.conversation.v1.user-unsafe-restore",
+      "conversation-unsafe-restore",
+    );
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-unsafe-restore", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(await screen.findByText("Stored failure")).toBeInTheDocument();
+    expect(await screen.findByText("AI response unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+    expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
+      /Hermes Gateway|DeepSeek|provider|model|\/api\/internal|stack|args|chain-of-thought/i,
+    );
+  });
+
+  it("redacts unsafe retry and regenerate failure payloads", async () => {
+    const encoder = new TextEncoder();
+    fetch.mockImplementation((url, options = {}) => {
+      if (url === "/api/ai/conversations" && options.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () =>
+            Promise.resolve({ conversation: { id: "conversation-retry-redact" } }),
+        });
+      }
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ conversations: [] }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-retry-redact/turns") {
+        return Promise.resolve(
+          protocolStreamResponse(encoder, [
+            [
+              "turn.started",
+              {
+                type: "turn.started",
+                conversationId: "conversation-retry-redact",
+                turnId: "turn-retry-redact",
+                userMessageId: "message-user-retry-redact",
+                assistantMessageId: "message-assistant-retry-redact",
+              },
+            ],
+            [
+              "response.failed",
+              {
+                type: "response.failed",
+                conversationId: "conversation-retry-redact",
+                turnId: "turn-retry-redact",
+                code: "provider_failed",
+                retryable: true,
+                message: "provider timeout",
+              },
+            ],
+          ]),
+        );
+      }
+      if (url === "/api/ai/turns/turn-retry-redact/retry") {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () =>
+            Promise.resolve({
+              error:
+                "Hermes Gateway provider model stack at /api/internal/retry",
+            }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-retry-redact", name: "123", role: "owner" }}
+      />,
+    );
+    fireEvent.change(container.querySelector("input"), {
+      target: { value: "Retry failure" },
+    });
+    fireEvent.keyDown(container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "重试" }));
+
+    expect(await screen.findByText(/AI response unavailable/)).toBeInTheDocument();
+    expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
+      /Hermes Gateway|provider|model|\/api\/internal|stack/i,
+    );
+  });
+
   it("consumes SSE streaming chat responses chunk by chunk into one bubble", async () => {
     const protocolFetch = createConversationProtocolFetch({
       content: "流式回复完成",

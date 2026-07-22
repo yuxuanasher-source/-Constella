@@ -582,12 +582,21 @@ function normalizeConversationHistory(value) {
         typeof message?.status === "string" ? message.status : "completed";
       const rawText =
         typeof message?.content === "string" ? message.content.trim() : "";
-      const failedText = turn?.errorSummary || "本次回答未完成";
+      const safeRawText =
+        message?.role === "assistant"
+          ? rawText
+            ? aiPublicContent(rawText, AI_UI_SAFE_FAILURE_TEXT)
+            : ""
+          : rawText;
+      const failedText = aiPublicText(
+        turn?.errorSummary,
+        AI_UI_SAFE_FAILURE_TEXT,
+      );
       return {
         id: typeof message?.id === "string" ? message.id : undefined,
         role: message?.role === "user" ? "user" : "ai",
         text:
-          rawText ||
+          safeRawText ||
           (status === "failed"
             ? `⚠ ${failedText}`
             : status === "completed"
@@ -3970,7 +3979,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       });
       if (!res.ok) {
         const payload = await res.json().catch(() => ({}));
-        throw new Error(payload?.error || "AI 会话恢复失败");
+        throw new Error(
+          aiPublicText(payload?.error, AI_UI_SAFE_FAILURE_TEXT),
+        );
       }
       const contentType = res.headers?.get?.("content-type") || "";
       if (!res.body || !contentType.includes("text/event-stream")) {
@@ -3987,6 +3998,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         },
       });
     } catch (error) {
+      const safeReplayError = aiPublicText(
+        error instanceof Error ? error.message : "",
+        AI_UI_SAFE_FAILURE_TEXT,
+      );
       setMsgs((current) =>
         current.map((item) =>
           item.id === message.id || item.id === replacementMessageId
@@ -3996,12 +4011,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
                 retryable: true,
                 turnId: replacementTurnId,
                 text: item.text
-                  ? `${item.text}\n\n⚠ 回复中断：${
-                      error instanceof Error ? error.message : "AI 会话恢复失败"
-                    }`
-                  : `⚠ ${
-                      error instanceof Error ? error.message : "AI 会话恢复失败"
-                    }`,
+                  ? `${item.text}\n\n⚠ 回复中断：${safeReplayError}`
+                  : `⚠ ${safeReplayError}`,
               }
             : item,
         ),

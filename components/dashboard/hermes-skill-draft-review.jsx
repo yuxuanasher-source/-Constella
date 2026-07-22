@@ -19,11 +19,18 @@ const C = {
 };
 
 const INTERNAL_TEXT =
-  /(Hermes(?:\s+Gateway)?|DeepSeek|OpenAI|provider|model|\/api\/|stack|trace|rawArguments|args|reasoning|chain-of-thought)/i;
+  /(Hermes(?:\s+Gateway)?|DeepSeek|OpenAI|provider|model|\/api\/|stack\s*trace|stack|trace|rawArguments|arguments|args|reasoning|chain-of-thought|toolName|gateway|sessionId|prompt|event:\s|data:\s|{\s*["'])/i;
+
+function publicDraftText(value, fallback = "") {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return fallback;
+  if (INTERNAL_TEXT.test(text)) return fallback;
+  return text.replace(/\s+/g, " ").slice(0, 240);
+}
 
 function publicDraftValue(value) {
   if (typeof value === "string") {
-    return INTERNAL_TEXT.test(value) ? "已隐藏内部字段" : value;
+    return publicDraftText(value, "已隐藏内部字段");
   }
   if (Array.isArray(value)) return value.map(publicDraftValue).slice(0, 20);
   if (!value || typeof value !== "object") return value;
@@ -44,6 +51,9 @@ export function HermesSkillDraftReview({ draft, currentUser }) {
 
   const owner = currentUser?.role === "owner";
   const reviewable = owner && draft.status === "pending_review" && !reviewState;
+  const safeSkillId = publicDraftText(draft.skillId, "已隐藏内部字段");
+  const safeStatus = publicDraftText(draft.status, "已隐藏内部字段");
+  const safeBundleSha256 = publicDraftText(draft.bundleSha256, "已隐藏内部字段");
   const manifestLines = JSON.stringify(publicDraftValue(draft.manifest || {}), null, 2)
     .split("\n")
     .map((line) => line.replace(/,$/, ""));
@@ -94,7 +104,7 @@ export function HermesSkillDraftReview({ draft, currentUser }) {
               overflowWrap: "anywhere",
             }}
           >
-            {draft.skillId}
+            {safeSkillId}
           </div>
         </div>
         <span
@@ -107,7 +117,7 @@ export function HermesSkillDraftReview({ draft, currentUser }) {
             fontWeight: 700,
           }}
         >
-          {draft.status}
+          {safeStatus}
         </span>
       </div>
 
@@ -124,7 +134,7 @@ export function HermesSkillDraftReview({ draft, currentUser }) {
             overflowWrap: "anywhere",
           }}
         >
-          {draft.bundleSha256}
+          {safeBundleSha256}
         </code>
       </div>
 

@@ -112,4 +112,37 @@ describe("HermesSkillDraftReview", () => {
     expect(screen.queryByTestId("skill-draft-approve")).not.toBeInTheDocument();
     expect(screen.queryByTestId("skill-draft-reject")).not.toBeInTheDocument();
   });
+
+  it("redacts unsafe draft fields before rendering them", () => {
+    const unsafeDraft = {
+      ...draft,
+      id: "unsafe-draft",
+      skillId: "Hermes Gateway /api/internal skill provider model",
+      bundleSha256: "sha256:{\"args\":true}",
+      version: "event: provider data: stack",
+      status: "provider model stack at /api/internal",
+      manifest: {
+        name: "Hermes Gateway tool",
+        prompt: "private chain-of-thought",
+        sessionId: "session-secret",
+        route: "/api/internal/hermes",
+        safeName: "Weekly risk brief",
+        nested: { data: "event: provider stack" },
+      },
+    };
+    const { container } = render(
+      <HermesSkillDraftReview
+        draft={unsafeDraft}
+        currentUser={{ id: "owner-1", role: "owner" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /manifest/i }));
+
+    expect(screen.getAllByText("已隐藏内部字段").length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByText('"safeName": "Weekly risk brief"')).toBeInTheDocument();
+    expect(container).not.toHaveTextContent(
+      /Hermes Gateway|provider|model|\/api\/internal|stack|args|prompt|sessionId|event:|data:|chain-of-thought/i,
+    );
+  });
 });
