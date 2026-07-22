@@ -546,11 +546,15 @@ export function sanitizeHermesReadValue(value: unknown, depth = 0): unknown {
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
     if (isSensitiveReadKey(key)) continue;
-    result[key] =
-      key.toLowerCase().replace(/[^a-z0-9]/g, "") === "sourceref" &&
-      typeof item === "string"
-        ? normalizeHermesEvidenceRef(item)
-        : sanitizeHermesReadValue(item, depth + 1);
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (normalizedKey === "sourceref" || normalizedKey === "evidenceref") {
+      if (typeof item === "string") {
+        const evidenceRef = sanitizeHermesEvidenceRef(item);
+        if (evidenceRef) result[key] = evidenceRef;
+      }
+      continue;
+    }
+    result[key] = sanitizeHermesReadValue(item, depth + 1);
   }
   return result;
 }
@@ -572,30 +576,57 @@ export function sanitizeHermesReadMetadata(
 export function normalizeHermesEvidenceRefs(
   values: readonly string[] | undefined,
 ): string[] {
-  return sanitizeHermesReadMetadata(
-    (values ?? []).map(normalizeHermesEvidenceRef),
-  );
+  return [
+    ...new Set(
+      (values ?? [])
+        .map(sanitizeHermesEvidenceRef)
+        .filter((value): value is string => value !== null),
+    ),
+  ].slice(0, 100);
 }
 
 function metadataList(values: readonly string[] | undefined): string[] {
   return sanitizeHermesReadMetadata(values);
 }
 
-function normalizeHermesEvidenceRef(value: string): string {
-  const separator = value.indexOf(":");
-  if (separator < 1) return value;
-  const prefix = value.slice(0, separator);
-  const suffix = value.slice(separator + 1);
-  const publicPrefix: Record<string, string> = {
-    projects: "project",
-    project_streamers: "streamer_project_profile",
-    live_reports: "live_report",
-    recording_assets: "recording_review",
-    recording_ai_analyses: "recording_review",
-    settlement_batches: "settlement_batch",
-    knowledge_documents: "knowledge_document",
-  };
-  return `${publicPrefix[prefix] ?? prefix}:${suffix}`;
+const HERMES_PUBLIC_EVIDENCE_PREFIXES = new Set([
+  "conversation",
+  "knowledge",
+  "live_report",
+  "project",
+  "recording_review",
+  "settlement_batch",
+  "streamer",
+  "streamer_project_profile",
+]);
+
+const HERMES_EVIDENCE_PREFIX_ALIASES: Readonly<Record<string, string>> = {
+  knowledge_base: "knowledge",
+  knowledge_document: "knowledge",
+  knowledge_documents: "knowledge",
+  live_reports: "live_report",
+  live_review: "knowledge",
+  project_streamers: "streamer_project_profile",
+  projects: "project",
+  recording_ai_analyses: "recording_review",
+  recording_assets: "recording_review",
+  settlement_batches: "settlement_batch",
+  streamers: "streamer",
+};
+
+function sanitizeHermesEvidenceRef(value: string): string | null {
+  const sanitized = sanitizeHermesReadText(value.trim());
+  if (!sanitized || sanitized === "[REDACTED]") return null;
+
+  const separator = sanitized.indexOf(":");
+  if (separator < 1) return null;
+  const rawPrefix = sanitized.slice(0, separator).trim().toLowerCase();
+  const suffix = sanitized.slice(separator + 1).trim();
+  if (!/^[a-z][a-z0-9_]*$/.test(rawPrefix) || !suffix) return null;
+
+  const prefix = HERMES_EVIDENCE_PREFIX_ALIASES[rawPrefix] ?? rawPrefix;
+  if (!HERMES_PUBLIC_EVIDENCE_PREFIXES.has(prefix)) return null;
+  return `${prefix}:${suffix}`.slice(0, 160);
 }
 
 function sanitizeHermesReadText(value: string): string {

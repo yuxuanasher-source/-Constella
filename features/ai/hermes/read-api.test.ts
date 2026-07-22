@@ -232,6 +232,80 @@ describe("Hermes product read API boundary", () => {
     expect(serialized).not.toContain("private_table");
   });
 
+  it("sanitizes evidence content before allowing only public domain prefixes", () => {
+    const validRefs = [
+      `conversation:${CONVERSATION_ID}`,
+      `project:${PROJECT_ID}`,
+      `streamer:${USER_ID}`,
+      `streamer_project_profile:${PROJECT_ID}`,
+      `live_report:${PROJECT_ID}`,
+      `recording_review:${PROJECT_ID}`,
+      `knowledge:${PROJECT_ID}`,
+      `settlement_batch:${PROJECT_ID}`,
+    ];
+    const envelope = hermesReadSuccess(profile(), {
+      data: {
+        refs: [
+          { kind: "valid", sourceRef: validRefs[6] },
+          {
+            kind: "bearer",
+            sourceRef: "projects:Bearer source-capability-secret",
+          },
+          {
+            kind: "jws",
+            sourceRef: "project:eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+          },
+          {
+            kind: "route",
+            sourceRef: "recording_review:/api/internal/hermes/read",
+          },
+          {
+            kind: "sql",
+            sourceRef: "live_report:select * from private_table",
+          },
+          {
+            kind: "unknown",
+            sourceRef: `private_payroll_rows:${PROJECT_ID}`,
+          },
+        ],
+      },
+      evidenceRefs: [
+        ...validRefs,
+        "projects:Bearer evidence-capability-secret",
+        "project:eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+        "recording_review:/api/internal/hermes/read",
+        "live_report:select * from private_table",
+        `private_payroll_rows:${PROJECT_ID}`,
+      ],
+    });
+    const serialized = JSON.stringify(envelope);
+
+    expect(envelope).toMatchObject({
+      data: {
+        refs: [
+          { kind: "valid", sourceRef: `knowledge:${PROJECT_ID}` },
+          { kind: "bearer" },
+          { kind: "jws" },
+          { kind: "route" },
+          { kind: "sql" },
+          { kind: "unknown" },
+        ],
+      },
+      evidenceRefs: validRefs,
+    });
+    for (const forbidden of [
+      "source-capability-secret",
+      "evidence-capability-secret",
+      "eyJhbGciOiJSUzI1NiJ9",
+      "/api/internal/",
+      "select *",
+      "private_table",
+      "private_payroll_rows",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
   it("uses one authorization and execution core for HTTP and Broker callers", async () => {
     const client = supabaseDouble([
       { id: PROJECT_ID, name: "Canonical project", status: "active" },

@@ -191,10 +191,41 @@ describe("Hermes Product Tool Broker", () => {
   });
 
   it("persists partial metadata atomically and replays it without redispatch", async () => {
+    const validEvidenceRefs = [
+      `conversation:${CONVERSATION_ID}`,
+      "project:project-1",
+      "streamer:streamer-1",
+      "streamer_project_profile:project-1",
+      "live_report:report-1",
+      "recording_review:review-1",
+      "knowledge:document-1",
+      "settlement_batch:batch-1",
+    ];
     const partialRead = {
       ...readSuccess(),
       status: "partial" as const,
-      evidenceRefs: ["project:project-1"],
+      data: {
+        rows: [
+          {
+            id: "project-1",
+            sourceRef: "project:project-1",
+          },
+          {
+            id: "unknown-source",
+            sourceRef: "private_payroll_rows:row-1",
+          },
+          {
+            id: "tainted-source",
+            sourceRef: "knowledge:Bearer broker-source-secret",
+          },
+        ],
+      },
+      evidenceRefs: [
+        ...validEvidenceRefs,
+        "private_payroll_rows:row-1",
+        "knowledge:Bearer broker-evidence-secret",
+        "recording_review:/api/internal/hermes/read",
+      ],
       sourceLabels: ["project_record"],
       missingData: ["older_projects_not_loaded"],
       permissionDenials: ["private_budget"],
@@ -207,7 +238,14 @@ describe("Hermes Product Tool Broker", () => {
     const first = await run(deps);
     expect(first).toMatchObject({
       status: "partial",
-      evidenceRefs: partialRead.evidenceRefs,
+      data: {
+        rows: [
+          { id: "project-1", sourceRef: "project:project-1" },
+          { id: "unknown-source" },
+          { id: "tainted-source" },
+        ],
+      },
+      evidenceRefs: validEvidenceRefs,
       sourceLabels: partialRead.sourceLabels,
       missingData: partialRead.missingData,
       permissionDenials: partialRead.permissionDenials,
@@ -234,6 +272,10 @@ describe("Hermes Product Tool Broker", () => {
       sanitizedResponseEnvelope: first,
     });
     await expect(run(deps)).resolves.toEqual(first);
+    expect(first.evidenceRefs).toEqual(validEvidenceRefs);
+    expect(JSON.stringify(first)).not.toContain("private_payroll_rows");
+    expect(JSON.stringify(first)).not.toContain("broker-source-secret");
+    expect(JSON.stringify(first)).not.toContain("/api/internal/");
     expect(deps.executeRead).toHaveBeenCalledTimes(1);
     expect(deps.repository.completeBrokerCall).toHaveBeenCalledTimes(1);
   });

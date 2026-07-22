@@ -43,6 +43,20 @@ describe("Hermes HTTP Read route handler", () => {
           cookie: "session=cookie-secret",
           note: "select * from projects at /api/internal/hermes/read",
           stack: "Error: internal stack",
+          sourceRef: `private_payroll_rows:${PROJECT_ID}`,
+          publicEvidence: { sourceRef: `project:${PROJECT_ID}` },
+          bearerEvidence: {
+            sourceRef: "projects:Bearer route-source-secret",
+          },
+          jwsEvidence: {
+            sourceRef: "project:eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+          },
+          routeEvidence: {
+            sourceRef: "recording_review:/api/internal/hermes/read/source",
+          },
+          sqlEvidence: {
+            sourceRef: "live_report:select * from private_evidence",
+          },
         },
       ]),
     );
@@ -72,7 +86,15 @@ describe("Hermes HTTP Read route handler", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(body).toMatchObject({
       status: "ok",
-      data: { rows: [{ id: PROJECT_ID, name: "Visible project" }] },
+      data: {
+        rows: [
+          {
+            id: PROJECT_ID,
+            name: "Visible project",
+            publicEvidence: { sourceRef: `project:${PROJECT_ID}` },
+          },
+        ],
+      },
       evidenceRefs: [`project:${PROJECT_ID}`],
     });
     for (const forbidden of [
@@ -87,6 +109,10 @@ describe("Hermes HTTP Read route handler", () => {
       "privateKey",
       "cookie",
       "stack",
+      "route-source-secret",
+      "eyJhbGciOiJSUzI1NiJ9",
+      "private_evidence",
+      "private_payroll_rows",
     ]) {
       expect(serialized).not.toContain(forbidden);
     }
