@@ -165,6 +165,28 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
     });
     expect(interrupts).toEqual(["child-session", "session-owned"]);
   });
+
+  it("does not interrupt the parent session twice when child control data repeats it", async () => {
+    const interrupts: string[] = [];
+    const service = serviceDouble({
+      cancelTurn: vi.fn().mockResolvedValue({
+        ...cancelResult(),
+        childSessions: ["session-owned", "child-session", "session-owned"],
+        revokedCapabilityIds: [CAPABILITY_ID],
+      }),
+    });
+    createSessionMock.mockImplementation(async ({ sessionId }) => ({
+      interrupt: vi.fn(async () => interrupts.push(sessionId)),
+      close: vi.fn(),
+    }));
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(200);
+    expect(interrupts).toEqual(["child-session", "session-owned"]);
+  });
 });
 
 const ACTOR = {

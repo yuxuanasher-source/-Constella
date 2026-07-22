@@ -42,7 +42,7 @@ export async function POST(
       conversationId,
       turnId,
     });
-    const childSessions = stringList(recordValue(cancelled, "childSessions"));
+    const childSessions = childControlSessions(cancelled, state?.sessionId);
     let interrupted = local.interrupted;
     for (const childSessionId of childSessions) {
       if (
@@ -205,4 +205,14 @@ function recordValue(value: unknown, key: string): unknown {
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function childControlSessions(value: unknown, parentSessionId?: string): string[] {
+  return [
+    ...new Set(
+      stringList(recordValue(value, "childSessions")).filter(
+        (sessionId) => sessionId !== parentSessionId,
+      ),
+    ),
+  ];
 }

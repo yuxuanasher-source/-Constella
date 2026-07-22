@@ -926,6 +926,86 @@ describe("native Hermes Gateway executor", () => {
     vi.useRealTimers();
   });
 
+  it("closes the live Gateway session on terminal completion and failure", async () => {
+    for (const events of [
+      [{ type: "text.delta", delta: "answer" }, { type: "completed" }],
+      [{ type: "text.delta", delta: "partial" }, { type: "failed", code: "model_timeout" }],
+    ]) {
+      const service = serviceDouble({
+        messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+      });
+      const closeSession = vi.fn();
+      const gateway = {
+        ...gatewayDouble(events),
+        closeSession,
+      };
+      const executor = createGatewayTurnExecutor({
+        service,
+        gateway,
+        auth: { ...actor, role: "finance" },
+        provider: "hermes",
+        model: "hermes-official-gateway",
+      });
+
+      await collect(
+        executor.execute({
+          request: jsonRequest({ message: "hello", mode: "fast" }),
+          actor,
+          turn,
+          attachments: [],
+          service: {} as never,
+        }),
+      );
+
+      expect(closeSession).toHaveBeenCalledTimes(1);
+      expect(closeSession).toHaveBeenCalledWith({
+        sessionId: "session-rebuilt",
+      });
+    }
+  });
+
+  it("closes the live Gateway session when the stream iterator is returned early", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    const closeSession = vi.fn();
+    const gateway = {
+      ...gatewayDouble([]),
+      closeSession,
+      submitPrompt: vi.fn().mockImplementation(async function* () {
+        yield { type: "text.delta", delta: "partial" };
+        await new Promise(() => undefined);
+      }),
+    };
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+    });
+
+    const iterator = executor
+      .execute({
+        request: jsonRequest({ message: "hello", mode: "fast" }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      })
+      [Symbol.asyncIterator]();
+
+    await iterator.next();
+    await iterator.next();
+    await iterator.next();
+    await iterator.return?.();
+
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(closeSession).toHaveBeenCalledWith({
+      sessionId: "session-rebuilt",
+    });
+  });
+
   it("uses the official Gateway session adapter for production client calls", async () => {
     const session = {
       sessionId: "session-official",

@@ -231,6 +231,7 @@ export function createGatewayTurnExecutor(
       let unregisterActiveRun: (() => void) | null = null;
       let abortListener: (() => void) | null = null;
       let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+      let activeSessionId: string | null = null;
 
       yield started(input.turn);
 
@@ -280,6 +281,7 @@ export function createGatewayTurnExecutor(
           throw new GatewayExecutionError("gateway_checkpoint_invalid");
         }
         const sessionId = sessionSetup.session.sessionId;
+        activeSessionId = sessionId;
         unregisterActiveRun = activeHermesRunRegistry.register({
           actor: input.actor,
           conversationId: input.turn.conversationId,
@@ -482,6 +484,13 @@ export function createGatewayTurnExecutor(
         }
         if (disconnectTimer) clearTimeout(disconnectTimer);
         unregisterActiveRun?.();
+        if (activeSessionId) {
+          try {
+            gateway.closeSession?.({ sessionId: activeSessionId });
+          } catch {
+            // Best-effort cleanup after terminal persistence or iterator return.
+          }
+        }
       }
     },
   };
