@@ -11,6 +11,7 @@ import type {
   RetryTurnCommand,
 } from "./conversation-contracts";
 import type { AiMessage, AiProviderName } from "./contracts";
+import { createHermesActorFingerprint } from "./hermes/actor-fingerprint";
 import {
   cancelAiConversationTurnV2,
   compareAndSwapAiConversationGatewayState,
@@ -35,12 +36,19 @@ import {
   type StoredConversationTurn,
 } from "./conversation-repository";
 import {
+  createHermesStateRepository,
   HermesStateRepositoryError,
   assertHermesSanitizedObject,
   mapHermesStateRepositoryError,
+  type HermesStateRepository,
 } from "./hermes/hermes-state-repository";
 import type { HermesOutcome } from "./hermes/contracts";
+import type { HermesActorProfile } from "./hermes/contracts";
 import { hasMeaningfulAiContent } from "./response-quality";
+import {
+  issueHermesRootRunCapability,
+  revealHermesCapabilityToken,
+} from "./hermes/run-capability";
 
 const MAX_SNAPSHOT_VERSION = 2_147_483_647;
 const MAX_CONTEXT_DEPTH = 64;
@@ -124,6 +132,7 @@ export type ConversationPersistence = {
     expectedSummaryVersion: number;
     summary: Record<string, unknown>;
   }): Promise<boolean>;
+  issueRunCapability?: HermesStateRepository["issueRunCapability"];
 };
 
 export class ConversationServiceError extends Error {
@@ -167,6 +176,13 @@ export function createSupabaseConversationPersistence(
       compareAndSwapAiConversationGatewayState(client, input),
     getGatewayState: (input) => getAiConversationGatewayState(client, input),
     syncConversationSummary: (input) => syncAiConversationSummary(client, input),
+    issueRunCapability: (actorSnapshot, turn, binding, expiresAt) =>
+      createHermesStateRepository(client).issueRunCapability(
+        actorSnapshot,
+        turn,
+        binding,
+        expiresAt,
+      ),
   };
 }
 
@@ -666,6 +682,51 @@ export function createConversationService(
         return null;
       }
       return checkpoint;
+    },
+
+    async issueGatewayRootCapability(
+      actor: ConversationActor,
+      input: {
+        actor: HermesActorProfile;
+        mode: "fast" | "deep";
+        turn: { id: string; conversationId: string };
+        serverAllowedTools: string[];
+        approvedSkillDraftIds: string[];
+        aiStateWritesAllowed: boolean;
+      },
+    ) {
+      if (!persistence.issueRunCapability) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      if (
+        input.actor.organizationId !== actor.organizationId ||
+        input.actor.userId !== actor.userId ||
+        input.actor.conversationId !== input.turn.conversationId ||
+        input.actor.invocationId !== input.turn.id
+      ) {
+        throw new HermesStateRepositoryError("permission_denied");
+      }
+      const issued = await issueHermesRootRunCapability({
+        repository: { issueRunCapability: persistence.issueRunCapability },
+        actor: input.actor,
+        actorFingerprint: createHermesActorFingerprint(input.actor),
+        turn: input.turn,
+        mode: input.mode,
+        serverAllowedTools: input.serverAllowedTools,
+        approvedSkillDraftIds: input.approvedSkillDraftIds,
+        aiStateWritesAllowed: input.aiStateWritesAllowed,
+        assertionExpiresAt: new Date(now().getTime() + 300_000),
+        runDeadline: new Date(
+          now().getTime() +
+            (input.mode === "deep" ? 300_000 : 90_000),
+        ),
+        now: now(),
+      });
+      return {
+        capabilityId: issued.capabilityId,
+        invocationCapability: revealHermesCapabilityToken(issued.capability),
+        expiresAt: issued.expiresAt,
+      };
     },
 
     async syncConversationSummary(
