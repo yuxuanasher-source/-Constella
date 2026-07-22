@@ -332,10 +332,15 @@ describe("Hermes Gateway JSON-RPC client", () => {
         );
         return;
       }
-      respondTo(socket, "session.resume", { sessionId: SESSION_ID });
+      respondTo(socket, "session.resume", {
+        sessionId: SESSION_ID,
+        invocationId: INVOCATION_ID,
+        actorFingerprint: ACTOR_FINGERPRINT,
+      });
       respondTo(socket, "session.info", {
         sessionId: SESSION_ID,
         invocationId: INVOCATION_ID,
+        actorFingerprint: ACTOR_FINGERPRINT,
         status: "accepted",
       });
     });
@@ -489,6 +494,67 @@ describe("Hermes Gateway JSON-RPC client", () => {
     await expect(actorSession.recover()).rejects.toThrow(
       "hermes_gateway_actor_mismatch",
     );
+  });
+
+  it("rejects recovery status without invocation and actor identity", async () => {
+    const { server, config } = await configuredGateway();
+    servers.push(server);
+    let connection = 0;
+    server.on("connection", (socket) => {
+      connection += 1;
+      socket.send(JSON.stringify(readyEvent()));
+      if (connection === 1) {
+        respondTo(socket, "session.create", { sessionId: SESSION_ID });
+        respondTo(
+          socket,
+          "prompt.submit",
+          { accepted: true, invocationId: INVOCATION_ID },
+          () => socket.close(),
+        );
+        return;
+      }
+      respondTo(socket, "session.resume", { sessionId: SESSION_ID });
+      respondTo(socket, "session.info", {
+        sessionId: SESSION_ID,
+        status: "accepted",
+      });
+    });
+
+    const session = await createHermesGatewaySession(
+      sessionOptions(config, { prompt: "Compare project evidence" }),
+    );
+    await expect(session.recover()).rejects.toThrow(
+      "hermes_gateway_actor_mismatch",
+    );
+  });
+
+  it("does not reconnect after fatal protocol drift", async () => {
+    const { server, config } = await configuredGateway();
+    servers.push(server);
+    server.on("connection", (socket) => {
+      socket.send(JSON.stringify(readyEvent()));
+      respondTo(socket, "session.create", { sessionId: SESSION_ID });
+      socket.on("message", (raw) => {
+        const command = JSON.parse(raw.toString()) as { method: string };
+        if (command.method === "session.info") {
+          socket.send(
+            JSON.stringify(event("thinking.delta", 1, { text: "no" })),
+          );
+        }
+      });
+    });
+
+    const session = await createHermesGatewaySession(sessionOptions(config));
+    await expect(session.info()).rejects.toThrow(
+      "hermes_gateway_event_schema_mismatch",
+    );
+    const handshakesAfterFatal = server.handshakeHeaders.length;
+
+    await expect(session.recover()).rejects.toThrow(
+      "hermes_gateway_event_schema_mismatch",
+    );
+    expect(server.handshakeHeaders).toHaveLength(handshakesAfterFatal);
+    expect(session.listenerCount()).toBe(0);
   });
 
   it("fails closed on Actor/session mismatch and redacts capability from errors", async () => {

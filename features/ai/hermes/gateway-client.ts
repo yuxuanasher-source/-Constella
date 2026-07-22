@@ -225,6 +225,7 @@ class HermesGatewayClient implements HermesGatewaySession {
   }
 
   async recover(): Promise<void> {
+    this.assertCanReconnect();
     await this.resumeAndLoadInvocationStatus();
   }
 
@@ -324,6 +325,7 @@ class HermesGatewayClient implements HermesGatewaySession {
   private validateSessionResult(
     result: unknown,
     expectedSessionId = this.sessionId,
+    requireIdentity = false,
   ): void {
     if (!isRecord(result)) {
       throw this.error("hermes_gateway_session_mismatch");
@@ -340,21 +342,31 @@ class HermesGatewayClient implements HermesGatewaySession {
       throw this.error("hermes_gateway_actor_mismatch");
     }
     if (
+      requireIdentity &&
+      result.invocationId !== this.options.actor.invocationId
+    ) {
+      throw this.error("hermes_gateway_actor_mismatch");
+    }
+    if (
       typeof result.actorFingerprint === "string" &&
       result.actorFingerprint !== this.actorFingerprint
     ) {
       throw this.error("hermes_gateway_actor_mismatch");
     }
+    if (requireIdentity && result.actorFingerprint !== this.actorFingerprint) {
+      throw this.error("hermes_gateway_actor_mismatch");
+    }
   }
 
   private async resumeAndLoadInvocationStatus(): Promise<void> {
+    this.assertCanReconnect();
     await this.connect();
     const resumeResult = await this.rpc("session.resume", {
       conversationId: this.options.conversationId,
     });
-    this.validateSessionResult(resumeResult);
+    this.validateSessionResult(resumeResult, this.sessionId, true);
     const infoResult = await this.rpc("session.info", {});
-    this.validateSessionResult(infoResult);
+    this.validateSessionResult(infoResult, this.sessionId, true);
     if (isRecord(infoResult) && infoResult.status === "accepted") {
       this.accepted = true;
       return;
@@ -367,6 +379,7 @@ class HermesGatewayClient implements HermesGatewaySession {
   }
 
   private async connect(): Promise<void> {
+    this.assertCanReconnect();
     this.detachSocket();
     this.socket?.close();
     const socket = new WebSocket(this.options.config.url, {
@@ -490,6 +503,10 @@ class HermesGatewayClient implements HermesGatewaySession {
   }
 
   private handleMessage(data: WebSocket.RawData): void {
+    if (this.closed || this.fatalError) {
+      this.socket?.terminate();
+      return;
+    }
     this.scheduleIdle();
     const value = parseJson(data);
     if (isResponse(value)) {
@@ -613,10 +630,20 @@ class HermesGatewayClient implements HermesGatewaySession {
     this.socket = null;
     this.clearAllTimers();
     this.rejectPendingError(error);
+    this.eventQueue.length = 0;
     for (const waiter of this.eventWaiters.splice(0)) {
       waiter.reject(error);
     }
     this.pendingTextDelta = null;
+  }
+
+  private assertCanReconnect(): void {
+    if (this.fatalError) {
+      throw this.fatalError;
+    }
+    if (this.closed) {
+      throw this.error("hermes_gateway_closed");
+    }
   }
 
   private command(
