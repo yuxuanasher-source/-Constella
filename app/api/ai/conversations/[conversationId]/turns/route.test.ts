@@ -43,6 +43,7 @@ describe("POST /api/ai/conversations/:conversationId/turns", () => {
     const service = { acceptTurn };
     getRouteContextMock.mockResolvedValue({
       actor: { organizationId: "org-1", userId: "user-1" },
+      auth: { organizationId: "org-1", userId: "user-1", role: "finance" },
       service,
     });
     createConversationTurnStreamMock.mockReturnValue(
@@ -83,9 +84,13 @@ describe("POST /api/ai/conversations/:conversationId/turns", () => {
         turn,
         attachments: [],
         service,
-        executeLegacyChat: executeNativeHermesAssistantMock,
+        executor: expect.objectContaining({ execute: expect.any(Function) }),
       }),
     );
+    expect(createConversationTurnStreamMock.mock.calls[0]?.[0]).not.toHaveProperty(
+      "executeLegacyChat",
+    );
+    expect(executeNativeHermesAssistantMock).not.toHaveBeenCalled();
     expect(response.headers.get("content-type")).toContain("text/event-stream");
   });
 

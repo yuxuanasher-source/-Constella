@@ -530,7 +530,7 @@ describe("native Hermes Gateway executor", () => {
     });
   });
 
-  it("records terminal completion before best-effort summary sync", async () => {
+  it("emits the same terminal result that finishTurnV2 persisted when summary sync fails", async () => {
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
     });
@@ -565,12 +565,16 @@ describe("native Hermes Gateway executor", () => {
     expect(service.finishTurnV2.mock.invocationCallOrder[0]).toBeLessThan(
       service.syncConversationSummary.mock.invocationCallOrder[0],
     );
-    expect(events.at(-1)).toMatchObject({
+    const finalEvent = events.at(-1);
+    const persisted = service.finishTurnV2.mock.calls[0]?.[2];
+    expect(finalEvent).toMatchObject({
       type: "response.completed",
-      outcome: "partial",
-      meta: expect.objectContaining({
-        summarySync: expect.objectContaining({ status: "failed" }),
-      }),
+      outcome: persisted?.outcome,
+      content: persisted?.content,
+      meta: persisted?.metadata,
+    });
+    expect(finalEvent).not.toMatchObject({
+      meta: expect.objectContaining({ summarySync: expect.anything() }),
     });
   });
 
@@ -820,6 +824,92 @@ describe("native Hermes Gateway executor", () => {
     expect(JSON.stringify(openSession.mock.calls)).not.toContain(
       "/v1/xingyao/gateway",
     );
+  });
+
+  it("reopens the branched official Gateway session before prompt submission", async () => {
+    const sourceSession = {
+      sessionId: "session-source",
+      events: gatewayDouble([]).submitPrompt({}),
+      close: vi.fn(),
+      branch: vi.fn().mockResolvedValue({ sessionId: "session-branch" }),
+      rpc: vi.fn().mockResolvedValue({ accepted: true }),
+    };
+    const branchedSession = {
+      sessionId: "session-branch",
+      events: gatewayDouble([
+        officialEvent("message.delta", { text: "branched" }),
+        officialEvent("turn.terminal", {
+          outcome: "complete",
+          message: "branched",
+          metadata: gatewayMetadata(),
+        }),
+      ]).submitPrompt({}),
+      close: vi.fn(),
+      branch: vi.fn(),
+      rpc: vi.fn().mockResolvedValue({ accepted: true }),
+    };
+    const openSession = vi
+      .fn()
+      .mockResolvedValueOnce(sourceSession)
+      .mockResolvedValueOnce(branchedSession);
+    const client = createHermesGatewayClient({
+      config: {
+        url: "ws://127.0.0.1:8787",
+        serviceToken: "gateway-service-token-that-is-long-enough",
+        timeouts: {
+          connectMs: 10,
+          readyMs: 10,
+          rpcMs: 10,
+          idleMs: 10,
+          heartbeatMs: 10,
+        },
+      },
+      actorAssertionConfig: {
+        baseUrl: "http://127.0.0.1:8788",
+        serviceToken: "runtime-service-token-that-is-long-enough",
+        privateKeyPem: "unused-by-test",
+        keyId: "test-key",
+      },
+      openSession,
+      createActorAssertion: vi.fn().mockResolvedValue("actor.assertion"),
+    });
+
+    const branch = await client.branchSession?.({
+      sessionId: "session-source",
+      actor: gatewayActor(),
+      conversationId: turn.conversationId,
+      invocationCapability: "root-capability-secret",
+    });
+    const events = await collect(
+      client.submitPrompt({
+        sessionId: branch?.sessionId,
+        prompt: "retry",
+        actor: gatewayActor(),
+        provider: "hermes",
+        model: "hermes-official-gateway",
+        mode: "fast",
+        conversationId: turn.conversationId,
+        invocationCapability: "root-capability-secret",
+      }),
+    );
+
+    expect(branch).toEqual({ sessionId: "session-branch" });
+    expect(openSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ sessionId: "session-branch" }),
+    );
+    expect(sourceSession.rpc).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.anything(),
+    );
+    expect(branchedSession.rpc).toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: "retry" }),
+    );
+    expect((events.at(-1) as ReturnType<typeof officialEvent> | undefined)?.params).toMatchObject({
+      type: "turn.terminal",
+      sessionId: "session-official",
+    });
   });
 
   it("classifies complete, partial, and blocked outcomes from tool observations", async () => {

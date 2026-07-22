@@ -692,10 +692,9 @@ async function completeWithCoherentSummary({
         expectedSummaryVersion,
         summary,
       });
-      metadata.summarySync = { status: "synced", expectedSummaryVersion };
     } catch {
-      outcome = outcome === "complete" ? "partial" : outcome;
-      metadata.summarySync = { status: "failed", expectedSummaryVersion };
+      // Terminal persistence already succeeded. Summary synchronization is
+      // retried by later turns; do not mutate the product-visible terminal state.
     }
   }
   return {
@@ -948,6 +947,17 @@ export function createHermesGatewayClient({
         isRecord(result) && stringValue(result.sessionId)
           ? stringValue(result.sessionId)!
           : session.sessionId;
+      if (branchedSessionId !== session.sessionId) {
+        session.close();
+        session = await openOfficialGatewaySession({
+          input,
+          config,
+          actorAssertionConfig,
+          openSession,
+          createActorAssertion,
+          sessionId: branchedSessionId,
+        });
+      }
       return { sessionId: branchedSessionId };
     },
     async *submitPrompt(input) {
