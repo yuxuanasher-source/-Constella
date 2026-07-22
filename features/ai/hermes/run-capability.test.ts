@@ -336,6 +336,32 @@ describe("Hermes run capabilities", () => {
   );
 
   it.each([
+    "loadParentCapability",
+    "countActiveChildren",
+    "createChildInvocation",
+  ] as const)(
+    "normalizes a rejected %s persistence dependency",
+    async (dependencyName) => {
+      const rawMessage = `network select failed in ${dependencyName}`;
+      const dependencies = derivationDependencies(parentCapability(), 0);
+      dependencies[dependencyName].mockRejectedValue(new Error(rawMessage));
+
+      const error = await deriveHermesChildRunCapability({
+        parentCapabilityToken: "p".repeat(43),
+        request: derivationRequest(),
+        dependencies,
+        now: NOW,
+      }).then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+      expect(error).toMatchObject({ code: "persistence_failed" });
+      expect(String(error)).not.toContain(rawMessage);
+    },
+  );
+
+  it.each([
     ["fast", 1, 0, "parallel_limit"],
     ["fast", 0, 1, "depth_limit"],
     ["deep", 3, 0, "parallel_limit"],

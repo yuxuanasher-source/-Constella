@@ -264,6 +264,29 @@ describe("Hermes capability derivation route", () => {
     expect(body.toLowerCase()).not.toContain("select");
   });
 
+  it.each([
+    ["parent capability", { rejectTable: "ai_hermes_run_capabilities" }],
+    ["turn", { rejectTable: "ai_chat_turns" }],
+    ["invocation", { rejectTable: "ai_invocations" }],
+    ["active-child count", { rejectCount: true }],
+    ["membership", { rejectTable: "organization_members" }],
+  ] as const)(
+    "returns sanitized 503 when the %s query rejects",
+    async (_queryName, options) => {
+      const { client } = persistenceClient(options);
+      createSupabaseAdminClientMock.mockReturnValue(client);
+
+      const response = await POST(request(validBody(), PARENT_CAPABILITY));
+      const body = JSON.stringify(await response.json());
+
+      expect(response.status).toBe(503);
+      expect(body).toBe('{"error":{"code":"persistence_failed"}}');
+      expect(body).not.toContain(PARENT_CAPABILITY);
+      expect(body).not.toContain(REJECTED_QUERY_MESSAGE);
+      expect(body.toLowerCase()).not.toContain("select");
+    },
+  );
+
   it("keeps a genuinely missing parent distinct from loader failure", async () => {
     const { client } = persistenceClient({ missingParent: true });
     createSupabaseAdminClientMock.mockReturnValue(client);
@@ -355,13 +378,20 @@ type PersistenceQuery = {
   filters: Array<[string, string, unknown]>;
 };
 
+const REJECTED_QUERY_MESSAGE =
+  `network select rejected Bearer ${PARENT_CAPABILITY}`;
+
+type PersistenceClientOptions = {
+  errorTable?: PersistenceTable;
+  rejectTable?: PersistenceTable;
+  missingParent?: boolean;
+  inactiveMembership?: boolean;
+  countError?: boolean;
+  rejectCount?: boolean;
+};
+
 function persistenceClient(
-  options: {
-    errorTable?: PersistenceTable;
-    missingParent?: boolean;
-    inactiveMembership?: boolean;
-    countError?: boolean;
-  } = {},
+  options: PersistenceClientOptions = {},
 ) {
   const parent = parentCapability();
   const tableCalls = new Map<string, number>();
@@ -403,6 +433,9 @@ function persistenceClient(
       const query: PersistenceQuery = { table, select: "", filters: [] };
       queries.push(query);
       const isCount = table === "ai_hermes_run_capabilities" && callIndex > 0;
+      const shouldReject = isCount
+        ? options.rejectCount === true
+        : options.rejectTable === table;
       const result = isCount
         ? {
             data: null,
@@ -441,13 +474,18 @@ function persistenceClient(
           return builder;
         },
         maybeSingle() {
-          return Promise.resolve(result);
+          return shouldReject
+            ? Promise.reject(new Error(REJECTED_QUERY_MESSAGE))
+            : Promise.resolve(result);
         },
         then<TResult1 = typeof result, TResult2 = never>(
           onfulfilled?: ((value: typeof result) => TResult1) | null,
           onrejected?: ((reason: unknown) => TResult2) | null,
         ) {
-          return Promise.resolve(result).then(onfulfilled, onrejected);
+          const promise = shouldReject
+            ? Promise.reject(new Error(REJECTED_QUERY_MESSAGE))
+            : Promise.resolve(result);
+          return promise.then(onfulfilled, onrejected);
         },
       };
       return builder;

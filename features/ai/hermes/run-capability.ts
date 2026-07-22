@@ -226,10 +226,12 @@ export async function deriveHermesChildRunCapability({
   }
 
   const parentTokenSha256 = hashCapabilityToken(parentCapabilityToken);
-  const parent = await dependencies.loadParentCapability({
-    tokenSha256: parentTokenSha256,
-    now,
-  });
+  const parent = await invokePersistenceDependency(() =>
+    dependencies.loadParentCapability({
+      tokenSha256: parentTokenSha256,
+      now,
+    }),
+  );
   if (!parent) {
     throw new HermesRunCapabilityError("parent_not_found");
   }
@@ -280,13 +282,15 @@ export async function deriveHermesChildRunCapability({
   if (depth > budget.maxSubagentDepth) {
     throw new HermesRunCapabilityError("depth_limit");
   }
-  const activeChildren = await dependencies.countActiveChildren({
-    organizationId: parent.actor.organizationId,
-    userId: parent.actor.userId,
-    turnId: parent.turnId,
-    rootInvocationId: parent.rootInvocationId,
-    now,
-  });
+  const activeChildren = await invokePersistenceDependency(() =>
+    dependencies.countActiveChildren({
+      organizationId: parent.actor.organizationId,
+      userId: parent.actor.userId,
+      turnId: parent.turnId,
+      rootInvocationId: parent.rootInvocationId,
+      now,
+    }),
+  );
   if (!Number.isSafeInteger(activeChildren) || activeChildren < 0) {
     throw new HermesRunCapabilityError("persistence_failed");
   }
@@ -302,14 +306,16 @@ export async function deriveHermesChildRunCapability({
     throw new HermesRunCapabilityError("invalid_request");
   }
 
-  await dependencies.createChildInvocation({
-    actor: parent.actor,
-    childInvocationId,
-    parentInvocationId: parent.invocationId,
-    rootInvocationId: parent.rootInvocationId,
-    mode: parent.mode,
-    depth,
-  });
+  await invokePersistenceDependency(() =>
+    dependencies.createChildInvocation({
+      actor: parent.actor,
+      childInvocationId,
+      parentInvocationId: parent.invocationId,
+      rootInvocationId: parent.rootInvocationId,
+      mode: parent.mode,
+      depth,
+    }),
+  );
 
   const token = randomCapabilityToken();
   const expiresAt = new Date(parent.expiresAt);
@@ -440,6 +446,17 @@ function randomCapabilityToken(): string {
 
 function hashCapabilityToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+async function invokePersistenceDependency<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof HermesRunCapabilityError) throw error;
+    throw new HermesRunCapabilityError("persistence_failed");
+  }
 }
 
 async function issuePersistedCapability(

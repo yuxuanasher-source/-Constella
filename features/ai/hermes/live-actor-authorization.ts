@@ -78,13 +78,20 @@ export async function authorizeLiveHermesActor({
     throw new HermesLiveActorAuthorizationError("invalid_snapshot");
   }
 
-  const { data, error } = await client
-    .from("organization_members")
-    .select("role")
-    .eq("organization_id", actorSnapshot.organizationId)
-    .eq("user_id", actorSnapshot.userId)
-    .eq("status", "active")
-    .maybeSingle();
+  let membership: MembershipQueryResult;
+  try {
+    membership = await client
+      .from("organization_members")
+      .select("role")
+      .eq("organization_id", actorSnapshot.organizationId)
+      .eq("user_id", actorSnapshot.userId)
+      .eq("status", "active")
+      .maybeSingle();
+  } catch {
+    throw new HermesLiveActorAuthorizationError("membership_query_failed");
+  }
+
+  const { data, error } = membership;
 
   if (error) {
     throw new HermesLiveActorAuthorizationError("membership_query_failed");

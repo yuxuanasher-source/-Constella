@@ -87,6 +87,24 @@ describe("Hermes live actor authorization", () => {
     },
   );
 
+  it("normalizes a rejected membership query without exposing its cause", async () => {
+    const actor = profile("owner");
+    const rawMessage = "network select failed with bearer-secret";
+    const { client } = membershipClient([new Error(rawMessage)]);
+
+    const error = await authorizeLiveHermesActor({
+      client,
+      actorSnapshot: actor,
+      expectedActorFingerprint: createHermesActorFingerprint(actor),
+    }).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toMatchObject({ code: "membership_query_failed" });
+    expect(String(error)).not.toContain(rawMessage);
+  });
+
   it("invalidates the actor after a live role downgrade", async () => {
     const actor = profile("owner");
     const { client } = membershipClient([
@@ -173,10 +191,12 @@ function profile(
   };
 }
 
-type MembershipResponse = {
-  data: { role: string } | null;
-  error: Error | null;
-};
+type MembershipResponse =
+  | {
+      data: { role: string } | null;
+      error: Error | null;
+    }
+  | Error;
 
 function membershipClient(responses: readonly MembershipResponse[]) {
   const queue = [...responses];
@@ -203,7 +223,9 @@ function membershipClient(responses: readonly MembershipResponse[]) {
           return builder;
         },
         async maybeSingle() {
-          return queue.shift() ?? { data: null, error: null };
+          const response = queue.shift() ?? { data: null, error: null };
+          if (response instanceof Error) throw response;
+          return response;
         },
       };
       return builder;
