@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { isUuid } from "./contracts";
+import { HERMES_EVIDENCE_REF_MAX_LENGTH, isUuid } from "./contracts";
 import {
   HERMES_READ_ENDPOINTS,
   type HermesReadErrorCode,
@@ -107,7 +107,7 @@ export function parseStoredHermesToolBrokerEnvelope(
     value.invocationId !== request.invocationId ||
     value.toolCallId !== request.toolCallId ||
     value.toolName !== request.toolName ||
-    !isMetadataList(value.evidenceRefs) ||
+    !isMetadataList(value.evidenceRefs, HERMES_EVIDENCE_REF_MAX_LENGTH) ||
     !isMetadataList(value.sourceLabels) ||
     !isMetadataList(value.missingData) ||
     !isMetadataList(value.permissionDenials) ||
@@ -187,7 +187,10 @@ function hasExactKeys(
   );
 }
 
-function isMetadataList(value: unknown): value is string[] {
+function isMetadataList(
+  value: unknown,
+  maxItemLength = HERMES_EVIDENCE_REF_MAX_LENGTH,
+): value is string[] {
   return (
     Array.isArray(value) &&
     value.length <= 100 &&
@@ -196,7 +199,7 @@ function isMetadataList(value: unknown): value is string[] {
       (item) =>
         typeof item === "string" &&
         item.length > 0 &&
-        item.length <= 160 &&
+        item.length <= maxItemLength &&
         item === item.trim(),
     )
   );

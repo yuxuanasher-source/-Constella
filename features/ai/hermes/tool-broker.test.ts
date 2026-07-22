@@ -4,7 +4,10 @@ import {
   computeHermesSkillGrantsHash,
   createHermesActorFingerprint,
 } from "./actor-fingerprint";
-import type { HermesActorProfile } from "./contracts";
+import {
+  HERMES_EVIDENCE_REF_MAX_LENGTH,
+  type HermesActorProfile,
+} from "./contracts";
 import { HermesLiveActorAuthorizationError } from "./live-actor-authorization";
 import { HermesStateRepositoryError } from "./hermes-state-repository";
 import { hashHermesCapabilityToken } from "./run-capability";
@@ -286,6 +289,37 @@ describe("Hermes Product Tool Broker", () => {
     expect(JSON.stringify(first)).not.toContain("pg_sleep");
     expect(JSON.stringify(first)).not.toContain("?expand=");
     expect(JSON.stringify(first)).not.toContain("report-1\\nnext");
+    expect(deps.executeRead).toHaveBeenCalledTimes(1);
+    expect(deps.repository.completeBrokerCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses one evidence length bound for the first result and exact replay", async () => {
+    const prefix = "knowledge:";
+    const kbBase = "kb_mqu7f3_q42";
+    const atMax = `${prefix}${kbBase}${"x".repeat(
+      HERMES_EVIDENCE_REF_MAX_LENGTH - prefix.length - kbBase.length,
+    )}`;
+    const overMax = `${atMax}x`;
+    const deps = dependencies({
+      executeRead: vi.fn(async () => ({
+        ...readSuccess(),
+        evidenceRefs: [atMax, overMax],
+      })),
+    });
+
+    const first = await run(deps);
+    expect(atMax).toHaveLength(HERMES_EVIDENCE_REF_MAX_LENGTH);
+    expect(first.evidenceRefs).toEqual([atMax]);
+
+    vi.mocked(deps.repository.claimBrokerCall).mockResolvedValueOnce({
+      brokerCallId: BROKER_CALL_ID,
+      status: "completed",
+      execute: false,
+      reused: true,
+      fencingToken: 1,
+      sanitizedResponseEnvelope: first,
+    });
+    await expect(run(deps)).resolves.toEqual(first);
     expect(deps.executeRead).toHaveBeenCalledTimes(1);
     expect(deps.repository.completeBrokerCall).toHaveBeenCalledTimes(1);
   });

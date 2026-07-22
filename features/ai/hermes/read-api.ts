@@ -7,6 +7,7 @@ import {
 
 import {
   HERMES_AUTH_ROLES,
+  HERMES_EVIDENCE_REF_MAX_LENGTH,
   isHermesReadScope,
   isUuid,
   type HermesActorProfile,
@@ -565,7 +566,9 @@ export function sanitizeHermesReadMetadata(
   return [
     ...new Set(
       (values ?? []).map((value) =>
-        sanitizeHermesReadText(value.trim().slice(0, 160)),
+        sanitizeHermesReadText(
+          value.trim().slice(0, HERMES_EVIDENCE_REF_MAX_LENGTH),
+        ),
       ),
     ),
   ]
@@ -631,7 +634,10 @@ function sanitizeHermesEvidenceRef(value: string): string | null {
 
   const prefix = HERMES_EVIDENCE_PREFIX_ALIASES[rawPrefix] ?? rawPrefix;
   if (!HERMES_PUBLIC_EVIDENCE_PREFIXES.has(prefix)) return null;
-  return `${prefix}:${suffix}`;
+  const evidenceRef = `${prefix}:${suffix}`;
+  return evidenceRef.length <= HERMES_EVIDENCE_REF_MAX_LENGTH
+    ? evidenceRef
+    : null;
 }
 
 function sanitizeHermesReadText(value: string): string {
@@ -703,7 +709,7 @@ function isSensitiveReadKey(key: string): boolean {
 
 function evidenceRef(label: string, row: unknown): string {
   if (!isPlainRecord(row) || typeof row.id !== "string") return "";
-  return `${label}:${row.id}`.slice(0, 160);
+  return sanitizeHermesEvidenceRef(`${label}:${row.id}`) ?? "";
 }
 
 function escapeIlike(value: string): string {

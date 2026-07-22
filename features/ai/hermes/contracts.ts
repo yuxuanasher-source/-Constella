@@ -13,6 +13,7 @@ export const HERMES_CAPABILITY_MANIFEST_SHA256 =
   "f7a47f72f5f2c5d93f3f8510b5b744f59c8937508b32c75d6556484a19d8a5e7";
 export const XINGYAO_PRODUCT_ISSUER = "xingyao-product";
 export const HERMES_AUDIENCE = "xingyao-hermes-agent";
+export const HERMES_EVIDENCE_REF_MAX_LENGTH = 160;
 
 export const HERMES_MODES = ["fast", "deep"] as const;
 export type HermesMode = (typeof HERMES_MODES)[number];

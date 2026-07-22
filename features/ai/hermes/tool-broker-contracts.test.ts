@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { HERMES_EVIDENCE_REF_MAX_LENGTH } from "./contracts";
 import {
   hashHermesToolBrokerRequest,
   parseHermesToolBrokerRequest,
@@ -119,7 +120,45 @@ describe("Hermes Tool Broker contracts", () => {
       ),
     ).toBeNull();
   });
+
+  it("accepts evidence refs at the replay bound and rejects max plus one", () => {
+    const prefix = "knowledge:";
+    const kbBase = "kb_mqu7f3_q42";
+    const atMax = `${prefix}${kbBase}${"x".repeat(
+      HERMES_EVIDENCE_REF_MAX_LENGTH - prefix.length - kbBase.length,
+    )}`;
+    const envelope = storedEnvelope([atMax]);
+
+    expect(atMax).toHaveLength(HERMES_EVIDENCE_REF_MAX_LENGTH);
+    expect(
+      parseStoredHermesToolBrokerEnvelope(envelope, validRequest()),
+    ).toEqual(envelope);
+    expect(
+      parseStoredHermesToolBrokerEnvelope(
+        storedEnvelope([`${atMax}x`]),
+        validRequest(),
+      ),
+    ).toBeNull();
+  });
 });
+
+function storedEnvelope(evidenceRefs: string[]) {
+  return {
+    status: "ok" as const,
+    data: { rows: [] },
+    evidenceRefs,
+    sourceLabels: [],
+    updatedAt: "2026-07-21T23:59:00.000Z",
+    observedAt: "2026-07-22T00:00:00.000Z",
+    missingData: [],
+    permissionDenials: [],
+    truncated: false,
+    invocationId: INVOCATION_ID,
+    toolCallId: "gateway-call-1",
+    toolName: "xingyao_search_projects" as const,
+    traceId: "trace-read",
+  };
+}
 
 function validRequest() {
   return {

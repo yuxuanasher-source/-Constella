@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { computeHermesSkillGrantsHash } from "./actor-fingerprint";
 import { signHermesActorAssertion } from "./actor-assertion";
-import type { HermesActorProfile } from "./contracts";
+import {
+  HERMES_EVIDENCE_REF_MAX_LENGTH,
+  type HermesActorProfile,
+} from "./contracts";
 import {
   HERMES_READ_ENDPOINTS,
   authorizeAndExecuteHermesReadTool,
@@ -307,7 +310,10 @@ describe("Hermes product read API boundary", () => {
   });
 
   it("accepts only bounded opaque public evidence identifiers", () => {
-    const maxLengthId = "a".repeat(256);
+    const conversationPrefix = "conversation:";
+    const maxLengthId = "a".repeat(
+      HERMES_EVIDENCE_REF_MAX_LENGTH - conversationPrefix.length,
+    );
     const validRefs = [
       `project:${PROJECT_ID}`,
       "live_report:123456",
@@ -323,7 +329,9 @@ describe("Hermes product read API boundary", () => {
       "project:project-1#details",
       "project:project:child",
       "live_report:report-1\nnext",
-      `conversation:${"b".repeat(257)}`,
+      `${conversationPrefix}${"b".repeat(
+        HERMES_EVIDENCE_REF_MAX_LENGTH - conversationPrefix.length + 1,
+      )}`,
     ];
     const envelope = hermesReadSuccess(profile(), {
       data: {
@@ -354,7 +362,9 @@ describe("Hermes product read API boundary", () => {
       "#details",
       "project:child",
       "report-1\\nnext",
-      "b".repeat(257),
+      "b".repeat(
+        HERMES_EVIDENCE_REF_MAX_LENGTH - conversationPrefix.length + 1,
+      ),
     ]) {
       expect(serialized).not.toContain(forbidden);
     }
