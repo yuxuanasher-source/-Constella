@@ -10,6 +10,11 @@ import {
 export type ConversationTurnStreamService = {
   renewLease?(actor: ConversationActor, turnId: string): Promise<void>;
   renewLeaseV2?(actor: ConversationActor, turnId: string): Promise<void>;
+  verifyTerminalState?(
+    actor: ConversationActor,
+    turnId: string,
+    event: ConversationStreamEvent,
+  ): Promise<boolean>;
 };
 
 export type ConversationTurnExecutorInput<TService = unknown> = {
@@ -32,6 +37,8 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
   service,
   executor,
   executeLegacyChat,
+  activeRun,
+  disconnectGraceMs,
 }: {
   request: Request;
   actor: ConversationActor;
@@ -40,6 +47,14 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
   service: TService;
   executor?: ConversationTurnExecutor<TService>;
   executeLegacyChat?: ExecuteLegacyChat;
+  activeRun?: {
+    sessionId: string;
+    session: {
+      interrupt(): Promise<unknown>;
+      close?(): void;
+    };
+  };
+  disconnectGraceMs?: number;
 }): Response {
   if (turn.duplicate) {
     return new Response(
@@ -60,6 +75,7 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
     async start(controller) {
       let closed = false;
       let renewalInFlight = false;
+      let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
       const send = (event: ConversationStreamEvent) => {
         if (closed) return;
         controller.enqueue(
@@ -85,6 +101,13 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
             });
         }
       }, 15_000);
+      const abortListener = () => {
+        if (!activeRun || closed || disconnectTimer) return;
+        disconnectTimer = setTimeout(() => {
+          void activeRun.session.interrupt().catch(() => undefined);
+        }, disconnectGraceMs ?? 2_000);
+      };
+      request.signal.addEventListener("abort", abortListener, { once: true });
 
       try {
         const source =
@@ -99,6 +122,16 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
           attachments,
           service,
         })) {
+          if (isTerminalStreamEvent(event)) {
+            const verified = await service.verifyTerminalState?.(
+              actor,
+              turn.turnId,
+              event,
+            );
+            if (verified === false) {
+              throw new Error("AI terminal state could not be persisted");
+            }
+          }
           send(event);
         }
       } catch (error) {
@@ -107,7 +140,10 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
         return;
       } finally {
         clearInterval(heartbeat);
+        request.signal.removeEventListener("abort", abortListener);
+        if (disconnectTimer) clearTimeout(disconnectTimer);
         closed = true;
+        activeRun?.session.close?.();
         try {
           controller.close();
         } catch {
@@ -126,4 +162,12 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
       "X-Accel-Buffering": "no",
     },
   });
+}
+
+function isTerminalStreamEvent(event: ConversationStreamEvent): boolean {
+  return (
+    event.type === "response.completed" ||
+    event.type === "response.failed" ||
+    event.type === "response.cancelled"
+  );
 }

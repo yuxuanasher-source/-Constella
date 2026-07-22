@@ -51,7 +51,7 @@ describe("POST /api/ai/conversations/:conversationId/turns", () => {
         headers: { "content-type": "text/event-stream" },
       }),
     );
-    const { POST } = await import("./route");
+    const { POST, maxDuration } = await import("./route");
     const request = new Request(
       "http://localhost/api/ai/conversations/conversation-1/turns",
       {
@@ -68,6 +68,7 @@ describe("POST /api/ai/conversations/:conversationId/turns", () => {
       params: Promise.resolve({ conversationId: "conversation-1" }),
     });
 
+    expect(maxDuration).toBe(330);
     expect(acceptTurn).toHaveBeenCalledWith(
       { organizationId: "org-1", userId: "user-1" },
       "conversation-1",
