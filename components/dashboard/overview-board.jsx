@@ -8,7 +8,18 @@
 // AI 面板调用真实接口，返回真实诊断或真实错误，绝不伪造成功内容。
 
 import * as React from "react";
-import { RefreshCw, RotateCcw } from "lucide-react";
+import {
+  AlertTriangle,
+  Ban,
+  Bot,
+  CheckCircle2,
+  CircleHelp,
+  ListChecks,
+  RefreshCw,
+  RotateCcw,
+  Square,
+  Wrench,
+} from "lucide-react";
 import { isConversationStreamEvent } from "@/features/ai/conversation-contracts";
 
 // ——— 设计稿调色板（取自设计文件内联样式） ———
@@ -171,12 +182,40 @@ function normalizeAiMessageMeta(value) {
   const webSearch = normalizeWebSearchMeta(
     value?.webSearch || value?.knowledge?.webSearch,
   );
+  const outcome = normalizeAiOutcome(value);
   const meta = {
     ...(projectHealth ? { projectHealth } : {}),
     ...(suggestedActions ? { suggestedActions } : {}),
     ...(webSearch ? { webSearch } : {}),
+    ...(outcome ? { outcome } : {}),
   };
   return Object.keys(meta).length ? meta : undefined;
+}
+
+function normalizeAiOutcome(value) {
+  const outcome =
+    value?.outcome === "complete" ||
+    value?.outcome === "partial" ||
+    value?.outcome === "blocked"
+      ? value.outcome
+      : value?.metadata?.outcome === "partial" ||
+          value?.metadata?.outcome === "blocked" ||
+          value?.metadata?.outcome === "complete"
+        ? value.metadata.outcome
+        : null;
+  if (!outcome || outcome === "complete") return null;
+  const missing = Array.isArray(value?.missing)
+    ? value.missing
+    : Array.isArray(value?.metadata?.missing)
+      ? value.metadata.missing
+      : [];
+  return {
+    outcome,
+    missing: missing
+      .map((item) => (typeof item === "string" ? item.trim().slice(0, 160) : ""))
+      .filter(Boolean)
+      .slice(0, 5),
+  };
 }
 
 function normalizeProjectHealth(value) {
@@ -474,6 +513,43 @@ function normalizeConversationHistory(value) {
         ...(turn?.retryable ? { retryable: true } : {}),
       };
     });
+}
+
+function normalizePendingClarify(value) {
+  const turns = Array.isArray(value?.turns) ? value.turns : [];
+  for (const turn of turns) {
+    const pending =
+      turn?.pendingClarify ||
+      turn?.pending_clarify ||
+      turn?.providerState?.pendingClarify ||
+      turn?.provider_state?.pendingClarify;
+    if (!pending || typeof pending !== "object") continue;
+    const clarifyId =
+      typeof pending.clarifyId === "string"
+        ? pending.clarifyId
+        : typeof pending.clarify_id === "string"
+          ? pending.clarify_id
+          : "";
+    const question =
+      typeof pending.question === "string" ? pending.question.trim() : "";
+    if (!clarifyId || !question || typeof turn?.id !== "string") continue;
+    return {
+      clarifyId,
+      turnId: turn.id,
+      question: question.slice(0, 240),
+      choices: Array.isArray(pending.choices)
+        ? pending.choices
+            .map((choice) =>
+              typeof choice === "string" ? choice.trim().slice(0, 120) : "",
+            )
+            .filter(Boolean)
+            .slice(0, 6)
+        : [],
+      allowFreeText: pending.allowFreeText === true,
+      submitted: false,
+    };
+  }
+  return null;
 }
 
 function fileToAiAttachment(file) {
@@ -2487,6 +2563,315 @@ function AiSuggestedActionCard({ actions, onCreateDraft }) {
   );
 }
 
+function AiRunProgressPanel({ progress, onSubmitClarify }) {
+  const activities = progress?.activities || [];
+  const todos = progress?.todos || [];
+  const subagents = progress?.subagents || [];
+  const clarify = progress?.clarify;
+  const visible =
+    activities.length || todos.length || subagents.length || clarify;
+  if (!visible) return null;
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-start" }}>
+      <div
+        data-testid="ai-activity-panel"
+        style={{
+          maxWidth: "94%",
+          width: "100%",
+          background: "#fff",
+          border: `1px solid ${C.border}`,
+          borderRadius: "14px 14px 14px 4px",
+          padding: "9px 10px",
+          display: "grid",
+          gap: 7,
+          boxShadow: "0 1px 2px rgba(24,27,46,.05)",
+        }}
+      >
+        {activities.map((item) => (
+          <AiProgressRow
+            key={item.id}
+            item={item}
+            icon={<Wrench size={13} aria-hidden="true" />}
+            kind="tool"
+          />
+        ))}
+        {todos.length ? (
+          <div style={{ display: "grid", gap: 5 }}>
+            {todos.map((item) => (
+              <AiProgressRow
+                key={item.id}
+                item={item}
+                icon={<ListChecks size={13} aria-hidden="true" />}
+                testId="ai-todo-row"
+              />
+            ))}
+          </div>
+        ) : null}
+        {subagents.length ? (
+          <div style={{ display: "grid", gap: 5 }}>
+            {subagents.map((item) => (
+              <AiProgressRow
+                key={item.id}
+                item={item}
+                icon={<Bot size={13} aria-hidden="true" />}
+                testId="ai-subagent-row"
+              />
+            ))}
+          </div>
+        ) : null}
+        {clarify ? (
+          <AiClarifyPrompt clarify={clarify} onSubmit={onSubmitClarify} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function AiProgressRow({ item, icon, kind, testId }) {
+  const statusLabel = compactStatusLabel(kind, item.status);
+  const statusTone =
+    statusLabel === "成功" || statusLabel === "已完成"
+      ? TONE.ok
+      : statusLabel === "受限"
+        ? TONE.warn
+        : statusLabel === "失败"
+          ? TONE.danger
+          : TONE.info;
+  const StatusIcon =
+    statusLabel === "成功" || statusLabel === "已完成"
+      ? CheckCircle2
+      : statusLabel === "受限"
+        ? Ban
+        : statusLabel === "失败"
+          ? AlertTriangle
+          : CircleHelp;
+  return (
+    <div
+      data-testid={testId}
+      style={{
+        display: "grid",
+        gridTemplateColumns: "18px minmax(0,1fr) auto",
+        alignItems: "center",
+        gap: 7,
+        minHeight: 24,
+        color: C.ink3,
+        fontSize: 11.5,
+        lineHeight: 1.35,
+      }}
+    >
+      <span
+        style={{
+          width: 18,
+          height: 18,
+          borderRadius: 6,
+          background: C.soft,
+          color: C.muted,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {icon}
+      </span>
+      <span
+        style={{
+          display: "flex",
+          gap: 6,
+          minWidth: 0,
+          alignItems: "baseline",
+        }}
+      >
+        <span
+          style={{
+            fontWeight: 680,
+            color: C.ink2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {item.label}
+        </span>
+        {item.source ? (
+          <span
+            style={{
+              color: C.muted,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.source}
+          </span>
+        ) : null}
+      </span>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          color: statusTone.color,
+          background: statusTone.bg,
+          borderRadius: 999,
+          padding: "2px 6px",
+          fontSize: 10.5,
+          fontWeight: 720,
+          lineHeight: 1.3,
+        }}
+      >
+        <StatusIcon size={11} aria-hidden="true" />
+        {statusLabel}
+      </span>
+    </div>
+  );
+}
+
+function AiClarifyPrompt({ clarify, onSubmit }) {
+  const [choice, setChoice] = React.useState("");
+  const [text, setText] = React.useState("");
+  const submitted = clarify.submitted === true;
+  const canSubmit = !submitted && Boolean((choice || text).trim());
+
+  React.useEffect(() => {
+    setChoice("");
+    setText("");
+  }, [clarify.clarifyId]);
+
+  return (
+    <div
+      style={{
+        borderTop: `1px solid ${C.divider}`,
+        paddingTop: 8,
+        display: "grid",
+        gap: 7,
+      }}
+    >
+      <div style={{ fontSize: 12, fontWeight: 720, color: C.ink }}>
+        {clarify.question}
+      </div>
+      {clarify.choices?.length ? (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {clarify.choices.map((item) => {
+            const active = choice === item;
+            return (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setChoice(item)}
+                disabled={submitted}
+                style={{
+                  minHeight: 28,
+                  border: `1px solid ${active ? C.primary : C.border}`,
+                  borderRadius: 8,
+                  background: active ? C.primarySoft : C.soft,
+                  color: active ? C.primaryDeep : C.ink4,
+                  padding: "4px 8px",
+                  fontSize: 11.5,
+                  fontWeight: 680,
+                  cursor: submitted ? "default" : "pointer",
+                }}
+              >
+                {item}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {clarify.allowFreeText ? (
+        <input
+          aria-label="补充说明"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          disabled={submitted}
+          placeholder="补充说明"
+          style={{
+            height: 30,
+            border: `1px solid ${C.border}`,
+            borderRadius: 8,
+            background: submitted ? C.soft : "#fff",
+            color: C.ink,
+            padding: "0 9px",
+            fontSize: 12,
+            outline: "none",
+          }}
+        />
+      ) : null}
+      <button
+        type="button"
+        onClick={() => onSubmit?.({ clarify, choice, text })}
+        disabled={!canSubmit}
+        style={{
+          justifySelf: "end",
+          height: 28,
+          border: `1px solid ${canSubmit ? C.primary : C.border}`,
+          borderRadius: 8,
+          background: canSubmit ? C.primarySoft : C.soft,
+          color: canSubmit ? C.primaryDeep : C.muted,
+          padding: "0 10px",
+          fontSize: 11.5,
+          fontWeight: 720,
+          cursor: canSubmit ? "pointer" : "default",
+        }}
+      >
+        提交澄清
+      </button>
+    </div>
+  );
+}
+
+function AiOutcomeNotice({ outcome }) {
+  if (!outcome) return null;
+  const isPartial = outcome.outcome === "partial";
+  const title = isPartial ? "基于部分可用数据" : "关键数据不可用";
+  const t = isPartial ? TONE.warn : TONE.danger;
+  const Icon = isPartial ? AlertTriangle : Ban;
+  return (
+    <div
+      style={{
+        border: `1px solid ${t.solid}`,
+        background: t.bg,
+        color: t.color,
+        borderRadius: 10,
+        padding: "7px 8px",
+        display: "grid",
+        gap: 5,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          fontSize: 11.5,
+          fontWeight: 760,
+        }}
+      >
+        <Icon size={13} aria-hidden="true" />
+        {title}
+      </div>
+      {outcome.missing?.length ? (
+        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+          {outcome.missing.map((item) => (
+            <span
+              key={item}
+              style={{
+                background: "rgba(255,255,255,.58)",
+                border: "1px solid rgba(255,255,255,.62)",
+                borderRadius: 999,
+                padding: "2px 6px",
+                fontSize: 10.5,
+                fontWeight: 650,
+              }}
+            >
+              {item}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function AiHeadingBlock({ heading }) {
   const Tag = heading.level <= 2 ? "h3" : "h4";
   return (
@@ -2659,6 +3044,36 @@ function AiMarkdownTable({ table }) {
   );
 }
 
+function createEmptyAiRunProgress() {
+  return {
+    activities: [],
+    todos: [],
+    subagents: [],
+    clarify: null,
+  };
+}
+
+function upsertById(items, id, nextItem) {
+  const index = items.findIndex((item) => item.id === id);
+  if (index < 0) return items.concat([nextItem]);
+  const next = items.slice();
+  next[index] = { ...items[index], ...nextItem };
+  return next;
+}
+
+function compactStatusLabel(kind, status) {
+  if (kind === "tool") {
+    if (status === "completed") return "成功";
+    if (status === "denied") return "受限";
+    if (status === "failed") return "失败";
+  }
+  if (status === "done" || status === "completed") return "已完成";
+  if (status === "blocked") return "受限";
+  if (status === "failed") return "失败";
+  if (status === "running") return "进行中";
+  return "待处理";
+}
+
 function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   const conversationStorageKey = aiConversationStorageKey(user);
   const [msgs, setMsgs] = React.useState([]);
@@ -2668,6 +3083,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   const [draft, setDraft] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [mode, setMode] = React.useState("fast");
+  const [runProgress, setRunProgress] = React.useState(() =>
+    createEmptyAiRunProgress(),
+  );
   const [attachments, setAttachments] = React.useState([]);
   const [attachmentError, setAttachmentError] = React.useState("");
   const name =
@@ -2679,6 +3097,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   const conversationInitRef = React.useRef(null);
   const conversationCreateRef = React.useRef(null);
   const panelMountedRef = React.useRef(true);
+  const activeRunRef = React.useRef(null);
   React.useEffect(() => {
     if (bodyRef.current)
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -2754,6 +3173,11 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       if (panelMountedRef.current) {
         setConversationId(activeId);
         setMsgs(normalizeConversationHistory(history));
+        const pendingClarify = normalizePendingClarify(history);
+        setRunProgress({
+          ...createEmptyAiRunProgress(),
+          clarify: pendingClarify,
+        });
       }
       saveStoredConversationId(conversationStorageKey, activeId);
       return activeId;
@@ -2848,6 +3272,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           userMessageId: payload.userMessageId,
           assistantMessageId: activeAssistantMessageId,
         });
+        if (activeRunRef.current) {
+          activeRunRef.current.turnId = activeTurnId;
+          activeRunRef.current.assistantMessageId = activeAssistantMessageId;
+        }
         onAssistantMessageId?.(activeAssistantMessageId);
         if (userMessageClientId && payload?.userMessageId) {
           setMsgs((current) =>
@@ -2862,6 +3290,99 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
             ),
           );
         }
+        return;
+      }
+      if (eventName === "activity.updated") {
+        const id = `activity:${payload?.label || "activity"}`;
+        setRunProgress((current) => ({
+          ...current,
+          activities: upsertById(current.activities, id, {
+            id,
+            label: String(payload?.label || "处理中").slice(0, 80),
+            status: payload?.status || "running",
+            source: "",
+            kind: "activity",
+          }),
+        }));
+        return;
+      }
+      if (eventName === "tool.started" || eventName === "tool.completed") {
+        const id = payload?.toolCallId || payload?.toolName || payload?.label;
+        if (!id) return;
+        const source = [
+          ...(Array.isArray(payload?.evidence) ? payload.evidence : []),
+          ...(Array.isArray(payload?.missing) ? payload.missing : []),
+        ]
+          .map((item) => (typeof item === "string" ? item.trim() : ""))
+          .filter(Boolean)[0];
+        setRunProgress((current) => ({
+          ...current,
+          activities: upsertById(current.activities, id, {
+            id,
+            label: String(payload?.label || payload?.toolName || "读取数据").slice(
+              0,
+              80,
+            ),
+            status:
+              eventName === "tool.started"
+                ? "running"
+                : payload?.status || "completed",
+            source: source ? source.slice(0, 120) : "",
+            kind: "tool",
+          }),
+        }));
+        return;
+      }
+      if (eventName === "todo.updated") {
+        setRunProgress((current) => ({
+          ...current,
+          todos: Array.isArray(payload?.items)
+            ? payload.items
+                .map((item) => ({
+                  id: item.id,
+                  label: String(item.label || "").slice(0, 120),
+                  status: item.status,
+                }))
+                .filter((item) => item.id && item.label)
+                .slice(0, 5)
+            : current.todos,
+        }));
+        return;
+      }
+      if (eventName === "subagent.updated") {
+        const id = payload?.subagentId;
+        if (!id) return;
+        setRunProgress((current) => ({
+          ...current,
+          subagents: upsertById(current.subagents, id, {
+            id,
+            label: String(payload?.label || "只读子任务").slice(0, 120),
+            status: payload?.status || "running",
+          }).slice(0, 5),
+        }));
+        return;
+      }
+      if (eventName === "clarify.requested") {
+        setRunProgress((current) => ({
+          ...current,
+          clarify: {
+            clarifyId: payload.clarifyId,
+            turnId: payload.turnId || activeTurnId,
+            question: String(payload.question || "").slice(0, 240),
+            choices: Array.isArray(payload.choices)
+              ? payload.choices
+                  .map((choice) =>
+                    typeof choice === "string"
+                      ? choice.trim().slice(0, 120)
+                      : "",
+                  )
+                  .filter(Boolean)
+                  .slice(0, 6)
+              : [],
+            allowFreeText: payload.allowFreeText === true,
+            submitted: false,
+          },
+        }));
         return;
       }
       if (eventName === "response.delta") {
@@ -2896,6 +3417,24 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           turnId: activeTurnId,
           retryable: false,
           ...(completedMeta ? { meta: completedMeta } : {}),
+        });
+        return;
+      }
+      if (eventName === "response.cancelled") {
+        sawTerminalEvent = true;
+        activeTurnId = payload?.turnId || activeTurnId;
+        activeAssistantMessageId =
+          payload?.messageId || activeAssistantMessageId;
+        upsertAiMessage({
+          id:
+            activeAssistantMessageId ||
+            replaceMessageId ||
+            createAiClientRequestId("assistant"),
+          role: "ai",
+          text: "已停止生成",
+          status: "cancelled",
+          turnId: activeTurnId,
+          retryable: false,
         });
         return;
       }
@@ -2972,6 +3511,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     userMessageClientId,
     onTurnStarted,
     onAssistantMessageId,
+    signal,
   }) {
     const res = await fetch(
       `/api/ai/conversations/${encodeURIComponent(activeConversationId)}/turns`,
@@ -2987,6 +3527,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           attachments: requestAttachments,
           clientRequestId: createAiClientRequestId("turn"),
         }),
+        signal,
       },
     );
     if (!res.ok) {
@@ -3028,6 +3569,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       userMessagePushed = true;
     };
     setBusy(true);
+    setRunProgress(createEmptyAiRunProgress());
     try {
       let text = "";
       let meta;
@@ -3048,12 +3590,21 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
               .join("\n")
           : "当前暂无可撮合的高契合机会，待有新发单/接单意向后会自动出现。";
       } else if (kind === "ask") {
+        const controller = new AbortController();
+        activeRunRef.current = {
+          controller,
+          conversationId: activeConversationId,
+          turnId: "",
+          assistantMessageId: "",
+          cancelRequested: false,
+        };
         await sendConversationTurn({
           activeConversationId,
           userText,
           requestMode,
           requestAttachments,
           userMessageClientId,
+          signal: controller.signal,
           onTurnStarted: (turn) => {
             acceptedTurn = turn;
           },
@@ -3094,6 +3645,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }
       push("ai", text, meta);
     } catch (e) {
+      if (kind === "ask" && activeRunRef.current?.cancelRequested) {
+        return;
+      }
       const errorMessage =
         e instanceof Error ? e.message : "调用失败，请稍后重试";
       if (kind === "ask") {
@@ -3130,8 +3684,92 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         push("ai", `⚠ ${errorMessage}`);
       }
     } finally {
+      if (!activeRunRef.current?.cancelRequested) setBusy(false);
+      activeRunRef.current = null;
+    }
+  }
+
+  async function stopActiveRun() {
+    const active = activeRunRef.current;
+    if (!busy || !active || active.cancelRequested) return;
+    active.cancelRequested = true;
+    try {
+      if (active.conversationId && active.turnId) {
+        await fetch(
+          `/api/ai/conversations/${encodeURIComponent(
+            active.conversationId,
+          )}/turns/${encodeURIComponent(active.turnId)}/cancel`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              clientRequestId: createAiClientRequestId("cancel"),
+            }),
+          },
+        );
+      }
+    } finally {
+      active.controller?.abort?.();
+      const assistantId =
+        active.assistantMessageId || createAiClientRequestId("assistant");
+      setMsgs((current) => {
+        if (current.some((message) => message.id === assistantId)) {
+          return current.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  role: "ai",
+                  text: "已停止生成",
+                  status: "cancelled",
+                  retryable: false,
+                  turnId: active.turnId,
+                }
+              : message,
+          );
+        }
+        return current.concat([
+          {
+            id: assistantId,
+            role: "ai",
+            text: "已停止生成",
+            status: "cancelled",
+            retryable: false,
+            turnId: active.turnId,
+          },
+        ]);
+      });
       setBusy(false);
     }
+  }
+
+  async function submitClarifyResponse({ clarify, choice, text }) {
+    if (!conversationIdRef.current || !clarify?.turnId || clarify.submitted) {
+      return;
+    }
+    const answer = [choice, text].filter(Boolean).join("\n").trim();
+    if (!answer) return;
+    await fetch(
+      `/api/ai/conversations/${encodeURIComponent(
+        conversationIdRef.current,
+      )}/turns/${encodeURIComponent(clarify.turnId)}/clarify`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clarifyId: clarify.clarifyId,
+          answer,
+          choice: choice || null,
+          text: text || "",
+          clientRequestId: createAiClientRequestId("clarify"),
+        }),
+      },
+    );
+    setRunProgress((current) => ({
+      ...current,
+      clarify: current.clarify
+        ? { ...current.clarify, submitted: true }
+        : current.clarify,
+    }));
   }
 
   async function replayConversationMessage(message, action) {
@@ -3623,6 +4261,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
             >
               {m.role === "ai" ? (
                 <div style={{ display: "grid", gap: 9 }}>
+                  <AiOutcomeNotice outcome={m.meta?.outcome} />
                   <AiMessageContent text={m.text} />
                   <AiWebSearchStatusCard webSearch={m.meta?.webSearch} />
                   <AiProjectHealthCard projectHealth={m.meta?.projectHealth} />
@@ -3699,6 +4338,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
             </div>
           </div>
         ))}
+        <AiRunProgressPanel
+          progress={runProgress}
+          onSubmitClarify={submitClarifyResponse}
+        />
         {busy ? (
           <div style={{ display: "flex", justifyContent: "flex-start" }}>
             <div
@@ -3884,8 +4527,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           />
           <button
             type="button"
-            onClick={send}
-            disabled={busy}
+            aria-label={busy ? "停止生成" : "发送"}
+            title={busy ? "停止生成" : "发送"}
+            onClick={busy ? stopActiveRun : send}
             style={{
               width: 32,
               height: 32,
@@ -3897,21 +4541,26 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
               justifyContent: "center",
               cursor: "pointer",
               flexShrink: 0,
-              opacity: busy ? 0.5 : 1,
+              opacity: 1,
             }}
           >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#fff"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M12 19V5M6 11l6-6 6 6" />
-            </svg>
+            {busy ? (
+              <Square size={14} fill="#fff" color="#fff" aria-hidden="true" />
+            ) : (
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#fff"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 19V5M6 11l6-6 6 6" />
+              </svg>
+            )}
           </button>
         </div>
         <div

@@ -29,7 +29,7 @@ describe("OverviewBoard AI panel", () => {
   beforeEach(() => {
     localStorage.clear();
     const protocolFetch = createConversationProtocolFetch({
-      content: "真实 DeepSeek 回复",
+      content: "真实星耀回复",
     });
     vi.stubGlobal(
       "fetch",
@@ -38,6 +38,503 @@ describe("OverviewBoard AI panel", () => {
           protocolFetch(url, options) || defaultFetchResponse(url),
       ),
     );
+  });
+
+  it("keeps Fast and Deep visible without exposing provider or model wording", () => {
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(screen.getByText("星耀 AI 助手")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "快速" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "深度思考" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "深度思考" }));
+
+    expect(screen.getByRole("button", { name: "快速" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "深度思考" }),
+    ).toBeInTheDocument();
+    expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
+      /Hermes Gateway|DeepSeek|provider|model/i,
+    );
+  });
+
+  it("turns Send into a stable Stop icon, cancels server turn before aborting local rendering", async () => {
+    const encoder = new TextEncoder();
+    let turnSignal;
+    const cancelChecks = [];
+    fetch.mockImplementation((url, options = {}) => {
+      if (url === "/api/ai/conversations" && options.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () =>
+            Promise.resolve({ conversation: { id: "conversation-stop" } }),
+        });
+      }
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ conversations: [] }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-stop/turns") {
+        turnSignal = options.signal;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => "text/event-stream; charset=utf-8" },
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  protocolSse([
+                    [
+                      "turn.started",
+                      {
+                        type: "turn.started",
+                        conversationId: "conversation-stop",
+                        turnId: "turn-stop",
+                        userMessageId: "message-user-stop",
+                        assistantMessageId: "message-assistant-stop",
+                      },
+                    ],
+                  ]),
+                ),
+              );
+            },
+          }),
+        });
+      }
+      if (
+        url ===
+        "/api/ai/conversations/conversation-stop/turns/turn-stop/cancel"
+      ) {
+        cancelChecks.push(turnSignal?.aborted === true);
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ turn: { status: "cancelled" } }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-stop", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "停止测试" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    const stop = await screen.findByRole("button", { name: "停止生成" });
+    expect(stop).toHaveAttribute("title", "停止生成");
+    expect(stop).toHaveStyle({ width: "32px", height: "32px" });
+    fireEvent.click(stop);
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/ai/conversations/conversation-stop/turns/turn-stop/cancel",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(cancelChecks).toEqual([false]);
+    expect(turnSignal.aborted).toBe(true);
+  });
+
+  it("renders compact sanitized activity, todo, and subagent rows that update in place", async () => {
+    const encoder = new TextEncoder();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-progress",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            userMessageId: "message-user-progress",
+            assistantMessageId: "message-assistant-progress",
+          },
+        ],
+        [
+          "tool.completed",
+          {
+            type: "tool.completed",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            toolCallId: "tool-read",
+            toolName: "read.revenue",
+            label: "读取经营数据",
+            status: "completed",
+            evidence: ["经营看板"],
+            rawArguments: { route: "/api/internal/hermes/read" },
+            stack: "Error: secret stack",
+            reasoning: "private chain-of-thought",
+          },
+        ],
+        [
+          "tool.completed",
+          {
+            type: "tool.completed",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            toolCallId: "tool-denied",
+            toolName: "settlement.private",
+            label: "读取结算明细",
+            status: "denied",
+            missing: ["结算明细权限"],
+          },
+        ],
+        [
+          "todo.updated",
+          {
+            type: "todo.updated",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            items: [{ id: "todo-1", label: "核对低毛利项目", status: "running" }],
+          },
+        ],
+        [
+          "todo.updated",
+          {
+            type: "todo.updated",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            items: [{ id: "todo-1", label: "核对低毛利项目", status: "done" }],
+          },
+        ],
+        [
+          "subagent.updated",
+          {
+            type: "subagent.updated",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            subagentId: "subagent-1",
+            label: "只读复核",
+            status: "running",
+          },
+        ],
+        [
+          "subagent.updated",
+          {
+            type: "subagent.updated",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            subagentId: "subagent-1",
+            label: "只读复核",
+            status: "completed",
+          },
+        ],
+        completedEvent({
+          conversationId: "conversation-progress",
+          turnId: "turn-progress",
+          messageId: "message-assistant-progress",
+          content: "已完成进度汇总",
+        }),
+      ],
+      encoder,
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-progress", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "展示进度" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    const activity = await screen.findByTestId("ai-activity-panel");
+    expect(within(activity).getByText("读取经营数据")).toBeInTheDocument();
+    expect(within(activity).getByText("经营看板")).toBeInTheDocument();
+    expect(within(activity).getByText("成功")).toBeInTheDocument();
+    expect(within(activity).getByText("读取结算明细")).toBeInTheDocument();
+    expect(within(activity).getByText("受限")).toBeInTheDocument();
+    expect(activity).not.toHaveTextContent(/rawArguments|secret stack|\/api\/internal|chain-of-thought/i);
+    expect(screen.getAllByTestId("ai-todo-row")).toHaveLength(1);
+    expect(screen.getByTestId("ai-todo-row")).toHaveTextContent("已完成");
+    expect(screen.getAllByTestId("ai-subagent-row")).toHaveLength(1);
+    expect(screen.getByTestId("ai-subagent-row")).toHaveTextContent("已完成");
+  });
+
+  it("renders Clarify choices and free text, disables after submit, and restores pending state", async () => {
+    const encoder = new TextEncoder();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-clarify",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-clarify",
+            turnId: "turn-clarify",
+            userMessageId: "message-user-clarify",
+            assistantMessageId: "message-assistant-clarify",
+          },
+        ],
+        [
+          "clarify.requested",
+          {
+            type: "clarify.requested",
+            conversationId: "conversation-clarify",
+            turnId: "turn-clarify",
+            clarifyId: "55555555-5555-4555-8555-555555555555",
+            question: "请选择要复核的项目",
+            choices: ["A 项目", "B 项目"],
+            allowFreeText: true,
+          },
+        ],
+      ],
+      encoder,
+      keepOpen: true,
+    });
+
+    const { container, unmount } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-clarify", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "需要澄清" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("请选择要复核的项目")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "A 项目" }));
+    fireEvent.change(screen.getByLabelText("补充说明"), {
+      target: { value: "只看本月" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交澄清" }));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/ai/conversations/conversation-clarify/turns/turn-clarify/clarify",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(screen.getByRole("button", { name: "A 项目" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "提交澄清" })).toBeDisabled();
+
+    unmount();
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversations: [{ id: "conversation-clarify" }],
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-clarify") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-clarify" },
+              messages: [
+                {
+                  id: "message-user-clarify",
+                  role: "user",
+                  status: "completed",
+                  content: "需要澄清",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-clarify",
+                  assistantMessageId: "message-assistant-clarify",
+                  status: "generating",
+                  pendingClarify: {
+                    clarifyId: "55555555-5555-4555-8555-555555555555",
+                    question: "请选择要复核的项目",
+                    choices: ["A 项目", "B 项目"],
+                    allowFreeText: true,
+                  },
+                },
+              ],
+            }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+    localStorage.setItem(
+      "jingying-cabin.dashboard.ai.conversation.v1.user-clarify",
+      "conversation-clarify",
+    );
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-clarify", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(await screen.findByText("请选择要复核的项目")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "A 项目" })).toBeEnabled();
+  });
+
+  it("renders partial, blocked, and cancelled outcomes without fabricating history", async () => {
+    const encoder = new TextEncoder();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-outcomes",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-outcomes",
+            turnId: "turn-partial",
+            userMessageId: "message-user-partial",
+            assistantMessageId: "message-assistant-partial",
+          },
+        ],
+        completedEvent({
+          conversationId: "conversation-outcomes",
+          turnId: "turn-partial",
+          messageId: "message-assistant-partial",
+          content: "只能确认当前项目风险，历史环比数据不可用。",
+          outcome: "partial",
+          missing: ["历史结算流水", "上一周期成交额"],
+        }),
+      ],
+      encoder,
+    });
+    const { container, unmount } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-outcome", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "部分数据" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("基于部分可用数据")).toBeInTheDocument();
+    expect(screen.getByText("历史结算流水")).toBeInTheDocument();
+    expect(screen.getByText("上一周期成交额")).toBeInTheDocument();
+    expect(container).not.toHaveTextContent(/同比增长\s*\d|历史成交额\s*\d/);
+
+    unmount();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-blocked",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-blocked",
+            turnId: "turn-blocked",
+            userMessageId: "message-user-blocked",
+            assistantMessageId: "message-assistant-blocked",
+          },
+        ],
+        completedEvent({
+          conversationId: "conversation-blocked",
+          turnId: "turn-blocked",
+          messageId: "message-assistant-blocked",
+          content: "无法完成该分析。",
+          outcome: "blocked",
+          missing: ["未授权结算明细", "数据源不可用：直播流水"],
+        }),
+      ],
+      encoder,
+    });
+    const blockedRender = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-blocked", name: "123", role: "owner" }}
+      />,
+    );
+    const blockedInput = blockedRender.container.querySelector("input");
+    fireEvent.change(blockedInput, { target: { value: "阻塞数据" } });
+    fireEvent.keyDown(blockedInput, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("关键数据不可用")).toBeInTheDocument();
+    expect(screen.getByText("未授权结算明细")).toBeInTheDocument();
+    expect(screen.getByText("数据源不可用：直播流水")).toBeInTheDocument();
+    expect(blockedRender.container).not.toHaveTextContent(/历史成交额\s*\d/);
+
+    blockedRender.unmount();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-cancelled",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-cancelled",
+            turnId: "turn-cancelled",
+            userMessageId: "message-user-cancelled",
+            assistantMessageId: "message-assistant-cancelled",
+          },
+        ],
+        [
+          "response.cancelled",
+          {
+            type: "response.cancelled",
+            conversationId: "conversation-cancelled",
+            turnId: "turn-cancelled",
+            messageId: "message-assistant-cancelled",
+          },
+        ],
+      ],
+      encoder,
+    });
+    const cancelledRender = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-cancelled", name: "123", role: "owner" }}
+      />,
+    );
+    const cancelledInput = cancelledRender.container.querySelector("input");
+    fireEvent.change(cancelledInput, { target: { value: "取消请求" } });
+    fireEvent.keyDown(cancelledInput, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("已停止生成")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+    expect(cancelledRender.container).not.toHaveTextContent(/调用失败|上游|provider/i);
   });
 
   it("creates a durable conversation and sends only the new turn", async () => {
@@ -98,6 +595,13 @@ describe("OverviewBoard AI panel", () => {
               turnId: "turn-1",
               messageId: "message-assistant-1",
               content: "真实会话回复",
+              outcome: "complete",
+              evidence: [],
+              missing: [],
+              observationTimes: {
+                firstObservedAt: "2026-07-22T09:00:00.000Z",
+                lastObservedAt: "2026-07-22T09:00:01.000Z",
+              },
             },
           ],
         ]);
@@ -620,7 +1124,7 @@ describe("OverviewBoard AI panel", () => {
     expect(payload.content).toBe("你好");
     expect(payload).not.toHaveProperty("messages");
     expect(fetch).not.toHaveBeenCalledWith("/api/ai/chat", expect.anything());
-    expect(await screen.findByText("真实 DeepSeek 回复")).toBeInTheDocument();
+    expect(await screen.findByText("真实星耀回复")).toBeInTheDocument();
   });
 
   it("sends deep thinking mode and up to five attachments to the chat API", async () => {
@@ -2109,7 +2613,7 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.change(input, { target: { value: "默认分析本月" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
-    expect(await screen.findByText("真实 DeepSeek 回复")).toBeInTheDocument();
+    expect(await screen.findByText("真实星耀回复")).toBeInTheDocument();
 
     unmount();
     render(
@@ -2124,16 +2628,58 @@ describe("OverviewBoard AI panel", () => {
     );
 
     expect(await screen.findByText("默认分析本月")).toBeInTheDocument();
-    expect(await screen.findByText("真实 DeepSeek 回复")).toBeInTheDocument();
+    expect(await screen.findByText("真实星耀回复")).toBeInTheDocument();
   });
 });
 
 function protocolSse(events) {
   return events
     .map(
-      ([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+      ([event, data]) =>
+        `event: ${event}\ndata: ${JSON.stringify(
+          event === "response.completed"
+            ? {
+                outcome: "complete",
+                evidence: [],
+                missing: [],
+                observationTimes: {
+                  firstObservedAt: "2026-07-22T09:00:00.000Z",
+                  lastObservedAt: "2026-07-22T09:00:01.000Z",
+                },
+                ...data,
+              }
+            : data,
+        )}\n\n`,
     )
     .join("");
+}
+
+function completedEvent({
+  conversationId,
+  turnId,
+  messageId,
+  content,
+  outcome = "complete",
+  evidence = [],
+  missing = [],
+}) {
+  return [
+    "response.completed",
+    {
+      type: "response.completed",
+      conversationId,
+      turnId,
+      messageId,
+      content,
+      outcome,
+      evidence,
+      missing,
+      observationTimes: {
+        firstObservedAt: "2026-07-22T09:00:00.000Z",
+        lastObservedAt: "2026-07-22T09:00:01.000Z",
+      },
+    },
+  ];
 }
 
 function protocolStreamResponse(encoder, events) {
@@ -2276,6 +2822,71 @@ function createConversationProtocolFetch({
     }
     return null;
   };
+}
+
+function mockConversationProtocolEvents({
+  conversationId,
+  events,
+  encoder = new TextEncoder(),
+  keepOpen = false,
+}) {
+  let created = false;
+  fetch.mockImplementation((url, options = {}) => {
+    if (url === "/api/ai/conversations" && options.method === "POST") {
+      created = true;
+      return Promise.resolve({
+        ok: true,
+        status: 201,
+        json: () =>
+          Promise.resolve({
+            conversation: { id: conversationId, title: "新会话" },
+          }),
+      });
+    }
+    if (url === "/api/ai/conversations") {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            conversations: created ? [{ id: conversationId }] : [],
+          }),
+      });
+    }
+    if (url === `/api/ai/conversations/${conversationId}`) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            conversation: { id: conversationId, title: "新会话" },
+            messages: [],
+            turns: [],
+          }),
+      });
+    }
+    if (url === `/api/ai/conversations/${conversationId}/turns`) {
+      created = true;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "text/event-stream; charset=utf-8" },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(protocolSse(events)));
+            if (!keepOpen) controller.close();
+          },
+        }),
+      });
+    }
+    if (url.includes("/clarify")) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ accepted: true }),
+      });
+    }
+    return defaultFetchResponse(url);
+  });
 }
 
 function mockConversationProtocol(options) {
