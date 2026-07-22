@@ -206,6 +206,49 @@ describe("Hermes actor-private memory", () => {
         expect([first.reused, second.reused].sort()).toEqual([false, true]);
         const memoryKey = String(first.memory_key);
 
+        const orderedContent = "Prefer stable memory ordering";
+        const orderedHash = sha256(orderedContent);
+        const orderedMemory = await client.rpc(
+          "write_ai_hermes_memory_revision",
+          {
+            ...rememberArgs,
+            p_idempotency_key: `${invocationId}:${orderedHash}`,
+            p_memory_key: null,
+            p_content: orderedContent,
+            p_content_hash: orderedHash,
+          },
+        );
+        expect(orderedMemory.error).toBeNull();
+        const orderedMemoryKey = String(record(orderedMemory.data).memory_key);
+        const orderedMemoryRow = await client
+          .from("ai_hermes_memories")
+          .select("created_at")
+          .eq("organization_id", organizationId)
+          .eq("owner_user_id", userId)
+          .eq("memory_key", orderedMemoryKey)
+          .eq("revision", 1)
+          .single();
+        expect(orderedMemoryRow.error).toBeNull();
+        const stableSnapshotAt = recordString(
+          orderedMemoryRow.data,
+          "created_at",
+        );
+        const stableSnapshotBefore = await loadMemorySnapshot(
+          client,
+          organizationId,
+          userId,
+          stableSnapshotAt,
+        );
+        expect(stableSnapshotBefore).toHaveLength(2);
+        for (const value of stableSnapshotBefore) {
+          expect(recordString(value, "updated_at")).toBe(
+            recordString(value, "created_at"),
+          );
+          expect(
+            Date.parse(recordString(value, "updated_at")),
+          ).toBeLessThanOrEqual(Date.parse(stableSnapshotAt));
+        }
+
         const updateContent = "Prefer concise answers with headings";
         const updateHash = sha256(updateContent);
         const updated = await client.rpc("write_ai_hermes_memory_revision", {
@@ -218,6 +261,26 @@ describe("Hermes actor-private memory", () => {
         });
         expect(updated.error).toBeNull();
         expect(record(updated.data).revision).toBe(2);
+
+        const orderedForget = await client.rpc("forget_ai_hermes_memory", {
+          p_organization_id: organizationId,
+          p_owner_user_id: userId,
+          p_capability_token_sha256: rootTokenSha256,
+          p_parent_invocation_id: invocationId,
+          p_memory_key: orderedMemoryKey,
+          p_expected_revision: 1,
+          p_source_conversation_id: conversationId,
+          p_source_message_id: sourceMessageId,
+          p_source_invocation_id: invocationId,
+        });
+        expect(orderedForget.error).toBeNull();
+        const stableSnapshotAfter = await loadMemorySnapshot(
+          client,
+          organizationId,
+          userId,
+          stableSnapshotAt,
+        );
+        expect(stableSnapshotAfter).toEqual(stableSnapshotBefore);
 
         const updatedRevisionTimes = await client
           .from("ai_hermes_memories")
@@ -258,7 +321,14 @@ describe("Hermes actor-private memory", () => {
             userId,
             revisionTwoCreatedAt,
           ),
-        ).toEqual([expect.objectContaining({ revision: 2 })]);
+        ).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              memory_key: memoryKey,
+              revision: 2,
+            }),
+          ]),
+        );
 
         const invalidSource = await client.rpc(
           "write_ai_hermes_memory_revision",
@@ -358,10 +428,25 @@ describe("Hermes actor-private memory", () => {
           ),
         ).toEqual([]);
 
+        const raceConversation = await client
+          .from("ai_conversations")
+          .insert({
+            organization_id: organizationId,
+            owner_user_id: userId,
+            title: "Hermes memory source race",
+          })
+          .select("id")
+          .single();
+        expect(raceConversation.error).toBeNull();
+        const raceConversationId = raceConversation.data?.id;
+        if (!raceConversationId) {
+          throw new Error("race conversation was not created");
+        }
+
         const raceTurn = await client.rpc("create_ai_chat_turn", {
           p_organization_id: organizationId,
           p_owner_user_id: userId,
-          p_conversation_id: conversationId,
+          p_conversation_id: raceConversationId,
           p_idempotency_key: `hermes-memory-race-${suffix}`,
           p_mode: "fast",
           p_kind: "user",
@@ -393,7 +478,7 @@ describe("Hermes actor-private memory", () => {
             p_token_sha256: raceTokenSha256,
             p_organization_id: organizationId,
             p_owner_user_id: userId,
-            p_conversation_id: conversationId,
+            p_conversation_id: raceConversationId,
             p_turn_id: raceTurnId,
             p_invocation_id: raceInvocationId,
             p_parent_invocation_id: null,
@@ -415,24 +500,25 @@ describe("Hermes actor-private memory", () => {
         expect(raceCapability.error).toBeNull();
         const raceContent = "Prefer source-locked summaries";
         const raceHash = sha256(raceContent);
+        const raceWriteArgs = {
+          p_organization_id: organizationId,
+          p_owner_user_id: userId,
+          p_capability_token_sha256: raceTokenSha256,
+          p_parent_invocation_id: raceInvocationId,
+          p_idempotency_key: `${raceInvocationId}:${raceHash}`,
+          p_memory_key: null,
+          p_expected_revision: 0,
+          p_memory_type: "preference",
+          p_content: raceContent,
+          p_content_hash: raceHash,
+          p_active: true,
+          p_source_conversation_id: raceConversationId,
+          p_source_message_id: raceSourceMessageId,
+          p_source_invocation_id: raceInvocationId,
+        };
         const [raceWrite, raceMutation] = await withTimeout(
           Promise.all([
-            client.rpc("write_ai_hermes_memory_revision", {
-              p_organization_id: organizationId,
-              p_owner_user_id: userId,
-              p_capability_token_sha256: raceTokenSha256,
-              p_parent_invocation_id: raceInvocationId,
-              p_idempotency_key: `${raceInvocationId}:${raceHash}`,
-              p_memory_key: null,
-              p_expected_revision: 0,
-              p_memory_type: "preference",
-              p_content: raceContent,
-              p_content_hash: raceHash,
-              p_active: true,
-              p_source_conversation_id: conversationId,
-              p_source_message_id: raceSourceMessageId,
-              p_source_invocation_id: raceInvocationId,
-            }),
+            client.rpc("write_ai_hermes_memory_revision", raceWriteArgs),
             client
               .from("ai_chat_messages")
               .update({ role: "assistant" })
@@ -466,6 +552,45 @@ describe("Hermes actor-private memory", () => {
           expect(racedMemories.data).toHaveLength(1);
           expect(racedSource.data?.role).toBe("user");
         }
+
+        if (raceWrite.error) {
+          const restoredSource = await client
+            .from("ai_chat_messages")
+            .update({ role: "user" })
+            .eq("id", raceSourceMessageId)
+            .select("id, role")
+            .single();
+          expect(restoredSource.error).toBeNull();
+          expect(restoredSource.data?.role).toBe("user");
+          const committedWrite = await client.rpc(
+            "write_ai_hermes_memory_revision",
+            raceWriteArgs,
+          );
+          expect(committedWrite.error).toBeNull();
+        }
+
+        const postCommitMutation = await client
+          .from("ai_chat_messages")
+          .update({ role: "assistant" })
+          .eq("id", raceSourceMessageId)
+          .select("id, role")
+          .single();
+        expect(postCommitMutation.error?.message).toContain(
+          "memory_source_immutable",
+        );
+        const committedRaceMemories = await client
+          .from("ai_hermes_memories")
+          .select("id")
+          .eq("source_message_id", raceSourceMessageId);
+        const committedRaceSource = await client
+          .from("ai_chat_messages")
+          .select("role")
+          .eq("id", raceSourceMessageId)
+          .single();
+        expect(committedRaceMemories.error).toBeNull();
+        expect(committedRaceMemories.data).toHaveLength(1);
+        expect(committedRaceSource.error).toBeNull();
+        expect(committedRaceSource.data?.role).toBe("user");
       } finally {
         if (organizationId) {
           await client.from("organizations").delete().eq("id", organizationId);

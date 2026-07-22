@@ -1338,7 +1338,7 @@ as $$
       memory.source_message_id,
       memory.source_invocation_id,
       memory.created_at,
-      memory.updated_at
+      memory.created_at as updated_at
     from public.ai_hermes_memories memory
     where memory.organization_id = p_organization_id
       and memory.owner_user_id = p_owner_user_id
@@ -1348,7 +1348,7 @@ as $$
       )
     order by memory.memory_key, memory.revision desc
   ) snapshot
-  order by snapshot.updated_at desc, snapshot.memory_key;
+  order by snapshot.created_at desc, snapshot.memory_key;
 $$;
 
 drop function if exists public.claim_ai_hermes_broker_call(

@@ -386,6 +386,12 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
     expect(snapshot).toContain("distinct on (memory.memory_key)");
     expect(snapshot).toContain("memory.memory_key, memory.revision desc");
+    expect(snapshot).toContain("memory.created_at as updated_at");
+    expect(snapshot).toContain(
+      "order by snapshot.created_at desc, snapshot.memory_key",
+    );
+    expect(snapshot).not.toContain("memory.updated_at");
+    expect(snapshot).not.toContain("snapshot.updated_at desc");
     expect(migration).toContain(
       "revoke all on function public.load_ai_hermes_memory_snapshot(",
     );

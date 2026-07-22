@@ -66,6 +66,7 @@ describe("Hermes personal memory policy", () => {
     "tool-result=streamer rows",
     "tool_result: report rows",
     "Bearer raw-reviewer-token",
+    "Bearer abcdefghijklmnopqrstuvwxyzabcdefghijklmnopq",
     "org_id=org-private",
     "org-id:org-private",
     "project_id=project-private",
