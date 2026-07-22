@@ -240,6 +240,22 @@ describe("Hermes actor-private memory", () => {
           stableSnapshotAt,
         );
         expect(stableSnapshotBefore).toHaveLength(2);
+        const stableTargetBefore = memorySnapshotRow(
+          stableSnapshotBefore,
+          memoryKey,
+        );
+        const stableOrderedBefore = memorySnapshotRow(
+          stableSnapshotBefore,
+          orderedMemoryKey,
+        );
+        expect(stableTargetBefore).toMatchObject({
+          content: firstContent,
+          revision: 1,
+        });
+        expect(stableOrderedBefore).toMatchObject({
+          content: orderedContent,
+          revision: 1,
+        });
         for (const value of stableSnapshotBefore) {
           expect(recordString(value, "updated_at")).toBe(
             recordString(value, "created_at"),
@@ -281,6 +297,12 @@ describe("Hermes actor-private memory", () => {
           stableSnapshotAt,
         );
         expect(stableSnapshotAfter).toEqual(stableSnapshotBefore);
+        expect(memorySnapshotRow(stableSnapshotAfter, memoryKey)).toEqual(
+          stableTargetBefore,
+        );
+        expect(
+          memorySnapshotRow(stableSnapshotAfter, orderedMemoryKey),
+        ).toEqual(stableOrderedBefore);
 
         const updatedRevisionTimes = await client
           .from("ai_hermes_memories")
@@ -306,29 +328,44 @@ describe("Hermes actor-private memory", () => {
             rootMemorySnapshotAt,
           ),
         ).toEqual([]);
-        expect(
-          await loadMemorySnapshot(
-            client,
-            organizationId,
-            userId,
-            revisionOneCreatedAt,
-          ),
-        ).toEqual([expect.objectContaining({ revision: 1 })]);
-        expect(
-          await loadMemorySnapshot(
-            client,
-            organizationId,
-            userId,
-            revisionTwoCreatedAt,
-          ),
-        ).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              memory_key: memoryKey,
-              revision: 2,
-            }),
-          ]),
+        const revisionOneSnapshot = await loadMemorySnapshot(
+          client,
+          organizationId,
+          userId,
+          revisionOneCreatedAt,
         );
+        expect(revisionOneSnapshot).toHaveLength(1);
+        expect(memorySnapshotRow(revisionOneSnapshot, memoryKey)).toMatchObject(
+          {
+            content: firstContent,
+            revision: 1,
+            updated_at: revisionOneCreatedAt,
+          },
+        );
+        const revisionTwoSnapshot = await loadMemorySnapshot(
+          client,
+          organizationId,
+          userId,
+          revisionTwoCreatedAt,
+        );
+        const revisionTwoTarget = memorySnapshotRow(
+          revisionTwoSnapshot,
+          memoryKey,
+        );
+        const revisionTwoOrdered = memorySnapshotRow(
+          revisionTwoSnapshot,
+          orderedMemoryKey,
+        );
+        expect(revisionTwoTarget).toMatchObject({
+          content: updateContent,
+          revision: 2,
+          updated_at: revisionTwoCreatedAt,
+        });
+        expect(revisionTwoOrdered).toMatchObject({
+          content: orderedContent,
+          revision: 1,
+          updated_at: stableSnapshotAt,
+        });
 
         const invalidSource = await client.rpc(
           "write_ai_hermes_memory_revision",
@@ -411,14 +448,19 @@ describe("Hermes actor-private memory", () => {
           forgottenRevisionTimes.data?.[2],
           "created_at",
         );
+        const revisionTwoSnapshotAfterForget = await loadMemorySnapshot(
+          client,
+          organizationId,
+          userId,
+          revisionTwoCreatedAt,
+        );
+        expect(revisionTwoSnapshotAfterForget).toEqual(revisionTwoSnapshot);
         expect(
-          await loadMemorySnapshot(
-            client,
-            organizationId,
-            userId,
-            revisionTwoCreatedAt,
-          ),
-        ).toEqual([expect.objectContaining({ revision: 2 })]);
+          memorySnapshotRow(revisionTwoSnapshotAfterForget, memoryKey),
+        ).toEqual(revisionTwoTarget);
+        expect(
+          memorySnapshotRow(revisionTwoSnapshotAfterForget, orderedMemoryKey),
+        ).toEqual(revisionTwoOrdered);
         expect(
           await loadMemorySnapshot(
             client,
@@ -627,6 +669,17 @@ function recordString(value: unknown, key: string): string {
     throw new Error(`live RPC did not return ${key}`);
   }
   return row[key];
+}
+
+function memorySnapshotRow(
+  snapshot: unknown[],
+  memoryKey: string,
+): Record<string, unknown> {
+  const matches = snapshot.filter(
+    (value) => recordString(value, "memory_key") === memoryKey,
+  );
+  expect(matches).toHaveLength(1);
+  return record(matches[0]);
 }
 
 async function loadMemorySnapshot(
