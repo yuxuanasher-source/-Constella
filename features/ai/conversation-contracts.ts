@@ -30,7 +30,14 @@ export type ConversationContextSnapshot = {
   messageIds: string[];
   groundingRefs: string[];
   assembledAt: string;
+  runtimeSelection?: ConversationRuntimeSelection;
   gatewayContext?: ConversationGatewayContext;
+};
+
+export type ConversationRuntimeSelection = {
+  runtime: "gateway" | "legacy";
+  protocol: string;
+  profile: string;
 };
 
 export type ConversationResponseOutcome = "complete" | "partial" | "blocked";

@@ -138,11 +138,7 @@ describe("POST /api/ai/conversations/:conversationId/turns", () => {
         request,
         turn,
         attachments: [],
-        service: expect.objectContaining({
-          acceptTurn,
-          prepareTurn: expect.any(Function),
-          captureGatewayContext: expect.any(Function),
-        }),
+        service,
         executor: expect.objectContaining({ execute: expect.any(Function) }),
       }),
     );

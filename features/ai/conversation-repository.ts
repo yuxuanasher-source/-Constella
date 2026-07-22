@@ -287,6 +287,7 @@ export async function createAiConversationTurn(
     kind: "user" | "retry" | "regenerate";
     content?: string;
     sourceTurnId?: string;
+    contextSnapshot?: ConversationContextSnapshot;
   },
 ): Promise<CreatedConversationTurn | null> {
   const { data, error } = await client.rpc("create_ai_chat_turn", {
@@ -300,7 +301,21 @@ export async function createAiConversationTurn(
     p_source_turn_id: input.sourceTurnId ?? null,
   });
 
-  return error ? null : parseCreatedTurn(data);
+  if (error) return null;
+  const turn = parseCreatedTurn(data);
+  if (!turn) return null;
+  if (input.contextSnapshot && !turn.duplicate) {
+    const persisted = await transitionAiConversationTurn(client, {
+      organizationId: input.organizationId,
+      ownerUserId: input.ownerUserId,
+      turnId: turn.turnId,
+      from: turn.status,
+      to: turn.status,
+      patch: { contextSnapshot: input.contextSnapshot },
+    });
+    if (!persisted) return null;
+  }
+  return turn;
 }
 
 export async function getAiConversationTurn(

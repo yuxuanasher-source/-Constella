@@ -7,6 +7,7 @@ import type {
   AiConversationMessageDto,
   ConversationContextSnapshot,
   ConversationGatewayContext,
+  ConversationRuntimeSelection,
   ConversationStreamEvent,
   CreateTurnCommand,
   RetryTurnCommand,
@@ -46,7 +47,12 @@ import {
   mapHermesStateRepositoryError,
   type HermesStateRepository,
 } from "./hermes/hermes-state-repository";
-import type { HermesOutcome } from "./hermes/contracts";
+import {
+  HERMES_PROFILE_VERSION,
+  HERMES_PROTOCOL_VERSION,
+  LEGACY_HERMES_PROFILE_VERSION,
+  type HermesOutcome,
+} from "./hermes/contracts";
 import type { HermesActorProfile } from "./hermes/contracts";
 import { hasMeaningfulAiContent } from "./response-quality";
 import {
@@ -60,6 +66,7 @@ const MAX_CONTEXT_VISITED_OBJECTS = 100_000;
 const MAX_CONTEXT_EXPANDED_NODES = 100_000;
 // Five max-size canonical attachments serialize below 60 MiB, leaving ample metadata headroom.
 const MAX_CONTEXT_ESTIMATED_JSON_BYTES = 128 * 1024 * 1024;
+const LEGACY_HERMES_PROTOCOL_VERSION = "xingyao-legacy-chat-v1";
 
 export type ConversationActor = {
   organizationId: string;
@@ -171,6 +178,10 @@ export class ConversationServiceError extends Error {
     this.name = "ConversationServiceError";
   }
 }
+
+export type ConversationTurnRuntimeOptions = {
+  runtimeSelection?: ConversationRuntimeSelection;
+};
 
 export function createSupabaseConversationPersistence(
   client: ConversationRepositoryClient,
@@ -295,6 +306,7 @@ export function createConversationService(
       actor: ConversationActor,
       conversationId: string,
       command: CreateTurnCommand,
+      options: ConversationTurnRuntimeOptions = {},
     ): Promise<CreatedConversationTurn> {
       return requireCreatedTurn(
         await persistence.createTurn({
@@ -305,6 +317,10 @@ export function createConversationService(
           mode: command.mode,
           kind: "user",
           content: command.content,
+          contextSnapshot: initialRuntimeSelectionSnapshot(
+            options.runtimeSelection,
+            now,
+          ),
         }),
       );
     },
@@ -313,6 +329,7 @@ export function createConversationService(
       actor: ConversationActor,
       sourceTurnId: string,
       command: RetryTurnCommand,
+      options: ConversationTurnRuntimeOptions = {},
     ): Promise<CreatedConversationTurn> {
       const source = await requireTurn(persistence, actor, sourceTurnId);
       if (source.status !== "failed" || !source.retryable) {
@@ -330,6 +347,10 @@ export function createConversationService(
           mode: source.mode,
           kind: "retry",
           sourceTurnId,
+          contextSnapshot: initialRuntimeSelectionSnapshot(
+            options.runtimeSelection,
+            now,
+          ),
         }),
       );
     },
@@ -338,6 +359,7 @@ export function createConversationService(
       actor: ConversationActor,
       sourceTurnId: string,
       command: RetryTurnCommand,
+      options: ConversationTurnRuntimeOptions = {},
     ): Promise<CreatedConversationTurn> {
       const source = await requireTurn(persistence, actor, sourceTurnId);
       if (source.status !== "completed") {
@@ -355,6 +377,10 @@ export function createConversationService(
           mode: source.mode,
           kind: "regenerate",
           sourceTurnId,
+          contextSnapshot: initialRuntimeSelectionSnapshot(
+            options.runtimeSelection,
+            now,
+          ),
         }),
       );
     },
@@ -420,13 +446,19 @@ export function createConversationService(
         ? completed.filter((message) => snapshotIds.includes(message.id))
         : completed;
       const selected = takeLatestWithinBudget(eligible, contextCharacterBudget);
-      const snapshot = frozenSnapshot ?? {
-        version: 1,
-        summaryVersion: 0,
-        messageIds: selected.map((message) => message.id),
-        groundingRefs: [...new Set(groundingRefs)],
-        assembledAt: now().toISOString(),
-      };
+      const snapshot =
+        frozenSnapshot && !isRuntimeSelectionSeedSnapshot(frozenSnapshot)
+          ? frozenSnapshot
+          : {
+              version: frozenSnapshot?.version ?? 1,
+              summaryVersion: frozenSnapshot?.summaryVersion ?? 0,
+              messageIds: selected.map((message) => message.id),
+              groundingRefs: [...new Set(groundingRefs)],
+              assembledAt: now().toISOString(),
+              ...(frozenSnapshot?.runtimeSelection
+                ? { runtimeSelection: frozenSnapshot.runtimeSelection }
+                : {}),
+            };
       const persistedSnapshot = requireConversationSnapshot(snapshot);
       const contextHash = hashConversationSnapshot(persistedSnapshot);
 
@@ -855,6 +887,21 @@ function requireCreatedTurn(
   return turn;
 }
 
+function initialRuntimeSelectionSnapshot(
+  runtimeSelection: ConversationRuntimeSelection | undefined,
+  now: () => Date,
+): ConversationContextSnapshot | undefined {
+  if (!runtimeSelection) return undefined;
+  return requireConversationSnapshot({
+    version: 1,
+    summaryVersion: 0,
+    messageIds: [],
+    groundingRefs: [],
+    assembledAt: now().toISOString(),
+    runtimeSelection,
+  });
+}
+
 function parseGatewayCheckpoint(value: unknown): {
   sessionId: string;
   checkpointId?: string;
@@ -972,8 +1019,40 @@ function isConversationSnapshot(
     typeof value.assembledAt === "string" &&
     value.assembledAt.trim().length > 0 &&
     Number.isFinite(Date.parse(value.assembledAt)) &&
+    (value.runtimeSelection === undefined ||
+      isConversationRuntimeSelection(value.runtimeSelection)) &&
     (value.gatewayContext === undefined ||
       isConversationGatewayContext(value.gatewayContext))
+  );
+}
+
+function isConversationRuntimeSelection(
+  value: unknown,
+): value is ConversationRuntimeSelection {
+  if (!isRecord(value)) return false;
+  if (value.runtime === "gateway") {
+    return (
+      value.protocol === HERMES_PROTOCOL_VERSION &&
+      value.profile === HERMES_PROFILE_VERSION
+    );
+  }
+  if (value.runtime === "legacy") {
+    return (
+      value.protocol === LEGACY_HERMES_PROTOCOL_VERSION &&
+      value.profile === LEGACY_HERMES_PROFILE_VERSION
+    );
+  }
+  return false;
+}
+
+function isRuntimeSelectionSeedSnapshot(
+  snapshot: ConversationContextSnapshot,
+): boolean {
+  return (
+    !!snapshot.runtimeSelection &&
+    !snapshot.gatewayContext &&
+    snapshot.messageIds.length === 0 &&
+    snapshot.groundingRefs.length === 0
   );
 }
 

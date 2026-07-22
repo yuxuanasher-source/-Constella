@@ -13,6 +13,11 @@ import type {
 } from "./conversation-repository";
 
 const actor = { organizationId: "org-1", userId: "user-1" };
+const gatewayRuntimeSelection = {
+  runtime: "gateway" as const,
+  protocol: "xingyao-hermes-gateway-v2",
+  profile: "hermes-xingyao-v2",
+};
 
 const createdTurn: CreatedConversationTurn = {
   conversationId: "conversation-1",
@@ -101,6 +106,43 @@ describe("Xingyao conversation service", () => {
       content: "解读当前风险",
     });
     expect(result).toEqual(createdTurn);
+  });
+
+  it("passes selected runtime into accepted turn persistence", async () => {
+    const store = persistence();
+    const service = createConversationService(store, {
+      now: () => new Date("2026-07-11T03:00:00.000Z"),
+    });
+
+    await service.acceptTurn(
+      actor,
+      "conversation-1",
+      {
+        content: "瑙ｈ褰撳墠椋庨櫓",
+        mode: "deep",
+        clientRequestId: "request-123",
+        attachments: [],
+      },
+      { runtimeSelection: gatewayRuntimeSelection },
+    );
+
+    expect(store.createTurn).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      clientRequestId: "request-123",
+      mode: "deep",
+      kind: "user",
+      content: "瑙ｈ褰撳墠椋庨櫓",
+      contextSnapshot: {
+        version: 1,
+        summaryVersion: 0,
+        messageIds: [],
+        groundingRefs: [],
+        assembledAt: "2026-07-11T03:00:00.000Z",
+        runtimeSelection: gatewayRuntimeSelection,
+      },
+    });
   });
 
   it("retries a failed turn without creating another user message", async () => {
@@ -207,6 +249,52 @@ describe("Xingyao conversation service", () => {
         from: "accepted",
         to: "grounding",
         patch: expect.objectContaining({ contextSnapshot: prepared.snapshot }),
+      }),
+    );
+  });
+
+  it("keeps persisted runtime selection when Gateway setup fails before capture", async () => {
+    const messages: AiConversationMessageDto[] = [
+      message("message-user-1", 1, "user", "completed", "褰撳墠闂"),
+      message("message-assistant-1", 2, "assistant", "pending", ""),
+    ];
+    const runtimeSeed = {
+      version: 1,
+      summaryVersion: 0,
+      messageIds: [],
+      groundingRefs: [],
+      assembledAt: "2026-07-11T03:00:00.000Z",
+      runtimeSelection: gatewayRuntimeSelection,
+    };
+    const store = persistence({
+      listMessages: vi.fn().mockResolvedValue(messages),
+      getTurn: vi.fn().mockResolvedValue(
+        storedTurn({
+          contextSnapshot: runtimeSeed,
+        }),
+      ),
+    });
+    const service = createConversationService(store, {
+      now: () => new Date("2026-07-12T06:00:00.000Z"),
+    });
+
+    const prepared = await service.prepareTurn(actor, "turn-1", [
+      "dashboard:role-home",
+    ]);
+
+    expect(prepared.snapshot).toEqual({
+      version: 1,
+      summaryVersion: 0,
+      messageIds: ["message-user-1"],
+      groundingRefs: ["dashboard:role-home"],
+      assembledAt: "2026-07-12T06:00:00.000Z",
+      runtimeSelection: gatewayRuntimeSelection,
+    });
+    expect(store.transitionTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        patch: expect.objectContaining({
+          contextSnapshot: prepared.snapshot,
+        }),
       }),
     );
   });

@@ -36,6 +36,18 @@ const v2Ids = {
   turnId: "00000000-0000-4000-8000-000000000004",
   invocationId: "00000000-0000-4000-8000-000000000005",
 };
+const gatewayRuntimeSnapshot = {
+  version: 1,
+  summaryVersion: 0,
+  messageIds: [],
+  groundingRefs: [],
+  assembledAt: "2026-07-11T03:00:00.000Z",
+  runtimeSelection: {
+    runtime: "gateway" as const,
+    protocol: "xingyao-hermes-gateway-v2",
+    profile: "hermes-xingyao-v2",
+  },
+};
 
 describe("Xingyao conversation repository", () => {
   it("creates an owner-scoped conversation and maps the public DTO", async () => {
@@ -137,6 +149,53 @@ describe("Xingyao conversation repository", () => {
       assistantMessageId: "assistant-message-1",
       duplicate: false,
     });
+  });
+
+  it("persists selected runtime snapshot before returning a new accepted turn", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        conversation_id: "conversation-1",
+        turn_id: "turn-1",
+        user_message_id: "user-message-1",
+        assistant_message_id: "assistant-message-1",
+        status: "accepted",
+        attempt_no: 1,
+        duplicate: false,
+      },
+      error: null,
+    });
+    const returns = vi
+      .fn()
+      .mockResolvedValue({ data: [{ id: "turn-1" }], error: null });
+    const select = vi.fn(() => ({ returns }));
+    const eqStatus = vi.fn(() => ({ select }));
+    const eqOwner = vi.fn(() => ({ eq: eqStatus }));
+    const eqOrganization = vi.fn(() => ({ eq: eqOwner }));
+    const eqId = vi.fn(() => ({ eq: eqOrganization }));
+    const update = vi.fn(() => ({ eq: eqId }));
+    const from = vi.fn(() => ({ update }));
+
+    const result = await createAiConversationTurn(
+      { rpc, from } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: "org-1",
+        ownerUserId: "user-1",
+        conversationId: "conversation-1",
+        clientRequestId: "request-123",
+        mode: "deep",
+        kind: "user",
+        content: "瑙ｈ椋庨櫓",
+        contextSnapshot: gatewayRuntimeSnapshot,
+      },
+    );
+
+    expect(update).toHaveBeenCalledWith({
+      status: "accepted",
+      context_snapshot: gatewayRuntimeSnapshot,
+      snapshot_version: 1,
+    });
+    expect(eqStatus).toHaveBeenCalledWith("status", "accepted");
+    expect(result).toMatchObject({ turnId: "turn-1", duplicate: false });
   });
 
   it("preserves a lease-expired duplicate status from the public RPC", async () => {

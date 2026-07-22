@@ -4,9 +4,12 @@ import {
   conversationRouteErrorResponse,
   getAiConversationRouteContext,
 } from "@/app/api/ai/conversation-route-context";
+import {
+  createSelectedNativeTurnExecutor,
+  selectNativeTurnRuntime,
+} from "@/app/api/ai/native-turn-runtime";
 import { parseRetryTurnCommand } from "@/features/ai/conversation-contracts";
 import { createConversationTurnStream } from "@/features/ai/conversation-stream-adapter";
-import { createGatewayTurnExecutor } from "@/features/ai/native-assistant/gateway-executor";
 
 export const maxDuration = 330;
 
@@ -28,10 +31,14 @@ export async function POST(
       );
     }
 
+    const selected = selectNativeTurnRuntime(context.actor);
+    if (selected instanceof Response) return selected;
+
     const regeneratedTurn = await context.service.regenerateTurn(
       context.actor,
       turnId,
       command,
+      selected.runtimeOption,
     );
     if (regeneratedTurn.duplicate) {
       return NextResponse.json(
@@ -49,11 +56,10 @@ export async function POST(
       turn: regeneratedTurn,
       attachments: [],
       service: context.service,
-      executor: createGatewayTurnExecutor({
+      executor: createSelectedNativeTurnExecutor({
+        selected,
         service: context.service,
         auth: context.auth,
-        provider: "hermes",
-        model: "hermes-official-gateway",
         sourceTurnId: turnId,
       }),
     });
