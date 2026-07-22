@@ -4,14 +4,18 @@ import {
   LEGACY_HERMES_KERNEL_ID,
   LEGACY_HERMES_PROFILE_VERSION,
 } from "@/features/ai/hermes/contracts";
+import { getHermesBuiltinSkillArtifacts } from "@/features/ai/hermes/approved-skill-registry";
 import { getAllowedReadScopesForRole } from "@/features/ai/hermes/read-scopes";
 import {
   HERMES_BUILTIN_SKILL_CATALOG,
   evaluateHermesSkillGrantsForActor,
 } from "@/features/ai/hermes/skill-governance";
+import { getHermesSkillSigningPublicKeysFromEnv } from "@/features/ai/hermes/skill-signing";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { isMcnStaff } from "@/lib/rbac/roles";
+
+export const runtime = "nodejs";
 
 export async function GET() {
   const supabase = await createSupabaseServerClient();
@@ -34,6 +38,12 @@ export async function GET() {
   const decisionsBySkillId = new Map(
     evaluation.decisions.map((decision) => [decision.skillId, decision]),
   );
+  const artifactsBySkillId = new Map(
+    getHermesBuiltinSkillArtifacts().map((artifact) => [
+      artifact.skillId,
+      artifact,
+    ]),
+  );
 
   return NextResponse.json(
     {
@@ -48,8 +58,10 @@ export async function GET() {
         (skill) => skill.skillId,
       ),
       skillGrantsHash: evaluation.skillGrantsHash,
+      signingPublicKeys: getHermesSkillSigningPublicKeysFromEnv(),
       skills: HERMES_BUILTIN_SKILL_CATALOG.map((skill) => {
         const decision = decisionsBySkillId.get(skill.skillId);
+        const artifact = artifactsBySkillId.get(skill.skillId);
         return {
           skillId: skill.skillId,
           version: skill.version,
@@ -61,6 +73,13 @@ export async function GET() {
           enabled: Boolean(decision?.granted),
           reason: decision?.reason ?? "missing_read_scope",
           missingReadScopes: decision?.missingReadScopes ?? [],
+          artifact: artifact
+            ? {
+                path: skill.artifactPath,
+                sha256: artifact.bundleSha256,
+                sizeBytes: artifact.sizeBytes,
+              }
+            : null,
         };
       }),
     },

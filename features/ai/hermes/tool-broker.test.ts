@@ -4,6 +4,7 @@ import {
   computeHermesSkillGrantsHash,
   createHermesActorFingerprint,
 } from "./actor-fingerprint";
+import { computeHermesSkillBundleSha256 } from "./approved-skill-registry";
 import {
   HERMES_EVIDENCE_REF_MAX_LENGTH,
   type HermesActorProfile,
@@ -870,6 +871,81 @@ describe("Hermes Product Tool Broker", () => {
     expect(deps.repository.completeBrokerCall).not.toHaveBeenCalled();
     expect(memoryRepository(deps).rememberMemory).not.toHaveBeenCalled();
   });
+
+  it("views only Skill bundles present in the approved live actor grant set", async () => {
+    const bundle = "# Business Context";
+    const grant = {
+      skillId: "business-context",
+      version: "1.0.0",
+      bundleSha256: computeHermesSkillBundleSha256(bundle),
+    };
+    const grantedActor = actor({
+      enabledSkillVersions: [grant],
+      allowedReadScopes: ["context.read"],
+    });
+    const capability = brokerCapability({
+      actor: grantedActor,
+      actorFingerprint: fingerprint(grantedActor),
+      allowedTools: ["xingyao_skill_view"],
+      scopes: ["context.read"],
+    });
+    const deps = dependencies({
+      loadCapability: vi.fn(async () => capability),
+      reauthorizeActor: vi.fn(async () => ({
+        actor: grantedActor,
+        actorFingerprint: capability.actorFingerprint,
+      })),
+      loadApprovedSkillArtifact: vi.fn(async () => ({
+        skillId: "business-context",
+        version: "1.0.0",
+        bundle,
+        bundleSha256: grant.bundleSha256,
+        source: "builtin" as const,
+      })),
+    });
+
+    await expect(
+      run(deps, skillViewRequest("business-context")),
+    ).resolves.toMatchObject({
+      status: "ok",
+      data: {
+        skillId: "business-context",
+        version: "1.0.0",
+        bundle,
+        bundleSha256: grant.bundleSha256,
+      },
+    });
+    expect(deps.executeRead).not.toHaveBeenCalled();
+
+    const wrongHashDeps = dependencies({
+      loadCapability: vi.fn(async () => capability),
+      reauthorizeActor: vi.fn(async () => ({
+        actor: grantedActor,
+        actorFingerprint: capability.actorFingerprint,
+      })),
+      loadApprovedSkillArtifact: vi.fn(async () => ({
+        skillId: "business-context",
+        version: "1.0.0",
+        bundle,
+        bundleSha256: "b".repeat(64),
+        source: "builtin" as const,
+      })),
+    });
+    await expect(
+      run(wrongHashDeps, skillViewRequest("business-context")),
+    ).rejects.toMatchObject({ code: "permission_denied" });
+
+    const ungrantedDeps = dependencies({
+      loadCapability: vi.fn(async () => capability),
+      reauthorizeActor: vi.fn(async () => ({
+        actor: actor({ enabledSkillVersions: [] }),
+        actorFingerprint: capability.actorFingerprint,
+      })),
+    });
+    await expect(
+      run(ungrantedDeps, skillViewRequest("business-context")),
+    ).rejects.toMatchObject({ code: "permission_denied" });
+  });
 });
 
 function run(
@@ -903,6 +979,13 @@ function memoryRequest(
   return {
     toolName,
     arguments: argumentsValue,
+  } as unknown as Partial<ReturnType<typeof request>>;
+}
+
+function skillViewRequest(skillId: string): Partial<ReturnType<typeof request>> {
+  return {
+    toolName: "xingyao_skill_view",
+    arguments: { skillId },
   } as unknown as Partial<ReturnType<typeof request>>;
 }
 

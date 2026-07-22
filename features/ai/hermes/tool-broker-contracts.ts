@@ -35,11 +35,14 @@ export const HERMES_MEMORY_TOOL_NAMES = [
   "xingyao_memory_remember",
   "xingyao_memory_forget",
 ] as const;
+export const HERMES_SKILL_TOOL_NAMES = ["xingyao_skill_view"] as const;
 
 export type HermesMemoryToolName = (typeof HERMES_MEMORY_TOOL_NAMES)[number];
+export type HermesSkillToolName = (typeof HERMES_SKILL_TOOL_NAMES)[number];
 export type HermesToolBrokerToolName =
   | HermesReadToolName
-  | HermesMemoryToolName;
+  | HermesMemoryToolName
+  | HermesSkillToolName;
 export type HermesToolBrokerErrorEnvelopeCode =
   | HermesReadErrorCode
   | "memory_content_rejected"
@@ -85,11 +88,21 @@ export type HermesMemoryForgetToolBrokerRequest = {
   };
 };
 
+export type HermesSkillViewToolBrokerRequest = {
+  invocationId: string;
+  toolCallId: string;
+  toolName: "xingyao_skill_view";
+  arguments: {
+    skillId: string;
+  };
+};
+
 export type HermesToolBrokerRequest =
   | HermesReadToolBrokerRequest
   | HermesMemoryListToolBrokerRequest
   | HermesMemoryRememberToolBrokerRequest
-  | HermesMemoryForgetToolBrokerRequest;
+  | HermesMemoryForgetToolBrokerRequest
+  | HermesSkillViewToolBrokerRequest;
 
 type HermesToolBrokerMetadata = {
   evidenceRefs: string[];
@@ -284,7 +297,8 @@ function isHermesToolBrokerToolName(
 ): value is HermesToolBrokerToolName {
   return (
     Object.hasOwn(HERMES_READ_ENDPOINTS, value) ||
-    (HERMES_MEMORY_TOOL_NAMES as readonly string[]).includes(value)
+    (HERMES_MEMORY_TOOL_NAMES as readonly string[]).includes(value) ||
+    (HERMES_SKILL_TOOL_NAMES as readonly string[]).includes(value)
   );
 }
 
@@ -351,6 +365,12 @@ function isToolArguments(
         isPositiveInteger(value.expectedRevision) &&
         isUuid(value.parentInvocationId) &&
         isUuid(value.sourceMessageId)
+      );
+    case "xingyao_skill_view":
+      return (
+        hasExactKeys(value, ["skillId"]) &&
+        typeof value.skillId === "string" &&
+        /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value.skillId)
       );
     default:
       return false;

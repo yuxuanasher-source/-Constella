@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  computeHermesSkillBundleSha256,
+  getHermesBuiltinSkillArtifact,
+} from "./approved-skill-registry";
 import type { HermesActorProfile, HermesReadScope } from "./contracts";
 import {
   assertHermesSanitizedObject,
@@ -28,6 +32,7 @@ import {
 import {
   hashHermesToolBrokerRequest,
   HERMES_MEMORY_TOOL_NAMES,
+  HERMES_SKILL_TOOL_NAMES,
   parseStoredHermesToolBrokerEnvelope,
   type HermesMemoryForgetToolBrokerRequest,
   type HermesMemoryRememberToolBrokerRequest,
@@ -95,6 +100,16 @@ export type HermesToolBrokerDependencies = {
     toolName: HermesReadToolName;
     arguments: Record<string, unknown>;
   }): Promise<HermesReadEnvelope>;
+  loadApprovedSkillArtifact?(input: {
+    actor: HermesActorProfile;
+    skillId: string;
+  }): Promise<{
+    skillId: string;
+    version: string;
+    bundle: string;
+    bundleSha256: string;
+    source: "builtin" | "draft";
+  } | null>;
 };
 
 export async function executeHermesToolBrokerCall({
@@ -190,6 +205,13 @@ export async function executeHermesToolBrokerCall({
       dependencies,
       actor: live.actor,
       memorySnapshotGeneration: capability.memorySnapshotGeneration,
+      request,
+      now,
+    });
+  } else if (request.toolName === "xingyao_skill_view") {
+    response = await executeSkillViewTool({
+      dependencies,
+      actor: live.actor,
       request,
       now,
     });
@@ -499,6 +521,73 @@ function memoryBrokerEnvelope(
     : { status, data: sanitizeHermesReadValue(payload), ...metadata };
 }
 
+async function executeSkillViewTool({
+  dependencies,
+  actor,
+  request,
+  now,
+}: {
+  dependencies: HermesToolBrokerDependencies;
+  actor: HermesActorProfile;
+  request: Extract<HermesToolBrokerRequest, { toolName: "xingyao_skill_view" }>;
+  now: Date;
+}): Promise<HermesToolBrokerEnvelope> {
+  const grant = actor.enabledSkillVersions.find(
+    (skill) => skill.skillId === request.arguments.skillId,
+  );
+  if (!grant) {
+    throw new HermesToolBrokerError("permission_denied");
+  }
+  const artifact = dependencies.loadApprovedSkillArtifact
+    ? await dependencies.loadApprovedSkillArtifact({
+        actor,
+        skillId: request.arguments.skillId,
+      })
+    : getHermesBuiltinSkillArtifact(request.arguments.skillId);
+  if (
+    !artifact ||
+    artifact.skillId !== grant.skillId ||
+    artifact.version !== grant.version ||
+    artifact.bundleSha256 !== grant.bundleSha256 ||
+    computeHermesSkillBundleSha256(artifact.bundle) !== grant.bundleSha256
+  ) {
+    throw new HermesToolBrokerError("permission_denied");
+  }
+  return skillBrokerEnvelope(
+    request,
+    now,
+    {
+      skillId: artifact.skillId,
+      version: artifact.version,
+      bundleSha256: artifact.bundleSha256,
+      bundle: artifact.bundle,
+      source: artifact.source,
+    },
+  );
+}
+
+function skillBrokerEnvelope(
+  request: Extract<HermesToolBrokerRequest, { toolName: "xingyao_skill_view" }>,
+  now: Date,
+  data: Record<string, unknown>,
+): HermesToolBrokerEnvelope {
+  return {
+    status: "ok",
+    data: sanitizeHermesReadValue(data),
+    evidenceRefs: [`skill:${request.arguments.skillId}`],
+    sourceLabels: ["approved_skill_bundle"],
+    updatedAt: now.toISOString(),
+    observedAt: now.toISOString(),
+    missingData: [],
+    permissionDenials: [],
+    truncated: false,
+    invocationId: request.invocationId,
+    toolCallId: request.toolCallId,
+    toolName: request.toolName,
+    traceId: request.toolCallId,
+  };
+}
+
 function memoryAuthority(
   request:
     | HermesMemoryRememberToolBrokerRequest
@@ -595,6 +684,7 @@ function authorizeToolRequest(
     // final authority decision, so denials remain tool-local and auditable.
     return;
   }
+  if (isSkillToolRequest(request)) return;
   const spec = HERMES_READ_ENDPOINTS[request.toolName];
   if (
     !capability.scopes.includes(spec.requiredScope) ||
@@ -617,6 +707,21 @@ function isMemoryToolRequest(
   { toolName: (typeof HERMES_MEMORY_TOOL_NAMES)[number] }
 > {
   return isMemoryToolName(request.toolName);
+}
+
+function isSkillToolName(
+  toolName: HermesToolBrokerRequest["toolName"],
+): toolName is (typeof HERMES_SKILL_TOOL_NAMES)[number] {
+  return (HERMES_SKILL_TOOL_NAMES as readonly string[]).includes(toolName);
+}
+
+function isSkillToolRequest(
+  request: HermesToolBrokerRequest,
+): request is Extract<
+  HermesToolBrokerRequest,
+  { toolName: (typeof HERMES_SKILL_TOOL_NAMES)[number] }
+> {
+  return isSkillToolName(request.toolName);
 }
 
 function isMemoryMutationRequest(
