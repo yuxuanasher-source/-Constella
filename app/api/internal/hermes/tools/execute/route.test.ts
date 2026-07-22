@@ -6,6 +6,7 @@ import { createHermesToolExecuteHandler } from "./route";
 
 const CAPABILITY = "c".repeat(43);
 const INVOCATION_ID = "11111111-1111-4111-8111-111111111111";
+const SOURCE_MESSAGE_ID = "22222222-2222-4222-8222-222222222222";
 
 describe("Hermes Tool Broker execute route", () => {
   it("accepts an opaque Bearer and strict Broker body with no-store", async () => {
@@ -127,6 +128,47 @@ describe("Hermes Tool Broker execute route", () => {
     await expect(response.json()).resolves.toMatchObject({
       status: "error",
       error: { code: "upstream_unavailable" },
+    });
+  });
+
+  it("keeps a rejected memory tool-local and accepts only its strict body", async () => {
+    const body = {
+      invocationId: INVOCATION_ID,
+      toolCallId: "memory-call-1",
+      toolName: "xingyao_memory_remember" as const,
+      arguments: {
+        memoryType: "preference" as const,
+        content: "sensitive content",
+        parentInvocationId: INVOCATION_ID,
+        sourceMessageId: SOURCE_MESSAGE_ID,
+      },
+    };
+    const envelope = {
+      status: "error" as const,
+      error: { code: "memory_content_rejected" as const },
+      evidenceRefs: [],
+      sourceLabels: ["actor_private_memory"],
+      updatedAt: "2026-07-22T00:00:00.000Z",
+      observedAt: "2026-07-22T00:00:00.000Z",
+      missingData: [],
+      permissionDenials: ["memory_content_rejected"],
+      truncated: false,
+      invocationId: INVOCATION_ID,
+      toolCallId: "memory-call-1",
+      toolName: "xingyao_memory_remember" as const,
+      traceId: "memory-call-1",
+    };
+    const execute = vi.fn(async () => envelope);
+    const handler = createHermesToolExecuteHandler({ execute });
+
+    const response = await handler(request(body, CAPABILITY));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual(envelope);
+    expect(execute).toHaveBeenCalledWith({
+      capabilityToken: CAPABILITY,
+      request: body,
     });
   });
 

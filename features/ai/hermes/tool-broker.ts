@@ -4,9 +4,14 @@ import type { HermesActorProfile, HermesReadScope } from "./contracts";
 import {
   assertHermesSanitizedObject,
   HermesStateRepositoryError,
+  type HermesMemoryRevision,
   type HermesStateRepository,
 } from "./hermes-state-repository";
 import { HermesLiveActorAuthorizationError } from "./live-actor-authorization";
+import {
+  HermesMemoryPolicyError,
+  prepareHermesMemoryContent,
+} from "./memory-policy";
 import {
   HERMES_READ_ENDPOINTS,
   authorizeHermesReadActor,
@@ -15,6 +20,7 @@ import {
   sanitizeHermesReadMetadata,
   sanitizeHermesReadValue,
   type HermesReadEnvelope,
+  type HermesReadToolName,
 } from "./read-api";
 import {
   hashHermesCapabilityToken,
@@ -22,7 +28,10 @@ import {
 } from "./run-capability";
 import {
   hashHermesToolBrokerRequest,
+  HERMES_MEMORY_TOOL_NAMES,
   parseStoredHermesToolBrokerEnvelope,
+  type HermesMemoryForgetToolBrokerRequest,
+  type HermesMemoryRememberToolBrokerRequest,
   type HermesToolBrokerEnvelope,
   type HermesToolBrokerRequest,
 } from "./tool-broker-contracts";
@@ -35,6 +44,8 @@ export type HermesBrokerCapability = {
   rootInvocationId: string;
   allowedTools: readonly string[];
   scopes: readonly HermesReadScope[];
+  depth: number;
+  aiStateWritesAllowed: boolean;
 };
 
 export type HermesToolBrokerErrorCode =
@@ -64,7 +75,11 @@ export class HermesToolBrokerError extends Error {
 export type HermesToolBrokerDependencies = {
   repository: Pick<
     HermesStateRepository,
-    "claimBrokerCall" | "completeBrokerCall"
+    | "claimBrokerCall"
+    | "completeBrokerCall"
+    | "forgetMemory"
+    | "loadActiveMemories"
+    | "rememberMemory"
   >;
   loadCapability(input: {
     tokenSha256: string;
@@ -76,7 +91,7 @@ export type HermesToolBrokerDependencies = {
   }): Promise<{ actor: HermesActorProfile; actorFingerprint: string }>;
   executeRead(input: {
     actor: HermesActorProfile;
-    toolName: HermesToolBrokerRequest["toolName"];
+    toolName: HermesReadToolName;
     arguments: Record<string, unknown>;
   }): Promise<HermesReadEnvelope>;
 };
@@ -103,23 +118,17 @@ export async function executeHermesToolBrokerCall({
   }
 
   const live = await reauthorize(dependencies, capability);
-  const spec = HERMES_READ_ENDPOINTS[request.toolName];
   if (
     !capability.allowedTools.includes(request.toolName) ||
-    !capability.scopes.includes(spec.requiredScope) ||
-    live.actor.invocationId !== request.invocationId ||
-    authorizeHermesReadActor(live.actor, spec) !== null
+    live.actor.invocationId !== request.invocationId
   ) {
     throw new HermesToolBrokerError("permission_denied");
   }
+  authorizeToolRequest(capability, live.actor, request);
 
   const claimOwnerId = randomUUID();
   const requestHash = hashHermesToolBrokerRequest(request);
-  const sanitizedRequest = assertHermesSanitizedObject({
-    toolCallId: request.toolCallId,
-    toolName: request.toolName,
-    arguments: sanitizeRecord(request.arguments),
-  });
+  const sanitizedRequest = sanitizedBrokerRequest(request);
   const owner = {
     organizationId: live.actor.organizationId,
     userId: live.actor.userId,
@@ -148,12 +157,28 @@ export async function executeHermesToolBrokerCall({
     return replay;
   }
 
-  const readEnvelope = await executeReadTool(dependencies, live.actor, request);
-  const response = brokerEnvelope(readEnvelope, request, now);
+  const response = isMemoryToolRequest(request)
+    ? await executeMemoryTool({
+        dependencies,
+        actor: live.actor,
+        capabilityTokenSha256: tokenSha256,
+        request,
+        now,
+      })
+    : brokerEnvelope(
+        await executeReadTool(dependencies, live.actor, request),
+        request,
+        now,
+      );
   const sanitizedResponse = assertHermesSanitizedObject(
     response as unknown as Record<string, unknown>,
   ) as unknown as HermesToolBrokerEnvelope;
-  const completionStatus = response.status === "error" ? "failed" : "completed";
+  const completionStatus =
+    response.status === "error" && response.error.code === "permission_denied"
+      ? "denied"
+      : response.status === "error"
+        ? "failed"
+        : "completed";
   const auditMessage = toolAuditMessage(
     request,
     sanitizedRequest,
@@ -245,7 +270,7 @@ async function completeBrokerCall(
     claimId: string;
     claimOwnerId: string;
     fencingToken: number;
-    completionStatus: "completed" | "failed";
+    completionStatus: "completed" | "failed" | "denied";
     sanitizedResponse: HermesToolBrokerEnvelope;
     auditMessage: { content: string; metadata: Record<string, unknown> };
   },
@@ -292,7 +317,7 @@ function toolAuditMessage(
 async function executeReadTool(
   dependencies: HermesToolBrokerDependencies,
   actor: HermesActorProfile,
-  request: HermesToolBrokerRequest,
+  request: HermesToolBrokerRequest & { toolName: HermesReadToolName },
 ): Promise<HermesReadEnvelope> {
   try {
     return await dependencies.executeRead({
@@ -303,6 +328,186 @@ async function executeReadTool(
   } catch {
     return hermesReadError(actor.invocationId, "upstream_unavailable");
   }
+}
+
+async function executeMemoryTool({
+  dependencies,
+  actor,
+  capabilityTokenSha256,
+  request,
+  now,
+}: {
+  dependencies: HermesToolBrokerDependencies;
+  actor: HermesActorProfile;
+  capabilityTokenSha256: string;
+  request: Extract<
+    HermesToolBrokerRequest,
+    { toolName: (typeof HERMES_MEMORY_TOOL_NAMES)[number] }
+  >;
+  now: Date;
+}): Promise<HermesToolBrokerEnvelope> {
+  try {
+    switch (request.toolName) {
+      case "xingyao_memory_list": {
+        const memories = await dependencies.repository.loadActiveMemories({
+          organizationId: actor.organizationId,
+          userId: actor.userId,
+        });
+        return memoryBrokerEnvelope(
+          request,
+          now,
+          "ok",
+          {
+            memories: memories.map((memory) => ({
+              memoryKey: memory.memoryKey,
+              memoryType: memory.memoryType,
+              content: memory.content,
+              revision: memory.revision,
+              updatedAt: memory.updatedAt,
+            })),
+          },
+        );
+      }
+      case "xingyao_memory_remember": {
+        const prepared = prepareHermesMemoryContent(request.arguments.content);
+        const revision = await dependencies.repository.rememberMemory(
+          stateActor(actor),
+          memoryAuthority(
+            request,
+            capabilityTokenSha256,
+          ),
+          {
+            memoryKey: request.arguments.memoryKey ?? null,
+            expectedRevision: request.arguments.expectedRevision ?? 0,
+            memoryType: request.arguments.memoryType,
+            content: prepared.canonicalContent,
+          },
+        );
+        return memoryRevisionEnvelope(request, now, revision);
+      }
+      case "xingyao_memory_forget": {
+        const revision = await dependencies.repository.forgetMemory(
+          stateActor(actor),
+          memoryAuthority(request, capabilityTokenSha256),
+          {
+            memoryKey: request.arguments.memoryKey,
+            expectedRevision: request.arguments.expectedRevision,
+          },
+        );
+        return memoryRevisionEnvelope(request, now, revision);
+      }
+    }
+  } catch (error) {
+    if (error instanceof HermesMemoryPolicyError) {
+      return memoryBrokerEnvelope(
+        request,
+        now,
+        "error",
+        "memory_content_rejected",
+      );
+    }
+    if (error instanceof HermesStateRepositoryError) {
+      if (error.code === "permission_denied" || error.code === "not_found") {
+        return memoryBrokerEnvelope(
+          request,
+          now,
+          "error",
+          "permission_denied",
+        );
+      }
+      throw mapRepositoryError(error, "complete");
+    }
+    throw new HermesToolBrokerError("persistence_unavailable");
+  }
+}
+
+function memoryRevisionEnvelope(
+  request: Extract<
+    HermesToolBrokerRequest,
+    { toolName: "xingyao_memory_remember" | "xingyao_memory_forget" }
+  >,
+  now: Date,
+  revision: HermesMemoryRevision,
+): HermesToolBrokerEnvelope {
+  return memoryBrokerEnvelope(request, now, "ok", {
+    memoryKey: revision.memoryKey,
+    revision: revision.revision,
+    active: revision.active,
+    reused: revision.reused,
+  });
+}
+
+function memoryBrokerEnvelope(
+  request: Extract<
+    HermesToolBrokerRequest,
+    { toolName: (typeof HERMES_MEMORY_TOOL_NAMES)[number] }
+  >,
+  now: Date,
+  status: "ok",
+  data: unknown,
+): HermesToolBrokerEnvelope;
+function memoryBrokerEnvelope(
+  request: Extract<
+    HermesToolBrokerRequest,
+    { toolName: (typeof HERMES_MEMORY_TOOL_NAMES)[number] }
+  >,
+  now: Date,
+  status: "error",
+  errorCode: "permission_denied" | "memory_content_rejected",
+): HermesToolBrokerEnvelope;
+function memoryBrokerEnvelope(
+  request: Extract<
+    HermesToolBrokerRequest,
+    { toolName: (typeof HERMES_MEMORY_TOOL_NAMES)[number] }
+  >,
+  now: Date,
+  status: "ok" | "error",
+  payload: unknown,
+): HermesToolBrokerEnvelope {
+  const metadata = {
+    evidenceRefs: [],
+    sourceLabels: ["actor_private_memory"],
+    updatedAt: now.toISOString(),
+    observedAt: now.toISOString(),
+    missingData: [],
+    permissionDenials: status === "error" ? [String(payload)] : [],
+    truncated: false,
+    invocationId: request.invocationId,
+    toolCallId: request.toolCallId,
+    toolName: request.toolName,
+    traceId: request.toolCallId,
+  };
+  return status === "error"
+    ? {
+        status,
+        error: {
+          code: payload as "permission_denied" | "memory_content_rejected",
+        },
+        ...metadata,
+      }
+    : { status, data: sanitizeHermesReadValue(payload), ...metadata };
+}
+
+function memoryAuthority(
+  request:
+    | HermesMemoryRememberToolBrokerRequest
+    | HermesMemoryForgetToolBrokerRequest,
+  capabilityTokenSha256: string,
+) {
+  return {
+    capabilityTokenSha256,
+    parentInvocationId: request.arguments.parentInvocationId,
+    sourceMessageId: request.arguments.sourceMessageId,
+  };
+}
+
+function stateActor(actor: HermesActorProfile) {
+  return {
+    organizationId: actor.organizationId,
+    userId: actor.userId,
+    conversationId: actor.conversationId,
+    invocationId: actor.invocationId,
+  };
 }
 
 function brokerEnvelope(
@@ -353,6 +558,61 @@ function sanitizeRecord(
 ): Record<string, unknown> {
   const sanitized = sanitizeHermesReadValue(value);
   return isRecord(sanitized) ? sanitized : {};
+}
+
+function sanitizedBrokerRequest(
+  request: HermesToolBrokerRequest,
+): Record<string, unknown> {
+  const argumentsValue: Record<string, unknown> = { ...request.arguments };
+  if (request.toolName === "xingyao_memory_remember") {
+    delete argumentsValue.content;
+  }
+  return assertHermesSanitizedObject({
+    toolCallId: request.toolCallId,
+    toolName: request.toolName,
+    arguments: sanitizeRecord(argumentsValue),
+  });
+}
+
+function authorizeToolRequest(
+  capability: HermesBrokerCapability,
+  actor: HermesActorProfile,
+  request: HermesToolBrokerRequest,
+): void {
+  if (isMemoryToolRequest(request)) {
+    if (
+      request.toolName !== "xingyao_memory_list" &&
+      (capability.depth !== 0 ||
+        !capability.aiStateWritesAllowed ||
+        capability.invocationId !== capability.rootInvocationId ||
+        request.arguments.parentInvocationId !== capability.rootInvocationId)
+    ) {
+      throw new HermesToolBrokerError("permission_denied");
+    }
+    return;
+  }
+  const spec = HERMES_READ_ENDPOINTS[request.toolName];
+  if (
+    !capability.scopes.includes(spec.requiredScope) ||
+    authorizeHermesReadActor(actor, spec) !== null
+  ) {
+    throw new HermesToolBrokerError("permission_denied");
+  }
+}
+
+function isMemoryToolName(
+  toolName: HermesToolBrokerRequest["toolName"],
+): toolName is (typeof HERMES_MEMORY_TOOL_NAMES)[number] {
+  return (HERMES_MEMORY_TOOL_NAMES as readonly string[]).includes(toolName);
+}
+
+function isMemoryToolRequest(
+  request: HermesToolBrokerRequest,
+): request is Extract<
+  HermesToolBrokerRequest,
+  { toolName: (typeof HERMES_MEMORY_TOOL_NAMES)[number] }
+> {
+  return isMemoryToolName(request.toolName);
 }
 
 function mapRepositoryError(

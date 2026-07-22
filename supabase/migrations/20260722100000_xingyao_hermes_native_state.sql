@@ -486,12 +486,18 @@ begin
   if not exists (
     select 1
     from public.ai_chat_messages source_message
+    join public.ai_chat_turns source_turn
+      on source_turn.user_message_id = source_message.id
+     and source_turn.organization_id = source_message.organization_id
+     and source_turn.owner_user_id = source_message.owner_user_id
+     and source_turn.conversation_id = source_message.conversation_id
     where source_message.id = new.source_message_id
       and source_message.role = 'user'
       and source_message.status = 'completed'
       and source_message.organization_id = new.organization_id
       and source_message.owner_user_id = new.owner_user_id
       and source_message.conversation_id = new.source_conversation_id
+      and source_turn.ai_invocation_id = new.source_invocation_id
   ) or not exists (
     select 1
     from public.ai_invocations source_invocation
@@ -1995,6 +2001,8 @@ $$;
 create or replace function public.write_ai_hermes_memory_revision(
   p_organization_id uuid,
   p_owner_user_id uuid,
+  p_capability_token_sha256 text,
+  p_parent_invocation_id uuid,
   p_idempotency_key text,
   p_memory_key uuid,
   p_expected_revision integer,
@@ -2012,13 +2020,14 @@ security definer
 set search_path = pg_catalog, public
 as $$
 declare
+  v_capability public.ai_hermes_run_capabilities%rowtype;
   v_existing public.ai_hermes_memories%rowtype;
   v_idempotent public.ai_hermes_memories%rowtype;
   v_memory_key uuid;
   v_next_revision integer;
   v_created_id uuid;
 begin
-  if p_active is null
+  if p_active is distinct from true
      or p_expected_revision is null
      or p_expected_revision < 0
      or nullif(trim(coalesce(p_idempotency_key, '')), '') is null
@@ -2039,6 +2048,39 @@ begin
      ) then
     raise exception 'memory_content_hash_invalid';
   end if;
+  if lower(coalesce(p_capability_token_sha256, '')) !~ '^[0-9a-f]{64}$'
+     or p_parent_invocation_id is null
+     or p_source_invocation_id is null
+     or p_idempotency_key is distinct from (
+       p_source_invocation_id::text || ':' || lower(p_content_hash)
+     ) then
+    raise exception 'memory_capability_invalid';
+  end if;
+
+  select memory_capability.*
+  into v_capability
+  from public.ai_hermes_run_capabilities memory_capability
+  where memory_capability.token_sha256 = lower(p_capability_token_sha256)
+    and memory_capability.organization_id = p_organization_id
+    and memory_capability.owner_user_id = p_owner_user_id
+  for update;
+
+  if not found
+     or v_capability.revoked_at is not null
+     or v_capability.expires_at <= now()
+     or v_capability.conversation_id <> p_source_conversation_id
+     or v_capability.invocation_id <> p_source_invocation_id
+     or v_capability.root_invocation_id <> p_source_invocation_id
+     or v_capability.root_invocation_id <> p_parent_invocation_id
+     or v_capability.parent_capability_id is not null
+     or v_capability.parent_invocation_id is not null
+     or v_capability.depth <> 0
+     or not v_capability.ai_state_writes_allowed
+     or not ('xingyao_memory_remember' = any(v_capability.allowed_tools))
+     or v_capability.allowed_tools_hash is distinct from
+       public.ai_hermes_canonical_text_array_sha256(v_capability.allowed_tools) then
+    raise exception 'memory_capability_invalid';
+  end if;
 
   perform 1
   from public.ai_chat_messages source_message
@@ -2053,12 +2095,29 @@ begin
     raise exception 'memory_source_invalid';
   end if;
 
+  perform 1
+  from public.ai_chat_turns source_turn
+  where source_turn.id = v_capability.turn_id
+    and source_turn.organization_id = p_organization_id
+    and source_turn.owner_user_id = p_owner_user_id
+    and source_turn.conversation_id = p_source_conversation_id
+    and source_turn.user_message_id = p_source_message_id
+    and source_turn.ai_invocation_id = v_capability.root_invocation_id
+    and source_turn.status in ('accepted', 'grounding', 'generating', 'validating')
+    and source_turn.cancel_requested_at is null
+    and source_turn.lease_expires_at > now();
+
+  if not found then
+    raise exception 'memory_source_invalid';
+  end if;
+
   if not exists (
     select 1
     from public.ai_invocations source_invocation
     where source_invocation.id = p_source_invocation_id
       and source_invocation.organization_id = p_organization_id
       and source_invocation.actor_user_id = p_owner_user_id
+      and source_invocation.status in ('started', 'queued')
   ) then
     raise exception 'memory_source_invalid';
   end if;
@@ -2190,6 +2249,237 @@ begin
     'memory_key', v_memory_key,
     'revision', v_next_revision,
     'active', p_active,
+    'reused', false
+  );
+end;
+$$;
+
+create or replace function public.forget_ai_hermes_memory(
+  p_organization_id uuid,
+  p_owner_user_id uuid,
+  p_capability_token_sha256 text,
+  p_parent_invocation_id uuid,
+  p_memory_key uuid,
+  p_expected_revision integer,
+  p_source_conversation_id uuid,
+  p_source_message_id uuid,
+  p_source_invocation_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_capability public.ai_hermes_run_capabilities%rowtype;
+  v_existing public.ai_hermes_memories%rowtype;
+  v_idempotent public.ai_hermes_memories%rowtype;
+  v_idempotency_key text;
+  v_next_revision integer;
+  v_created_id uuid;
+begin
+  if p_organization_id is null
+     or p_owner_user_id is null
+     or p_memory_key is null
+     or p_expected_revision is null
+     or p_expected_revision < 1
+     or p_parent_invocation_id is null
+     or p_source_conversation_id is null
+     or p_source_message_id is null
+     or p_source_invocation_id is null
+     or lower(coalesce(p_capability_token_sha256, '')) !~ '^[0-9a-f]{64}$' then
+    raise exception 'memory_revision_invalid';
+  end if;
+
+  v_idempotency_key := 'forget:'
+    || p_source_invocation_id::text
+    || ':'
+    || p_memory_key::text
+    || ':'
+    || p_expected_revision::text;
+
+  select memory_capability.*
+  into v_capability
+  from public.ai_hermes_run_capabilities memory_capability
+  where memory_capability.token_sha256 = lower(p_capability_token_sha256)
+    and memory_capability.organization_id = p_organization_id
+    and memory_capability.owner_user_id = p_owner_user_id
+  for update;
+
+  if not found
+     or v_capability.revoked_at is not null
+     or v_capability.expires_at <= now()
+     or v_capability.conversation_id <> p_source_conversation_id
+     or v_capability.invocation_id <> p_source_invocation_id
+     or v_capability.root_invocation_id <> p_source_invocation_id
+     or v_capability.root_invocation_id <> p_parent_invocation_id
+     or v_capability.parent_capability_id is not null
+     or v_capability.parent_invocation_id is not null
+     or v_capability.depth <> 0
+     or not v_capability.ai_state_writes_allowed
+     or not ('xingyao_memory_forget' = any(v_capability.allowed_tools))
+     or v_capability.allowed_tools_hash is distinct from
+       public.ai_hermes_canonical_text_array_sha256(v_capability.allowed_tools) then
+    raise exception 'memory_capability_invalid';
+  end if;
+
+  perform 1
+  from public.ai_chat_messages source_message
+  where source_message.id = p_source_message_id
+    and source_message.role = 'user'
+    and source_message.status = 'completed'
+    and source_message.organization_id = p_organization_id
+    and source_message.owner_user_id = p_owner_user_id
+    and source_message.conversation_id = p_source_conversation_id;
+
+  if not found then
+    raise exception 'memory_source_invalid';
+  end if;
+
+  perform 1
+  from public.ai_chat_turns source_turn
+  where source_turn.id = v_capability.turn_id
+    and source_turn.organization_id = p_organization_id
+    and source_turn.owner_user_id = p_owner_user_id
+    and source_turn.conversation_id = p_source_conversation_id
+    and source_turn.user_message_id = p_source_message_id
+    and source_turn.ai_invocation_id = v_capability.root_invocation_id
+    and source_turn.status in ('accepted', 'grounding', 'generating', 'validating')
+    and source_turn.cancel_requested_at is null
+    and source_turn.lease_expires_at > now();
+
+  if not found then
+    raise exception 'memory_source_invalid';
+  end if;
+
+  if not exists (
+    select 1
+    from public.ai_invocations source_invocation
+    where source_invocation.id = p_source_invocation_id
+      and source_invocation.organization_id = p_organization_id
+      and source_invocation.actor_user_id = p_owner_user_id
+      and source_invocation.status in ('started', 'queued')
+  ) then
+    raise exception 'memory_source_invalid';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      'ai_hermes_memory_forget:'
+        || p_organization_id::text
+        || ':'
+        || p_owner_user_id::text
+        || ':'
+        || v_idempotency_key,
+      0
+    )
+  );
+
+  select memory.*
+  into v_idempotent
+  from public.ai_hermes_memories memory
+  where memory.organization_id = p_organization_id
+    and memory.owner_user_id = p_owner_user_id
+    and memory.idempotency_key = v_idempotency_key
+  for update;
+
+  if found then
+    if v_idempotent.requested_memory_key is distinct from p_memory_key
+       or v_idempotent.requested_expected_revision is distinct from p_expected_revision
+       or v_idempotent.source_conversation_id <> p_source_conversation_id
+       or v_idempotent.source_message_id <> p_source_message_id
+       or v_idempotent.source_invocation_id <> p_source_invocation_id
+       or v_idempotent.active then
+      raise exception 'memory_idempotency_conflict';
+    end if;
+    return jsonb_build_object(
+      'memory_id', v_idempotent.id,
+      'memory_key', v_idempotent.memory_key,
+      'revision', v_idempotent.revision,
+      'active', false,
+      'reused', true
+    );
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      'ai_hermes_memory_key:'
+        || p_organization_id::text
+        || ':'
+        || p_owner_user_id::text
+        || ':'
+        || p_memory_key::text,
+      0
+    )
+  );
+
+  select memory.*
+  into v_existing
+  from public.ai_hermes_memories memory
+  where memory.organization_id = p_organization_id
+    and memory.owner_user_id = p_owner_user_id
+    and memory.memory_key = p_memory_key
+  order by memory.revision desc
+  limit 1
+  for update;
+
+  if not found then
+    raise exception 'memory_not_found';
+  end if;
+  if v_existing.revision <> p_expected_revision or not v_existing.active then
+    raise exception 'memory_expected_revision_conflict';
+  end if;
+
+  v_next_revision := v_existing.revision + 1;
+
+  update public.ai_hermes_memories
+  set active = false,
+      deactivated_at = now(),
+      deactivated_by_invocation_id = p_source_invocation_id
+  where id = v_existing.id;
+
+  insert into public.ai_hermes_memories (
+    memory_key,
+    requested_memory_key,
+    requested_expected_revision,
+    idempotency_key,
+    organization_id,
+    owner_user_id,
+    memory_type,
+    content,
+    content_hash,
+    revision,
+    active,
+    source_conversation_id,
+    source_message_id,
+    source_invocation_id,
+    deactivated_at,
+    deactivated_by_invocation_id
+  ) values (
+    p_memory_key,
+    p_memory_key,
+    p_expected_revision,
+    v_idempotency_key,
+    p_organization_id,
+    p_owner_user_id,
+    v_existing.memory_type,
+    v_existing.content,
+    v_existing.content_hash,
+    v_next_revision,
+    false,
+    p_source_conversation_id,
+    p_source_message_id,
+    p_source_invocation_id,
+    now(),
+    p_source_invocation_id
+  )
+  returning id into v_created_id;
+
+  return jsonb_build_object(
+    'memory_id', v_created_id,
+    'memory_key', p_memory_key,
+    'revision', v_next_revision,
+    'active', false,
     'reused', false
   );
 end;
@@ -2767,7 +3057,10 @@ revoke all on function public.update_ai_conversation_hermes_state(
   uuid, uuid, uuid, integer, jsonb
 ) from public, anon, authenticated;
 revoke all on function public.write_ai_hermes_memory_revision(
-  uuid, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid
+  uuid, uuid, text, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid
+) from public, anon, authenticated;
+revoke all on function public.forget_ai_hermes_memory(
+  uuid, uuid, text, uuid, uuid, integer, uuid, uuid, uuid
 ) from public, anon, authenticated;
 revoke all on function public.write_ai_hermes_skill_draft(
   uuid, uuid, text, integer, jsonb, text, text, uuid, uuid
@@ -2808,7 +3101,10 @@ grant execute on function public.update_ai_conversation_hermes_state(
   uuid, uuid, uuid, integer, jsonb
 ) to service_role;
 grant execute on function public.write_ai_hermes_memory_revision(
-  uuid, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid
+  uuid, uuid, text, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid
+) to service_role;
+grant execute on function public.forget_ai_hermes_memory(
+  uuid, uuid, text, uuid, uuid, integer, uuid, uuid, uuid
 ) to service_role;
 grant execute on function public.write_ai_hermes_skill_draft(
   uuid, uuid, text, integer, jsonb, text, text, uuid, uuid

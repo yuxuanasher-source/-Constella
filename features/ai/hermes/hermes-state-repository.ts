@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 
 import type { AiProviderName } from "../contracts";
 import { isHermesOutcome, isUuid, type HermesOutcome } from "./contracts";
+import {
+  isHermesMemoryType,
+  prepareHermesMemoryContent,
+  type HermesMemoryType,
+} from "./memory-policy";
+
+export type { HermesMemoryType } from "./memory-policy";
 
 type RepositoryResult<T> = { data: T | null; error: unknown };
 
@@ -51,20 +58,22 @@ export type HermesRunCapabilityBinding = {
   };
 };
 
-export type HermesMemoryType =
-  | "preference"
-  | "workflow"
-  | "communication"
-  | "user_instruction";
+export type HermesMemoryWriteAuthority = {
+  capabilityTokenSha256: string;
+  parentInvocationId: string;
+  sourceMessageId: string;
+};
 
-export type HermesMemoryProposal = {
-  idempotencyKey: string;
+export type HermesRememberMemoryProposal = {
   memoryKey: string | null;
   expectedRevision: number;
   memoryType: HermesMemoryType;
   content: string;
-  active: boolean;
-  sourceMessageId: string;
+};
+
+export type HermesForgetMemoryCommand = {
+  memoryKey: string;
+  expectedRevision: number;
 };
 
 export type HermesSkillDraftProposal = {
@@ -219,9 +228,15 @@ export type HermesStateRepository = {
     auditMessage: { content: string; metadata?: Record<string, unknown> },
   ): Promise<AppendedHermesToolMessage>;
   loadActiveMemories(actor: HermesStateOwnerActor): Promise<HermesMemory[]>;
-  writeMemoryRevision(
+  rememberMemory(
     actor: HermesStateActor,
-    proposal: HermesMemoryProposal,
+    authority: HermesMemoryWriteAuthority,
+    proposal: HermesRememberMemoryProposal,
+  ): Promise<HermesMemoryRevision>;
+  forgetMemory(
+    actor: HermesStateActor,
+    authority: HermesMemoryWriteAuthority,
+    command: HermesForgetMemoryCommand,
   ): Promise<HermesMemoryRevision>;
   upsertSkillDraft(
     actor: HermesStateActor,
@@ -409,27 +424,57 @@ export function createHermesStateRepository(
       return data.map(parseMemory);
     },
 
-    async writeMemoryRevision(actor, proposal) {
+    async rememberMemory(actor, authority, proposal) {
       requireActor(actor);
-      requireNonEmpty(proposal.idempotencyKey);
+      requireMemoryWriteAuthority(actor, authority);
       if (proposal.memoryKey !== null) requireUuidInput(proposal.memoryKey);
       if (!isNonNegativeInteger(proposal.expectedRevision)) invalidInput();
-      if (!isMemoryType(proposal.memoryType)) invalidInput();
-      requireNonEmpty(proposal.content);
-      if (typeof proposal.active !== "boolean") invalidInput();
-      requireUuidInput(proposal.sourceMessageId);
+      if (proposal.memoryKey === null && proposal.expectedRevision !== 0) {
+        invalidInput();
+      }
+      if (
+        proposal.memoryKey !== null &&
+        !isPositiveInteger(proposal.expectedRevision)
+      ) {
+        invalidInput();
+      }
+      if (!isHermesMemoryType(proposal.memoryType)) invalidInput();
+      const prepared = prepareHermesMemoryContent(proposal.content);
       const data = await callRpc(client, "write_ai_hermes_memory_revision", {
         p_organization_id: actor.organizationId,
         p_owner_user_id: actor.userId,
-        p_idempotency_key: proposal.idempotencyKey,
+        p_capability_token_sha256:
+          authority.capabilityTokenSha256.toLowerCase(),
+        p_parent_invocation_id: authority.parentInvocationId,
+        p_idempotency_key: `${actor.invocationId}:${prepared.contentHash}`,
         p_memory_key: proposal.memoryKey,
         p_expected_revision: proposal.expectedRevision,
         p_memory_type: proposal.memoryType,
-        p_content: proposal.content,
-        p_content_hash: sha256(proposal.content),
-        p_active: proposal.active,
+        p_content: prepared.canonicalContent,
+        p_content_hash: prepared.contentHash,
+        p_active: true,
         p_source_conversation_id: actor.conversationId,
-        p_source_message_id: proposal.sourceMessageId,
+        p_source_message_id: authority.sourceMessageId,
+        p_source_invocation_id: actor.invocationId,
+      });
+      return parseMemoryRevision(data);
+    },
+
+    async forgetMemory(actor, authority, command) {
+      requireActor(actor);
+      requireMemoryWriteAuthority(actor, authority);
+      requireUuidInput(command.memoryKey);
+      if (!isPositiveInteger(command.expectedRevision)) invalidInput();
+      const data = await callRpc(client, "forget_ai_hermes_memory", {
+        p_organization_id: actor.organizationId,
+        p_owner_user_id: actor.userId,
+        p_capability_token_sha256:
+          authority.capabilityTokenSha256.toLowerCase(),
+        p_parent_invocation_id: authority.parentInvocationId,
+        p_memory_key: command.memoryKey,
+        p_expected_revision: command.expectedRevision,
+        p_source_conversation_id: actor.conversationId,
+        p_source_message_id: authority.sourceMessageId,
         p_source_invocation_id: actor.invocationId,
       });
       return parseMemoryRevision(data);
@@ -571,7 +616,7 @@ export function mapHermesStateRepositoryError(
     return new HermesStateRepositoryError("lease_expired");
   }
   if (
-    /permission|not_authorized|actor_mismatch|tool_not_allowed|state_write_not_allowed|skill_grant_not_approved|capability_(invalid|parent_invalid|context_invalid|binding_invalid)|42501/.test(
+    /permission|not_authorized|actor_mismatch|tool_not_allowed|state_write_not_allowed|skill_grant_not_approved|memory_(source|capability|parent_invocation|actor)_invalid|capability_(invalid|parent_invalid|context_invalid|binding_invalid)|42501/.test(
       text,
     )
   ) {
@@ -900,6 +945,16 @@ function requireActor(actor: HermesStateActor): void {
   requireUuidInput(actor.invocationId);
 }
 
+function requireMemoryWriteAuthority(
+  actor: HermesStateActor,
+  authority: HermesMemoryWriteAuthority,
+): void {
+  requireHash(authority.capabilityTokenSha256);
+  requireUuidInput(authority.parentInvocationId);
+  requireUuidInput(authority.sourceMessageId);
+  if (authority.parentInvocationId !== actor.invocationId) invalidInput();
+}
+
 function requireIdentity(actor: HermesStateOwnerActor): void {
   requireUuidInput(actor.organizationId);
   requireUuidInput(actor.userId);
@@ -1015,12 +1070,7 @@ function isBrokerTerminalStatus(
 }
 
 function isMemoryType(value: unknown): value is HermesMemoryType {
-  return [
-    "preference",
-    "workflow",
-    "communication",
-    "user_instruction",
-  ].includes(String(value));
+  return isHermesMemoryType(value);
 }
 
 function isSkillDraftStatus(

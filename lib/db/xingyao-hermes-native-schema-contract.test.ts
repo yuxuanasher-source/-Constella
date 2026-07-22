@@ -42,6 +42,7 @@ const serviceOnlyFunctions = [
   "append_ai_hermes_tool_message",
   "update_ai_conversation_hermes_state",
   "write_ai_hermes_memory_revision",
+  "forget_ai_hermes_memory",
   "write_ai_hermes_skill_draft",
   "review_ai_hermes_skill_draft",
   "cancel_ai_chat_turn",
@@ -321,23 +322,72 @@ describe("Xingyao Hermes native state schema contract", () => {
 
   it("validates memory provenance against the exact owner user message", () => {
     const writeMemory = functionSql("write_ai_hermes_memory_revision");
+    const forgetMemory = functionSql("forget_ai_hermes_memory");
 
-    expect(writeMemory).toContain(
-      "from public.ai_chat_messages source_message",
-    );
-    expect(writeMemory).toContain("source_message.role = 'user'");
-    expect(writeMemory).toContain(
-      "source_message.organization_id = p_organization_id",
-    );
-    expect(writeMemory).toContain(
-      "source_message.owner_user_id = p_owner_user_id",
-    );
-    expect(writeMemory).toContain(
-      "source_message.conversation_id = p_source_conversation_id",
-    );
-    expect(writeMemory).toContain("memory_source_invalid");
+    for (const memoryFunction of [writeMemory, forgetMemory]) {
+      expect(memoryFunction).toContain(
+        "from public.ai_hermes_run_capabilities memory_capability",
+      );
+      expect(memoryFunction).toContain(
+        "memory_capability.token_sha256 = lower(p_capability_token_sha256)",
+      );
+      expect(memoryFunction).toContain("v_capability.depth <> 0");
+      expect(memoryFunction).toContain(
+        "v_capability.ai_state_writes_allowed",
+      );
+      expect(memoryFunction).toContain(
+        "v_capability.root_invocation_id <> p_parent_invocation_id",
+      );
+      expect(memoryFunction).toContain(
+        "from public.ai_chat_messages source_message",
+      );
+      expect(memoryFunction).toContain("source_message.role = 'user'");
+      expect(memoryFunction).toContain(
+        "source_message.organization_id = p_organization_id",
+      );
+      expect(memoryFunction).toContain(
+        "source_message.owner_user_id = p_owner_user_id",
+      );
+      expect(memoryFunction).toContain(
+        "source_message.conversation_id = p_source_conversation_id",
+      );
+      expect(memoryFunction).toContain(
+        "from public.ai_chat_turns source_turn",
+      );
+      expect(memoryFunction).toContain(
+        "source_turn.user_message_id = p_source_message_id",
+      );
+      expect(memoryFunction).toContain(
+        "source_turn.ai_invocation_id = v_capability.root_invocation_id",
+      );
+      expect(memoryFunction).toContain("memory_source_invalid");
+    }
     expect(writeMemory).toContain("expected_revision");
     expect(writeMemory).toContain("deactivated_at");
+  });
+
+  it("soft-deactivates actor-owned memory as a new retry-safe revision", () => {
+    const forgetMemory = functionSql("forget_ai_hermes_memory");
+    const locks = forgetMemory.match(/pg_advisory_xact_lock/g) ?? [];
+
+    expect(locks).toHaveLength(2);
+    expect(forgetMemory).toContain("ai_hermes_memory_forget:");
+    expect(forgetMemory).toContain("ai_hermes_memory_key:");
+    expect(forgetMemory).toContain(
+      "memory.organization_id = p_organization_id",
+    );
+    expect(forgetMemory).toContain("memory.owner_user_id = p_owner_user_id");
+    expect(forgetMemory).toContain("memory.memory_key = p_memory_key");
+    expect(forgetMemory).toContain(
+      "v_existing.revision <> p_expected_revision",
+    );
+    expect(forgetMemory).toContain("not v_existing.active");
+    expect(forgetMemory).toContain("set active = false");
+    expect(forgetMemory).toMatch(
+      /insert into public\.ai_hermes_memories \([\s\S]*?false,[\s\S]*?p_source_conversation_id,[\s\S]*?p_source_message_id,[\s\S]*?p_source_invocation_id/,
+    );
+    expect(forgetMemory).toContain("'reused', true");
+    expect(forgetMemory).toContain("'reused', false");
   });
 
   it("keeps skill drafts reviewable and grants approved bundles only", () => {
@@ -849,13 +899,16 @@ describe("Xingyao Hermes native state schema contract", () => {
     const completeSignature =
       "uuid, uuid, uuid, uuid, bigint, text, jsonb, text, text, jsonb";
     const memorySignature =
-      "uuid, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid";
+      "uuid, uuid, text, uuid, text, uuid, integer, text, text, text, boolean, uuid, uuid, uuid";
+    const forgetMemorySignature =
+      "uuid, uuid, text, uuid, uuid, integer, uuid, uuid, uuid";
 
     for (const [name, signature] of [
       ["issue_ai_hermes_run_capability", issueSignature],
       ["claim_ai_hermes_broker_call", claimSignature],
       ["complete_ai_hermes_broker_call", completeSignature],
       ["write_ai_hermes_memory_revision", memorySignature],
+      ["forget_ai_hermes_memory", forgetMemorySignature],
     ]) {
       expect(migration).toContain(
         `revoke all on function public.${name}(\n  ${signature}\n) from public, anon, authenticated;`,
@@ -981,7 +1034,7 @@ describe("Xingyao Hermes native state schema contract", () => {
       "p_expected_generation is null",
     );
     expect(functionSql("write_ai_hermes_memory_revision")).toContain(
-      "p_active is null",
+      "p_active is distinct from true",
     );
     expect(functionSql("write_ai_hermes_skill_draft")).toContain(
       "p_version is null",

@@ -369,8 +369,8 @@ describe("Hermes state repository", () => {
     });
   });
 
-  it("writes memory and Skill proposals without accepting payload identity", async () => {
-    const memoryClient = rpcClient({
+  it("remembers canonical content with capability and source lineage authority", async () => {
+    const { client, rpc } = rpcClient({
       data: {
         memory_id: MEMORY_ID,
         memory_key: MEMORY_KEY,
@@ -380,37 +380,145 @@ describe("Hermes state repository", () => {
       },
       error: null,
     });
-    const memoryRepository = createHermesStateRepository(memoryClient.client);
-    const memoryProposal = {
-      idempotencyKey: "memory-request-1",
-      memoryKey: null,
-      expectedRevision: 0,
-      memoryType: "preference" as const,
-      content: "Prefer concise answers",
-      active: true,
-      sourceMessageId: MESSAGE_ID,
-      organizationId: "attacker-org",
-      userId: "attacker-user",
-    };
-    await memoryRepository.writeMemoryRevision(actor, memoryProposal);
-    expect(memoryClient.rpc).toHaveBeenCalledWith(
-      "write_ai_hermes_memory_revision",
-      {
-        p_organization_id: ORGANIZATION_ID,
-        p_owner_user_id: USER_ID,
-        p_idempotency_key: "memory-request-1",
-        p_memory_key: null,
-        p_expected_revision: 0,
-        p_memory_type: "preference",
-        p_content: "Prefer concise answers",
-        p_content_hash: sha256("Prefer concise answers"),
-        p_active: true,
-        p_source_conversation_id: CONVERSATION_ID,
-        p_source_message_id: MESSAGE_ID,
-        p_source_invocation_id: INVOCATION_ID,
-      },
-    );
+    const repository = createHermesStateRepository(client);
 
+    await expect(
+      repository.rememberMemory(
+        actor,
+        {
+          capabilityTokenSha256: TOKEN_SHA256,
+          parentInvocationId: INVOCATION_ID,
+          sourceMessageId: MESSAGE_ID,
+        },
+        {
+          memoryKey: null,
+          expectedRevision: 0,
+          memoryType: "preference",
+          content: "  Prefer cafe\u0301 summaries.  ",
+        },
+      ),
+    ).resolves.toMatchObject({
+      memoryKey: MEMORY_KEY,
+      revision: 1,
+      active: true,
+      reused: false,
+    });
+
+    const canonicalContent = "Prefer caf\u00e9 summaries.";
+    const contentHash = sha256(canonicalContent);
+    expect(rpc).toHaveBeenCalledWith("write_ai_hermes_memory_revision", {
+      p_organization_id: ORGANIZATION_ID,
+      p_owner_user_id: USER_ID,
+      p_capability_token_sha256: TOKEN_SHA256,
+      p_parent_invocation_id: INVOCATION_ID,
+      p_idempotency_key: `${INVOCATION_ID}:${contentHash}`,
+      p_memory_key: null,
+      p_expected_revision: 0,
+      p_memory_type: "preference",
+      p_content: canonicalContent,
+      p_content_hash: contentHash,
+      p_active: true,
+      p_source_conversation_id: CONVERSATION_ID,
+      p_source_message_id: MESSAGE_ID,
+      p_source_invocation_id: INVOCATION_ID,
+    });
+  });
+
+  it("soft-forgets only an actor-owned active memory and is retry-idempotent", async () => {
+    const { client, rpc } = rpcClient({
+      data: {
+        memory_id: MEMORY_ID,
+        memory_key: MEMORY_KEY,
+        revision: 3,
+        active: false,
+        reused: true,
+      },
+      error: null,
+    });
+    const repository = createHermesStateRepository(client);
+
+    await expect(
+      repository.forgetMemory(
+        actor,
+        {
+          capabilityTokenSha256: TOKEN_SHA256,
+          parentInvocationId: INVOCATION_ID,
+          sourceMessageId: MESSAGE_ID,
+        },
+        { memoryKey: MEMORY_KEY, expectedRevision: 2 },
+      ),
+    ).resolves.toEqual({
+      memoryId: MEMORY_ID,
+      memoryKey: MEMORY_KEY,
+      revision: 3,
+      active: false,
+      reused: true,
+    });
+    expect(rpc).toHaveBeenCalledWith("forget_ai_hermes_memory", {
+      p_organization_id: ORGANIZATION_ID,
+      p_owner_user_id: USER_ID,
+      p_capability_token_sha256: TOKEN_SHA256,
+      p_parent_invocation_id: INVOCATION_ID,
+      p_memory_key: MEMORY_KEY,
+      p_expected_revision: 2,
+      p_source_conversation_id: CONVERSATION_ID,
+      p_source_message_id: MESSAGE_ID,
+      p_source_invocation_id: INVOCATION_ID,
+    });
+  });
+
+  it("rejects sensitive memory before any database call without echoing it", async () => {
+    const { client, rpc } = rpcClient({ data: null, error: null });
+    const sensitive = "Remember settlement amount USD 7,500";
+
+    let thrown: unknown;
+    try {
+      await createHermesStateRepository(client).rememberMemory(
+        actor,
+        {
+          capabilityTokenSha256: TOKEN_SHA256,
+          parentInvocationId: INVOCATION_ID,
+          sourceMessageId: MESSAGE_ID,
+        },
+        {
+          memoryKey: null,
+          expectedRevision: 0,
+          memoryType: "workflow",
+          content: sensitive,
+        },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ code: "memory_content_rejected" });
+    expect(String(thrown)).not.toContain(sensitive);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "memory_source_invalid",
+    "memory_capability_invalid",
+    "memory_parent_invocation_invalid",
+    "memory_actor_mismatch",
+    "capability_state_write_not_allowed",
+  ])("maps private memory authority failures to permission_denied", async (message) => {
+    const { client } = rpcClient({ data: null, error: { message } });
+
+    await expect(
+      createHermesStateRepository(client).forgetMemory(
+        actor,
+        {
+          capabilityTokenSha256: TOKEN_SHA256,
+          parentInvocationId: INVOCATION_ID,
+          sourceMessageId: MESSAGE_ID,
+        },
+        { memoryKey: MEMORY_KEY, expectedRevision: 2 },
+      ),
+    ).rejects.toEqual(new HermesStateRepositoryError("permission_denied"));
+  });
+
+  it("writes Skill proposals without accepting payload identity", async () => {
     const skillClient = rpcClient({
       data: { draft_id: DRAFT_ID, status: "draft", reused: false },
       error: null,
@@ -828,15 +936,20 @@ describe("Hermes state repository", () => {
         reused: false,
       },
       invoke: (repository: HermesStateRepository) =>
-        repository.writeMemoryRevision(actor, {
-          idempotencyKey: "memory-invalid-id",
-          memoryKey: null,
-          expectedRevision: 0,
-          memoryType: "preference",
-          content: "Remember this",
-          active: true,
-          sourceMessageId: MESSAGE_ID,
-        }),
+        repository.rememberMemory(
+          actor,
+          {
+            capabilityTokenSha256: TOKEN_SHA256,
+            parentInvocationId: INVOCATION_ID,
+            sourceMessageId: MESSAGE_ID,
+          },
+          {
+            memoryKey: null,
+            expectedRevision: 0,
+            memoryType: "preference",
+            content: "Remember this",
+          },
+        ),
     },
     {
       name: "memory_key",
@@ -848,15 +961,20 @@ describe("Hermes state repository", () => {
         reused: false,
       },
       invoke: (repository: HermesStateRepository) =>
-        repository.writeMemoryRevision(actor, {
-          idempotencyKey: "memory-invalid-key",
-          memoryKey: null,
-          expectedRevision: 0,
-          memoryType: "preference",
-          content: "Remember this",
-          active: true,
-          sourceMessageId: MESSAGE_ID,
-        }),
+        repository.rememberMemory(
+          actor,
+          {
+            capabilityTokenSha256: TOKEN_SHA256,
+            parentInvocationId: INVOCATION_ID,
+            sourceMessageId: MESSAGE_ID,
+          },
+          {
+            memoryKey: null,
+            expectedRevision: 0,
+            memoryType: "preference",
+            content: "Remember this",
+          },
+        ),
     },
     {
       name: "draft_id from write",

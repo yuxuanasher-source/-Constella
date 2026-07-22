@@ -16,6 +16,95 @@ describe("Hermes Tool Broker contracts", () => {
     );
   });
 
+  it("accepts only the three named memory tools with strict per-tool arguments", () => {
+    const list = memoryRequest("xingyao_memory_list", {});
+    const remember = memoryRequest("xingyao_memory_remember", {
+      memoryType: "preference",
+      content: "Prefer concise answers",
+      parentInvocationId: "22222222-2222-4222-8222-222222222222",
+      sourceMessageId: "33333333-3333-4333-8333-333333333333",
+    });
+    const update = memoryRequest("xingyao_memory_remember", {
+      memoryKey: "44444444-4444-4444-8444-444444444444",
+      expectedRevision: 2,
+      memoryType: "workflow",
+      content: "Use a checklist",
+      parentInvocationId: "22222222-2222-4222-8222-222222222222",
+      sourceMessageId: "33333333-3333-4333-8333-333333333333",
+    });
+    const forget = memoryRequest("xingyao_memory_forget", {
+      memoryKey: "44444444-4444-4444-8444-444444444444",
+      expectedRevision: 2,
+      parentInvocationId: "22222222-2222-4222-8222-222222222222",
+      sourceMessageId: "33333333-3333-4333-8333-333333333333",
+    });
+
+    expect(parseHermesToolBrokerRequest(list)).toEqual(list);
+    expect(parseHermesToolBrokerRequest(remember)).toEqual(remember);
+    expect(parseHermesToolBrokerRequest(update)).toEqual(update);
+    expect(parseHermesToolBrokerRequest(forget)).toEqual(forget);
+  });
+
+  it.each([
+    ["xingyao_memory_list", { limit: 10 }],
+    [
+      "xingyao_memory_remember",
+      {
+        memoryType: "financial",
+        content: "Prefer concise answers",
+        parentInvocationId: "22222222-2222-4222-8222-222222222222",
+        sourceMessageId: "33333333-3333-4333-8333-333333333333",
+      },
+    ],
+    [
+      "xingyao_memory_remember",
+      {
+        memoryType: "preference",
+        content: "Prefer concise answers",
+        parentInvocationId: "not-an-invocation",
+        sourceMessageId: "33333333-3333-4333-8333-333333333333",
+      },
+    ],
+    [
+      "xingyao_memory_remember",
+      {
+        memoryType: "preference",
+        content: "Prefer concise answers",
+        parentInvocationId: "22222222-2222-4222-8222-222222222222",
+        sourceMessageId: "33333333-3333-4333-8333-333333333333",
+        authority: "owner",
+      },
+    ],
+    [
+      "xingyao_memory_forget",
+      {
+        memoryKey: "44444444-4444-4444-8444-444444444444",
+        expectedRevision: 0,
+        parentInvocationId: "22222222-2222-4222-8222-222222222222",
+        sourceMessageId: "33333333-3333-4333-8333-333333333333",
+      },
+    ],
+  ])("rejects malformed memory tool arguments for %s", (toolName, args) => {
+    expect(parseHermesToolBrokerRequest(memoryRequest(toolName, args))).toBeNull();
+  });
+
+  it.each(["authority", "model", "provider", "url", "table", "sql"])(
+    "rejects forbidden memory argument field %s",
+    (field) => {
+      expect(
+        parseHermesToolBrokerRequest(
+          memoryRequest("xingyao_memory_remember", {
+            memoryType: "preference",
+            content: "Prefer concise answers",
+            parentInvocationId: "22222222-2222-4222-8222-222222222222",
+            sourceMessageId: "33333333-3333-4333-8333-333333333333",
+            [field]: "client-controlled",
+          }),
+        ),
+      ).toBeNull();
+    },
+  );
+
   it.each([
     "organizationId",
     "userId",
@@ -166,5 +255,14 @@ function validRequest() {
     toolCallId: "gateway-call-1",
     toolName: "xingyao_search_projects" as const,
     arguments: {},
+  };
+}
+
+function memoryRequest(toolName: string, argumentsValue: unknown) {
+  return {
+    invocationId: INVOCATION_ID,
+    toolCallId: "memory-call-1",
+    toolName,
+    arguments: argumentsValue,
   };
 }

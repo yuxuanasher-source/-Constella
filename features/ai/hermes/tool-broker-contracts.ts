@@ -6,6 +6,7 @@ import {
   type HermesReadErrorCode,
   type HermesReadToolName,
 } from "./read-api";
+import { isHermesMemoryType, type HermesMemoryType } from "./memory-policy";
 
 const REQUEST_KEYS = [
   "arguments",
@@ -13,7 +14,12 @@ const REQUEST_KEYS = [
   "toolCallId",
   "toolName",
 ] as const;
-const ARGUMENT_KEYS = new Set(["limit", "projectId", "query", "streamerId"]);
+const READ_ARGUMENT_KEYS = new Set([
+  "limit",
+  "projectId",
+  "query",
+  "streamerId",
+]);
 const TOOL_CALL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const ENVELOPE_METADATA_KEYS = [
   "evidenceRefs",
@@ -30,12 +36,65 @@ const ENVELOPE_METADATA_KEYS = [
   "updatedAt",
 ] as const;
 
-export type HermesToolBrokerRequest = {
+export const HERMES_MEMORY_TOOL_NAMES = [
+  "xingyao_memory_list",
+  "xingyao_memory_remember",
+  "xingyao_memory_forget",
+] as const;
+
+export type HermesMemoryToolName = (typeof HERMES_MEMORY_TOOL_NAMES)[number];
+export type HermesToolBrokerToolName =
+  | HermesReadToolName
+  | HermesMemoryToolName;
+export type HermesToolBrokerErrorEnvelopeCode =
+  | HermesReadErrorCode
+  | "memory_content_rejected";
+
+type HermesReadToolBrokerRequest = {
   invocationId: string;
   toolCallId: string;
   toolName: HermesReadToolName;
   arguments: Record<string, unknown>;
 };
+
+export type HermesMemoryListToolBrokerRequest = {
+  invocationId: string;
+  toolCallId: string;
+  toolName: "xingyao_memory_list";
+  arguments: Record<string, never>;
+};
+
+export type HermesMemoryRememberToolBrokerRequest = {
+  invocationId: string;
+  toolCallId: string;
+  toolName: "xingyao_memory_remember";
+  arguments: {
+    memoryType: HermesMemoryType;
+    content: string;
+    parentInvocationId: string;
+    sourceMessageId: string;
+    memoryKey?: string;
+    expectedRevision?: number;
+  };
+};
+
+export type HermesMemoryForgetToolBrokerRequest = {
+  invocationId: string;
+  toolCallId: string;
+  toolName: "xingyao_memory_forget";
+  arguments: {
+    memoryKey: string;
+    expectedRevision: number;
+    parentInvocationId: string;
+    sourceMessageId: string;
+  };
+};
+
+export type HermesToolBrokerRequest =
+  | HermesReadToolBrokerRequest
+  | HermesMemoryListToolBrokerRequest
+  | HermesMemoryRememberToolBrokerRequest
+  | HermesMemoryForgetToolBrokerRequest;
 
 type HermesToolBrokerMetadata = {
   evidenceRefs: string[];
@@ -47,7 +106,7 @@ type HermesToolBrokerMetadata = {
   truncated: boolean;
   invocationId: string;
   toolCallId: string;
-  toolName: HermesReadToolName;
+  toolName: HermesToolBrokerToolName;
   traceId: string;
 };
 
@@ -58,7 +117,7 @@ export type HermesToolBrokerEnvelope =
     })
   | (HermesToolBrokerMetadata & {
       status: "error";
-      error: { code: HermesReadErrorCode };
+      error: { code: HermesToolBrokerErrorEnvelopeCode };
     });
 
 export function parseHermesToolBrokerRequest(
@@ -70,10 +129,10 @@ export function parseHermesToolBrokerRequest(
     typeof value.toolCallId !== "string" ||
     !TOOL_CALL_ID_PATTERN.test(value.toolCallId) ||
     typeof value.toolName !== "string" ||
-    !Object.hasOwn(HERMES_READ_ENDPOINTS, value.toolName) ||
+    !isHermesToolBrokerToolName(value.toolName) ||
     !isPlainRecord(value.arguments) ||
-    !Object.keys(value.arguments).every((key) => ARGUMENT_KEYS.has(key)) ||
-    !isJsonValue(value.arguments)
+    !isJsonValue(value.arguments) ||
+    !isToolArguments(value.toolName, value.arguments)
   ) {
     return null;
   }
@@ -81,9 +140,9 @@ export function parseHermesToolBrokerRequest(
   return {
     invocationId: value.invocationId,
     toolCallId: value.toolCallId,
-    toolName: value.toolName as HermesReadToolName,
+    toolName: value.toolName,
     arguments: structuredClone(value.arguments),
-  };
+  } as HermesToolBrokerRequest;
 }
 
 export function hashHermesToolBrokerRequest(
@@ -123,7 +182,7 @@ export function parseStoredHermesToolBrokerEnvelope(
     if (
       !isPlainRecord(value.error) ||
       !hasExactKeys(value.error, ["code"]) ||
-      !isHermesReadErrorCode(value.error.code)
+      !isHermesToolBrokerErrorEnvelopeCode(value.error.code)
     ) {
       return null;
     }
@@ -209,7 +268,9 @@ function isTimestamp(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
-function isHermesReadErrorCode(value: unknown): value is HermesReadErrorCode {
+function isHermesToolBrokerErrorEnvelopeCode(
+  value: unknown,
+): value is HermesToolBrokerErrorEnvelopeCode {
   return [
     "unauthorized",
     "permission_denied",
@@ -218,7 +279,77 @@ function isHermesReadErrorCode(value: unknown): value is HermesReadErrorCode {
     "rate_limited",
     "upstream_unavailable",
     "internal_error",
+    "memory_content_rejected",
   ].includes(String(value));
+}
+
+function isHermesToolBrokerToolName(
+  value: string,
+): value is HermesToolBrokerToolName {
+  return (
+    Object.hasOwn(HERMES_READ_ENDPOINTS, value) ||
+    (HERMES_MEMORY_TOOL_NAMES as readonly string[]).includes(value)
+  );
+}
+
+function isToolArguments(
+  toolName: HermesToolBrokerToolName,
+  value: Record<string, unknown>,
+): boolean {
+  if (Object.hasOwn(HERMES_READ_ENDPOINTS, toolName)) {
+    return Object.keys(value).every((key) => READ_ARGUMENT_KEYS.has(key));
+  }
+  switch (toolName) {
+    case "xingyao_memory_list":
+      return hasExactKeys(value, []);
+    case "xingyao_memory_remember":
+      return isRememberArguments(value);
+    case "xingyao_memory_forget":
+      return (
+        hasExactKeys(value, [
+          "expectedRevision",
+          "memoryKey",
+          "parentInvocationId",
+          "sourceMessageId",
+        ]) &&
+        isUuid(value.memoryKey) &&
+        isPositiveInteger(value.expectedRevision) &&
+        isUuid(value.parentInvocationId) &&
+        isUuid(value.sourceMessageId)
+      );
+    default:
+      return false;
+  }
+}
+
+function isRememberArguments(value: Record<string, unknown>): boolean {
+  const createKeys = [
+    "content",
+    "memoryType",
+    "parentInvocationId",
+    "sourceMessageId",
+  ] as const;
+  const updateKeys = [
+    ...createKeys,
+    "expectedRevision",
+    "memoryKey",
+  ] as const;
+  const isCreate = hasExactKeys(value, createKeys);
+  const isUpdate = hasExactKeys(value, updateKeys);
+  return (
+    (isCreate || isUpdate) &&
+    isHermesMemoryType(value.memoryType) &&
+    typeof value.content === "string" &&
+    Boolean(value.content.trim()) &&
+    isUuid(value.parentInvocationId) &&
+    isUuid(value.sourceMessageId) &&
+    (!isUpdate ||
+      (isUuid(value.memoryKey) && isPositiveInteger(value.expectedRevision)))
+  );
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
 function isPrototypeKey(key: string): boolean {

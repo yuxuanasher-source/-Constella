@@ -135,7 +135,7 @@ async function loadBrokerCapability(
   const capabilityResult = await client
     .from("ai_hermes_run_capabilities")
     .select(
-      "organization_id, owner_user_id, conversation_id, turn_id, invocation_id, root_invocation_id, actor_fingerprint, allowed_tools, scopes, expires_at",
+      "organization_id, owner_user_id, conversation_id, turn_id, invocation_id, parent_invocation_id, root_invocation_id, actor_fingerprint, allowed_tools, scopes, depth, ai_state_writes_allowed, expires_at",
     )
     .eq("token_sha256", tokenSha256)
     .is("revoked_at", null)
@@ -152,9 +152,14 @@ async function loadBrokerCapability(
   const conversationId = stringValue(capability.conversation_id);
   const turnId = stringValue(capability.turn_id);
   const invocationId = stringValue(capability.invocation_id);
+  const parentInvocationId = nullableStringValue(
+    capability.parent_invocation_id,
+  );
   const rootInvocationId = stringValue(capability.root_invocation_id);
   const allowedTools = stringArray(capability.allowed_tools);
   const scopes = scopeArray(capability.scopes);
+  const depth = boundedDepth(capability.depth);
+  const aiStateWritesAllowed = capability.ai_state_writes_allowed;
   if (
     !isUuid(organizationId) ||
     !isUuid(userId) ||
@@ -162,6 +167,12 @@ async function loadBrokerCapability(
     !isUuid(turnId) ||
     !isUuid(invocationId) ||
     !isUuid(rootInvocationId) ||
+    depth === null ||
+    typeof aiStateWritesAllowed !== "boolean" ||
+    (depth === 0 &&
+      (parentInvocationId !== null || rootInvocationId !== invocationId)) ||
+    (depth > 0 &&
+      (!isUuid(parentInvocationId) || aiStateWritesAllowed)) ||
     !isSha256(capability.actor_fingerprint) ||
     !allowedTools ||
     !scopes
@@ -227,6 +238,8 @@ async function loadBrokerCapability(
     rootInvocationId,
     allowedTools,
     scopes,
+    depth,
+    aiStateWritesAllowed,
   };
 }
 
@@ -302,6 +315,16 @@ function json(body: unknown, status: number): Response {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function nullableStringValue(value: unknown): string | null {
+  return value === null ? null : stringValue(value);
+}
+
+function boundedDepth(value: unknown): number | null {
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 2
+    ? Number(value)
+    : null;
 }
 
 function stringArray(value: unknown): string[] | null {
