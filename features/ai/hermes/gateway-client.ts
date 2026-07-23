@@ -80,6 +80,9 @@ const DEFAULT_TIMEOUTS: HermesGatewayTimeouts = {
   idleMs: 120_000,
   heartbeatMs: 30_000,
 };
+const XINGYAO_GATEWAY_WS_PATH = "/api/xingyao/ws";
+const XINGYAO_LOOPBACK_WS_URL =
+  /^ws:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?(?:\/|\/api\/xingyao\/ws)?$/i;
 
 export function resolveHermesGatewayConfig(
   env: Record<string, string | undefined> = process.env,
@@ -758,8 +761,14 @@ class HermesGatewayClient implements HermesGatewaySession {
 }
 
 function normalizeLoopbackWsUrl(value: string): string | null {
+  const configuredValue = value.trim();
+  if (!XINGYAO_LOOPBACK_WS_URL.test(configuredValue)) {
+    return null;
+  }
+
   try {
-    const url = new URL(value.trim());
+    const url = new URL(configuredValue);
+    const configuredPath = url.pathname === "/" ? "" : url.pathname;
     if (
       url.protocol !== "ws:" ||
       !["127.0.0.1", "localhost"].includes(url.hostname) ||
@@ -767,11 +776,13 @@ function normalizeLoopbackWsUrl(value: string): string | null {
       url.password ||
       url.search ||
       url.hash ||
-      (url.pathname !== "/" && url.pathname !== "")
+      (configuredPath !== "" &&
+        configuredPath !== XINGYAO_GATEWAY_WS_PATH)
     ) {
       return null;
     }
-    return url.href.endsWith("/") ? url.href.slice(0, -1) : url.href;
+    url.pathname = XINGYAO_GATEWAY_WS_PATH;
+    return url.href;
   } catch {
     return null;
   }

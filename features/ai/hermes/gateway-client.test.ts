@@ -58,24 +58,35 @@ describe("Hermes Gateway JSON-RPC client", () => {
         "read-api-service-token-that-must-never-be-used",
     });
     expect(config).toMatchObject({
-      url: expect.stringMatching(/^ws:\/\/localhost:/),
+      url: expect.stringMatching(
+        /^ws:\/\/localhost:\d+\/api\/xingyao\/ws$/,
+      ),
       serviceToken: "gateway-service-token-that-is-long-enough",
     });
+    expect(
+      resolveHermesGatewayConfig({
+        XINGYAO_HERMES_GATEWAY_URL: `${url}/api/xingyao/ws`,
+        XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN:
+          "gateway-service-token-that-is-long-enough",
+      })?.url,
+    ).toBe(`${url}/api/xingyao/ws`);
 
-    expect(
-      resolveHermesGatewayConfig({
-        XINGYAO_HERMES_GATEWAY_URL: "wss://gateway.example.com/v1",
-        XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN:
-          "gateway-service-token-that-is-long-enough",
-      }),
-    ).toBeNull();
-    expect(
-      resolveHermesGatewayConfig({
-        XINGYAO_HERMES_GATEWAY_URL: "ws://192.168.1.5:9000",
-        XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN:
-          "gateway-service-token-that-is-long-enough",
-      }),
-    ).toBeNull();
+    for (const unsafeUrl of [
+      "wss://gateway.example.com/v1",
+      "ws://192.168.1.5:9000",
+      `${url}/api/ws`,
+      `${url}/api/other`,
+      `${url}/api/other/../xingyao/ws`,
+      `${url}/api/%2e/xingyao/ws`,
+    ]) {
+      expect(
+        resolveHermesGatewayConfig({
+          XINGYAO_HERMES_GATEWAY_URL: unsafeUrl,
+          XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN:
+            "gateway-service-token-that-is-long-enough",
+        }),
+      ).toBeNull();
+    }
     expect(
       resolveHermesGatewayConfig({
         XINGYAO_HERMES_GATEWAY_URL: url,
@@ -94,6 +105,7 @@ describe("Hermes Gateway JSON-RPC client", () => {
     expect(server.handshakeHeaders.at(0)?.authorization).toBe(
       "Bearer gateway-service-token-that-is-long-enough",
     );
+    expect(server.handshakePaths).toEqual(["/api/xingyao/ws"]);
     expect(JSON.stringify(server.handshakeHeaders)).not.toContain(
       "read-api-service-token-that-must-never-be-used",
     );
@@ -843,13 +855,16 @@ async function fakeGateway() {
       params: Record<string, unknown>;
     }>;
     handshakeHeaders: Array<Record<string, string | undefined>>;
+    handshakePaths: string[];
   };
   server.commands = [];
   server.handshakeHeaders = [];
+  server.handshakePaths = [];
   server.on("connection", (socket, request) => {
     server.handshakeHeaders.push(
       request.headers as Record<string, string | undefined>,
     );
+    server.handshakePaths.push(request.url ?? "");
     socket.on("message", (raw) => {
       try {
         const command = JSON.parse(raw.toString()) as {
