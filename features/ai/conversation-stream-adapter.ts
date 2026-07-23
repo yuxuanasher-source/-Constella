@@ -10,7 +10,7 @@ import {
 export type ConversationTurnStreamService = {
   renewLease?(actor: ConversationActor, turnId: string): Promise<void>;
   renewLeaseV2?(actor: ConversationActor, turnId: string): Promise<void>;
-  verifyTerminalState(
+  verifyTerminalState?(
     actor: ConversationActor,
     turnId: string,
     event: ConversationStreamEvent,
@@ -29,7 +29,10 @@ export type ConversationTurnExecutor<TService = unknown> = {
   execute(input: ConversationTurnExecutorInput<TService>): AsyncIterable<ConversationStreamEvent>;
 };
 
-export function createConversationTurnStream<TService extends ConversationTurnStreamService>({
+export function createConversationTurnStream<
+  TService extends ConversationTurnStreamService,
+  TExecutorService = TService,
+>({
   request,
   actor,
   turn,
@@ -44,8 +47,8 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
   actor: ConversationActor;
   turn: CreatedConversationTurn;
   attachments: AiAttachment[];
-  service: TService;
-  executor?: ConversationTurnExecutor<any>;
+  service: TService & TExecutorService;
+  executor?: ConversationTurnExecutor<TExecutorService>;
   executeLegacyChat?: ExecuteLegacyChat;
   activeRun?: {
     sessionId: string;
@@ -114,7 +117,7 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
           executor ??
           (createLegacyTurnExecutor({
             executeLegacyChat,
-          }) as unknown as ConversationTurnExecutor<TService>);
+          }) as unknown as ConversationTurnExecutor<TExecutorService>);
         for await (const event of source.execute({
           request,
           actor,
@@ -134,7 +137,7 @@ export function createConversationTurnStream<TService extends ConversationTurnSt
           }
           send(event);
         }
-      } catch (error) {
+      } catch {
         closed = true;
         controller.error(new Error("AI terminal state could not be persisted"));
         return;

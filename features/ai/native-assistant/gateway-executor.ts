@@ -746,7 +746,7 @@ async function completeWithCoherentSummary({
   | { type: "completed"; event: ConversationStreamEvent }
   | { type: "failed"; code: string }
 > {
-  let outcome = forcedOutcome ?? classifyOutcome(observations);
+  const outcome = forcedOutcome ?? classifyOutcome(observations);
   const metadata = completionMetadata({ observations, provider, model });
   const expectedSummaryVersion =
     state?.summaryVersion ?? 0;
@@ -1424,9 +1424,9 @@ function normalizeOfficialGatewayEvent(
   turn: CreatedConversationTurn,
 ): ConversationStreamEvent | null {
   if (event.params.type === "gateway.ready") return null;
-  const payload = event.params.payload as Record<string, any>;
   switch (event.params.type) {
-    case "message.delta":
+    case "message.delta": {
+      const payload = event.params.payload;
       return {
         type: "response.delta",
         conversationId: turn.conversationId,
@@ -1434,7 +1434,9 @@ function normalizeOfficialGatewayEvent(
         messageId: turn.assistantMessageId,
         delta: payload.text,
       };
-    case "tool.start":
+    }
+    case "tool.start": {
+      const payload = event.params.payload;
       return {
         type: "tool.started",
         conversationId: turn.conversationId,
@@ -1443,7 +1445,9 @@ function normalizeOfficialGatewayEvent(
         toolName: payload.name,
         label: payload.label,
       };
+    }
     case "tool.complete": {
+      const payload = event.params.payload;
       const metadata = payload.metadata;
       const status =
         metadata.permissionDenials.length > 0
@@ -1467,7 +1471,8 @@ function normalizeOfficialGatewayEvent(
         observedAt: metadata.updatedAt,
       };
     }
-    case "status.update":
+    case "status.update": {
+      const payload = event.params.payload;
       return {
         type: "activity.updated",
         conversationId: turn.conversationId,
@@ -1475,16 +1480,14 @@ function normalizeOfficialGatewayEvent(
         label: payload.message,
         status: payload.status === "ready" ? "completed" : "running",
       };
-    case "todo.updated":
+    }
+    case "todo.updated": {
+      const payload = event.params.payload;
       return {
         type: "todo.updated",
         conversationId: turn.conversationId,
         turnId: turn.turnId,
-        items: (payload.todos as Array<{
-          id: string;
-          content: string;
-          status: string;
-        }>).map((todo) => ({
+        items: payload.todos.map((todo) => ({
           id: todo.id,
           label: todo.content,
           status:
@@ -1495,7 +1498,9 @@ function normalizeOfficialGatewayEvent(
                 : "pending",
         })),
       };
-    case "clarify.request":
+    }
+    case "clarify.request": {
+      const payload = event.params.payload;
       return {
         type: "clarify.requested",
         conversationId: turn.conversationId,
@@ -1505,7 +1510,9 @@ function normalizeOfficialGatewayEvent(
         choices: payload.choices,
         allowFreeText: payload.allowFreeText === true,
       };
-    case "subagent.start":
+    }
+    case "subagent.start": {
+      const payload = event.params.payload;
       return {
         type: "subagent.updated",
         conversationId: turn.conversationId,
@@ -1514,7 +1521,9 @@ function normalizeOfficialGatewayEvent(
         label: payload.goal,
         status: "running",
       };
-    case "subagent.progress":
+    }
+    case "subagent.progress": {
+      const payload = event.params.payload;
       return {
         type: "subagent.updated",
         conversationId: turn.conversationId,
@@ -1523,7 +1532,9 @@ function normalizeOfficialGatewayEvent(
         label: payload.summary,
         status: payload.status === "completed" ? "completed" : "running",
       };
-    case "subagent.complete":
+    }
+    case "subagent.complete": {
+      const payload = event.params.payload;
       return {
         type: "subagent.updated",
         conversationId: turn.conversationId,
@@ -1532,6 +1543,7 @@ function normalizeOfficialGatewayEvent(
         label: payload.summary,
         status: payload.outcome === "failed" ? "failed" : "completed",
       };
+    }
     default:
       return null;
   }

@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import {
   conversationRouteErrorResponse,
   getAiConversationRouteContext,
+  type AiConversationRouteContext,
 } from "@/app/api/ai/conversation-route-context";
 import { activeHermesRunRegistry } from "@/features/ai/hermes/active-run-registry";
 import {
@@ -166,7 +167,7 @@ async function openControlSession({
   turn,
   sessionId,
 }: {
-  context: any;
+  context: AiConversationRouteContext;
   conversationId: string;
   turnId: string;
   turn: { mode?: "fast" | "deep" };
@@ -198,14 +199,14 @@ async function openControlSession({
 }
 
 async function requireOwnedTurn(
-  service: any,
-  actor: { organizationId: string; userId: string },
+  service: AiConversationRouteContext["service"],
+  actor: AiConversationRouteContext["actor"],
   conversationId: string,
   turnId: string,
 ) {
   const history = await service.getHistory(actor, conversationId);
   const turn = Array.isArray(history?.turns)
-    ? history.turns.find((item: any) => item?.id === turnId || item?.turnId === turnId)
+    ? history.turns.find((item) => item.id === turnId)
     : null;
   if (!turn) throw new Error("Turn not found");
   if (!["accepted", "grounding", "generating", "validating"].includes(String(turn.status))) {
@@ -232,8 +233,8 @@ function buildControlActor(
 }
 
 async function recoveryResponse(
-  service: any,
-  actor: { organizationId: string; userId: string },
+  service: AiConversationRouteContext["service"],
+  actor: AiConversationRouteContext["actor"],
   conversationId: string,
   state: { generation: number; summary?: Record<string, unknown>; summaryVersion?: number },
 ) {

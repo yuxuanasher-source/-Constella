@@ -11,10 +11,16 @@ import {
   createGatewayTurnExecutor,
   createHermesGatewayClient,
 } from "@/features/ai/native-assistant/gateway-executor";
-import { createLegacyTurnExecutor } from "@/features/ai/native-assistant/legacy-turn-executor";
+import type { ConversationTurnExecutor } from "@/features/ai/conversation-stream-adapter";
+import {
+  createLegacyTurnExecutor,
+  type LegacyConversationTurnService,
+} from "@/features/ai/native-assistant/legacy-turn-executor";
 import type { ConversationActor } from "@/features/ai/conversation-service";
 
 type GatewayTurnExecutorOptions = Parameters<typeof createGatewayTurnExecutor>[0];
+type NativeTurnService =
+  GatewayTurnExecutorOptions["service"] & LegacyConversationTurnService;
 
 export type SelectedNativeTurnRuntime = {
   kind: "selected";
@@ -74,14 +80,14 @@ export function createSelectedNativeTurnExecutor({
   sourceTurnId,
 }: {
   selected: SelectedNativeTurnRuntime;
-  service: GatewayTurnExecutorOptions["service"];
+  service: NativeTurnService;
   auth: {
     userId: string;
     organizationId: string;
     role: string;
   };
   sourceTurnId?: string;
-}) {
+}): ConversationTurnExecutor<NativeTurnService> {
   if (selected.selection.runtime === "legacy") {
     return createLegacyTurnExecutor();
   }
