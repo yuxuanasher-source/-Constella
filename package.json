@@ -16,6 +16,8 @@
     "test:api-contracts": "vitest run app/api/api-route-contracts.test.ts",
     "test:api-integration-smoke": "node scripts/api-integration-smoke.mjs",
     "test:manual-acceptance-smoke": "node scripts/manual-acceptance-smoke.mjs",
+    "verify:xingyao-hermes-release": "node scripts/verify-xingyao-hermes-release.mjs",
+    "test:xingyao-hermes-e2e": "node scripts/test-xingyao-hermes-e2e.mjs --local",
     "test:ops-visual": "playwright test tests/visual/arco-redesign.spec.ts",
     "test:dto-contracts": "vitest run features/dto-contracts/api-dto-contract.test.ts",
     "test:golden": "vitest run features/regression/settlement-golden-path.test.ts",
@@ -25,7 +27,7 @@
     "test:p6-payment": "vitest run lib/db/p6-schema-contract.test.ts features/billing features/regression/p6-payment.test.ts",
     "test:onboarding-funnel": "vitest run lib/db/funnel-schema-contract.test.ts features/funnel features/regression/onboarding-funnel.test.ts",
     "test:async-tasks": "vitest run lib/db/async-task-schema-contract.test.ts features/async-tasks",
-    "test:ai-system": "vitest run lib/db/ai-schema-contract.test.ts features/ai app/api/ai app/api/ocr",
+    "test:ai-system": "vitest run lib/db/ai-schema-contract.test.ts lib/db/xingyao-hermes-native-schema-contract.test.ts features/ai app/api/ai app/api/ocr",
     "test:permissions": "vitest run features/live-operations/live-operations-service.test.ts features/settlements/settlement-service.test.ts",
     "test:custom-settlement": "vitest run features/settlements app/api/settlement-batches features/regression/custom-settlement-rules-golden-path.test.ts features/regression/custom-settlement-cost-reconciliation.test.ts",
     "test:ui-smoke": "vitest run components/reference-ui/ops-reference.test.jsx components/reference-ui/ops-reference-org-members.test.jsx components/reference-ui/streamer-mobile-reference.test.jsx",
@@ -65,6 +67,7 @@
     "react-dom": "19.2.4",
     "tailwind-merge": "^3.6.0",
     "tsx": "^4.23.1",
+    "ws": "^8.21.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -75,6 +78,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.2",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",

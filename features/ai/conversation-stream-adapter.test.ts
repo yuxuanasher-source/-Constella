@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CreatedConversationTurn } from "./conversation-repository";
 import { createConversationTurnStream } from "./conversation-stream-adapter";
+import { createLegacyTurnExecutor } from "./native-assistant/legacy-turn-executor";
 
 const turn: CreatedConversationTurn = {
   conversationId: "conversation-1",
@@ -14,20 +15,66 @@ const turn: CreatedConversationTurn = {
 };
 
 describe("conversation stream adapter", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("rejects duplicate turns without mutating the original execution", async () => {
     const service = serviceDouble({ callOrder: [] });
+    const executor = { execute: vi.fn() };
     const response = createConversationTurnStream({
       request: new Request("http://localhost/api/ai/turns"),
       actor: { organizationId: "org-1", userId: "user-1" },
       turn: { ...turn, duplicate: true, status: "generating" },
       attachments: [],
       service,
-      executeLegacyChat: vi.fn(),
+      executor,
     });
 
     expect(response.status).toBe(409);
-    expect(service.prepareTurn).not.toHaveBeenCalled();
-    expect(service.failTurn).not.toHaveBeenCalled();
+    expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it("streams events from a typed ConversationTurnExecutor source", async () => {
+    const service = serviceDouble({ callOrder: [] });
+    const executor = {
+      execute: vi.fn().mockImplementation(async function* () {
+        yield {
+          type: "turn.started",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          userMessageId: "message-user-1",
+          assistantMessageId: "message-assistant-1",
+        };
+        yield {
+          type: "response.cancelled",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          messageId: "message-assistant-1",
+        };
+      }),
+    };
+
+    const response = createConversationTurnStream({
+      request: new Request("http://localhost/api/ai/turns"),
+      actor: { organizationId: "org-1", userId: "user-1" },
+      turn,
+      attachments: [],
+      service,
+      executor,
+    });
+
+    const events = parseSseEvents(await response.text());
+    expect(events.map((event) => event.event)).toEqual([
+      "turn.started",
+      "response.cancelled",
+    ]);
+    expect(executor.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        turn,
+        service,
+      }),
+    );
   });
 
   it("maps legacy chat events to typed events and commits before completion", async () => {
@@ -71,7 +118,7 @@ describe("conversation stream adapter", () => {
       turn,
       attachments: [],
       service,
-      executeLegacyChat,
+      executor: createLegacyTurnExecutor({ executeLegacyChat }),
     });
     const events = parseSseEvents(await response.text());
 
@@ -156,7 +203,7 @@ describe("conversation stream adapter", () => {
       turn,
       attachments: [],
       service,
-      executeLegacyChat,
+      executor: createLegacyTurnExecutor({ executeLegacyChat }),
     });
     const events = parseSseEvents(await response.text());
 
@@ -193,7 +240,124 @@ describe("conversation stream adapter", () => {
       turn,
       attachments: [],
       service,
-      executeLegacyChat,
+      executor: createLegacyTurnExecutor({ executeLegacyChat }),
+    });
+
+    await expect(response.text()).rejects.toThrow("terminal state");
+  });
+
+  it("interrupts the active native run after a client disconnect grace period", async () => {
+    vi.useFakeTimers();
+    const abortController = new AbortController();
+    const service = serviceDouble({ callOrder: [] });
+    const session = {
+      interrupt: vi.fn().mockResolvedValue({ interrupted: true }),
+      respondToClarify: vi.fn(),
+      close: vi.fn(),
+    };
+    const executor = {
+      execute: vi.fn().mockImplementation(async function* () {
+        yield {
+          type: "turn.started",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          userMessageId: "message-user-1",
+          assistantMessageId: "message-assistant-1",
+        };
+        await new Promise(() => undefined);
+      }),
+    };
+    const response = createConversationTurnStream({
+      request: new Request("http://localhost/api/ai/turns", {
+        signal: abortController.signal,
+      }),
+      actor: { organizationId: "org-1", userId: "user-1" },
+      turn,
+      attachments: [],
+      service,
+      executor,
+      activeRun: {
+        sessionId: "session-1",
+        session,
+      },
+      disconnectGraceMs: 250,
+    });
+
+    const reader = response.body!.getReader();
+    await reader.read();
+    abortController.abort();
+    await vi.advanceTimersByTimeAsync(249);
+    expect(session.interrupt).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(session.interrupt).toHaveBeenCalledTimes(1);
+    await reader.cancel();
+  });
+
+  it("does not emit terminal SSE unless the matching DB terminal state exists", async () => {
+    const service = {
+      ...serviceDouble({ callOrder: [] }),
+      verifyTerminalState: vi.fn().mockResolvedValue(false),
+    };
+    const executor = {
+      execute: vi.fn().mockImplementation(async function* () {
+        yield {
+          type: "turn.started",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          userMessageId: "message-user-1",
+          assistantMessageId: "message-assistant-1",
+        };
+        yield {
+          type: "response.completed",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          messageId: "message-assistant-1",
+          content: "done",
+          outcome: "complete",
+          meta: {},
+        };
+      }),
+    };
+
+    const response = createConversationTurnStream({
+      request: new Request("http://localhost/api/ai/turns"),
+      actor: { organizationId: "org-1", userId: "user-1" },
+      turn,
+      attachments: [],
+      service: service as any,
+      executor,
+    });
+
+    await expect(response.text()).rejects.toThrow("terminal state");
+    expect(service.verifyTerminalState).toHaveBeenCalledWith(
+      { organizationId: "org-1", userId: "user-1" },
+      "turn-1",
+      expect.objectContaining({ type: "response.completed" }),
+    );
+  });
+
+  it("requires terminal-state verification for native terminal SSE", async () => {
+    const { verifyTerminalState: _verifyTerminalState, ...unverifiedService } =
+      serviceDouble({ callOrder: [] });
+    const executor = {
+      execute: vi.fn().mockImplementation(async function* () {
+        yield {
+          type: "response.cancelled",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          messageId: "message-assistant-1",
+        };
+      }),
+    };
+
+    const response = createConversationTurnStream({
+      request: new Request("http://localhost/api/ai/turns"),
+      actor: { organizationId: "org-1", userId: "user-1" },
+      turn,
+      attachments: [],
+      service: unverifiedService as any,
+      executor,
     });
 
     await expect(response.text()).rejects.toThrow("terminal state");
@@ -235,6 +399,7 @@ function serviceDouble({ callOrder }: { callOrder: string[] }) {
       callOrder.push("fail");
     }),
     renewLease: vi.fn().mockResolvedValue(undefined),
+    verifyTerminalState: vi.fn().mockResolvedValue(true),
     captureGatewayContext: vi.fn().mockImplementation(async () => {
       callOrder.push("capture");
     }),

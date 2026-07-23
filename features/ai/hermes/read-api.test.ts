@@ -3,9 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { computeHermesSkillGrantsHash } from "./actor-fingerprint";
 import { signHermesActorAssertion } from "./actor-assertion";
-import type { HermesActorProfile } from "./contracts";
+import {
+  HERMES_EVIDENCE_REF_MAX_LENGTH,
+  type HermesActorProfile,
+} from "./contracts";
 import {
   HERMES_READ_ENDPOINTS,
+  authorizeAndExecuteHermesReadTool,
   authenticateHermesReadRequest,
   executeHermesReadTool,
   hermesReadSuccess,
@@ -59,13 +63,16 @@ describe("Hermes product read API boundary", () => {
     );
 
     const result = await authenticateHermesReadRequest(
-      new Request("http://localhost/api/internal/hermes/read/live-reports/search", {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer read-service-token-that-is-long-enough",
-          "X-Xingyao-Actor": token,
+      new Request(
+        "http://localhost/api/internal/hermes/read/live-reports/search",
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer read-service-token-that-is-long-enough",
+            "X-Xingyao-Actor": token,
+          },
         },
-      }),
+      ),
       HERMES_READ_ENDPOINTS.xingyao_search_live_reports,
       {
         XINGYAO_READ_API_SERVICE_TOKEN:
@@ -119,7 +126,12 @@ describe("Hermes product read API boundary", () => {
       "select",
       "id, name, status, started_at:starts_at, ended_at:ends_at, created_at, updated_at",
     ]);
-    expect(client.calls).toContainEqual(["projects", "eq", "organization_id", ORG_ID]);
+    expect(client.calls).toContainEqual([
+      "projects",
+      "eq",
+      "organization_id",
+      ORG_ID,
+    ]);
     expect(client.calls).not.toContainEqual([
       "projects",
       "eq",
@@ -187,6 +199,482 @@ describe("Hermes product read API boundary", () => {
       truncated: false,
     });
   });
+
+  it("normalizes legacy physical evidence prefixes and sanitizes metadata", () => {
+    const envelope = hermesReadSuccess(profile(), {
+      data: {
+        sourceRef: `recording_assets:${PROJECT_ID}`,
+        note: "signed.actor.jws",
+      },
+      evidenceRefs: [
+        `projects:${PROJECT_ID}`,
+        `recording_assets:${PROJECT_ID}`,
+        `settlement_batches:${PROJECT_ID}`,
+        "Bearer metadata-secret",
+      ],
+      sourceLabels: ["project_record", "signed.actor.jws"],
+      missingData: ["safe_missing", "select * from private_table"],
+    });
+    const serialized = JSON.stringify(envelope);
+
+    expect(envelope).toMatchObject({
+      data: { sourceRef: `recording_review:${PROJECT_ID}` },
+      evidenceRefs: [
+        `project:${PROJECT_ID}`,
+        `recording_review:${PROJECT_ID}`,
+        `settlement_batch:${PROJECT_ID}`,
+      ],
+      sourceLabels: ["project_record"],
+      missingData: ["safe_missing"],
+    });
+    expect(serialized).not.toContain("projects:");
+    expect(serialized).not.toContain("recording_assets:");
+    expect(serialized).not.toContain("settlement_batches:");
+    expect(serialized).not.toContain("metadata-secret");
+    expect(serialized).not.toContain("signed.actor.jws");
+    expect(serialized).not.toContain("private_table");
+  });
+
+  it("preserves one safe knowledge chunk fragment while rejecting malformed fragments", () => {
+    const envelope = hermesReadSuccess(profile(), {
+      data: {
+        passages: [
+          { sourceRef: "knowledge_base:doc-1#chunk-1" },
+          { sourceRef: "knowledge_base:doc-1#chunk-1#extra" },
+          { sourceRef: "knowledge_base:#chunk-1" },
+          { sourceRef: "knowledge_base:doc-1#" },
+        ],
+      },
+      evidenceRefs: [
+        "knowledge_base:doc-1#chunk-1",
+        "knowledge_base:doc-1#chunk-1#extra",
+        "knowledge_base:#chunk-1",
+        "knowledge_base:doc-1#",
+      ],
+    });
+
+    expect(envelope).toMatchObject({
+      data: {
+        passages: [{ sourceRef: "knowledge:doc-1#chunk-1" }, {}, {}, {}],
+      },
+      evidenceRefs: ["knowledge:doc-1#chunk-1"],
+    });
+  });
+
+  it("keeps ordinary business text while redacting actual credential patterns", () => {
+    const ordinaryText = [
+      "Password rotation SOP",
+      "Authorization workflow policy",
+      "Secret shopper campaign",
+      "Cookie consent policy",
+    ];
+    const envelope = hermesReadSuccess(profile(), {
+      data: {
+        ordinaryText,
+        bearer: "Bearer actual-credential-value",
+        jwt: "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+        pem: "-----BEGIN PRIVATE KEY-----\nmaterial\n-----END PRIVATE KEY-----",
+        passwordAssignment: "password=hunter2",
+        secretAssignment: "api_secret: actual-secret-value",
+        authorizationHeader: "Authorization: Basic dXNlcjpwYXNz",
+        credentialUrl: "https://user:pass@example.invalid/path",
+        internalRoute: "POST /api/internal/hermes/read",
+        sql: "select * from private_table where id = 1",
+        stack: "Error: failed\n at handler (server.ts:10:2)",
+        authorization: "sensitive-key-value",
+        sessionToken: "sensitive-token-value",
+      },
+    });
+    const serialized = JSON.stringify(envelope);
+
+    expect(envelope).toMatchObject({ data: { ordinaryText } });
+    for (const secret of [
+      "actual-credential-value",
+      "eyJhbGciOiJSUzI1NiJ9",
+      "BEGIN PRIVATE KEY",
+      "hunter2",
+      "actual-secret-value",
+      "dXNlcjpwYXNz",
+      "user:pass",
+      "/api/internal/",
+      "private_table",
+      "server.ts:10:2",
+      "sensitive-key-value",
+      "sensitive-token-value",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  it("distinguishes env credential assignments from select business prose", () => {
+    const businessText = [
+      "Select one project from the current queue",
+      "Please select one project from the current queue",
+      "Select the active project from the review queue",
+      "select one project from the current queue",
+      "Select id from projects for the current queue",
+    ];
+    const credentialAssignments = [
+      "OPENAI_API_KEY=read-openai-secret",
+      "AWS_ACCESS_KEY_ID=read-aws-access-id",
+      "AWS_SECRET_ACCESS_KEY=read-aws-secret",
+      "XINGYAO_READ_API_SERVICE_TOKEN=read-service-token",
+      "VENDOR_CLIENT_SECRET=read-client-secret",
+      "DATABASE_PASSWORD=read-database-password",
+      "SIGNING_PRIVATE_KEY=read-private-key",
+      "SESSION_TOKEN=read-session-token",
+    ];
+    const sqlStatements = [
+      "SELECT id FROM projects",
+      "select id from projects",
+      "SELECT id project_id FROM projects",
+      "SELECT count(*) FROM projects",
+      "select p.id project_id from public.projects p;",
+      "SELECT projects.id FROM public.projects",
+      'SELECT "projects"."id" FROM "public"."projects";',
+      "SELECT p.id FROM projects p",
+      "SELECT * FROM projects",
+      "SELECT id, name FROM projects",
+      "SELECT projects.id, projects.name FROM public.projects;",
+      "SELECT p.id, p.name FROM projects AS p WHERE p.id = 1;",
+      "SELECT pg_sleep(10)",
+      "SELECT id FROM projects WHERE status = 'active'",
+      "SELECT projects.id FROM projects JOIN organizations ON organizations.id = projects.organization_id",
+      "SELECT status FROM projects GROUP BY status",
+      "SELECT id FROM projects ORDER BY updated_at",
+      "SELECT id FROM projects LIMIT 1",
+      "INSERT INTO projects (id) VALUES ('project-1')",
+      "UPDATE projects SET status = 'active'",
+      "DELETE FROM projects WHERE id = 'project-1'",
+      "DROP TABLE private_projects",
+    ];
+    const envelope = hermesReadSuccess(profile(), {
+      data: { businessText, credentialAssignments, sqlStatements },
+    });
+    const serialized = JSON.stringify(envelope);
+
+    expect(envelope).toMatchObject({
+      data: {
+        businessText,
+        credentialAssignments: credentialAssignments.map(() => "[REDACTED]"),
+        sqlStatements: sqlStatements.map(() => "[REDACTED]"),
+      },
+    });
+    for (const secret of [
+      "read-openai-secret",
+      "read-aws-access-id",
+      "read-aws-secret",
+      "read-service-token",
+      "read-client-secret",
+      "read-database-password",
+      "read-private-key",
+      "read-session-token",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  it("preserves authorized current-context identity and page fields", async () => {
+    const actor = profile({
+      allowedReadScopes: ["context.read"],
+      pageContext: { pageType: "project", objectIds: [PROJECT_ID] },
+    });
+    const result = await authorizeAndExecuteHermesReadTool(
+      supabaseDouble([]) as never,
+      actor,
+      "xingyao_get_current_context",
+      {},
+    );
+
+    expect(result).toMatchObject({
+      status: 200,
+      envelope: {
+        status: "ok",
+        data: {
+          organizationId: ORG_ID,
+          role: "owner",
+          conversationId: CONVERSATION_ID,
+          pageContext: { pageType: "project", objectIds: [PROJECT_ID] },
+          allowedReadScopes: ["context.read"],
+        },
+        evidenceRefs: [`conversation:${CONVERSATION_ID}`],
+      },
+    });
+  });
+
+  it("sanitizes evidence content before allowing only public domain prefixes", () => {
+    const validRefs = [
+      `conversation:${CONVERSATION_ID}`,
+      `project:${PROJECT_ID}`,
+      `streamer:${USER_ID}`,
+      `streamer_project_profile:${PROJECT_ID}`,
+      `live_report:${PROJECT_ID}`,
+      `recording_review:${PROJECT_ID}`,
+      `knowledge:${PROJECT_ID}`,
+      `settlement_batch:${PROJECT_ID}`,
+    ];
+    const envelope = hermesReadSuccess(profile(), {
+      data: {
+        refs: [
+          { kind: "valid", sourceRef: validRefs[6] },
+          {
+            kind: "bearer",
+            sourceRef: "projects:Bearer source-capability-secret",
+          },
+          {
+            kind: "jws",
+            sourceRef: "project:eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+          },
+          {
+            kind: "route",
+            sourceRef: "recording_review:/api/internal/hermes/read",
+          },
+          {
+            kind: "sql",
+            sourceRef: "live_report:select * from private_table",
+          },
+          {
+            kind: "unknown",
+            sourceRef: `private_payroll_rows:${PROJECT_ID}`,
+          },
+        ],
+      },
+      evidenceRefs: [
+        ...validRefs,
+        "projects:Bearer evidence-capability-secret",
+        "project:eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+        "recording_review:/api/internal/hermes/read",
+        "live_report:select * from private_table",
+        `private_payroll_rows:${PROJECT_ID}`,
+      ],
+    });
+    const serialized = JSON.stringify(envelope);
+
+    expect(envelope).toMatchObject({
+      data: {
+        refs: [
+          { kind: "valid", sourceRef: `knowledge:${PROJECT_ID}` },
+          { kind: "bearer" },
+          { kind: "jws" },
+          { kind: "route" },
+          { kind: "sql" },
+          { kind: "unknown" },
+        ],
+      },
+      evidenceRefs: validRefs,
+    });
+    for (const forbidden of [
+      "source-capability-secret",
+      "evidence-capability-secret",
+      "eyJhbGciOiJSUzI1NiJ9",
+      "/api/internal/",
+      "select *",
+      "private_table",
+      "private_payroll_rows",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  it("accepts only bounded opaque public evidence identifiers", () => {
+    const conversationPrefix = "conversation:";
+    const maxLengthId = "a".repeat(
+      HERMES_EVIDENCE_REF_MAX_LENGTH - conversationPrefix.length,
+    );
+    const validRefs = [
+      `project:${PROJECT_ID}`,
+      "live_report:123456",
+      "knowledge:kb_mqu7f3_q42",
+      `conversation:${maxLengthId}`,
+    ];
+    const invalidRefs = [
+      "project:https://example.invalid/project/1",
+      "knowledge:select pg_sleep(10)",
+      "recording_review:folder/review-1",
+      "recording_review:folder\\review-1",
+      "settlement_batch:batch-1?expand=items",
+      "project:project:child",
+      "live_report:report-1\nnext",
+      `${conversationPrefix}${"b".repeat(
+        HERMES_EVIDENCE_REF_MAX_LENGTH - conversationPrefix.length + 1,
+      )}`,
+    ];
+    const envelope = hermesReadSuccess(profile(), {
+      data: {
+        refs: [
+          ...validRefs.map((sourceRef) => ({ sourceRef })),
+          ...invalidRefs.map((sourceRef) => ({ sourceRef })),
+        ],
+      },
+      evidenceRefs: [...validRefs, ...invalidRefs],
+    });
+
+    expect(envelope).toMatchObject({
+      data: {
+        refs: [
+          ...validRefs.map((sourceRef) => ({ sourceRef })),
+          ...invalidRefs.map(() => ({})),
+        ],
+      },
+      evidenceRefs: validRefs,
+    });
+    const serialized = JSON.stringify(envelope);
+    for (const forbidden of [
+      "https://",
+      "pg_sleep",
+      "folder/review",
+      "folder\\\\review",
+      "?expand=",
+      "project:child",
+      "report-1\\nnext",
+      "b".repeat(
+        HERMES_EVIDENCE_REF_MAX_LENGTH - conversationPrefix.length + 1,
+      ),
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  it("uses one authorization and execution core for HTTP and Broker callers", async () => {
+    const client = supabaseDouble([
+      { id: PROJECT_ID, name: "Canonical project", status: "active" },
+    ]);
+
+    const result = await authorizeAndExecuteHermesReadTool(
+      client as never,
+      profile(),
+      "xingyao_search_projects",
+      { query: "Canonical", limit: 5 },
+    );
+
+    expect(result).toMatchObject({
+      status: 200,
+      envelope: {
+        status: "ok",
+        data: { rows: [{ id: PROJECT_ID, name: "Canonical project" }] },
+        evidenceRefs: [`project:${PROJECT_ID}`],
+        sourceLabels: ["project_record"],
+        missingData: [],
+        permissionDenials: [],
+        truncated: false,
+        toolInvocationId: INVOCATION_ID,
+      },
+    });
+    expect(client.from).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps shared role and scope denials identical and dispatch-free", async () => {
+    const client = supabaseDouble([]);
+    const result = await authorizeAndExecuteHermesReadTool(
+      client as never,
+      profile({ role: "finance", allowedReadScopes: ["context.read"] }),
+      "xingyao_search_live_reports",
+      {},
+    );
+
+    expect(result).toMatchObject({
+      status: 403,
+      envelope: {
+        status: "error",
+        error: { code: "permission_denied" },
+        toolInvocationId: INVOCATION_ID,
+      },
+    });
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it("returns upstream_unavailable as a scoped tool envelope", async () => {
+    const client = supabaseErrorDouble();
+    const result = await authorizeAndExecuteHermesReadTool(
+      client as never,
+      profile(),
+      "xingyao_search_projects",
+      {},
+    );
+
+    expect(result).toMatchObject({
+      status: 503,
+      envelope: {
+        status: "error",
+        error: { code: "upstream_unavailable" },
+        toolInvocationId: INVOCATION_ID,
+      },
+    });
+  });
+
+  it("sanitizes malicious database fields and text at the shared success boundary", async () => {
+    const client = supabaseDouble([
+      {
+        id: PROJECT_ID,
+        name: "Visible project",
+        authorization: "Bearer read-secret-that-must-not-leak",
+        actorJws: "signed.actor.jws",
+        password: "database-password",
+        note: "select * from projects; Error at /api/internal/hermes/read",
+        stack: "Error: private stack",
+      },
+    ]);
+
+    const result = await authorizeAndExecuteHermesReadTool(
+      client as never,
+      profile(),
+      "xingyao_search_projects",
+      {},
+    );
+    const serialized = JSON.stringify(result.envelope);
+
+    expect(result.status).toBe(200);
+    expect(result.envelope).toMatchObject({
+      status: "ok",
+      data: { rows: [{ id: PROJECT_ID, name: "Visible project" }] },
+      evidenceRefs: [`project:${PROJECT_ID}`],
+    });
+    for (const secret of [
+      "read-secret-that-must-not-leak",
+      "signed.actor.jws",
+      "database-password",
+      "select *",
+      "projects;",
+      "/api/internal/",
+      "private stack",
+      "authorization",
+      "actorJws",
+      "password",
+      "stack",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  it("returns stable public evidence labels and preserves partial metadata", async () => {
+    const client = supabaseDouble([
+      { id: PROJECT_ID, name: "Project one" },
+      { id: PROJECT_ID_TWO, name: "Project two" },
+      { id: PROJECT_ID_THREE, name: "Project three" },
+    ]);
+
+    const result = await authorizeAndExecuteHermesReadTool(
+      client as never,
+      profile(),
+      "xingyao_search_projects",
+      { limit: 2 },
+    );
+
+    expect(result).toMatchObject({
+      status: 200,
+      envelope: {
+        status: "partial",
+        data: { rows: [{ id: PROJECT_ID }, { id: PROJECT_ID_TWO }] },
+        evidenceRefs: [`project:${PROJECT_ID}`, `project:${PROJECT_ID_TWO}`],
+        sourceLabels: ["project_record"],
+        missingData: [],
+        permissionDenials: [],
+        truncated: true,
+      },
+    });
+    expect(JSON.stringify(result.envelope)).not.toContain("projects:");
+    expect(client.calls).toContainEqual(["projects", "limit", 3]);
+  });
 });
 
 const USER_ID = "11111111-1111-4111-8111-111111111111";
@@ -194,6 +682,8 @@ const ORG_ID = "22222222-2222-4222-8222-222222222222";
 const CONVERSATION_ID = "33333333-3333-4333-8333-333333333333";
 const INVOCATION_ID = "44444444-4444-4444-8444-444444444444";
 const PROJECT_ID = "55555555-5555-4555-8555-555555555555";
+const PROJECT_ID_TWO = "66666666-6666-4666-8666-666666666666";
+const PROJECT_ID_THREE = "77777777-7777-4777-8777-777777777777";
 
 function profile(
   overrides: Partial<HermesActorProfile> = {},
@@ -269,5 +759,21 @@ function supabaseDouble(rows: unknown[]) {
       calls.push([table, "from"]);
       return builder;
     }),
+  };
+}
+
+function supabaseErrorDouble() {
+  const builder = {
+    select: vi.fn(() => builder),
+    eq: vi.fn(() => builder),
+    ilike: vi.fn(() => builder),
+    order: vi.fn(() => builder),
+    limit: vi.fn(async () => ({
+      data: null,
+      error: { message: "database unavailable" },
+    })),
+  };
+  return {
+    from: vi.fn(() => builder),
   };
 }

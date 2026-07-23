@@ -6,12 +6,18 @@ import {
   createConversationService,
   type ConversationPersistence,
 } from "./conversation-service";
+import { HermesStateRepositoryError } from "./hermes/hermes-state-repository";
 import type {
   CreatedConversationTurn,
   StoredConversationTurn,
 } from "./conversation-repository";
 
 const actor = { organizationId: "org-1", userId: "user-1" };
+const gatewayRuntimeSelection = {
+  runtime: "gateway" as const,
+  protocol: "xingyao-hermes-gateway-v2",
+  profile: "hermes-xingyao-v2",
+};
 
 const createdTurn: CreatedConversationTurn = {
   conversationId: "conversation-1",
@@ -38,6 +44,8 @@ function storedTurn(
     retryOfTurnId: null,
     regenerateOfTurnId: null,
     providerName: null,
+    outcome: null,
+    cancelRequestedAt: null,
     errorCode: null,
     errorSummary: null,
     retryable: true,
@@ -60,6 +68,18 @@ function persistence(
     completeTurn: vi.fn().mockResolvedValue(true),
     failTurn: vi.fn().mockResolvedValue(true),
     renewLease: vi.fn().mockResolvedValue(true),
+    finishTurnV2: vi.fn().mockResolvedValue(undefined),
+    cancelTurnV2: vi.fn().mockResolvedValue({
+      turnId: "turn-1",
+      status: "cancelled",
+      outcome: "cancelled",
+      cancelRequested: true,
+      alreadyTerminal: false,
+    }),
+    renewLeaseV2: vi.fn().mockResolvedValue(undefined),
+    compareAndSwapGatewayState: vi.fn().mockResolvedValue(2),
+    getGatewayState: vi.fn().mockResolvedValue(null),
+    syncConversationSummary: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
 }
@@ -86,6 +106,43 @@ describe("Xingyao conversation service", () => {
       content: "解读当前风险",
     });
     expect(result).toEqual(createdTurn);
+  });
+
+  it("passes selected runtime into accepted turn persistence", async () => {
+    const store = persistence();
+    const service = createConversationService(store, {
+      now: () => new Date("2026-07-11T03:00:00.000Z"),
+    });
+
+    await service.acceptTurn(
+      actor,
+      "conversation-1",
+      {
+        content: "瑙ｈ褰撳墠椋庨櫓",
+        mode: "deep",
+        clientRequestId: "request-123",
+        attachments: [],
+      },
+      { runtimeSelection: gatewayRuntimeSelection },
+    );
+
+    expect(store.createTurn).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      clientRequestId: "request-123",
+      mode: "deep",
+      kind: "user",
+      content: "瑙ｈ褰撳墠椋庨櫓",
+      contextSnapshot: {
+        version: 1,
+        summaryVersion: 0,
+        messageIds: [],
+        groundingRefs: [],
+        assembledAt: "2026-07-11T03:00:00.000Z",
+        runtimeSelection: gatewayRuntimeSelection,
+      },
+    });
   });
 
   it("retries a failed turn without creating another user message", async () => {
@@ -192,6 +249,52 @@ describe("Xingyao conversation service", () => {
         from: "accepted",
         to: "grounding",
         patch: expect.objectContaining({ contextSnapshot: prepared.snapshot }),
+      }),
+    );
+  });
+
+  it("keeps persisted runtime selection when Gateway setup fails before capture", async () => {
+    const messages: AiConversationMessageDto[] = [
+      message("message-user-1", 1, "user", "completed", "褰撳墠闂"),
+      message("message-assistant-1", 2, "assistant", "pending", ""),
+    ];
+    const runtimeSeed = {
+      version: 1,
+      summaryVersion: 0,
+      messageIds: [],
+      groundingRefs: [],
+      assembledAt: "2026-07-11T03:00:00.000Z",
+      runtimeSelection: gatewayRuntimeSelection,
+    };
+    const store = persistence({
+      listMessages: vi.fn().mockResolvedValue(messages),
+      getTurn: vi.fn().mockResolvedValue(
+        storedTurn({
+          contextSnapshot: runtimeSeed,
+        }),
+      ),
+    });
+    const service = createConversationService(store, {
+      now: () => new Date("2026-07-12T06:00:00.000Z"),
+    });
+
+    const prepared = await service.prepareTurn(actor, "turn-1", [
+      "dashboard:role-home",
+    ]);
+
+    expect(prepared.snapshot).toEqual({
+      version: 1,
+      summaryVersion: 0,
+      messageIds: ["message-user-1"],
+      groundingRefs: ["dashboard:role-home"],
+      assembledAt: "2026-07-12T06:00:00.000Z",
+      runtimeSelection: gatewayRuntimeSelection,
+    });
+    expect(store.transitionTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        patch: expect.objectContaining({
+          contextSnapshot: prepared.snapshot,
+        }),
       }),
     );
   });
@@ -1183,8 +1286,16 @@ describe("Xingyao conversation service", () => {
     expect(store.completeTurn).not.toHaveBeenCalled();
   });
 
-  it("returns turn mappings with history so failed messages remain retryable after reload", async () => {
+  it("returns turn mappings and pending clarify with history for reload", async () => {
     const turn = storedTurn({ status: "failed", errorCode: "provider_failed" });
+    const pendingClarify = {
+      turnId: "turn-1",
+      clarifyId: "66666666-6666-4666-8666-666666666666",
+      requestId: "clarify-request-1",
+      question: "Which scope should be reviewed?",
+      choices: ["Current month", "Current week"],
+      allowFreeText: true,
+    };
     const store = persistence({
       getConversation: vi.fn().mockResolvedValue({
         id: "conversation-1",
@@ -1196,12 +1307,18 @@ describe("Xingyao conversation service", () => {
       }),
       listMessages: vi.fn().mockResolvedValue([]),
       listTurns: vi.fn().mockResolvedValue([turn]),
+      getGatewayState: vi.fn().mockResolvedValue({
+        generation: 3,
+        summary: {},
+        summaryVersion: 0,
+        pendingClarify,
+      }),
     });
     const service = createConversationService(store);
 
     const history = await service.getHistory(actor, "conversation-1");
 
-    expect(history.turns).toEqual([turn]);
+    expect(history.turns).toEqual([{ ...turn, pendingClarify }]);
   });
 
   it("captures the exact trusted gateway context before generation", async () => {
@@ -1248,6 +1365,163 @@ describe("Xingyao conversation service", () => {
         }),
       }),
     );
+  });
+
+  it("injects actor ownership into Hermes finish, cancel, lease, and state calls", async () => {
+    const store = persistence();
+    const service = createConversationService(store);
+
+    await service.finishTurnV2(actor, "turn-1", {
+      invocationId: "invocation-1",
+      outcome: "partial",
+      content: "基于部分可用数据。",
+      providerName: "deepseek",
+      errorCode: null,
+      errorSummary: null,
+      retryable: false,
+      metadata: { missingData: ["settlement"] },
+    });
+    expect(store.finishTurnV2).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      turnId: "turn-1",
+      invocationId: "invocation-1",
+      outcome: "partial",
+      content: "基于部分可用数据。",
+      providerName: "deepseek",
+      errorCode: null,
+      errorSummary: null,
+      retryable: false,
+      metadata: { missingData: ["settlement"] },
+    });
+
+    await service.cancelTurn(actor, "conversation-1", "turn-1");
+    expect(store.cancelTurnV2).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+    });
+
+    await service.renewLeaseV2(actor, "turn-1");
+    expect(store.renewLeaseV2).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      turnId: "turn-1",
+    });
+
+    await expect(
+      service.compareAndSwapGatewayState(actor, "conversation-1", 1, {
+        generation: 2,
+        sessionId: "session-1",
+        organizationId: "attacker-org",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(store.compareAndSwapGatewayState).not.toHaveBeenCalled();
+
+    await expect(
+      service.compareAndSwapGatewayState(actor, "conversation-1", 1, {
+        generation: 2,
+        sessionId: "session-1",
+      }),
+    ).resolves.toBe(2);
+    expect(store.compareAndSwapGatewayState).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      expectedGeneration: 1,
+      nextState: { generation: 2, sessionId: "session-1" },
+    });
+  });
+
+  it("tenant-scopes Gateway state, Session search inputs, and summary synchronization", async () => {
+    const store = persistence({
+      getGatewayState: vi.fn().mockResolvedValue({
+        generation: 2,
+        sessionId: "session-1",
+        summaryVersion: 4,
+        summary: { text: "old" },
+      }),
+      syncConversationSummary: vi.fn().mockResolvedValue(true),
+    });
+    const service = createConversationService(store);
+
+    await expect(
+      service.getGatewayState(actor, "conversation-1"),
+    ).resolves.toMatchObject({ generation: 2, sessionId: "session-1" });
+    expect(store.getGatewayState).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+    });
+
+    await expect(
+      service.syncConversationSummary(actor, "conversation-1", {
+        expectedSummaryVersion: 4,
+        summary: { text: "official compression" },
+      }),
+    ).resolves.toBeUndefined();
+    expect(store.syncConversationSummary).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      expectedSummaryVersion: 4,
+      summary: { text: "official compression" },
+    });
+  });
+
+  it("does not let a runtime finish payload override verified identity or turn", async () => {
+    const store = persistence();
+    const service = createConversationService(store);
+    const maliciousInput = {
+      invocationId: "invocation-1",
+      outcome: "complete" as const,
+      content: "可信回答",
+      providerName: "deepseek" as const,
+      errorCode: null,
+      errorSummary: null,
+      retryable: false,
+      metadata: {},
+      organizationId: "attacker-org",
+      ownerUserId: "attacker-user",
+      turnId: "attacker-turn",
+    };
+
+    await service.finishTurnV2(actor, "turn-1", maliciousInput);
+
+    expect(store.finishTurnV2).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      turnId: "turn-1",
+      invocationId: "invocation-1",
+      outcome: "complete",
+      content: "可信回答",
+      providerName: "deepseek",
+      errorCode: null,
+      errorSummary: null,
+      retryable: false,
+      metadata: {},
+    });
+  });
+
+  it("normalizes unknown Hermes persistence failures without leaking internals", async () => {
+    const store = persistence({
+      cancelTurnV2: vi
+        .fn()
+        .mockRejectedValue(new Error("cancel_ai_chat_turn SQL failed")),
+    });
+    const service = createConversationService(store);
+
+    const error = await service
+      .cancelTurn(actor, "conversation-1", "turn-1")
+      .then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+    expect(error).toBeInstanceOf(HermesStateRepositoryError);
+    expect(error).toMatchObject({ code: "state_conflict" });
+    expect(String(error)).not.toContain("cancel_ai_chat_turn");
   });
 });
 

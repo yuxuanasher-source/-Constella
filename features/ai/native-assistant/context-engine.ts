@@ -1,6 +1,9 @@
 import {
+  HERMES_MODE_BUDGETS,
   HERMES_PROFILE_VERSION,
+  LEGACY_HERMES_PROFILE_VERSION,
   isHermesActorProfile,
+  isLegacyHermesActorProfile,
   isUuid,
   type HermesActorProfile,
   type HermesSkillGrant,
@@ -12,7 +15,9 @@ import {
   toHermesSkillGrantAuditEvent,
   type HermesSkillGrantAuditEvent,
 } from "../hermes/skill-governance";
+import type { AiConversationMessageDto } from "../conversation-contracts";
 import {
+  LEGACY_XINGYAO_ASSISTANT,
   NATIVE_XINGYAO_ASSISTANT,
   parseNativeAssistantClientRequest,
   type NativeAssistantClientRequest,
@@ -26,20 +31,47 @@ type BuildContextInput = {
   };
   conversationId: string;
   invocationId: string;
+  runtime?: "legacy" | "gateway";
   clientRequest: unknown;
   enabledSkillVersions?: HermesSkillGrant[];
 };
 
+type BuildGatewayContextInput = BuildContextInput & {
+  personalMemoryRevision: number;
+  messages: AiConversationMessageDto[];
+};
+
 export type NativeAssistantContext = NativeAssistantClientRequest & {
-  assistant: typeof NATIVE_XINGYAO_ASSISTANT;
+  assistant:
+    | typeof LEGACY_XINGYAO_ASSISTANT
+    | typeof NATIVE_XINGYAO_ASSISTANT;
   actor: HermesActorProfile;
   skillAudit: HermesSkillGrantAuditEvent;
+};
+
+export type GatewayLedgerTranscriptMessage = {
+  role: "user" | "assistant" | "tool";
+  content: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type GatewayNativeAssistantContext = NativeAssistantContext & {
+  personalMemoryRevision: number;
+  budget: (typeof HERMES_MODE_BUDGETS)[keyof typeof HERMES_MODE_BUDGETS];
+  ledgerTranscript: GatewayLedgerTranscriptMessage[];
 };
 
 export function buildNativeAssistantContext(
   input: BuildContextInput,
 ): NativeAssistantContext | null {
   const clientRequest = parseNativeAssistantClientRequest(input.clientRequest);
+  const useGateway = input.runtime === "gateway";
+  const assistant = useGateway
+    ? NATIVE_XINGYAO_ASSISTANT
+    : LEGACY_XINGYAO_ASSISTANT;
+  const profileVersion = useGateway
+    ? HERMES_PROFILE_VERSION
+    : LEGACY_HERMES_PROFILE_VERSION;
   const allowedReadScopes = getAllowedReadScopesForRole(input.auth.role);
   const skillEvaluation = evaluateHermesSkillGrantsForActor({
     role: input.auth.role,
@@ -68,16 +100,19 @@ export function buildNativeAssistantContext(
     allowedReadScopes,
     enabledSkillVersions,
     skillGrantsHash: computeHermesSkillGrantsHash(enabledSkillVersions),
-    profileVersion: HERMES_PROFILE_VERSION,
+    profileVersion,
     pageContext: clientRequest.pageContext ?? { pageType: "global", objectIds: [] },
   };
 
-  if (!isHermesActorProfile(actor)) {
+  const isExpectedActorProfile = useGateway
+    ? isHermesActorProfile
+    : isLegacyHermesActorProfile;
+  if (!isExpectedActorProfile(actor)) {
     return null;
   }
 
   return {
-    assistant: NATIVE_XINGYAO_ASSISTANT,
+    assistant,
     ...clientRequest,
     actor,
     skillAudit: toHermesSkillGrantAuditEvent({
@@ -88,6 +123,75 @@ export function buildNativeAssistantContext(
         skillGrantsHash: actor.skillGrantsHash,
       },
     }),
+  };
+}
+
+export function buildGatewayNativeAssistantContext(
+  input: BuildGatewayContextInput,
+): GatewayNativeAssistantContext | null {
+  const base = buildNativeAssistantContext({
+    ...input,
+    runtime: "gateway",
+  });
+  if (!base || !Number.isInteger(input.personalMemoryRevision) || input.personalMemoryRevision < 0) {
+    return null;
+  }
+
+  return {
+    ...base,
+    personalMemoryRevision: input.personalMemoryRevision,
+    budget: HERMES_MODE_BUDGETS[base.mode],
+    ledgerTranscript: sanitizeLedgerTranscript({
+      messages: input.messages,
+      ownerUserId: input.auth.userId,
+    }),
+  };
+}
+
+function sanitizeLedgerTranscript({
+  messages,
+  ownerUserId,
+}: {
+  messages: AiConversationMessageDto[];
+  ownerUserId: string;
+}): GatewayLedgerTranscriptMessage[] {
+  return messages
+    .filter((message) => {
+      if (message.status !== "completed") return false;
+      if (
+        typeof message.metadata?.ownerUserId === "string" &&
+        message.metadata.ownerUserId !== ownerUserId
+      ) {
+        return false;
+      }
+      return message.role === "user" || message.role === "assistant" || message.role === "tool";
+    })
+    .map((message): GatewayLedgerTranscriptMessage => {
+      if (message.role === "user" || message.role === "assistant") {
+        return { role: message.role, content: message.content };
+      }
+      const metadata = sanitizeToolMessageMetadata(message.metadata ?? {}, message.updatedAt);
+      return {
+        role: "tool",
+        content: message.content,
+        ...(Object.keys(metadata).length ? { metadata } : {}),
+      };
+    });
+}
+
+function sanitizeToolMessageMetadata(
+  metadata: Record<string, unknown>,
+  fallbackUpdatedAt: string,
+): Record<string, unknown> {
+  return {
+    ...(typeof metadata.toolName === "string" && metadata.toolName.trim()
+      ? { toolName: metadata.toolName }
+      : {}),
+    updatedAt:
+      typeof metadata.updatedAt === "string" && metadata.updatedAt.trim()
+        ? metadata.updatedAt
+        : fallbackUpdatedAt,
+    historical: true,
   };
 }
 

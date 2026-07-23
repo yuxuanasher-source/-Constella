@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+import {
+  parseHermesRuntimeSelectionConfig,
+  type HermesRuntimeSelectionEnv,
+} from "@/features/ai/hermes/runtime-selection";
+
 const publicEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
@@ -16,7 +21,8 @@ const serverEnvSchema = z.object({
 });
 
 export type PublicEnv = z.infer<typeof publicEnvSchema>;
-export type ServerEnv = z.infer<typeof serverEnvSchema>;
+export type ServerEnv = z.infer<typeof serverEnvSchema> &
+  HermesRuntimeSelectionEnv;
 
 export function parsePublicEnv(
   env: Record<string, string | undefined>,
@@ -27,7 +33,12 @@ export function parsePublicEnv(
 export function parseServerEnv(
   env: Record<string, string | undefined>,
 ): ServerEnv {
-  return serverEnvSchema.parse(env);
+  const { gatewayAllowlistEntries: _gatewayAllowlistEntries, ...hermesEnv } =
+    parseHermesRuntimeSelectionConfig(env);
+  return {
+    ...serverEnvSchema.parse(env),
+    ...hermesEnv,
+  };
 }
 
 export function getPublicEnv(): PublicEnv {
@@ -42,6 +53,16 @@ export function getServerEnv(): ServerEnv {
   return parseServerEnv({
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
     STORAGE_BUCKET_PRIVATE: process.env.STORAGE_BUCKET_PRIVATE,
+    XINGYAO_HERMES_GATEWAY_ENABLED:
+      process.env.XINGYAO_HERMES_GATEWAY_ENABLED,
+    XINGYAO_HERMES_GATEWAY_ALLOWLIST:
+      process.env.XINGYAO_HERMES_GATEWAY_ALLOWLIST,
+    XINGYAO_HERMES_GATEWAY_BASE_URL:
+      process.env.XINGYAO_HERMES_GATEWAY_BASE_URL,
+    XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN:
+      process.env.XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN,
+    XINGYAO_HERMES_LEGACY_RUNTIME_ENABLED:
+      process.env.XINGYAO_HERMES_LEGACY_RUNTIME_ENABLED,
   });
 }
 

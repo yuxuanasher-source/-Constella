@@ -2,13 +2,18 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  HERMES_ASSERTION_PROFILE_VERSION,
+  HERMES_GATEWAY_ASSERTION_PROFILE_VERSION,
   signHermesActorAssertion,
   verifyHermesActorAssertion,
 } from "./actor-assertion";
-import type { HermesActorProfile } from "./contracts";
+import { HERMES_PROFILE_VERSION, type HermesActorProfile } from "./contracts";
 
 describe("Hermes actor assertion", () => {
   it("signs and verifies an RS256 actor assertion with a configured key and kid", async () => {
+    expect(HERMES_ASSERTION_PROFILE_VERSION).toBe(
+      "hermes-xingyao-v1+skills.c1755ec71e802748",
+    );
     const keys = rsaKeyPair();
     const token = await signHermesActorAssertion(PROFILE, {
       privateKeyPem: keys.privateKeyPem,
@@ -76,6 +81,131 @@ describe("Hermes actor assertion", () => {
         },
       ),
     ).rejects.toThrow("actor profile");
+    await expect(
+      signHermesActorAssertion(
+        { ...PROFILE, profileVersion: "custom" },
+        {
+          privateKeyPem: keys.privateKeyPem,
+          kid: "test-key-1",
+        },
+      ),
+    ).rejects.toThrow("actor profile");
+  });
+
+  it("signs a fresh Gateway v2 assertion for every boundary operation", async () => {
+    expect(HERMES_GATEWAY_ASSERTION_PROFILE_VERSION).toBe(
+      HERMES_PROFILE_VERSION,
+    );
+    const keys = rsaKeyPair();
+    const gatewayProfile = {
+      ...PROFILE,
+      profileVersion: HERMES_PROFILE_VERSION,
+    };
+
+    const assertions = await Promise.all(
+      ["session.create", "session.resume", "prompt.submit"].map(() =>
+        signHermesActorAssertion(gatewayProfile, {
+          privateKeyPem: keys.privateKeyPem,
+          kid: "gateway-key-1",
+          now: new Date("2026-07-22T00:00:00.000Z"),
+          ttlSeconds: 60,
+          runtime: "gateway",
+        }),
+      ),
+    );
+
+    expect(new Set(assertions)).toHaveLength(3);
+    for (const assertion of assertions) {
+      await expect(
+        verifyHermesActorAssertion(assertion, {
+          publicKeyPem: keys.publicKeyPem,
+          now: new Date("2026-07-22T00:00:30.000Z"),
+          runtime: "gateway",
+        }),
+      ).resolves.toMatchObject({ actor: gatewayProfile });
+    }
+  });
+
+  it("fails closed on a wrong runtime profile or changed Skill hash", async () => {
+    const keys = rsaKeyPair();
+    const legacyToken = await signHermesActorAssertion(PROFILE, {
+      privateKeyPem: keys.privateKeyPem,
+      kid: "test-key-1",
+      now: new Date("2026-07-22T00:00:00.000Z"),
+    });
+
+    await expect(
+      verifyHermesActorAssertion(legacyToken, {
+        publicKeyPem: keys.publicKeyPem,
+        now: new Date("2026-07-22T00:00:30.000Z"),
+        runtime: "gateway",
+      }),
+    ).rejects.toThrow("profile");
+    await expect(
+      signHermesActorAssertion(
+        {
+          ...PROFILE,
+          profileVersion: HERMES_PROFILE_VERSION,
+          skillGrantsHash: "a".repeat(64),
+        },
+        {
+          privateKeyPem: keys.privateKeyPem,
+          kid: "gateway-key-1",
+          runtime: "gateway",
+        },
+      ),
+    ).rejects.toThrow("actor profile");
+  });
+
+  it("accepts bounded Gateway clock skew and rejects future issued-at claims", async () => {
+    const keys = rsaKeyPair();
+    const gatewayProfile = {
+      ...PROFILE,
+      profileVersion: HERMES_PROFILE_VERSION,
+    };
+    const nearFuture = await signHermesActorAssertion(gatewayProfile, {
+      privateKeyPem: keys.privateKeyPem,
+      kid: "gateway-key-1",
+      now: new Date("2026-07-22T00:00:20.000Z"),
+      runtime: "gateway",
+    });
+    const farFuture = await signHermesActorAssertion(gatewayProfile, {
+      privateKeyPem: keys.privateKeyPem,
+      kid: "gateway-key-1",
+      now: new Date("2026-07-22T00:00:31.000Z"),
+      runtime: "gateway",
+    });
+
+    await expect(
+      verifyHermesActorAssertion(nearFuture, {
+        publicKeyPem: keys.publicKeyPem,
+        now: new Date("2026-07-22T00:00:00.000Z"),
+        runtime: "gateway",
+      }),
+    ).resolves.toMatchObject({ actor: gatewayProfile });
+    await expect(
+      verifyHermesActorAssertion(farFuture, {
+        publicKeyPem: keys.publicKeyPem,
+        now: new Date("2026-07-22T00:00:00.000Z"),
+        runtime: "gateway",
+      }),
+    ).rejects.toThrow("issued-at");
+    await expect(
+      verifyHermesActorAssertion(nearFuture, {
+        publicKeyPem: keys.publicKeyPem,
+        now: new Date("2026-07-22T00:00:00.000Z"),
+        runtime: "gateway",
+        clockSkewSeconds: 10,
+      }),
+    ).rejects.toThrow("issued-at");
+    await expect(
+      verifyHermesActorAssertion(nearFuture, {
+        publicKeyPem: keys.publicKeyPem,
+        now: new Date("2026-07-22T00:00:00.000Z"),
+        runtime: "gateway",
+        clockSkewSeconds: 31,
+      }),
+    ).rejects.toThrow("clock skew");
   });
 });
 

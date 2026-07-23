@@ -7,27 +7,58 @@ import type {
   AiConversationMessageDto,
   ConversationContextSnapshot,
   ConversationGatewayContext,
+  ConversationRuntimeSelection,
+  ConversationStreamEvent,
   CreateTurnCommand,
   RetryTurnCommand,
 } from "./conversation-contracts";
 import type { AiMessage, AiProviderName } from "./contracts";
+import { createHermesActorFingerprint } from "./hermes/actor-fingerprint";
 import {
+  cancelAiConversationTurnV2,
+  claimAiConversationClarifyResponse,
+  compareAndSwapAiConversationGatewayState,
   completeAiConversationTurn,
   createAiConversation,
   createAiConversationTurn,
   failAiConversationTurn,
+  finishAiConversationTurnV2,
+  getAiConversationGatewayState,
   getAiConversation,
   getAiConversationTurn,
   listAiConversationMessages,
   listAiConversationTurns,
   listAiConversations,
   renewAiConversationTurnLease,
+  renewAiConversationTurnLeaseV2,
+  syncAiConversationSummary,
   transitionAiConversationTurn,
+  verifyAiConversationTerminalState,
   type ConversationRepositoryClient,
+  type ConversationClarifyClaim,
+  type ConversationGatewayState,
   type CreatedConversationTurn,
   type StoredConversationTurn,
 } from "./conversation-repository";
+import {
+  createHermesStateRepository,
+  HermesStateRepositoryError,
+  assertHermesSanitizedObject,
+  mapHermesStateRepositoryError,
+  type HermesStateRepository,
+} from "./hermes/hermes-state-repository";
+import {
+  HERMES_PROFILE_VERSION,
+  HERMES_PROTOCOL_VERSION,
+  LEGACY_HERMES_PROFILE_VERSION,
+  type HermesOutcome,
+} from "./hermes/contracts";
+import type { HermesActorProfile } from "./hermes/contracts";
 import { hasMeaningfulAiContent } from "./response-quality";
+import {
+  issueHermesRootRunCapability,
+  revealHermesCapabilityToken,
+} from "./hermes/run-capability";
 
 const MAX_SNAPSHOT_VERSION = 2_147_483_647;
 const MAX_CONTEXT_DEPTH = 64;
@@ -35,6 +66,7 @@ const MAX_CONTEXT_VISITED_OBJECTS = 100_000;
 const MAX_CONTEXT_EXPANDED_NODES = 100_000;
 // Five max-size canonical attachments serialize below 60 MiB, leaving ample metadata headroom.
 const MAX_CONTEXT_ESTIMATED_JSON_BYTES = 128 * 1024 * 1024;
+const LEGACY_HERMES_PROTOCOL_VERSION = "xingyao-legacy-chat-v1";
 
 export type ConversationActor = {
   organizationId: string;
@@ -87,6 +119,45 @@ export type ConversationPersistence = {
   renewLease(
     input: Parameters<typeof renewAiConversationTurnLease>[1],
   ): Promise<boolean>;
+  finishTurnV2?(
+    input: Parameters<typeof finishAiConversationTurnV2>[1],
+  ): Promise<void>;
+  cancelTurnV2?(
+    input: Parameters<typeof cancelAiConversationTurnV2>[1],
+  ): ReturnType<typeof cancelAiConversationTurnV2>;
+  renewLeaseV2?(
+    input: Parameters<typeof renewAiConversationTurnLeaseV2>[1],
+  ): Promise<void>;
+  compareAndSwapGatewayState?(
+    input: Parameters<typeof compareAndSwapAiConversationGatewayState>[1],
+  ): Promise<number>;
+  getGatewayState?(input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+  }): Promise<ConversationGatewayState | null>;
+  claimClarifyResponse?(input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+    clarifyId: string;
+    answerSha256: string;
+  }): Promise<ConversationClarifyClaim>;
+  verifyTerminalState?(input: {
+    organizationId: string;
+    ownerUserId: string;
+    turnId: string;
+    event: ConversationStreamEvent;
+  }): Promise<boolean>;
+  syncConversationSummary?(input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    expectedSummaryVersion: number;
+    summary: Record<string, unknown>;
+  }): Promise<boolean>;
+  issueRunCapability?: HermesStateRepository["issueRunCapability"];
 };
 
 export class ConversationServiceError extends Error {
@@ -108,6 +179,10 @@ export class ConversationServiceError extends Error {
   }
 }
 
+export type ConversationTurnRuntimeOptions = {
+  runtimeSelection?: ConversationRuntimeSelection;
+};
+
 export function createSupabaseConversationPersistence(
   client: ConversationRepositoryClient,
 ): ConversationPersistence {
@@ -123,6 +198,24 @@ export function createSupabaseConversationPersistence(
     completeTurn: (input) => completeAiConversationTurn(client, input),
     failTurn: (input) => failAiConversationTurn(client, input),
     renewLease: (input) => renewAiConversationTurnLease(client, input),
+    finishTurnV2: (input) => finishAiConversationTurnV2(client, input),
+    cancelTurnV2: (input) => cancelAiConversationTurnV2(client, input),
+    renewLeaseV2: (input) => renewAiConversationTurnLeaseV2(client, input),
+    compareAndSwapGatewayState: (input) =>
+      compareAndSwapAiConversationGatewayState(client, input),
+    getGatewayState: (input) => getAiConversationGatewayState(client, input),
+    claimClarifyResponse: (input) =>
+      claimAiConversationClarifyResponse(client, input),
+    verifyTerminalState: (input) =>
+      verifyAiConversationTerminalState(client, input),
+    syncConversationSummary: (input) => syncAiConversationSummary(client, input),
+    issueRunCapability: (actorSnapshot, turn, binding, expiresAt) =>
+      createHermesStateRepository(client).issueRunCapability(
+        actorSnapshot,
+        turn,
+        binding,
+        expiresAt,
+      ),
   };
 }
 
@@ -178,17 +271,42 @@ export function createConversationService(
         ownerUserId: actor.userId,
         conversationId,
       };
-      const [messages, turns] = await Promise.all([
+      const [messages, turns, gatewayState] = await Promise.all([
         persistence.listMessages(scope),
         persistence.listTurns(scope),
+        persistence.getGatewayState
+          ? persistence.getGatewayState(scope)
+          : Promise.resolve(null),
       ]);
-      return { conversation, messages, turns };
+      const pendingClarify = gatewayState?.pendingClarify;
+      const turnsWithPendingClarify = pendingClarify
+        ? turns.map((turn) =>
+            turn.id === pendingClarify.turnId
+              ? { ...turn, pendingClarify }
+              : turn,
+          )
+        : turns;
+      return { conversation, messages, turns: turnsWithPendingClarify };
+    },
+
+    listMessages(
+      actor: ConversationActor,
+      conversationId: string,
+      limit = 200,
+    ) {
+      return persistence.listMessages({
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        conversationId,
+        limit,
+      });
     },
 
     async acceptTurn(
       actor: ConversationActor,
       conversationId: string,
       command: CreateTurnCommand,
+      options: ConversationTurnRuntimeOptions = {},
     ): Promise<CreatedConversationTurn> {
       return requireCreatedTurn(
         await persistence.createTurn({
@@ -199,6 +317,10 @@ export function createConversationService(
           mode: command.mode,
           kind: "user",
           content: command.content,
+          contextSnapshot: initialRuntimeSelectionSnapshot(
+            options.runtimeSelection,
+            now,
+          ),
         }),
       );
     },
@@ -207,6 +329,7 @@ export function createConversationService(
       actor: ConversationActor,
       sourceTurnId: string,
       command: RetryTurnCommand,
+      options: ConversationTurnRuntimeOptions = {},
     ): Promise<CreatedConversationTurn> {
       const source = await requireTurn(persistence, actor, sourceTurnId);
       if (source.status !== "failed" || !source.retryable) {
@@ -224,6 +347,10 @@ export function createConversationService(
           mode: source.mode,
           kind: "retry",
           sourceTurnId,
+          contextSnapshot: initialRuntimeSelectionSnapshot(
+            options.runtimeSelection,
+            now,
+          ),
         }),
       );
     },
@@ -232,6 +359,7 @@ export function createConversationService(
       actor: ConversationActor,
       sourceTurnId: string,
       command: RetryTurnCommand,
+      options: ConversationTurnRuntimeOptions = {},
     ): Promise<CreatedConversationTurn> {
       const source = await requireTurn(persistence, actor, sourceTurnId);
       if (source.status !== "completed") {
@@ -249,6 +377,10 @@ export function createConversationService(
           mode: source.mode,
           kind: "regenerate",
           sourceTurnId,
+          contextSnapshot: initialRuntimeSelectionSnapshot(
+            options.runtimeSelection,
+            now,
+          ),
         }),
       );
     },
@@ -314,13 +446,19 @@ export function createConversationService(
         ? completed.filter((message) => snapshotIds.includes(message.id))
         : completed;
       const selected = takeLatestWithinBudget(eligible, contextCharacterBudget);
-      const snapshot = frozenSnapshot ?? {
-        version: 1,
-        summaryVersion: 0,
-        messageIds: selected.map((message) => message.id),
-        groundingRefs: [...new Set(groundingRefs)],
-        assembledAt: now().toISOString(),
-      };
+      const snapshot =
+        frozenSnapshot && !isRuntimeSelectionSeedSnapshot(frozenSnapshot)
+          ? frozenSnapshot
+          : {
+              version: frozenSnapshot?.version ?? 1,
+              summaryVersion: frozenSnapshot?.summaryVersion ?? 0,
+              messageIds: selected.map((message) => message.id),
+              groundingRefs: [...new Set(groundingRefs)],
+              assembledAt: now().toISOString(),
+              ...(frozenSnapshot?.runtimeSelection
+                ? { runtimeSelection: frozenSnapshot.runtimeSelection }
+                : {}),
+            };
       const persistedSnapshot = requireConversationSnapshot(snapshot);
       const contextHash = hashConversationSnapshot(persistedSnapshot);
 
@@ -478,6 +616,246 @@ export function createConversationService(
         );
       }
     },
+
+    async finishTurnV2(
+      actor: ConversationActor,
+      turnId: string,
+      input: {
+        invocationId: string;
+        outcome: HermesOutcome;
+        content?: string;
+        providerName?: AiProviderName | null;
+        errorCode?: string | null;
+        errorSummary?: string | null;
+        retryable: boolean;
+        metadata?: Record<string, unknown>;
+      },
+    ) {
+      if (
+        ["complete", "partial", "blocked"].includes(input.outcome) &&
+        !hasMeaningfulAiContent(input.content ?? "")
+      ) {
+        throw new HermesStateRepositoryError("invalid_input");
+      }
+      if (!persistence.finishTurnV2) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        await persistence.finishTurnV2({
+          invocationId: input.invocationId,
+          outcome: input.outcome,
+          content: input.content,
+          providerName: input.providerName,
+          errorCode: input.errorCode,
+          errorSummary: input.errorSummary,
+          retryable: input.retryable,
+          metadata: input.metadata,
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          turnId,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async cancelTurn(
+      actor: ConversationActor,
+      conversationId: string,
+      turnId: string,
+    ) {
+      if (!persistence.cancelTurnV2) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        return await persistence.cancelTurnV2({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          conversationId,
+          turnId,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async renewLeaseV2(actor: ConversationActor, turnId: string) {
+      if (!persistence.renewLeaseV2) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        await persistence.renewLeaseV2({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          turnId,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async compareAndSwapGatewayState(
+      actor: ConversationActor,
+      conversationId: string,
+      expectedGeneration: number,
+      nextState: Record<string, unknown>,
+    ) {
+      const sanitizedState = assertHermesSanitizedObject(nextState);
+      if (!persistence.compareAndSwapGatewayState) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        return await persistence.compareAndSwapGatewayState({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          conversationId,
+          expectedGeneration,
+          nextState: sanitizedState,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async getGatewayState(actor: ConversationActor, conversationId: string) {
+      if (!persistence.getGatewayState) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      return persistence.getGatewayState({
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        conversationId,
+      });
+    },
+
+    async claimClarifyResponse(
+      actor: ConversationActor,
+      conversationId: string,
+      turnId: string,
+      input: { clarifyId: string; answerSha256: string },
+    ) {
+      if (!persistence.claimClarifyResponse) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        return await persistence.claimClarifyResponse({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          conversationId,
+          turnId,
+          clarifyId: input.clarifyId,
+          answerSha256: input.answerSha256,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async verifyTerminalState(
+      actor: ConversationActor,
+      turnId: string,
+      event: ConversationStreamEvent,
+    ) {
+      if (!persistence.verifyTerminalState) return false;
+      return persistence.verifyTerminalState({
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        turnId,
+        event,
+      });
+    },
+
+    async getSourceGatewayCheckpoint(
+      actor: ConversationActor,
+      sourceTurnId: string,
+    ) {
+      const sourceTurn = await requireTurn(persistence, actor, sourceTurnId);
+      const checkpoint = parseGatewayCheckpoint(
+        sourceTurn.contextSnapshot?.gatewayContext?.invocationMetadata
+          ?.gatewayCheckpoint,
+      );
+      if (
+        !checkpoint ||
+        checkpoint.turnId !== sourceTurn.id ||
+        checkpoint.conversationId !== sourceTurn.conversationId ||
+        checkpoint.organizationId !== actor.organizationId ||
+        checkpoint.ownerUserId !== actor.userId
+      ) {
+        return null;
+      }
+      return checkpoint;
+    },
+
+    async issueGatewayRootCapability(
+      actor: ConversationActor,
+      input: {
+        actor: HermesActorProfile;
+        mode: "fast" | "deep";
+        turn: { id: string; conversationId: string };
+        serverAllowedTools: string[];
+        approvedSkillDraftIds: string[];
+        aiStateWritesAllowed: boolean;
+      },
+    ) {
+      if (!persistence.issueRunCapability) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      if (
+        input.actor.organizationId !== actor.organizationId ||
+        input.actor.userId !== actor.userId ||
+        input.actor.conversationId !== input.turn.conversationId ||
+        input.actor.invocationId !== input.turn.id
+      ) {
+        throw new HermesStateRepositoryError("permission_denied");
+      }
+      const issued = await issueHermesRootRunCapability({
+        repository: { issueRunCapability: persistence.issueRunCapability },
+        actor: input.actor,
+        actorFingerprint: createHermesActorFingerprint(input.actor),
+        turn: input.turn,
+        mode: input.mode,
+        serverAllowedTools: input.serverAllowedTools,
+        approvedSkillDraftIds: input.approvedSkillDraftIds,
+        aiStateWritesAllowed: input.aiStateWritesAllowed,
+        assertionExpiresAt: new Date(now().getTime() + 300_000),
+        runDeadline: new Date(
+          now().getTime() +
+            (input.mode === "deep" ? 300_000 : 90_000),
+        ),
+        now: now(),
+      });
+      return {
+        capabilityId: issued.capabilityId,
+        invocationCapability: revealHermesCapabilityToken(issued.capability),
+        expiresAt: issued.expiresAt,
+      };
+    },
+
+    async syncConversationSummary(
+      actor: ConversationActor,
+      conversationId: string,
+      input: {
+        expectedSummaryVersion: number;
+        summary: Record<string, unknown>;
+      },
+    ) {
+      if (!persistence.syncConversationSummary) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      const synced = await persistence.syncConversationSummary({
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        conversationId,
+        expectedSummaryVersion: input.expectedSummaryVersion,
+        summary: assertHermesSanitizedObject(input.summary),
+      });
+      if (!synced) {
+        throw new ConversationServiceError(
+          "turn_state_conflict",
+          "Conversation summary changed before synchronization",
+        );
+      }
+    },
   };
 }
 
@@ -507,6 +885,49 @@ function requireCreatedTurn(
     );
   }
   return turn;
+}
+
+function initialRuntimeSelectionSnapshot(
+  runtimeSelection: ConversationRuntimeSelection | undefined,
+  now: () => Date,
+): ConversationContextSnapshot | undefined {
+  if (!runtimeSelection) return undefined;
+  return requireConversationSnapshot({
+    version: 1,
+    summaryVersion: 0,
+    messageIds: [],
+    groundingRefs: [],
+    assembledAt: now().toISOString(),
+    runtimeSelection,
+  });
+}
+
+function parseGatewayCheckpoint(value: unknown): {
+  sessionId: string;
+  checkpointId?: string;
+  turnId: string;
+  conversationId: string;
+  organizationId: string;
+  ownerUserId: string;
+} | null {
+  if (!isRecord(value)) return null;
+  const sessionId = nonEmptyString(value.sessionId);
+  const turnId = nonEmptyString(value.turnId);
+  const conversationId = nonEmptyString(value.conversationId);
+  const organizationId = nonEmptyString(value.organizationId);
+  const ownerUserId = nonEmptyString(value.ownerUserId);
+  const checkpointId = nonEmptyString(value.checkpointId);
+  if (!sessionId || !turnId || !conversationId || !organizationId || !ownerUserId) {
+    return null;
+  }
+  return {
+    sessionId,
+    turnId,
+    conversationId,
+    organizationId,
+    ownerUserId,
+    ...(checkpointId ? { checkpointId } : {}),
+  };
 }
 
 async function requireTransition(
@@ -598,8 +1019,40 @@ function isConversationSnapshot(
     typeof value.assembledAt === "string" &&
     value.assembledAt.trim().length > 0 &&
     Number.isFinite(Date.parse(value.assembledAt)) &&
+    (value.runtimeSelection === undefined ||
+      isConversationRuntimeSelection(value.runtimeSelection)) &&
     (value.gatewayContext === undefined ||
       isConversationGatewayContext(value.gatewayContext))
+  );
+}
+
+function isConversationRuntimeSelection(
+  value: unknown,
+): value is ConversationRuntimeSelection {
+  if (!isRecord(value)) return false;
+  if (value.runtime === "gateway") {
+    return (
+      value.protocol === HERMES_PROTOCOL_VERSION &&
+      value.profile === HERMES_PROFILE_VERSION
+    );
+  }
+  if (value.runtime === "legacy") {
+    return (
+      value.protocol === LEGACY_HERMES_PROTOCOL_VERSION &&
+      value.profile === LEGACY_HERMES_PROFILE_VERSION
+    );
+  }
+  return false;
+}
+
+function isRuntimeSelectionSeedSnapshot(
+  snapshot: ConversationContextSnapshot,
+): boolean {
+  return (
+    !!snapshot.runtimeSelection &&
+    !snapshot.gatewayContext &&
+    snapshot.messageIds.length === 0 &&
+    snapshot.groundingRefs.length === 0
   );
 }
 
@@ -866,6 +1319,12 @@ function rejectUnsafeConversationContext(): never {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
 }
 
 function hashConversationSnapshot(

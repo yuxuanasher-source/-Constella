@@ -1,12 +1,57 @@
-export const HERMES_KERNEL_ID = "hermes-agent-fork";
+export const HERMES_KERNEL_ID = "hermes-agent-official-gateway";
+export const HERMES_PROTOCOL_VERSION = "xingyao-hermes-gateway-v2";
+export const HERMES_PROFILE_VERSION = "hermes-xingyao-v2";
+export const LEGACY_HERMES_KERNEL_ID = "hermes-agent-fork";
+export const LEGACY_HERMES_PROFILE_VERSION =
+  "hermes-xingyao-v1+skills.c1755ec71e802748";
+export const HERMES_UPSTREAM_TAG = "v2026.7.20";
+export const HERMES_UPSTREAM_COMMIT =
+  "3ef6bbd201263d354fd83ec55b3c306ded2eb72a";
 export const HERMES_BUILTIN_SKILLS_SHA256 =
   "c1755ec71e802748d518c2a27c81d429c95f8e31b1b82ab77d966e60469c9239";
-export const HERMES_PROFILE_VERSION = `hermes-xingyao-v1+skills.${HERMES_BUILTIN_SKILLS_SHA256.slice(
-  0,
-  16,
-)}`;
+export const HERMES_CAPABILITY_MANIFEST_SHA256 =
+  "f7a47f72f5f2c5d93f3f8510b5b744f59c8937508b32c75d6556484a19d8a5e7";
 export const XINGYAO_PRODUCT_ISSUER = "xingyao-product";
 export const HERMES_AUDIENCE = "xingyao-hermes-agent";
+export const HERMES_EVIDENCE_REF_MAX_LENGTH = 160;
+
+export const HERMES_MODES = ["fast", "deep"] as const;
+export type HermesMode = (typeof HERMES_MODES)[number];
+
+export type HermesModeBudget = {
+  maxIterations: number;
+  wallClockMs: number;
+  maxParallelSubagents: number;
+  maxSubagentDepth: number;
+};
+
+export const HERMES_MODE_BUDGETS = {
+  fast: {
+    maxIterations: 24,
+    wallClockMs: 90_000,
+    maxParallelSubagents: 1,
+    maxSubagentDepth: 1,
+  },
+  deep: {
+    maxIterations: 90,
+    wallClockMs: 300_000,
+    maxParallelSubagents: 3,
+    maxSubagentDepth: 2,
+  },
+} as const satisfies Record<HermesMode, HermesModeBudget>;
+
+export const HERMES_OUTCOMES = [
+  "complete",
+  "partial",
+  "blocked",
+  "failed",
+  "cancelled",
+] as const;
+
+export type HermesOutcome = (typeof HERMES_OUTCOMES)[number];
+export type HermesProfileVersion =
+  | typeof HERMES_PROFILE_VERSION
+  | typeof LEGACY_HERMES_PROFILE_VERSION;
 
 export const HERMES_AUTH_ROLES = [
   "owner",
@@ -88,6 +133,25 @@ const PAGE_TYPE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 export function isHermesActorProfile(
   value: unknown,
 ): value is HermesActorProfile {
+  return isHermesActorProfileForVersion(value, HERMES_PROFILE_VERSION);
+}
+
+export function isLegacyHermesActorProfile(
+  value: unknown,
+): value is HermesActorProfile {
+  return isHermesActorProfileForVersion(value, LEGACY_HERMES_PROFILE_VERSION);
+}
+
+export function isKnownHermesActorProfile(
+  value: unknown,
+): value is HermesActorProfile {
+  return isHermesActorProfile(value) || isLegacyHermesActorProfile(value);
+}
+
+function isHermesActorProfileForVersion(
+  value: unknown,
+  profileVersion: HermesProfileVersion,
+): value is HermesActorProfile {
   if (!isRecord(value) || !hasExactKeys(value, ACTOR_PROFILE_KEYS)) {
     return false;
   }
@@ -101,7 +165,7 @@ export function isHermesActorProfile(
     isReadScopeArray(value.allowedReadScopes) &&
     isHermesSkillGrantArray(value.enabledSkillVersions) &&
     isSha256(value.skillGrantsHash) &&
-    value.profileVersion === HERMES_PROFILE_VERSION &&
+    value.profileVersion === profileVersion &&
     isHermesActorPageContext(value.pageContext)
   );
 }
@@ -116,6 +180,19 @@ export function isHermesAuthRole(value: unknown): value is HermesAuthRole {
 export function isHermesReadScope(value: unknown): value is HermesReadScope {
   return (
     typeof value === "string" && READ_SCOPES.includes(value as HermesReadScope)
+  );
+}
+
+export function isHermesMode(value: unknown): value is HermesMode {
+  return (
+    typeof value === "string" && HERMES_MODES.includes(value as HermesMode)
+  );
+}
+
+export function isHermesOutcome(value: unknown): value is HermesOutcome {
+  return (
+    typeof value === "string" &&
+    HERMES_OUTCOMES.includes(value as HermesOutcome)
   );
 }
 
@@ -200,7 +277,7 @@ function isHermesActorPageContext(
   return true;
 }
 
-function isSha256(value: unknown): value is string {
+export function isSha256(value: unknown): value is string {
   return typeof value === "string" && SHA256_PATTERN.test(value);
 }
 

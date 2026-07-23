@@ -1,13 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  cancelAiConversationTurnV2,
+  claimAiConversationClarifyResponse,
+  compareAndSwapAiConversationGatewayState,
   completeAiConversationTurn,
   createAiConversation,
   createAiConversationTurn,
+  finishAiConversationTurnV2,
+  getAiConversationGatewayState,
+  verifyAiConversationTerminalState,
   listAiConversationMessages,
   listAiConversationTurns,
   listAiConversations,
   renewAiConversationTurnLease,
+  renewAiConversationTurnLeaseV2,
+  syncAiConversationSummary,
   transitionAiConversationTurn,
   type ConversationRepositoryClient,
 } from "./conversation-repository";
@@ -21,9 +29,31 @@ const conversationRow = {
   updated_at: "2026-07-11T03:00:00.000Z",
 };
 
+const v2Ids = {
+  organizationId: "00000000-0000-4000-8000-000000000001",
+  ownerUserId: "00000000-0000-4000-8000-000000000002",
+  conversationId: "00000000-0000-4000-8000-000000000003",
+  turnId: "00000000-0000-4000-8000-000000000004",
+  invocationId: "00000000-0000-4000-8000-000000000005",
+};
+const gatewayRuntimeSnapshot = {
+  version: 1,
+  summaryVersion: 0,
+  messageIds: [],
+  groundingRefs: [],
+  assembledAt: "2026-07-11T03:00:00.000Z",
+  runtimeSelection: {
+    runtime: "gateway" as const,
+    protocol: "xingyao-hermes-gateway-v2",
+    profile: "hermes-xingyao-v2",
+  },
+};
+
 describe("Xingyao conversation repository", () => {
   it("creates an owner-scoped conversation and maps the public DTO", async () => {
-    const single = vi.fn().mockResolvedValue({ data: conversationRow, error: null });
+    const single = vi
+      .fn()
+      .mockResolvedValue({ data: conversationRow, error: null });
     const select = vi.fn(() => ({ single }));
     const insert = vi.fn(() => ({ select }));
     const from = vi.fn(() => ({ insert }));
@@ -54,7 +84,9 @@ describe("Xingyao conversation repository", () => {
   });
 
   it("lists only active conversations for the organization owner", async () => {
-    const limit = vi.fn().mockResolvedValue({ data: [conversationRow], error: null });
+    const limit = vi
+      .fn()
+      .mockResolvedValue({ data: [conversationRow], error: null });
     const order = vi.fn(() => ({ limit }));
     const eqStatus = vi.fn(() => ({ order }));
     const eqOwner = vi.fn(() => ({ eq: eqStatus }));
@@ -117,6 +149,53 @@ describe("Xingyao conversation repository", () => {
       assistantMessageId: "assistant-message-1",
       duplicate: false,
     });
+  });
+
+  it("persists selected runtime snapshot before returning a new accepted turn", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        conversation_id: "conversation-1",
+        turn_id: "turn-1",
+        user_message_id: "user-message-1",
+        assistant_message_id: "assistant-message-1",
+        status: "accepted",
+        attempt_no: 1,
+        duplicate: false,
+      },
+      error: null,
+    });
+    const returns = vi
+      .fn()
+      .mockResolvedValue({ data: [{ id: "turn-1" }], error: null });
+    const select = vi.fn(() => ({ returns }));
+    const eqStatus = vi.fn(() => ({ select }));
+    const eqOwner = vi.fn(() => ({ eq: eqStatus }));
+    const eqOrganization = vi.fn(() => ({ eq: eqOwner }));
+    const eqId = vi.fn(() => ({ eq: eqOrganization }));
+    const update = vi.fn(() => ({ eq: eqId }));
+    const from = vi.fn(() => ({ update }));
+
+    const result = await createAiConversationTurn(
+      { rpc, from } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: "org-1",
+        ownerUserId: "user-1",
+        conversationId: "conversation-1",
+        clientRequestId: "request-123",
+        mode: "deep",
+        kind: "user",
+        content: "瑙ｈ椋庨櫓",
+        contextSnapshot: gatewayRuntimeSnapshot,
+      },
+    );
+
+    expect(update).toHaveBeenCalledWith({
+      status: "accepted",
+      context_snapshot: gatewayRuntimeSnapshot,
+      snapshot_version: 1,
+    });
+    expect(eqStatus).toHaveBeenCalledWith("status", "accepted");
+    expect(result).toMatchObject({ turnId: "turn-1", duplicate: false });
   });
 
   it("preserves a lease-expired duplicate status from the public RPC", async () => {
@@ -194,6 +273,8 @@ describe("Xingyao conversation repository", () => {
         retry_of_turn_id: null,
         regenerate_of_turn_id: null,
         provider_name: "deepseek",
+        outcome: "partial",
+        cancel_requested_at: "2026-07-11T03:01:30.000Z",
         error_code: null,
         error_summary: null,
         retryable: false,
@@ -215,8 +296,12 @@ describe("Xingyao conversation repository", () => {
         retryable: false,
       },
     ];
-    const messageLimit = vi.fn().mockResolvedValue({ data: messageRows, error: null });
-    const turnLimit = vi.fn().mockResolvedValue({ data: turnRows, error: null });
+    const messageLimit = vi
+      .fn()
+      .mockResolvedValue({ data: messageRows, error: null });
+    const turnLimit = vi
+      .fn()
+      .mockResolvedValue({ data: turnRows, error: null });
     const messageOrder = vi.fn(() => ({ limit: messageLimit }));
     const turnOrder = vi.fn(() => ({ limit: turnLimit }));
     const buildQuery = (order: ReturnType<typeof vi.fn>) => {
@@ -241,14 +326,26 @@ describe("Xingyao conversation repository", () => {
     const messages = await listAiConversationMessages(client, scope);
     const turns = await listAiConversationTurns(client, scope);
 
-    expect(messageOrder).toHaveBeenCalledWith("sequence_no", { ascending: false });
+    expect(messageOrder).toHaveBeenCalledWith("sequence_no", {
+      ascending: false,
+    });
     expect(turnOrder).toHaveBeenCalledWith("created_at", { ascending: false });
-    expect(messages.map((message) => message.id)).toEqual(["message-201", "message-202"]);
+    expect(messages.map((message) => message.id)).toEqual([
+      "message-201",
+      "message-202",
+    ]);
     expect(turns.map((turn) => turn.id)).toEqual(["turn-100", "turn-101"]);
+    expect(turns[1]).toMatchObject({
+      outcome: "partial",
+      cancelRequestedAt: "2026-07-11T03:01:30.000Z",
+    });
+    expect(turns[0]).toMatchObject({ outcome: null, cancelRequestedAt: null });
   });
 
   it("guards every state transition with the expected current status", async () => {
-    const returns = vi.fn().mockResolvedValue({ data: [{ id: "turn-1" }], error: null });
+    const returns = vi
+      .fn()
+      .mockResolvedValue({ data: [{ id: "turn-1" }], error: null });
     const select = vi.fn(() => ({ returns }));
     const eqStatus = vi.fn(() => ({ select }));
     const eqOwner = vi.fn(() => ({ eq: eqStatus }));
@@ -270,7 +367,10 @@ describe("Xingyao conversation repository", () => {
     );
 
     expect(update).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "generating", provider_name: "deepseek" }),
+      expect.objectContaining({
+        status: "generating",
+        provider_name: "deepseek",
+      }),
     );
     expect(eqStatus).toHaveBeenCalledWith("status", "grounding");
     expect(transitioned).toBe(true);
@@ -326,5 +426,278 @@ describe("Xingyao conversation repository", () => {
       p_owner_user_id: "user-1",
       p_turn_id: "turn-1",
     });
+  });
+
+  it("finishes a Hermes turn through the v2 outcome contract", async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: true, error: null });
+
+    await expect(
+      finishAiConversationTurnV2(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          turnId: v2Ids.turnId,
+          invocationId: v2Ids.invocationId,
+          outcome: "blocked",
+          content: "缺少结算权限。",
+          providerName: "deepseek",
+          errorCode: null,
+          errorSummary: null,
+          retryable: false,
+          metadata: { permissionDenials: ["settlements.summary"] },
+        },
+      ),
+    ).resolves.toBeUndefined();
+    expect(rpc).toHaveBeenCalledWith("finish_ai_chat_turn_v2", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_turn_id: v2Ids.turnId,
+      p_outcome: "blocked",
+      p_content: "缺少结算权限。",
+      p_provider_name: "deepseek",
+      p_ai_invocation_id: v2Ids.invocationId,
+      p_error_code: null,
+      p_error_summary: null,
+      p_retryable: false,
+      p_metadata: { permissionDenials: ["settlements.summary"] },
+    });
+  });
+
+  it("exposes actor-scoped cancel, v2 lease, and provider-state wrappers", async () => {
+    const cancelRpc = vi.fn().mockResolvedValue({
+      data: {
+        turn_id: v2Ids.turnId,
+        status: "cancelled",
+        cancel_requested: true,
+        already_terminal: false,
+        child_sessions: ["child-session"],
+        revoked_capability_ids: ["00000000-0000-4000-8000-000000000006"],
+      },
+      error: null,
+    });
+    await expect(
+      cancelAiConversationTurnV2(
+        { rpc: cancelRpc } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          turnId: v2Ids.turnId,
+        },
+      ),
+    ).resolves.toMatchObject({
+      outcome: "cancelled",
+      cancelRequested: true,
+      childSessions: ["child-session"],
+      revokedCapabilityIds: ["00000000-0000-4000-8000-000000000006"],
+    });
+    expect(cancelRpc).toHaveBeenCalledWith("cancel_ai_chat_turn", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_conversation_id: v2Ids.conversationId,
+      p_turn_id: v2Ids.turnId,
+    });
+
+    const renewRpc = vi.fn().mockResolvedValue({ data: true, error: null });
+    await renewAiConversationTurnLeaseV2(
+      { rpc: renewRpc } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: v2Ids.organizationId,
+        ownerUserId: v2Ids.ownerUserId,
+        turnId: v2Ids.turnId,
+      },
+    );
+    expect(renewRpc).toHaveBeenCalledWith("renew_ai_chat_turn_lease", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_turn_id: v2Ids.turnId,
+    });
+
+    const stateRpc = vi.fn().mockResolvedValue({
+      data: { generation: 2 },
+      error: null,
+    });
+    await expect(
+      compareAndSwapAiConversationGatewayState(
+        { rpc: stateRpc } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          expectedGeneration: 1,
+          nextState: { generation: 2, sessionId: "session-1" },
+        },
+      ),
+    ).resolves.toBe(2);
+    expect(stateRpc).toHaveBeenCalledWith(
+      "update_ai_conversation_hermes_state",
+      {
+        p_organization_id: v2Ids.organizationId,
+        p_owner_user_id: v2Ids.ownerUserId,
+        p_conversation_id: v2Ids.conversationId,
+        p_expected_generation: 1,
+        p_next_hermes_state: { generation: 2, sessionId: "session-1" },
+      },
+    );
+  });
+
+  it("loads Gateway state and synchronizes official compression summary with tenant and version guards", async () => {
+    const maybeSingle = vi.fn().mockResolvedValue({
+      data: {
+        provider_state: {
+          hermesGateway: {
+            generation: 3,
+            sessionId: "session-1",
+            pendingClarify: {
+              turnId: v2Ids.turnId,
+              clarifyId: "00000000-0000-4000-8000-000000000007",
+              requestId: "00000000-0000-4000-8000-000000000007",
+              question: "Which scope?",
+              choices: ["project", "streamer"],
+              allowFreeText: false,
+            },
+          },
+        },
+        summary: { text: "old" },
+        summary_version: 2,
+      },
+      error: null,
+    });
+    const select = vi.fn(() => ({ eq: vi.fn(() => ({ eq: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle })) })) })) }));
+    const fromForGet = vi.fn(() => ({ select }));
+
+    await expect(
+      getAiConversationGatewayState(
+        { from: fromForGet } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: "org-1",
+          ownerUserId: "user-1",
+          conversationId: "conversation-1",
+        },
+      ),
+    ).resolves.toEqual({
+      generation: 3,
+      sessionId: "session-1",
+      summary: { text: "old" },
+      summaryVersion: 2,
+      pendingClarify: {
+        turnId: v2Ids.turnId,
+        clarifyId: "00000000-0000-4000-8000-000000000007",
+        requestId: "00000000-0000-4000-8000-000000000007",
+        question: "Which scope?",
+        choices: ["project", "streamer"],
+        allowFreeText: false,
+      },
+    });
+
+    const returns = vi.fn().mockResolvedValue({ data: [{ id: "conversation-1" }], error: null });
+    const syncEqSummaryVersion = vi.fn(() => ({ select: vi.fn(() => ({ returns })) }));
+    const syncEqOwner = vi.fn(() => ({ eq: syncEqSummaryVersion }));
+    const syncEqOrganization = vi.fn(() => ({ eq: syncEqOwner }));
+    const syncEqId = vi.fn(() => ({ eq: syncEqOrganization }));
+    const update = vi.fn(() => ({ eq: syncEqId }));
+    const fromForUpdate = vi.fn(() => ({ update }));
+
+    await expect(
+      syncAiConversationSummary(
+        { from: fromForUpdate } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: "org-1",
+          ownerUserId: "user-1",
+          conversationId: "conversation-1",
+          expectedSummaryVersion: 2,
+          summary: { text: "compressed" },
+        },
+      ),
+    ).resolves.toBe(true);
+    expect(update).toHaveBeenCalledWith({
+      summary: { text: "compressed" },
+      summary_version: 3,
+    });
+    expect(syncEqSummaryVersion).toHaveBeenCalledWith("summary_version", 2);
+  });
+
+  it("claims clarify responses atomically through the actor-scoped RPC before Gateway control", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        status: "claimed",
+        generation: 9,
+      },
+      error: null,
+    });
+
+    await expect(
+      claimAiConversationClarifyResponse(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          turnId: v2Ids.turnId,
+          clarifyId: "00000000-0000-4000-8000-000000000007",
+          answerSha256:
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+      ),
+    ).resolves.toEqual({ status: "claimed", generation: 9 });
+
+    expect(rpc).toHaveBeenCalledWith("claim_ai_conversation_clarify_response", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_conversation_id: v2Ids.conversationId,
+      p_turn_id: v2Ids.turnId,
+      p_clarify_id: "00000000-0000-4000-8000-000000000007",
+      p_answer_sha256:
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+  });
+
+  it("verifies terminal SSE against an actor-owned persisted turn state", async () => {
+    const maybeSingle = vi.fn().mockResolvedValue({
+      data: {
+        status: "completed",
+        outcome: "partial",
+        assistant_message_id: "message-assistant-1",
+      },
+      error: null,
+    });
+    const eqOwner = vi.fn(() => ({ maybeSingle }));
+    const eqOrg = vi.fn(() => ({ eq: eqOwner }));
+    const eqId = vi.fn(() => ({ eq: eqOrg }));
+    const select = vi.fn(() => ({ eq: eqId }));
+    const from = vi.fn(() => ({ select }));
+
+    await expect(
+      verifyAiConversationTerminalState(
+        { from } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          turnId: v2Ids.turnId,
+          event: {
+            type: "response.completed",
+            conversationId: v2Ids.conversationId,
+            turnId: v2Ids.turnId,
+            messageId: "message-assistant-1",
+            content: "done",
+            outcome: "partial",
+            evidence: [],
+            missing: [],
+            observationTimes: {
+              firstObservedAt: null,
+              lastObservedAt: null,
+            },
+          },
+        },
+      ),
+    ).resolves.toBe(true);
+
+    expect(select).toHaveBeenCalledWith(
+      "status, outcome, assistant_message_id",
+    );
+    expect(eqId).toHaveBeenCalledWith("id", v2Ids.turnId);
+    expect(eqOrg).toHaveBeenCalledWith("organization_id", v2Ids.organizationId);
+    expect(eqOwner).toHaveBeenCalledWith("owner_user_id", v2Ids.ownerUserId);
   });
 });

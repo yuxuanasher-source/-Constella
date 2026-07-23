@@ -137,4 +137,25 @@ describe("AI runtime schema contract", () => {
     );
     expect(allMigrations).toContain("knowledge_document_chunks_tags_idx");
   });
+
+  it("adds Hermes native state without replacing the legacy turn finisher", () => {
+    expect(allMigrations).toContain(
+      "create table public.ai_hermes_run_capabilities",
+    );
+    expect(allMigrations).toContain(
+      "create table public.ai_hermes_broker_calls",
+    );
+    expect(allMigrations).toContain("create table public.ai_hermes_memories");
+    expect(allMigrations).toContain(
+      "create table public.ai_hermes_skill_drafts",
+    );
+    expect(allMigrations).toContain(
+      "create or replace function public.finish_ai_chat_turn_v2(",
+    );
+    expect(
+      allMigrations.match(
+        /create or replace function public\.finish_ai_chat_turn\(/g,
+      ),
+    ).toHaveLength(1);
+  });
 });

@@ -2,21 +2,24 @@ import type {
   AiConversationDto,
   AiConversationMessageDto,
   ConversationContextSnapshot,
+  ConversationStreamEvent,
   ConversationMessageRole,
   ConversationMessageStatus,
   ConversationTurnStatus,
 } from "./conversation-contracts";
 import type { AiChatMode, AiProviderName } from "./contracts";
+import {
+  createHermesStateRepository,
+  type HermesTurnCancellation,
+} from "./hermes/hermes-state-repository";
+import { isHermesOutcome, type HermesOutcome } from "./hermes/contracts";
 
 type QueryResult<T> = { data: T | null; error: unknown };
 
 type RepositoryQuery = PromiseLike<QueryResult<unknown>> & {
-  eq(column: string, value: string): RepositoryQuery;
+  eq(column: string, value: unknown): RepositoryQuery;
   in(column: string, values: string[]): RepositoryQuery;
-  order(
-    column: string,
-    options: { ascending: boolean },
-  ): RepositoryQuery;
+  order(column: string, options: { ascending: boolean }): RepositoryQuery;
   limit(count: number): RepositoryQuery;
   select(columns: string): RepositoryQuery;
   single(): PromiseLike<QueryResult<unknown>>;
@@ -70,6 +73,8 @@ export type StoredConversationTurn = {
   retryOfTurnId: string | null;
   regenerateOfTurnId: string | null;
   providerName: AiProviderName | null;
+  outcome?: HermesOutcome | null;
+  cancelRequestedAt?: string | null;
   errorCode: string | null;
   errorSummary: string | null;
   retryable: boolean;
@@ -87,6 +92,8 @@ type TurnRow = {
   retry_of_turn_id: string | null;
   regenerate_of_turn_id: string | null;
   provider_name: AiProviderName | null;
+  outcome?: HermesOutcome | null;
+  cancel_requested_at?: string | null;
   error_code: string | null;
   error_summary: string | null;
   retryable: boolean;
@@ -102,6 +109,32 @@ export type CreatedConversationTurn = {
   duplicate: boolean;
 };
 
+export type ConversationGatewayState = {
+  generation: number;
+  sessionId?: string;
+  summary: Record<string, unknown>;
+  summaryVersion: number;
+  pendingClarify?: ConversationGatewayPendingClarify;
+};
+
+export type ConversationGatewayPendingClarify = {
+  turnId: string;
+  clarifyId: string;
+  requestId: string;
+  question: string;
+  choices: string[];
+  allowFreeText: boolean;
+  response?: {
+    clarifyId: string;
+    answerSha256?: string;
+  };
+};
+
+export type ConversationClarifyClaim = {
+  status: "claimed" | "duplicate" | "conflict";
+  generation?: number;
+};
+
 export async function createAiConversation(
   client: ConversationRepositoryClient,
   input: { organizationId: string; ownerUserId: string; title: string },
@@ -113,9 +146,7 @@ export async function createAiConversation(
       owner_user_id: input.ownerUserId,
       title: input.title,
     })
-    .select(
-      "id, title, status, last_message_at, created_at, updated_at",
-    )
+    .select("id, title, status, last_message_at, created_at, updated_at")
     .single();
 
   return error || !isConversationRow(data) ? null : toConversationDto(data);
@@ -141,7 +172,11 @@ export async function listAiConversations(
 
 export async function getAiConversation(
   client: ConversationRepositoryClient,
-  input: { organizationId: string; ownerUserId: string; conversationId: string },
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+  },
 ): Promise<AiConversationDto | null> {
   const { data, error } = await client
     .from("ai_conversations")
@@ -179,6 +214,68 @@ export async function listAiConversationMessages(
     : data.filter(isMessageRow).map(toMessageDto).reverse();
 }
 
+export async function getAiConversationGatewayState(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+  },
+): Promise<ConversationGatewayState | null> {
+  const { data, error } = await client
+    .from("ai_conversations")
+    .select("provider_state, summary, summary_version")
+    .eq("id", input.conversationId)
+    .eq("organization_id", input.organizationId)
+    .eq("owner_user_id", input.ownerUserId)
+    .maybeSingle();
+
+  if (error || !isRecord(data)) return null;
+  const providerState = isRecord(data.provider_state) ? data.provider_state : {};
+  const hermesGateway = isRecord(providerState.hermesGateway)
+    ? providerState.hermesGateway
+    : {};
+  const generation = numberValue(hermesGateway.generation) ?? 0;
+  const sessionId = stringValue(hermesGateway.sessionId);
+  const pendingClarify = parsePendingClarify(hermesGateway.pendingClarify);
+  const summary = isRecord(data.summary) ? data.summary : {};
+  const summaryVersion = numberValue(data.summary_version) ?? 0;
+  return {
+    generation,
+    ...(sessionId ? { sessionId } : {}),
+    ...(pendingClarify ? { pendingClarify } : {}),
+    summary,
+    summaryVersion,
+  };
+}
+
+export async function syncAiConversationSummary(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    expectedSummaryVersion: number;
+    summary: Record<string, unknown>;
+  },
+): Promise<boolean> {
+  const nextVersion = input.expectedSummaryVersion + 1;
+  const { data, error } = await client
+    .from("ai_conversations")
+    .update({
+      summary: input.summary,
+      summary_version: nextVersion,
+    })
+    .eq("id", input.conversationId)
+    .eq("organization_id", input.organizationId)
+    .eq("owner_user_id", input.ownerUserId)
+    .eq("summary_version", input.expectedSummaryVersion)
+    .select("id")
+    .returns<{ id: string }[]>();
+
+  return !error && (data?.length ?? 0) > 0;
+}
+
 export async function createAiConversationTurn(
   client: ConversationRepositoryClient,
   input: {
@@ -190,6 +287,7 @@ export async function createAiConversationTurn(
     kind: "user" | "retry" | "regenerate";
     content?: string;
     sourceTurnId?: string;
+    contextSnapshot?: ConversationContextSnapshot;
   },
 ): Promise<CreatedConversationTurn | null> {
   const { data, error } = await client.rpc("create_ai_chat_turn", {
@@ -203,7 +301,21 @@ export async function createAiConversationTurn(
     p_source_turn_id: input.sourceTurnId ?? null,
   });
 
-  return error ? null : parseCreatedTurn(data);
+  if (error) return null;
+  const turn = parseCreatedTurn(data);
+  if (!turn) return null;
+  if (input.contextSnapshot && !turn.duplicate) {
+    const persisted = await transitionAiConversationTurn(client, {
+      organizationId: input.organizationId,
+      ownerUserId: input.ownerUserId,
+      turnId: turn.turnId,
+      from: turn.status,
+      to: turn.status,
+      patch: { contextSnapshot: input.contextSnapshot },
+    });
+    if (!persisted) return null;
+  }
+  return turn;
 }
 
 export async function getAiConversationTurn(
@@ -213,7 +325,7 @@ export async function getAiConversationTurn(
   const { data, error } = await client
     .from("ai_chat_turns")
     .select(
-      "id, conversation_id, user_message_id, assistant_message_id, mode, status, attempt_no, context_snapshot, retry_of_turn_id, regenerate_of_turn_id, provider_name, error_code, error_summary, retryable",
+      "id, conversation_id, user_message_id, assistant_message_id, mode, status, attempt_no, context_snapshot, retry_of_turn_id, regenerate_of_turn_id, provider_name, outcome, cancel_requested_at, error_code, error_summary, retryable",
     )
     .eq("id", input.turnId)
     .eq("organization_id", input.organizationId)
@@ -235,7 +347,7 @@ export async function listAiConversationTurns(
   const { data, error } = (await client
     .from("ai_chat_turns")
     .select(
-      "id, conversation_id, user_message_id, assistant_message_id, mode, status, attempt_no, context_snapshot, retry_of_turn_id, regenerate_of_turn_id, provider_name, error_code, error_summary, retryable",
+      "id, conversation_id, user_message_id, assistant_message_id, mode, status, attempt_no, context_snapshot, retry_of_turn_id, regenerate_of_turn_id, provider_name, outcome, cancel_requested_at, error_code, error_summary, retryable",
     )
     .eq("conversation_id", input.conversationId)
     .eq("organization_id", input.organizationId)
@@ -270,8 +382,10 @@ export async function transitionAiConversationTurn(
     payload.snapshot_version = input.patch.contextSnapshot.version;
   }
   if (input.patch?.contextHash) payload.context_hash = input.patch.contextHash;
-  if (input.patch?.providerName) payload.provider_name = input.patch.providerName;
-  if (input.patch?.invocationId) payload.ai_invocation_id = input.patch.invocationId;
+  if (input.patch?.providerName)
+    payload.provider_name = input.patch.providerName;
+  if (input.patch?.invocationId)
+    payload.ai_invocation_id = input.patch.invocationId;
   if (input.to === "generating") payload.started_at = new Date().toISOString();
 
   const { data, error } = await client
@@ -339,6 +453,163 @@ export async function renewAiConversationTurnLease(
     p_turn_id: input.turnId,
   });
   return !error && data === true;
+}
+
+export async function finishAiConversationTurnV2(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    turnId: string;
+    invocationId: string;
+    outcome: HermesOutcome;
+    content?: string;
+    providerName?: AiProviderName | null;
+    errorCode?: string | null;
+    errorSummary?: string | null;
+    retryable: boolean;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<void> {
+  await createHermesStateRepository(client).finishTurn(
+    {
+      organizationId: input.organizationId,
+      userId: input.ownerUserId,
+      invocationId: input.invocationId,
+    },
+    input.turnId,
+    {
+      outcome: input.outcome,
+      content: input.content,
+      providerName: input.providerName,
+      errorCode: input.errorCode,
+      errorSummary: input.errorSummary,
+      retryable: input.retryable,
+      metadata: input.metadata,
+    },
+  );
+}
+
+export async function cancelAiConversationTurnV2(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+  },
+): Promise<HermesTurnCancellation> {
+  return createHermesStateRepository(client).cancelTurn(
+    { organizationId: input.organizationId, userId: input.ownerUserId },
+    input.conversationId,
+    input.turnId,
+  );
+}
+
+export async function renewAiConversationTurnLeaseV2(
+  client: ConversationRepositoryClient,
+  input: { organizationId: string; ownerUserId: string; turnId: string },
+): Promise<void> {
+  await createHermesStateRepository(client).renewTurnLease(
+    { organizationId: input.organizationId, userId: input.ownerUserId },
+    input.turnId,
+  );
+}
+
+export async function compareAndSwapAiConversationGatewayState(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    expectedGeneration: number;
+    nextState: Record<string, unknown>;
+  },
+): Promise<number> {
+  return createHermesStateRepository(client).compareAndSwapGatewayState(
+    { organizationId: input.organizationId, userId: input.ownerUserId },
+    input.conversationId,
+    input.expectedGeneration,
+    input.nextState,
+  );
+}
+
+export async function claimAiConversationClarifyResponse(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+    clarifyId: string;
+    answerSha256: string;
+  },
+): Promise<ConversationClarifyClaim> {
+  const { data, error } = await client.rpc(
+    "claim_ai_conversation_clarify_response",
+    {
+      p_organization_id: input.organizationId,
+      p_owner_user_id: input.ownerUserId,
+      p_conversation_id: input.conversationId,
+      p_turn_id: input.turnId,
+      p_clarify_id: input.clarifyId,
+      p_answer_sha256: input.answerSha256,
+    },
+  );
+  if (error || !isRecord(data)) {
+    throw error ?? new Error("clarify_claim_malformed");
+  }
+  if (!isClarifyClaimStatus(data.status)) {
+    throw new Error("clarify_claim_malformed");
+  }
+  const generation = numberValue(data.generation);
+  return {
+    status: data.status,
+    ...(generation !== null ? { generation } : {}),
+  };
+}
+
+export async function verifyAiConversationTerminalState(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    turnId: string;
+    event: ConversationStreamEvent;
+  },
+): Promise<boolean> {
+  const { data, error } = await client
+    .from("ai_chat_turns")
+    .select("status, outcome, assistant_message_id")
+    .eq("id", input.turnId)
+    .eq("organization_id", input.organizationId)
+    .eq("owner_user_id", input.ownerUserId)
+    .maybeSingle();
+
+  if (error || !isRecord(data)) return false;
+  const status = stringValue(data.status);
+  const outcome = stringValue(data.outcome);
+  const assistantMessageId = stringValue(data.assistant_message_id);
+  const event = input.event;
+
+  if (event.type === "response.completed") {
+    return (
+      status === "completed" &&
+      outcome === event.outcome &&
+      assistantMessageId === event.messageId
+    );
+  }
+  if (event.type === "response.failed") {
+    return status === "failed" && outcome === "failed";
+  }
+  if (event.type === "response.cancelled") {
+    return (
+      status === "cancelled" &&
+      outcome === "cancelled" &&
+      assistantMessageId === event.messageId
+    );
+  }
+  return false;
 }
 
 async function finishAiConversationTurn(
@@ -412,6 +683,12 @@ function toStoredTurn(row: TurnRow): StoredConversationTurn {
     retryOfTurnId: row.retry_of_turn_id,
     regenerateOfTurnId: row.regenerate_of_turn_id,
     providerName: row.provider_name,
+    outcome: isHermesOutcome(row.outcome) ? row.outcome : null,
+    cancelRequestedAt:
+      typeof row.cancel_requested_at === "string" &&
+      row.cancel_requested_at.trim()
+        ? row.cancel_requested_at
+        : null,
     errorCode: row.error_code,
     errorSummary: row.error_summary,
     retryable: row.retryable,
@@ -485,8 +762,51 @@ function isTurnRow(value: unknown): value is TurnRow {
     (value.mode === "fast" || value.mode === "deep") &&
     stringValue(value.status) !== null &&
     numberValue(value.attempt_no) !== null &&
+    (value.outcome === undefined ||
+      value.outcome === null ||
+      isHermesOutcome(value.outcome)) &&
+    (value.cancel_requested_at === undefined ||
+      value.cancel_requested_at === null ||
+      stringValue(value.cancel_requested_at) !== null) &&
     typeof value.retryable === "boolean"
   );
+}
+
+function parsePendingClarify(
+  value: unknown,
+): ConversationGatewayPendingClarify | null {
+  if (!isRecord(value)) return null;
+  const turnId = stringValue(value.turnId);
+  const clarifyId = stringValue(value.clarifyId);
+  const requestId = stringValue(value.requestId) ?? clarifyId;
+  const question = stringValue(value.question);
+  const choices = Array.isArray(value.choices)
+    ? value.choices.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  if (!turnId || !clarifyId || !requestId || !question) return null;
+  const response = isRecord(value.response)
+    ? {
+        clarifyId: stringValue(value.response.clarifyId) ?? clarifyId,
+        ...(stringValue(value.response.answerSha256)
+          ? { answerSha256: stringValue(value.response.answerSha256)! }
+          : {}),
+      }
+    : undefined;
+  return {
+    turnId,
+    clarifyId,
+    requestId,
+    question,
+    choices,
+    allowFreeText: value.allowFreeText === true,
+    ...(response ? { response } : {}),
+  };
+}
+
+function isClarifyClaimStatus(
+  value: unknown,
+): value is ConversationClarifyClaim["status"] {
+  return value === "claimed" || value === "duplicate" || value === "conflict";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

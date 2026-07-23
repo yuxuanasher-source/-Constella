@@ -2,12 +2,10 @@ import { NextResponse } from "next/server";
 
 import {
   HERMES_READ_ENDPOINTS,
+  authorizeAndExecuteHermesReadTool,
   authenticateHermesReadRequest,
-  executeHermesReadTool,
   hermesReadError,
-  hermesReadSuccess,
   type HermesReadDbClient,
-  type HermesReadErrorCode,
   type HermesReadToolName,
 } from "@/features/ai/hermes/read-api";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
@@ -25,45 +23,23 @@ export async function handleHermesReadRoute(
   const filters = await request.json().catch(() => null);
   const client = createSupabaseAdminClient();
   if (!client) {
-    return json(hermesReadError(auth.actor.invocationId, "internal_error"), 503);
+    return json(
+      hermesReadError(auth.actor.invocationId, "internal_error"),
+      503,
+    );
   }
 
-  const result = await executeHermesReadTool(
+  const result = await authorizeAndExecuteHermesReadTool(
     client as unknown as HermesReadDbClient,
     auth.actor,
     toolName,
     filters,
   );
-  if (typeof result === "string") {
-    return json(
-      hermesReadError(auth.actor.invocationId, result),
-      statusForReadError(result),
-    );
-  }
-  return json(hermesReadSuccess(auth.actor, result), 200);
+  return json(result.envelope, result.status);
 }
 
 function json(body: unknown, status: number): Response {
   const response = NextResponse.json(body, { status });
   response.headers.set("Cache-Control", "no-store");
   return response;
-}
-
-function statusForReadError(code: HermesReadErrorCode): number {
-  switch (code) {
-    case "unauthorized":
-      return 401;
-    case "permission_denied":
-      return 403;
-    case "not_found":
-      return 404;
-    case "invalid_request":
-      return 400;
-    case "rate_limited":
-      return 429;
-    case "upstream_unavailable":
-      return 503;
-    case "internal_error":
-      return 500;
-  }
 }

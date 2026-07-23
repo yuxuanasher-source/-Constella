@@ -7,6 +7,7 @@ import {
 
 import {
   HERMES_AUTH_ROLES,
+  HERMES_EVIDENCE_REF_MAX_LENGTH,
   isHermesReadScope,
   isUuid,
   type HermesActorProfile,
@@ -110,7 +111,7 @@ type ReadAuthResult =
   | { ok: true; actor: HermesActorProfile; actorFingerprint: string }
   | { ok: false; status: number; envelope: HermesReadEnvelope };
 
-type ReadExecutionResult = {
+export type HermesReadExecutionResult = {
   data: unknown;
   evidenceRefs?: string[];
   sourceLabels?: string[];
@@ -129,8 +130,14 @@ type QueryBuilder = {
   then?: Promise<QueryResult>["then"];
 };
 
-type QueryResult = { data?: unknown[] | null; error?: { message?: string } | null };
-type SingleQueryResult = { data?: unknown | null; error?: { message?: string } | null };
+type QueryResult = {
+  data?: unknown[] | null;
+  error?: { message?: string } | null;
+};
+type SingleQueryResult = {
+  data?: unknown | null;
+  error?: { message?: string } | null;
+};
 export type HermesReadDbClient = { from(table: string): QueryBuilder };
 
 export async function authenticateHermesReadRequest(
@@ -170,8 +177,7 @@ export async function authenticateHermesReadRequest(
     });
     if (
       verified.header.kid !== expectedKid ||
-      !verified.actor.allowedReadScopes.includes(spec.requiredScope) ||
-      !spec.allowedRoles.includes(verified.actor.role)
+      authorizeHermesReadActor(verified.actor, spec) !== null
     ) {
       return {
         ok: false,
@@ -198,12 +204,12 @@ export async function authenticateHermesReadRequest(
 
 export function hermesReadSuccess(
   actor: HermesActorProfile,
-  result: ReadExecutionResult,
+  result: HermesReadExecutionResult,
 ): HermesReadEnvelope {
   return {
     status: result.truncated ? "partial" : "ok",
-    data: result.data,
-    evidenceRefs: metadataList(result.evidenceRefs),
+    data: sanitizeHermesReadValue(result.data),
+    evidenceRefs: normalizeHermesEvidenceRefs(result.evidenceRefs),
     sourceLabels: metadataList(result.sourceLabels),
     updatedAt: new Date().toISOString(),
     missingData: metadataList(result.missingData),
@@ -226,12 +232,68 @@ export function hermesReadError(
   };
 }
 
+export function authorizeHermesReadActor(
+  actor: HermesActorProfile,
+  spec: HermesReadEndpointSpec,
+): "permission_denied" | null {
+  return actor.allowedReadScopes.includes(spec.requiredScope) &&
+    spec.allowedRoles.includes(actor.role)
+    ? null
+    : "permission_denied";
+}
+
+export async function authorizeAndExecuteHermesReadTool(
+  client: HermesReadDbClient,
+  actor: HermesActorProfile,
+  toolName: HermesReadToolName,
+  filters: unknown,
+): Promise<{ status: number; envelope: HermesReadEnvelope }> {
+  const authorizationError = authorizeHermesReadActor(
+    actor,
+    HERMES_READ_ENDPOINTS[toolName],
+  );
+  if (authorizationError) {
+    return {
+      status: statusForHermesReadError(authorizationError),
+      envelope: hermesReadError(actor.invocationId, authorizationError),
+    };
+  }
+
+  const result = await executeHermesReadTool(client, actor, toolName, filters);
+  if (typeof result === "string") {
+    return {
+      status: statusForHermesReadError(result),
+      envelope: hermesReadError(actor.invocationId, result),
+    };
+  }
+  return { status: 200, envelope: hermesReadSuccess(actor, result) };
+}
+
+export function statusForHermesReadError(code: HermesReadErrorCode): number {
+  switch (code) {
+    case "unauthorized":
+      return 401;
+    case "permission_denied":
+      return 403;
+    case "not_found":
+      return 404;
+    case "invalid_request":
+      return 400;
+    case "rate_limited":
+      return 429;
+    case "upstream_unavailable":
+      return 503;
+    case "internal_error":
+      return 500;
+  }
+}
+
 export async function executeHermesReadTool(
   client: HermesReadDbClient,
   actor: HermesActorProfile,
   toolName: HermesReadToolName,
   filters: unknown,
-): Promise<ReadExecutionResult | HermesReadErrorCode> {
+): Promise<HermesReadExecutionResult | HermesReadErrorCode> {
   const input = readFilters(filters);
   if (!input) return "invalid_request";
 
@@ -259,6 +321,7 @@ export async function executeHermesReadTool(
         query: input.query,
         queryColumn: "name",
         limit: input.limit,
+        evidenceLabel: "project",
         sourceLabel: "project_record",
       });
     case "xingyao_get_project_summary":
@@ -273,6 +336,7 @@ export async function executeHermesReadTool(
         projectId: input.projectId,
         streamerId: input.streamerId,
         limit: input.limit,
+        evidenceLabel: "streamer_project_profile",
         sourceLabel: "project_streamer_record",
       });
     case "xingyao_search_live_reports":
@@ -285,6 +349,7 @@ export async function executeHermesReadTool(
         projectId: input.projectId,
         streamerId: input.streamerId,
         limit: input.limit,
+        evidenceLabel: "live_report",
         sourceLabel: "live_report_record",
       });
     case "xingyao_search_recording_reviews":
@@ -299,6 +364,7 @@ export async function executeHermesReadTool(
         query: input.query,
         queryColumn: "title",
         limit: input.limit,
+        evidenceLabel: "recording_review",
         sourceLabel: "recording_asset_record",
       });
     case "xingyao_search_knowledge":
@@ -312,6 +378,7 @@ export async function executeHermesReadTool(
           "id, project_id, batch_type, status, title, period_start, period_end, computed_amount, manual_amount, adjustment_amount, evidence_summary, updated_at",
         projectId: input.projectId,
         limit: input.limit,
+        evidenceLabel: "settlement_batch",
         sourceLabel: "settlement_batch_record",
       });
   }
@@ -321,7 +388,7 @@ async function querySingleProject(
   client: HermesReadDbClient,
   actor: HermesActorProfile,
   projectId: string | undefined,
-): Promise<ReadExecutionResult | HermesReadErrorCode> {
+): Promise<HermesReadExecutionResult | HermesReadErrorCode> {
   if (!projectId) return "invalid_request";
   const builder = client
     .from("projects")
@@ -351,6 +418,7 @@ async function queryRows({
   query,
   queryColumn,
   limit,
+  evidenceLabel,
   sourceLabel,
 }: {
   client: HermesReadDbClient;
@@ -362,8 +430,9 @@ async function queryRows({
   query?: string;
   queryColumn?: string;
   limit: number;
+  evidenceLabel: string;
   sourceLabel: string;
-}): Promise<ReadExecutionResult | HermesReadErrorCode> {
+}): Promise<HermesReadExecutionResult | HermesReadErrorCode> {
   let builder = client
     .from(table)
     .select(select)
@@ -371,17 +440,25 @@ async function queryRows({
   if (projectId) builder = builder.eq?.("project_id", projectId) ?? builder;
   if (streamerId) builder = builder.eq?.("streamer_id", streamerId) ?? builder;
   if (query && queryColumn) {
-    builder = builder.ilike?.(queryColumn, `%${escapeIlike(query)}%`) ?? builder;
+    builder =
+      builder.ilike?.(queryColumn, `%${escapeIlike(query)}%`) ?? builder;
   }
   builder = builder.order?.("updated_at", { ascending: false }) ?? builder;
-  const result = await (builder.limit?.(limit) as Promise<QueryResult> | undefined);
+  const result = await (builder.limit?.(limit + 1) as
+    | Promise<QueryResult>
+    | undefined);
   if (!result) return "internal_error";
   if (result.error) return "upstream_unavailable";
-  const rows = Array.isArray(result.data) ? result.data : [];
+  const availableRows = Array.isArray(result.data) ? result.data : [];
+  const truncated = availableRows.length > limit;
+  const rows = availableRows.slice(0, limit);
   return {
     data: { rows },
-    evidenceRefs: rows.map((row) => evidenceRef(table, row)).filter(Boolean),
+    evidenceRefs: rows
+      .map((row) => evidenceRef(evidenceLabel, row))
+      .filter(Boolean),
     sourceLabels: [sourceLabel],
+    truncated,
   };
 }
 
@@ -390,7 +467,7 @@ async function queryKnowledge(
   actor: HermesActorProfile,
   query: string | undefined,
   limit: number,
-): Promise<ReadExecutionResult | HermesReadErrorCode> {
+): Promise<HermesReadExecutionResult | HermesReadErrorCode> {
   if (!query) return "invalid_request";
   const passages = await searchKnowledgeDocuments(
     client as unknown as KnowledgeClient,
@@ -456,16 +533,225 @@ function limitValue(value: unknown): number | null {
   return Math.max(1, Math.min(value, 20));
 }
 
-function metadataList(values: readonly string[] | undefined): string[] {
-  return [...new Set(values ?? [])]
-    .map((value) => value.trim().slice(0, 160))
-    .filter(Boolean)
+export function sanitizeHermesReadValue(value: unknown, depth = 0): unknown {
+  if (depth > 32) return "[REDACTED]";
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") return sanitizeHermesReadText(value);
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, 200)
+      .map((item) => sanitizeHermesReadValue(item, depth + 1));
+  }
+  if (!isPlainRecord(value)) return null;
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (isSensitiveReadKey(key)) continue;
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (normalizedKey === "sourceref" || normalizedKey === "evidenceref") {
+      if (typeof item === "string") {
+        const evidenceRef = sanitizeHermesEvidenceRef(item);
+        if (evidenceRef) result[key] = evidenceRef;
+      }
+      continue;
+    }
+    result[key] = sanitizeHermesReadValue(item, depth + 1);
+  }
+  return result;
+}
+
+export function sanitizeHermesReadMetadata(
+  values: readonly string[] | undefined,
+): string[] {
+  return [
+    ...new Set(
+      (values ?? []).map((value) =>
+        sanitizeHermesReadText(
+          value.trim().slice(0, HERMES_EVIDENCE_REF_MAX_LENGTH),
+        ),
+      ),
+    ),
+  ]
+    .filter((value) => Boolean(value) && value !== "[REDACTED]")
     .slice(0, 100);
 }
 
-function evidenceRef(table: string, row: unknown): string {
+export function normalizeHermesEvidenceRefs(
+  values: readonly string[] | undefined,
+): string[] {
+  return [
+    ...new Set(
+      (values ?? [])
+        .map(sanitizeHermesEvidenceRef)
+        .filter((value): value is string => value !== null),
+    ),
+  ].slice(0, 100);
+}
+
+function metadataList(values: readonly string[] | undefined): string[] {
+  return sanitizeHermesReadMetadata(values);
+}
+
+const HERMES_PUBLIC_EVIDENCE_PREFIXES = new Set([
+  "conversation",
+  "knowledge",
+  "live_report",
+  "project",
+  "recording_review",
+  "settlement_batch",
+  "streamer",
+  "streamer_project_profile",
+]);
+
+const HERMES_EVIDENCE_PREFIX_ALIASES: Readonly<Record<string, string>> = {
+  knowledge_base: "knowledge",
+  knowledge_document: "knowledge",
+  knowledge_documents: "knowledge",
+  live_reports: "live_report",
+  live_review: "knowledge",
+  project_streamers: "streamer_project_profile",
+  projects: "project",
+  recording_ai_analyses: "recording_review",
+  recording_assets: "recording_review",
+  settlement_batches: "settlement_batch",
+  streamers: "streamer",
+};
+
+function sanitizeHermesEvidenceRef(value: string): string | null {
+  const sanitized = sanitizeHermesReadText(value.trim());
+  if (!sanitized || sanitized === "[REDACTED]") return null;
+
+  const separator = sanitized.indexOf(":");
+  if (separator < 1) return null;
+  const rawPrefix = sanitized.slice(0, separator).trim().toLowerCase();
+  const suffix = sanitized.slice(separator + 1);
+  if (
+    !/^[a-z][a-z0-9_]*$/.test(rawPrefix) ||
+    !/^[A-Za-z0-9._-]{1,256}(?:#[A-Za-z0-9._-]{1,256})?$/.test(suffix)
+  ) {
+    return null;
+  }
+
+  const prefix = HERMES_EVIDENCE_PREFIX_ALIASES[rawPrefix] ?? rawPrefix;
+  if (!HERMES_PUBLIC_EVIDENCE_PREFIXES.has(prefix)) return null;
+  const evidenceRef = `${prefix}:${suffix}`;
+  return evidenceRef.length <= HERMES_EVIDENCE_REF_MAX_LENGTH
+    ? evidenceRef
+    : null;
+}
+
+const HERMES_SQL_IDENTIFIER_SOURCE = String.raw`(?:"(?:[^"\r\n]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
+const HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE = String.raw`${HERMES_SQL_IDENTIFIER_SOURCE}(?:\s*\.\s*${HERMES_SQL_IDENTIFIER_SOURCE})*`;
+const HERMES_SQL_LITERAL_SOURCE = String.raw`(?:\d+(?:\.\d+)?|'(?:''|[^'\r\n])*')`;
+const HERMES_SQL_FUNCTION_ARGUMENT_SOURCE = String.raw`(?:\*|${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}|${HERMES_SQL_LITERAL_SOURCE})`;
+const HERMES_SQL_FUNCTION_CALL_SOURCE = String.raw`${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}\s*\(\s*(?:distinct\s+)?(?:${HERMES_SQL_FUNCTION_ARGUMENT_SOURCE}(?:\s*,\s*${HERMES_SQL_FUNCTION_ARGUMENT_SOURCE})*)?\s*\)`;
+const HERMES_SQL_SELECT_EXPRESSION_SOURCE = String.raw`(?:${HERMES_SQL_FUNCTION_CALL_SOURCE}|${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}(?:\s*\.\s*\*)?|\*)`;
+const HERMES_SQL_SELECT_ITEM_SOURCE = String.raw`${HERMES_SQL_SELECT_EXPRESSION_SOURCE}(?:\s+(?:as\s+)?${HERMES_SQL_IDENTIFIER_SOURCE})?`;
+const HERMES_SQL_SELECT_LIST_SOURCE = String.raw`${HERMES_SQL_SELECT_ITEM_SOURCE}(?:\s*,\s*${HERMES_SQL_SELECT_ITEM_SOURCE})*`;
+const HERMES_SQL_TABLE_REFERENCE_SOURCE = String.raw`${HERMES_SQL_QUALIFIED_IDENTIFIER_SOURCE}(?:\s+(?:as\s+)?${HERMES_SQL_IDENTIFIER_SOURCE})?`;
+const HERMES_SQL_CLAUSE_START_SOURCE = String.raw`(?:where|having|join|(?:inner|cross)\s+join|(?:left|right|full)(?:\s+outer)?\s+join|group\s+by|order\s+by|limit|offset|fetch(?:\s+(?:first|next))?|for\s+(?:update|share))\b`;
+const HERMES_SQL_CLAUSE_BODY_SOURCE = String.raw`[A-Za-z0-9_$\."'(),=*<>!+\-/%?:\s]+`;
+const HERMES_SQL_SELECT_FROM_PATTERN = new RegExp(
+  String.raw`^\s*select\s+(?:distinct\s+)?${HERMES_SQL_SELECT_LIST_SOURCE}\s+from\s+${HERMES_SQL_TABLE_REFERENCE_SOURCE}(?:\s+${HERMES_SQL_CLAUSE_START_SOURCE}(?:\s+${HERMES_SQL_CLAUSE_BODY_SOURCE})?)?\s*;?\s*$`,
+  "i",
+);
+const HERMES_SQL_FUNCTION_SELECT_PATTERN = new RegExp(
+  String.raw`^\s*select\s+${HERMES_SQL_FUNCTION_CALL_SOURCE}(?:\s+(?:as\s+)?${HERMES_SQL_IDENTIFIER_SOURCE})?(?:\s*,\s*${HERMES_SQL_FUNCTION_CALL_SOURCE}(?:\s+(?:as\s+)?${HERMES_SQL_IDENTIFIER_SOURCE})?)*\s*;?\s*$`,
+  "i",
+);
+
+function isHermesSqlShapedSelect(value: string): boolean {
+  return (
+    HERMES_SQL_SELECT_FROM_PATTERN.test(value) ||
+    HERMES_SQL_FUNCTION_SELECT_PATTERN.test(value)
+  );
+}
+
+function sanitizeHermesReadText(value: string): string {
+  const normalized = value.slice(0, 20_000);
+  if (
+    /\bBearer\s+[A-Za-z0-9._~-]+/i.test(normalized) ||
+    /-----BEGIN (?:ENCRYPTED |RSA |EC |OPENSSH )?PRIVATE KEY-----/i.test(
+      normalized,
+    ) ||
+    /\bAuthorization\s*:\s*(?:Basic|Bearer|Digest|Negotiate)\s+\S+/i.test(
+      normalized,
+    ) ||
+    /\b(?:Set-Cookie|Cookie)\s*:\s*\S+/i.test(normalized) ||
+    /(?:^|[\s;,])(?:[a-z][a-z0-9]*[_-])*(?:api[_-]?(?:key|secret)|access[_-]?key[_-]?id|secret[_-]?access[_-]?key|client[_-]?secret|password|passwd|private[_-]?key|token|secret)\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s;,]+)/i.test(
+      normalized,
+    ) ||
+    /https?:\/\/[^\s/:@]+:[^\s/@]+@/i.test(normalized) ||
+    isHermesSqlShapedSelect(normalized) ||
+    /\b(?:insert\s+into\b|update\s+[a-z0-9_."]+\s+set\b|delete\s+from\b|(?:alter|drop|create)\s+table\b)/i.test(
+      normalized,
+    ) ||
+    /(?:localhost|127\.0\.0\.1|\/api\/internal\/)/i.test(normalized) ||
+    /\b(?:eyJ[A-Za-z0-9_-]*|signed)\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(
+      normalized,
+    ) ||
+    /(?:^|[^A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?:$|[^A-Za-z0-9_-])/.test(
+      normalized,
+    ) ||
+    /(?:^|\s)(?:error:|at\s+\S+\s*\([^)]*:\d+:\d+\))/i.test(normalized)
+  ) {
+    return "[REDACTED]";
+  }
+  return normalized;
+}
+
+function isSensitiveReadKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (
+    [
+      "actorassertion",
+      "actorjws",
+      "authorization",
+      "bearer",
+      "capability",
+      "cookie",
+      "internalroute",
+      "method",
+      "model",
+      "operation",
+      "owneruserid",
+      "password",
+      "pem",
+      "privatekey",
+      "provider",
+      "rawcapability",
+      "secret",
+      "session",
+      "sessionid",
+      "sql",
+      "stack",
+      "table",
+      "token",
+      "url",
+      "userid",
+    ].includes(normalized) ||
+    normalized === "authorizationheader" ||
+    normalized === "bearertoken" ||
+    normalized === "cookieheader" ||
+    normalized === "cookies" ||
+    normalized === "setcookie" ||
+    normalized.startsWith("model") ||
+    normalized.startsWith("provider") ||
+    normalized.startsWith("session") ||
+    normalized.endsWith("token") ||
+    normalized.endsWith("apikey") ||
+    normalized.endsWith("password") ||
+    normalized.endsWith("privatekey") ||
+    normalized.endsWith("secretkey") ||
+    normalized.endsWith("secret") ||
+    normalized.endsWith("jws") ||
+    normalized.endsWith("jwt")
+  );
+}
+
+function evidenceRef(label: string, row: unknown): string {
   if (!isPlainRecord(row) || typeof row.id !== "string") return "";
-  return `${table}:${row.id}`.slice(0, 160);
+  return sanitizeHermesEvidenceRef(`${label}:${row.id}`) ?? "";
 }
 
 function escapeIlike(value: string): string {

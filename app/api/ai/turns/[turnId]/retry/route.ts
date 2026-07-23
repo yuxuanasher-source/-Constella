@@ -4,11 +4,14 @@ import {
   conversationRouteErrorResponse,
   getAiConversationRouteContext,
 } from "@/app/api/ai/conversation-route-context";
+import {
+  createSelectedNativeTurnExecutor,
+  selectNativeTurnRuntime,
+} from "@/app/api/ai/native-turn-runtime";
 import { parseRetryTurnCommand } from "@/features/ai/conversation-contracts";
 import { createConversationTurnStream } from "@/features/ai/conversation-stream-adapter";
-import { executeNativeHermesAssistant } from "@/features/ai/native-assistant/executor";
 
-export const maxDuration = 60;
+export const maxDuration = 330;
 
 export async function POST(
   request: Request,
@@ -28,10 +31,14 @@ export async function POST(
       );
     }
 
+    const selected = selectNativeTurnRuntime(context.actor);
+    if (selected instanceof Response) return selected;
+
     const retriedTurn = await context.service.retryTurn(
       context.actor,
       turnId,
       command,
+      selected.runtimeOption,
     );
     if (retriedTurn.duplicate) {
       return NextResponse.json(
@@ -49,7 +56,12 @@ export async function POST(
       turn: retriedTurn,
       attachments: [],
       service: context.service,
-      executeLegacyChat: executeNativeHermesAssistant,
+      executor: createSelectedNativeTurnExecutor({
+        selected,
+        service: context.service,
+        auth: context.auth,
+        sourceTurnId: turnId,
+      }),
     });
   } catch (error) {
     return conversationRouteErrorResponse(error);

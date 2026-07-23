@@ -29,7 +29,7 @@ describe("OverviewBoard AI panel", () => {
   beforeEach(() => {
     localStorage.clear();
     const protocolFetch = createConversationProtocolFetch({
-      content: "真实 DeepSeek 回复",
+      content: "真实星耀回复",
     });
     vi.stubGlobal(
       "fetch",
@@ -38,6 +38,942 @@ describe("OverviewBoard AI panel", () => {
           protocolFetch(url, options) || defaultFetchResponse(url),
       ),
     );
+  });
+
+  it("keeps Fast and Deep visible without exposing provider or model wording", () => {
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(screen.getByText("星耀 AI 助手")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "快速" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "深度思考" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "深度思考" }));
+
+    expect(screen.getByRole("button", { name: "快速" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "深度思考" }),
+    ).toBeInTheDocument();
+    expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
+      /Hermes Gateway|DeepSeek|provider|model/i,
+    );
+  });
+
+  it("turns Send into a stable Stop icon, cancels server turn before aborting local rendering", async () => {
+    const encoder = new TextEncoder();
+    let turnSignal;
+    const cancelChecks = [];
+    fetch.mockImplementation((url, options = {}) => {
+      if (url === "/api/ai/conversations" && options.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () =>
+            Promise.resolve({ conversation: { id: "conversation-stop" } }),
+        });
+      }
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ conversations: [] }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-stop/turns") {
+        turnSignal = options.signal;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => "text/event-stream; charset=utf-8" },
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  protocolSse([
+                    [
+                      "turn.started",
+                      {
+                        type: "turn.started",
+                        conversationId: "conversation-stop",
+                        turnId: "turn-stop",
+                        userMessageId: "message-user-stop",
+                        assistantMessageId: "message-assistant-stop",
+                      },
+                    ],
+                  ]),
+                ),
+              );
+            },
+          }),
+        });
+      }
+      if (
+        url ===
+        "/api/ai/conversations/conversation-stop/turns/turn-stop/cancel"
+      ) {
+        cancelChecks.push(turnSignal?.aborted === true);
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ turn: { status: "cancelled" } }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-stop", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "停止测试" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    const stop = await screen.findByRole("button", { name: "停止生成" });
+    expect(stop).toHaveAttribute("title", "停止生成");
+    expect(stop).toHaveStyle({ width: "32px", height: "32px" });
+    fireEvent.click(stop);
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/ai/conversations/conversation-stop/turns/turn-stop/cancel",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(cancelChecks).toEqual([false]);
+    expect(turnSignal.aborted).toBe(true);
+  });
+
+  it("renders compact sanitized activity, todo, and subagent rows that update in place", async () => {
+    const encoder = new TextEncoder();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-progress",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            userMessageId: "message-user-progress",
+            assistantMessageId: "message-assistant-progress",
+          },
+        ],
+        [
+          "tool.completed",
+          {
+            type: "tool.completed",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            toolCallId: "tool-read",
+            toolName: "read.revenue",
+            label: "读取经营数据",
+            status: "completed",
+            evidence: ["经营看板"],
+            rawArguments: { route: "/api/internal/hermes/read" },
+            stack: "Error: secret stack",
+            reasoning: "private chain-of-thought",
+          },
+        ],
+        [
+          "tool.completed",
+          {
+            type: "tool.completed",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            toolCallId: "tool-denied",
+            toolName: "settlement.private",
+            label: "读取结算明细",
+            status: "denied",
+            missing: ["结算明细权限"],
+          },
+        ],
+        [
+          "todo.updated",
+          {
+            type: "todo.updated",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            items: [{ id: "todo-1", label: "核对低毛利项目", status: "running" }],
+          },
+        ],
+        [
+          "todo.updated",
+          {
+            type: "todo.updated",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            items: [{ id: "todo-1", label: "核对低毛利项目", status: "done" }],
+          },
+        ],
+        [
+          "subagent.updated",
+          {
+            type: "subagent.updated",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            subagentId: "subagent-1",
+            label: "只读复核",
+            status: "running",
+          },
+        ],
+        [
+          "subagent.updated",
+          {
+            type: "subagent.updated",
+            conversationId: "conversation-progress",
+            turnId: "turn-progress",
+            subagentId: "subagent-1",
+            label: "只读复核",
+            status: "completed",
+          },
+        ],
+        completedEvent({
+          conversationId: "conversation-progress",
+          turnId: "turn-progress",
+          messageId: "message-assistant-progress",
+          content: "已完成进度汇总",
+        }),
+      ],
+      encoder,
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-progress", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "展示进度" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    const activity = await screen.findByTestId("ai-activity-panel");
+    expect(within(activity).getByText("读取经营数据")).toBeInTheDocument();
+    expect(within(activity).getByText("经营看板")).toBeInTheDocument();
+    expect(within(activity).getByText("成功")).toBeInTheDocument();
+    expect(within(activity).getByText("读取结算明细")).toBeInTheDocument();
+    expect(within(activity).getByText("受限")).toBeInTheDocument();
+    expect(activity).not.toHaveTextContent(/rawArguments|secret stack|\/api\/internal|chain-of-thought/i);
+    expect(screen.getAllByTestId("ai-todo-row")).toHaveLength(1);
+    expect(screen.getByTestId("ai-todo-row")).toHaveTextContent("已完成");
+    expect(screen.getAllByTestId("ai-subagent-row")).toHaveLength(1);
+    expect(screen.getByTestId("ai-subagent-row")).toHaveTextContent("已完成");
+  });
+
+  it("renders Clarify choices and free text, disables after submit, and restores pending state", async () => {
+    const encoder = new TextEncoder();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-clarify",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-clarify",
+            turnId: "turn-clarify",
+            userMessageId: "message-user-clarify",
+            assistantMessageId: "message-assistant-clarify",
+          },
+        ],
+        [
+          "clarify.requested",
+          {
+            type: "clarify.requested",
+            conversationId: "conversation-clarify",
+            turnId: "turn-clarify",
+            clarifyId: "55555555-5555-4555-8555-555555555555",
+            question: "请选择要复核的项目",
+            choices: ["A 项目", "B 项目"],
+            allowFreeText: true,
+          },
+        ],
+      ],
+      encoder,
+      keepOpen: true,
+    });
+
+    const { container, unmount } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-clarify", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "需要澄清" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("请选择要复核的项目")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "A 项目" }));
+    fireEvent.change(screen.getByLabelText("补充说明"), {
+      target: { value: "只看本月" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "提交澄清" }));
+
+    await waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        "/api/ai/conversations/conversation-clarify/turns/turn-clarify/clarify",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(screen.getByRole("button", { name: "A 项目" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "提交澄清" })).toBeDisabled();
+
+    unmount();
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversations: [{ id: "conversation-clarify" }],
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-clarify") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-clarify" },
+              messages: [
+                {
+                  id: "message-user-clarify",
+                  role: "user",
+                  status: "completed",
+                  content: "需要澄清",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-clarify",
+                  assistantMessageId: "message-assistant-clarify",
+                  status: "generating",
+                  pendingClarify: {
+                    clarifyId: "55555555-5555-4555-8555-555555555555",
+                    question: "请选择要复核的项目",
+                    choices: ["A 项目", "B 项目"],
+                    allowFreeText: true,
+                  },
+                },
+              ],
+            }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+    localStorage.setItem(
+      "jingying-cabin.dashboard.ai.conversation.v1.user-clarify",
+      "conversation-clarify",
+    );
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-clarify", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(await screen.findByText("请选择要复核的项目")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "A 项目" })).toBeEnabled();
+  });
+
+  it("renders partial, blocked, and cancelled outcomes without fabricating history", async () => {
+    const encoder = new TextEncoder();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-outcomes",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-outcomes",
+            turnId: "turn-partial",
+            userMessageId: "message-user-partial",
+            assistantMessageId: "message-assistant-partial",
+          },
+        ],
+        completedEvent({
+          conversationId: "conversation-outcomes",
+          turnId: "turn-partial",
+          messageId: "message-assistant-partial",
+          content: "只能确认当前项目风险，历史环比数据不可用。",
+          outcome: "partial",
+          missing: ["历史结算流水", "上一周期成交额"],
+        }),
+      ],
+      encoder,
+    });
+    const { container, unmount } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-outcome", name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "部分数据" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("基于部分可用数据")).toBeInTheDocument();
+    expect(screen.getByText("历史结算流水")).toBeInTheDocument();
+    expect(screen.getByText("上一周期成交额")).toBeInTheDocument();
+    expect(container).not.toHaveTextContent(/同比增长\s*\d|历史成交额\s*\d/);
+
+    unmount();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-blocked",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-blocked",
+            turnId: "turn-blocked",
+            userMessageId: "message-user-blocked",
+            assistantMessageId: "message-assistant-blocked",
+          },
+        ],
+        completedEvent({
+          conversationId: "conversation-blocked",
+          turnId: "turn-blocked",
+          messageId: "message-assistant-blocked",
+          content: "无法完成该分析。",
+          outcome: "blocked",
+          missing: ["未授权结算明细", "数据源不可用：直播流水"],
+        }),
+      ],
+      encoder,
+    });
+    const blockedRender = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-blocked", name: "123", role: "owner" }}
+      />,
+    );
+    const blockedInput = blockedRender.container.querySelector("input");
+    fireEvent.change(blockedInput, { target: { value: "阻塞数据" } });
+    fireEvent.keyDown(blockedInput, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("关键数据不可用")).toBeInTheDocument();
+    expect(screen.getByText("未授权结算明细")).toBeInTheDocument();
+    expect(screen.getByText("数据源不可用：直播流水")).toBeInTheDocument();
+    expect(blockedRender.container).not.toHaveTextContent(/历史成交额\s*\d/);
+
+    blockedRender.unmount();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-cancelled",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-cancelled",
+            turnId: "turn-cancelled",
+            userMessageId: "message-user-cancelled",
+            assistantMessageId: "message-assistant-cancelled",
+          },
+        ],
+        [
+          "response.cancelled",
+          {
+            type: "response.cancelled",
+            conversationId: "conversation-cancelled",
+            turnId: "turn-cancelled",
+            messageId: "message-assistant-cancelled",
+          },
+        ],
+      ],
+      encoder,
+    });
+    const cancelledRender = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-cancelled", name: "123", role: "owner" }}
+      />,
+    );
+    const cancelledInput = cancelledRender.container.querySelector("input");
+    fireEvent.change(cancelledInput, { target: { value: "取消请求" } });
+    fireEvent.keyDown(cancelledInput, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("已停止生成")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+    expect(cancelledRender.container).not.toHaveTextContent(/调用失败|上游|provider/i);
+  });
+
+  it("mounts Skill draft review from AI metadata for owners only", async () => {
+    const skillDraft = {
+      id: "skill-draft-overview",
+      skillId: "weekly-risk-brief",
+      version: "0.1.0",
+      bundleSha256: "sha256:abcdef1234567890",
+      manifest: {
+        name: "Weekly risk brief",
+        permissions: ["read:projects"],
+      },
+      status: "pending_review",
+    };
+    const protocolFetch = createConversationProtocolFetch({
+      content: "AI summary",
+      meta: { skillDrafts: [skillDraft] },
+      conversationId: "conversation-skill-owner",
+    });
+    fetch.mockImplementation((url, options) => {
+      if (String(url).includes("/skill-drafts/")) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({ draft: { ...skillDraft, status: "approved" } }),
+        });
+      }
+      return protocolFetch(url, options) || defaultFetchResponse(url);
+    });
+    const owner = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "owner-skill", name: "123", role: "owner" }}
+      />,
+    );
+
+    fireEvent.change(owner.container.querySelector("input"), {
+      target: { value: "Review the skill draft" },
+    });
+    fireEvent.keyDown(owner.container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    expect(await screen.findByText("weekly-risk-brief")).toBeInTheDocument();
+    expect(screen.getByText("sha256:abcdef1234567890")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /manifest/i }));
+    expect(screen.getByText('"permissions": [')).toBeInTheDocument();
+    expect(screen.getByTestId("skill-draft-approve")).toBeInTheDocument();
+    expect(screen.getByTestId("skill-draft-reject")).toBeInTheDocument();
+
+    owner.unmount();
+    mockConversationProtocol({
+      content: "AI summary",
+      meta: { skillDrafts: [skillDraft] },
+      conversationId: "conversation-skill-staff",
+    });
+    const staff = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "staff-skill", name: "123", role: "ops" }}
+      />,
+    );
+
+    fireEvent.change(staff.container.querySelector("input"), {
+      target: { value: "Review the skill draft" },
+    });
+    fireEvent.keyDown(staff.container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    expect(await screen.findByText("weekly-risk-brief")).toBeInTheDocument();
+    expect(screen.queryByTestId("skill-draft-approve")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("skill-draft-reject")).not.toBeInTheDocument();
+  });
+
+  it("restores persisted pending clarify DTOs with the saved question", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversations: [{ id: "conversation-clarify-restore" }],
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-clarify-restore") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-clarify-restore" },
+              messages: [
+                {
+                  id: "message-user-clarify-restore",
+                  role: "user",
+                  status: "completed",
+                  content: "Need scope",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-clarify-restore",
+                  assistantMessageId: "message-assistant-clarify-restore",
+                  status: "generating",
+                  pendingClarify: {
+                    clarifyId: "66666666-6666-4666-8666-666666666666",
+                    requestId: "clarify-request-restore",
+                    question: "Which project scope should be reviewed?",
+                    choices: ["Current month", "Current week"],
+                    allowFreeText: true,
+                  },
+                },
+              ],
+            }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+    localStorage.setItem(
+      "jingying-cabin.dashboard.ai.conversation.v1.user-clarify-restore",
+      "conversation-clarify-restore",
+    );
+
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-clarify-restore", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Which project scope should be reviewed?"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Current month" })).toBeEnabled();
+  });
+
+  it("queues Stop before turn.started and cancels once the server turn exists", async () => {
+    const encoder = new TextEncoder();
+    let streamController;
+    let turnSignal;
+    const cancelChecks = [];
+    fetch.mockImplementation((url, options = {}) => {
+      if (url === "/api/ai/conversations" && options.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () =>
+            Promise.resolve({ conversation: { id: "conversation-early-stop" } }),
+        });
+      }
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ conversations: [] }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-early-stop/turns") {
+        turnSignal = options.signal;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => "text/event-stream; charset=utf-8" },
+          body: new ReadableStream({
+            start(controller) {
+              streamController = controller;
+            },
+          }),
+        });
+      }
+      if (
+        url ===
+        "/api/ai/conversations/conversation-early-stop/turns/turn-early-stop/cancel"
+      ) {
+        cancelChecks.push(turnSignal?.aborted === true);
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ turn: { status: "cancelled" } }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-early-stop", name: "123", role: "owner" }}
+      />,
+    );
+    fireEvent.change(container.querySelector("input"), {
+      target: { value: "Stop before turn id" },
+    });
+    fireEvent.keyDown(container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    await waitFor(() => expect(streamController).toBeTruthy());
+    fireEvent.click(await screen.findByTestId("ai-send-stop-button"));
+    expect(cancelChecks).toEqual([]);
+
+    streamController.enqueue(
+      encoder.encode(
+        protocolSse([
+          [
+            "turn.started",
+            {
+              type: "turn.started",
+              conversationId: "conversation-early-stop",
+              turnId: "turn-early-stop",
+              userMessageId: "message-user-early-stop",
+              assistantMessageId: "message-assistant-early-stop",
+            },
+          ],
+        ]),
+      ),
+    );
+
+    await waitFor(() => expect(cancelChecks).toEqual([false]));
+    expect(turnSignal.aborted).toBe(true);
+  });
+
+  it("does not render cancelled success when the cancel route fails", async () => {
+    const encoder = new TextEncoder();
+    const protocolFetch = createEventProtocolFetch({
+      conversationId: "conversation-cancel-fails",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-cancel-fails",
+            turnId: "turn-cancel-fails",
+            userMessageId: "message-user-cancel-fails",
+            assistantMessageId: "message-assistant-cancel-fails",
+          },
+        ],
+      ],
+      encoder,
+      keepOpen: true,
+    });
+    fetch.mockImplementation((url, options = {}) => {
+      if (
+        url ===
+        "/api/ai/conversations/conversation-cancel-fails/turns/turn-cancel-fails/cancel"
+      ) {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () =>
+            Promise.resolve({ error: "Hermes Gateway provider stack trace" }),
+        });
+      }
+      return protocolFetch(url, options) || defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-cancel-fails", name: "123", role: "owner" }}
+      />,
+    );
+    fireEvent.change(container.querySelector("input"), {
+      target: { value: "Cancel fails safely" },
+    });
+    fireEvent.keyDown(container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    fireEvent.click(await screen.findByTestId("ai-send-stop-button"));
+
+    expect(await screen.findByText("停止请求未确认")).toBeInTheDocument();
+    expect(screen.queryByText("已停止生成")).not.toBeInTheDocument();
+    expect(container).not.toHaveTextContent(/Hermes Gateway|provider|stack/i);
+  });
+
+  it("redacts unsafe gateway/provider strings from SSE labels and failures", async () => {
+    const encoder = new TextEncoder();
+    mockConversationProtocolEvents({
+      conversationId: "conversation-redaction",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-redaction",
+            turnId: "turn-redaction",
+            userMessageId: "message-user-redaction",
+            assistantMessageId: "message-assistant-redaction",
+          },
+        ],
+        [
+          "tool.completed",
+          {
+            type: "tool.completed",
+            conversationId: "conversation-redaction",
+            turnId: "turn-redaction",
+            toolCallId: "tool-unsafe",
+            toolName: "internal.rawToolName",
+            label: "Hermes Gateway /api/internal {\"args\":true}",
+            status: "completed",
+            evidence: ["/api/internal/hermes/read"],
+            missing: ["provider model stack trace"],
+          },
+        ],
+        [
+          "response.failed",
+          {
+            type: "response.failed",
+            conversationId: "conversation-redaction",
+            turnId: "turn-redaction",
+            code: "provider_failed",
+            message: "DeepSeek provider model stack at /api/internal",
+            retryable: true,
+          },
+        ],
+      ],
+      encoder,
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-redaction", name: "123", role: "owner" }}
+      />,
+    );
+    fireEvent.change(container.querySelector("input"), {
+      target: { value: "Show unsafe progress" },
+    });
+    fireEvent.keyDown(container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    expect(await screen.findByText("AI response unavailable")).toBeInTheDocument();
+    expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
+      /Hermes Gateway|DeepSeek|provider|model|\/api\/internal|rawToolName|args|stack|chain-of-thought|reasoning/i,
+    );
+  });
+
+  it("keeps clarify enabled on failed POST and rejects invalid submissions", async () => {
+    const encoder = new TextEncoder();
+    const protocolFetch = createEventProtocolFetch({
+      conversationId: "conversation-clarify-failure",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-clarify-failure",
+            turnId: "turn-clarify-failure",
+            userMessageId: "message-user-clarify-failure",
+            assistantMessageId: "message-assistant-clarify-failure",
+          },
+        ],
+        [
+          "clarify.requested",
+          {
+            type: "clarify.requested",
+            conversationId: "conversation-clarify-failure",
+            turnId: "turn-clarify-failure",
+            clarifyId: "77777777-7777-4777-8777-777777777777",
+            question: "Choose a scope",
+            choices: ["Project A", "Project B"],
+            allowFreeText: false,
+          },
+        ],
+      ],
+      encoder,
+      keepOpen: true,
+    });
+    fetch.mockImplementation((url, options = {}) => {
+      if (String(url).includes("/clarify")) {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({ error: "stale clarify" }),
+        });
+      }
+      return protocolFetch(url, options) || defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-clarify-failure", name: "123", role: "owner" }}
+      />,
+    );
+    fireEvent.change(container.querySelector("input"), {
+      target: { value: "Need clarify" },
+    });
+    fireEvent.keyDown(container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    expect(await screen.findByText("Choose a scope")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "提交澄清" }));
+    expect(fetch).not.toHaveBeenCalledWith(
+      "/api/ai/conversations/conversation-clarify-failure/turns/turn-clarify-failure/clarify",
+      expect.anything(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Project A" }));
+    fireEvent.click(screen.getByRole("button", { name: "提交澄清" }));
+    expect(await screen.findByText("澄清提交失败")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "提交澄清" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Project A" })).toBeEnabled();
   });
 
   it("creates a durable conversation and sends only the new turn", async () => {
@@ -98,6 +1034,13 @@ describe("OverviewBoard AI panel", () => {
               turnId: "turn-1",
               messageId: "message-assistant-1",
               content: "真实会话回复",
+              outcome: "complete",
+              evidence: [],
+              missing: [],
+              observationTimes: {
+                firstObservedAt: "2026-07-22T09:00:00.000Z",
+                lastObservedAt: "2026-07-22T09:00:01.000Z",
+              },
             },
           ],
         ]);
@@ -559,6 +1502,165 @@ describe("OverviewBoard AI panel", () => {
     expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
   });
 
+  it("redacts unsafe restored assistant content and failed turn summaries", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversations: [{ id: "conversation-unsafe-restore" }],
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-unsafe-restore") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-unsafe-restore" },
+              messages: [
+                {
+                  id: "message-user-unsafe-restore",
+                  role: "user",
+                  status: "completed",
+                  content: "Stored failure",
+                },
+                {
+                  id: "message-assistant-unsafe-restore",
+                  role: "assistant",
+                  status: "failed",
+                  content:
+                    "Hermes Gateway provider model stack at /api/internal/ai {\"args\":true}",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-unsafe-restore",
+                  assistantMessageId: "message-assistant-unsafe-restore",
+                  status: "failed",
+                  retryable: true,
+                  errorSummary:
+                    "DeepSeek model stack at /api/internal/retry with chain-of-thought",
+                },
+              ],
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: "not found" }),
+      });
+    });
+    localStorage.setItem(
+      "jingying-cabin.dashboard.ai.conversation.v1.user-unsafe-restore",
+      "conversation-unsafe-restore",
+    );
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-unsafe-restore", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(await screen.findByText("Stored failure")).toBeInTheDocument();
+    expect(await screen.findByText("AI response unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+    expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
+      /Hermes Gateway|DeepSeek|provider|model|\/api\/internal|stack|args|chain-of-thought/i,
+    );
+  });
+
+  it("redacts unsafe retry and regenerate failure payloads", async () => {
+    const encoder = new TextEncoder();
+    fetch.mockImplementation((url, options = {}) => {
+      if (url === "/api/ai/conversations" && options.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: () =>
+            Promise.resolve({ conversation: { id: "conversation-retry-redact" } }),
+        });
+      }
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ conversations: [] }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-retry-redact/turns") {
+        return Promise.resolve(
+          protocolStreamResponse(encoder, [
+            [
+              "turn.started",
+              {
+                type: "turn.started",
+                conversationId: "conversation-retry-redact",
+                turnId: "turn-retry-redact",
+                userMessageId: "message-user-retry-redact",
+                assistantMessageId: "message-assistant-retry-redact",
+              },
+            ],
+            [
+              "response.failed",
+              {
+                type: "response.failed",
+                conversationId: "conversation-retry-redact",
+                turnId: "turn-retry-redact",
+                code: "provider_failed",
+                retryable: true,
+                message: "provider timeout",
+              },
+            ],
+          ]),
+        );
+      }
+      if (url === "/api/ai/turns/turn-retry-redact/retry") {
+        return Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () =>
+            Promise.resolve({
+              error:
+                "Hermes Gateway provider model stack at /api/internal/retry",
+            }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-retry-redact", name: "123", role: "owner" }}
+      />,
+    );
+    fireEvent.change(container.querySelector("input"), {
+      target: { value: "Retry failure" },
+    });
+    fireEvent.keyDown(container.querySelector("input"), {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "重试" }));
+
+    expect(await screen.findByText(/AI response unavailable/)).toBeInTheDocument();
+    expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
+      /Hermes Gateway|provider|model|\/api\/internal|stack/i,
+    );
+  });
+
   it("consumes SSE streaming chat responses chunk by chunk into one bubble", async () => {
     const protocolFetch = createConversationProtocolFetch({
       content: "流式回复完成",
@@ -620,7 +1722,7 @@ describe("OverviewBoard AI panel", () => {
     expect(payload.content).toBe("你好");
     expect(payload).not.toHaveProperty("messages");
     expect(fetch).not.toHaveBeenCalledWith("/api/ai/chat", expect.anything());
-    expect(await screen.findByText("真实 DeepSeek 回复")).toBeInTheDocument();
+    expect(await screen.findByText("真实星耀回复")).toBeInTheDocument();
   });
 
   it("sends deep thinking mode and up to five attachments to the chat API", async () => {
@@ -2109,7 +3211,7 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.change(input, { target: { value: "默认分析本月" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
-    expect(await screen.findByText("真实 DeepSeek 回复")).toBeInTheDocument();
+    expect(await screen.findByText("真实星耀回复")).toBeInTheDocument();
 
     unmount();
     render(
@@ -2124,16 +3226,58 @@ describe("OverviewBoard AI panel", () => {
     );
 
     expect(await screen.findByText("默认分析本月")).toBeInTheDocument();
-    expect(await screen.findByText("真实 DeepSeek 回复")).toBeInTheDocument();
+    expect(await screen.findByText("真实星耀回复")).toBeInTheDocument();
   });
 });
 
 function protocolSse(events) {
   return events
     .map(
-      ([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+      ([event, data]) =>
+        `event: ${event}\ndata: ${JSON.stringify(
+          event === "response.completed"
+            ? {
+                outcome: "complete",
+                evidence: [],
+                missing: [],
+                observationTimes: {
+                  firstObservedAt: "2026-07-22T09:00:00.000Z",
+                  lastObservedAt: "2026-07-22T09:00:01.000Z",
+                },
+                ...data,
+              }
+            : data,
+        )}\n\n`,
     )
     .join("");
+}
+
+function completedEvent({
+  conversationId,
+  turnId,
+  messageId,
+  content,
+  outcome = "complete",
+  evidence = [],
+  missing = [],
+}) {
+  return [
+    "response.completed",
+    {
+      type: "response.completed",
+      conversationId,
+      turnId,
+      messageId,
+      content,
+      outcome,
+      evidence,
+      missing,
+      observationTimes: {
+        firstObservedAt: "2026-07-22T09:00:00.000Z",
+        lastObservedAt: "2026-07-22T09:00:01.000Z",
+      },
+    },
+  ];
 }
 
 function protocolStreamResponse(encoder, events) {
@@ -2276,6 +3420,90 @@ function createConversationProtocolFetch({
     }
     return null;
   };
+}
+
+function createEventProtocolFetch({
+  conversationId,
+  events,
+  encoder = new TextEncoder(),
+  keepOpen = false,
+}) {
+  let created = false;
+  return (url, options = {}) => {
+    if (url === "/api/ai/conversations" && options.method === "POST") {
+      created = true;
+      return Promise.resolve({
+        ok: true,
+        status: 201,
+        json: () =>
+          Promise.resolve({
+            conversation: { id: conversationId, title: "新会话" },
+          }),
+      });
+    }
+    if (url === "/api/ai/conversations") {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            conversations: created ? [{ id: conversationId }] : [],
+          }),
+      });
+    }
+    if (url === `/api/ai/conversations/${conversationId}`) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            conversation: { id: conversationId, title: "新会话" },
+            messages: [],
+            turns: [],
+          }),
+      });
+    }
+    if (url === `/api/ai/conversations/${conversationId}/turns`) {
+      created = true;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "text/event-stream; charset=utf-8" },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(protocolSse(events)));
+            if (!keepOpen) controller.close();
+          },
+        }),
+      });
+    }
+    return null;
+  };
+}
+
+function mockConversationProtocolEvents({
+  conversationId,
+  events,
+  encoder = new TextEncoder(),
+  keepOpen = false,
+}) {
+  const protocolFetch = createEventProtocolFetch({
+    conversationId,
+    events,
+    encoder,
+    keepOpen,
+  });
+  fetch.mockImplementation((url, options = {}) => {
+    const response = protocolFetch(url, options);
+    if (response) return response;
+    if (url.includes("/clarify")) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ accepted: true }),
+      });
+    }
+    return defaultFetchResponse(url);
+  });
 }
 
 function mockConversationProtocol(options) {
