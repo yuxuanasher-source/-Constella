@@ -325,7 +325,7 @@ describe("conversation stream adapter", () => {
       actor: { organizationId: "org-1", userId: "user-1" },
       turn,
       attachments: [],
-      service: service as any,
+      service,
       executor,
     });
 
@@ -338,8 +338,10 @@ describe("conversation stream adapter", () => {
   });
 
   it("requires terminal-state verification for native terminal SSE", async () => {
-    const { verifyTerminalState: _verifyTerminalState, ...unverifiedService } =
-      serviceDouble({ callOrder: [] });
+    const unverifiedService = {
+      ...serviceDouble({ callOrder: [] }),
+      verifyTerminalState: undefined,
+    };
     const executor = {
       execute: vi.fn().mockImplementation(async function* () {
         yield {
@@ -356,7 +358,7 @@ describe("conversation stream adapter", () => {
       actor: { organizationId: "org-1", userId: "user-1" },
       turn,
       attachments: [],
-      service: unverifiedService as any,
+      service: unverifiedService,
       executor,
     });
 

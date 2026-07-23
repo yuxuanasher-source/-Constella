@@ -4,16 +4,25 @@ import {
   ConversationServiceError,
   createConversationService,
   createSupabaseConversationPersistence,
+  type ConversationActor,
 } from "@/features/ai/conversation-service";
 import type { ConversationRepositoryClient } from "@/features/ai/conversation-repository";
-import { getAuthContext } from "@/lib/auth/context";
+import { getAuthContext, type AuthContext } from "@/lib/auth/context";
 import {
   createSupabaseAdminClient,
   createSupabaseServerClient,
 } from "@/lib/db/supabase-server";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
-export async function getAiConversationRouteContext() {
+export type AiConversationRouteContext = {
+  auth: AuthContext;
+  actor: ConversationActor;
+  service: ReturnType<typeof createConversationService>;
+};
+
+export async function getAiConversationRouteContext(): Promise<
+  AiConversationRouteContext | Response
+> {
   const supabase = await createSupabaseServerClient();
   const auth = supabase ? await getAuthContext(supabase) : null;
   if (!supabase || !auth) {
