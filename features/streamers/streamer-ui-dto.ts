@@ -39,6 +39,9 @@ export type StreamerCardDto = {
     projectFinish: number;
     roi: number;
     grossContrib: number;
+    vendorPassRateBps: number | null;
+    rejectionReasonHistogram: Record<string, number>;
+    evaluatedCount: number;
   };
   projects: StreamerProjectContributionDto[];
   aiInsights: StreamerAiInsightDto[];
@@ -138,7 +141,13 @@ export function toStreamerCardDto(
     createdAtLabel: row.created_at.slice(0, 10),
     matchScore: liveMetrics.matchScore,
     matchTrend: liveMetrics.matchTrend,
-    metrics: liveMetrics.metrics,
+    metrics: {
+      ...liveMetrics.metrics,
+      vendorPassRateBps: row.admission_stats?.vendorPassRateBps ?? null,
+      rejectionReasonHistogram:
+        row.admission_stats?.rejectionReasonHistogram ?? {},
+      evaluatedCount: row.admission_stats?.evaluatedCount ?? 0,
+    },
     projects: liveMetrics.projects,
     aiInsights: streamerAiInsights(row),
   };

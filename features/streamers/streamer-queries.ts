@@ -1,5 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import {
+  aggregateStreamerAdmissionStats,
+  type StreamerAdmissionApplicationRow,
+  type StreamerAdmissionStats,
+} from "./streamer-admission-stats";
+
 export type StreamerListRow = {
   id: string;
   display_name: string;
@@ -23,6 +29,8 @@ export type StreamerListRow = {
   streamer_accounts?: StreamerAccountMetricRow[];
   recording_submissions?: StreamerRecordingMetricRow[];
   streamer_profile_insights?: StreamerProfileInsightMetricRow[];
+  project_applications?: StreamerAdmissionApplicationRow[];
+  admission_stats?: StreamerAdmissionStats;
   live_tasks?: StreamerTaskMetricRow[];
   live_reports?: StreamerReportMetricRow[];
   project_streamers?: StreamerProjectMetricRow[];
@@ -107,10 +115,35 @@ export async function listStreamerPool(
   const { data, error } = await supabase
     .from("streamers")
     .select(
-      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
+      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), project_applications(organization_id, project_recording_vendor_reviews(id, organization_id, decision), admission_review_evaluations(id, vendor_review_id, organization_id, stage, admission_review_checkpoint_results(organization_id, checkpoint_key, verdict))), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
     )
     // 组织过滤放在查询层（RLS 仍作为第二道防线）。
     .eq("organization_id", organizationId)
+    .eq("project_applications.organization_id", organizationId)
+    .eq(
+      "project_applications.project_recording_vendor_reviews.organization_id",
+      organizationId,
+    )
+    .in(
+      "project_applications.project_recording_vendor_reviews.decision",
+      ["selected", "backup", "rejected", "needs_changes"],
+    )
+    .eq(
+      "project_applications.admission_review_evaluations.organization_id",
+      organizationId,
+    )
+    .eq(
+      "project_applications.admission_review_evaluations.stage",
+      "vendor_second",
+    )
+    .eq(
+      "project_applications.admission_review_evaluations.admission_review_checkpoint_results.organization_id",
+      organizationId,
+    )
+    .eq(
+      "project_applications.admission_review_evaluations.admission_review_checkpoint_results.verdict",
+      "fail",
+    )
     // 嵌套关联收敛：DTO 的指标窗口是「近 90 天」，按 created_at 倒序取
     // 最近 N 行足以覆盖常规体量；project_streamers 行数天然有限，保留。
     .order("created_at", {
@@ -135,7 +168,13 @@ export async function listStreamerPool(
     throw error;
   }
 
-  return data ?? [];
+  return ((data ?? []) as unknown as StreamerListRow[]).map((row) => ({
+    ...row,
+    admission_stats: aggregateStreamerAdmissionStats({
+      applications: row.project_applications,
+      organizationId,
+    }),
+  }));
 }
 
 export async function getStreamerProfileRow(

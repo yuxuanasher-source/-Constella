@@ -127,6 +127,9 @@ describe("toStreamerCardDto", () => {
       projectFinish: 100,
       roi: 0.9,
       grossContrib: 150,
+      vendorPassRateBps: null,
+      rejectionReasonHistogram: {},
+      evaluatedCount: 0,
     });
     expect(dto.matchScore).toBeGreaterThan(70);
     expect(dto.matchTrend).toHaveLength(6);
@@ -164,6 +167,9 @@ describe("toStreamerCardDto", () => {
       projectFinish: 0,
       roi: 0,
       grossContrib: 0,
+      vendorPassRateBps: null,
+      rejectionReasonHistogram: {},
+      evaluatedCount: 0,
     });
     expect(dto.matchScore).toBe(0);
     expect(dto.matchTrend).toEqual([]);
@@ -217,6 +223,41 @@ describe("toStreamerCardDto", () => {
       baseSalary: 0,
       cpsRateBps: 1500,
       label: "CPS 15%",
+    });
+  });
+
+  it("maps the vendor admission aggregate into card metrics without changing units", () => {
+    const dto = toStreamerCardDto({
+      id: "s-admission",
+      display_name: "Admission Streamer",
+      real_name: null,
+      gender: null,
+      source_type: "external",
+      cooperation_status: "active",
+      categories: [],
+      platforms: [],
+      styles: [],
+      default_settlement_method: "cpt",
+      risk_level: "low",
+      clean_report_count: 0,
+      created_at: "2026-07-26T00:00:00.000Z",
+      admission_stats: {
+        vendorPassRateBps: 6667,
+        rejectionReasonHistogram: {
+          compliance: 2,
+          audio_quality: 1,
+        },
+        evaluatedCount: 3,
+      },
+    });
+
+    expect(dto.metrics).toMatchObject({
+      vendorPassRateBps: 6667,
+      rejectionReasonHistogram: {
+        compliance: 2,
+        audio_quality: 1,
+      },
+      evaluatedCount: 3,
     });
   });
 });

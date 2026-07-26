@@ -25,6 +25,98 @@ describe("streamer queries", () => {
     );
   });
 
+  it("selects and aggregates vendor admission reviews for the streamer pool", async () => {
+    const pool = queryBuilder([
+      {
+        id: "streamer-1",
+        display_name: "Streamer One",
+        real_name: null,
+        gender: null,
+        source_type: "external",
+        cooperation_status: "active",
+        categories: [],
+        platforms: [],
+        styles: [],
+        default_settlement_method: "cpt",
+        risk_level: "low",
+        clean_report_count: 0,
+        created_at: "2026-07-26T00:00:00.000Z",
+        project_applications: [
+          {
+            organization_id: "org-1",
+            project_recording_vendor_reviews: [
+              {
+                id: "vendor-review-1",
+                organization_id: "org-1",
+                decision: "selected",
+              },
+            ],
+            admission_review_evaluations: [
+              {
+                id: "evaluation-1",
+                organization_id: "org-1",
+                stage: "vendor_second",
+                decision: "selected",
+                admission_review_checkpoint_results: [],
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    const client = { from: vi.fn(() => pool) };
+
+    const rows = await listStreamerPool(client as never, "org-1");
+
+    expect(pool.select).toHaveBeenCalledWith(
+      expect.stringContaining("admission_review_evaluations"),
+    );
+    expect(pool.select).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "admission_review_evaluations(id, vendor_review_id, organization_id",
+      ),
+    );
+    expect(pool.select).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "admission_review_checkpoint_results(organization_id, checkpoint_key, verdict)",
+      ),
+    );
+    expect(pool.select).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "project_recording_vendor_reviews(id, organization_id, decision)",
+      ),
+    );
+    expect(pool.eq).toHaveBeenCalledWith(
+      "project_applications.organization_id",
+      "org-1",
+    );
+    expect(pool.eq).toHaveBeenCalledWith(
+      "project_applications.admission_review_evaluations.organization_id",
+      "org-1",
+    );
+    expect(pool.eq).toHaveBeenCalledWith(
+      "project_applications.admission_review_evaluations.stage",
+      "vendor_second",
+    );
+    expect(pool.eq).toHaveBeenCalledWith(
+      "project_applications.project_recording_vendor_reviews.organization_id",
+      "org-1",
+    );
+    expect(pool.in).toHaveBeenCalledWith(
+      "project_applications.project_recording_vendor_reviews.decision",
+      ["selected", "backup", "rejected", "needs_changes"],
+    );
+    expect(pool.eq).toHaveBeenCalledWith(
+      "project_applications.admission_review_evaluations.admission_review_checkpoint_results.verdict",
+      "fail",
+    );
+    expect(rows[0].admission_stats).toEqual({
+      vendorPassRateBps: 10_000,
+      rejectionReasonHistogram: {},
+      evaluatedCount: 1,
+    });
+  });
+
   it("filters the pool by organization and bounds the main query", async () => {
     const pool = queryBuilder([]);
     const client = { from: vi.fn(() => pool) };
@@ -81,6 +173,7 @@ function queryBuilder(data: unknown) {
     order: vi.fn(() => builder),
     limit: vi.fn(() => builder),
     eq: vi.fn(() => builder),
+    in: vi.fn(() => builder),
     maybeSingle: vi.fn(() => Promise.resolve({ data, error: null })),
     then: (resolve: (value: unknown) => unknown) =>
       Promise.resolve({ data, error: null }).then(resolve),
