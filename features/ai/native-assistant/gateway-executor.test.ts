@@ -1,6 +1,13 @@
+import { generateKeyPairSync } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { AiConversationMessageDto } from "../conversation-contracts";
+import { verifyHermesActorAssertion } from "../hermes/actor-assertion";
+import type {
+  HermesGatewaySession,
+  HermesGatewaySessionOptions,
+} from "../hermes/gateway-client";
 import {
   createGatewayTurnExecutor,
   createHermesGatewayClient,
@@ -1084,6 +1091,63 @@ describe("native Hermes Gateway executor", () => {
     );
   });
 
+  it("signs the default official Gateway session with a Gateway v2 actor assertion", async () => {
+    const keys = rsaKeyPair();
+    const gatewayProfile = gatewayActor();
+    const openSession = vi.fn(async (options: HermesGatewaySessionOptions) => {
+      await expect(
+        verifyHermesActorAssertion(options.actorAssertion, {
+          publicKeyPem: keys.publicKeyPem,
+          runtime: "gateway",
+        }),
+      ).resolves.toMatchObject({ actor: gatewayProfile });
+
+      return {
+        sessionId: "session-official",
+        events: gatewayDouble([]).submitPrompt({}),
+        info: vi.fn(),
+        list: vi.fn(),
+        branch: vi.fn(),
+        compress: vi.fn(),
+        respondToClarify: vi.fn(),
+        interrupt: vi.fn(),
+        waitForAccepted: vi.fn(),
+        recover: vi.fn(),
+        close: vi.fn(),
+        listenerCount: vi.fn().mockReturnValue(0),
+      } satisfies HermesGatewaySession;
+    });
+    const client = createHermesGatewayClient({
+      config: {
+        url: "ws://127.0.0.1:8787",
+        serviceToken: "gateway-service-token-that-is-long-enough",
+        timeouts: {
+          connectMs: 10,
+          readyMs: 10,
+          rpcMs: 10,
+          idleMs: 10,
+          heartbeatMs: 10,
+        },
+      },
+      actorAssertionConfig: {
+        baseUrl: "http://127.0.0.1:8788",
+        serviceToken: "runtime-service-token-that-is-long-enough",
+        privateKeyPem: keys.privateKeyPem,
+        keyId: "gateway-key-1",
+      },
+      openSession,
+    });
+
+    await expect(
+      client.createSession({
+        actor: gatewayProfile,
+        conversationId: turn.conversationId,
+        invocationCapability: "root-capability-secret",
+      }),
+    ).resolves.toEqual({ sessionId: "session-official" });
+    expect(openSession).toHaveBeenCalledTimes(1);
+  });
+
   it("reopens the branched official Gateway session before prompt submission", async () => {
     const sourceSession = {
       sessionId: "session-source",
@@ -1353,6 +1417,18 @@ function gatewayActor() {
       "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     profileVersion: "hermes-xingyao-v2",
     pageContext: { pageType: "global", objectIds: [] },
+  };
+}
+
+function rsaKeyPair() {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  });
+  return {
+    privateKeyPem: privateKey
+      .export({ type: "pkcs8", format: "pem" })
+      .toString(),
+    publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
   };
 }
 

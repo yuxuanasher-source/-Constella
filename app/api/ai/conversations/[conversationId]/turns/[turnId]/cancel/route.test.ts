@@ -130,6 +130,9 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
 
     await POST(request(), params());
 
+    expect(issueAssertionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runtime: "gateway" }),
+    );
     expect(createSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         actor: expect.objectContaining({

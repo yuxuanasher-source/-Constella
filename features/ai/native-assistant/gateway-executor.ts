@@ -1006,7 +1006,7 @@ export function createHermesGatewayClient({
   openSession = openHermesGatewaySession,
   attachBytes = attachHermesGatewayBytes,
   createActorAssertion = ({ actor, config }) =>
-    createHermesActorAssertionForRun({ actor, config }),
+    createHermesActorAssertionForRun({ actor, config, runtime: "gateway" }),
 }: {
   config?: HermesGatewayClientConfig | null;
   actorAssertionConfig?: HermesRuntimeConfig | null;
