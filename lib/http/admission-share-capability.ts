@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const ADMISSION_SHARE_CAPABILITY_COOKIE = "admission_share_capability";
 
@@ -12,18 +12,37 @@ type CapabilityPayload = {
   version: 1;
   boardId: string;
   tokenHash: string;
-  verifierDigest: string;
   expiresAt: number;
 };
+
+export class AdmissionShareCapabilityUnavailableError extends Error {
+  readonly name = "AdmissionShareCapabilityUnavailableError";
+
+  constructor() {
+    super("Admission share capability secret is not configured");
+  }
+}
+
+export function requireAdmissionShareCapabilitySecret(
+  env: Record<string, string | undefined> = process.env,
+) {
+  return validateSecret(env.ADMISSION_SHARE_CAPABILITY_SECRET);
+}
 
 export function signAdmissionShareCapability({
   boardExpiresAt,
   now,
+  secret,
   ...binding
 }: CapabilityBinding & {
   boardExpiresAt: string;
   now: string;
+  secret?: string;
 }) {
+  const signingSecret =
+    secret === undefined
+      ? requireAdmissionShareCapabilitySecret()
+      : validateSecret(secret);
   const expiresAt = Math.min(
     Date.parse(boardExpiresAt),
     Date.parse(now) + 60 * 60 * 1000,
@@ -36,11 +55,10 @@ export function signAdmissionShareCapability({
       version: 1,
       boardId: binding.boardId,
       tokenHash: binding.tokenHash,
-      verifierDigest: verifierDigest(binding.accessCodeHash),
       expiresAt,
     } satisfies CapabilityPayload),
   ).toString("base64url");
-  const signature = sign(encodedPayload, binding.accessCodeHash);
+  const signature = sign(encodedPayload, binding, signingSecret);
   return {
     value: `${encodedPayload}.${signature}`,
     expiresAt: new Date(expiresAt).toISOString(),
@@ -50,19 +68,30 @@ export function signAdmissionShareCapability({
 export function verifyAdmissionShareCapability({
   capability,
   now,
+  secret,
   ...binding
 }: CapabilityBinding & {
   capability: string | undefined;
   now: string;
+  secret?: string;
 }) {
   if (!capability) {
+    return false;
+  }
+  let signingSecret: string;
+  try {
+    signingSecret =
+      secret === undefined
+        ? requireAdmissionShareCapabilitySecret()
+        : validateSecret(secret);
+  } catch {
     return false;
   }
   const [encodedPayload, suppliedSignature, extra] = capability.split(".");
   if (!encodedPayload || !suppliedSignature || extra) {
     return false;
   }
-  const expectedSignature = sign(encodedPayload, binding.accessCodeHash);
+  const expectedSignature = sign(encodedPayload, binding, signingSecret);
   if (!safeEqual(suppliedSignature, expectedSignature)) {
     return false;
   }
@@ -75,7 +104,6 @@ export function verifyAdmissionShareCapability({
       payload.version === 1 &&
       payload.boardId === binding.boardId &&
       payload.tokenHash === binding.tokenHash &&
-      payload.verifierDigest === verifierDigest(binding.accessCodeHash) &&
       typeof payload.expiresAt === "number" &&
       Number.isFinite(payload.expiresAt) &&
       payload.expiresAt >= Date.parse(now)
@@ -100,19 +128,35 @@ export function admissionShareCapabilityFromRequest(request: Request) {
   return undefined;
 }
 
-function verifierDigest(accessCodeHash: string) {
-  return createHash("sha256").update(accessCodeHash).digest("hex");
+function validateSecret(secret: string | undefined) {
+  const normalized = secret?.trim();
+  if (!normalized || normalized.length < 32) {
+    throw new AdmissionShareCapabilityUnavailableError();
+  }
+  return normalized;
 }
 
-function sign(encodedPayload: string, accessCodeHash: string) {
-  return createHmac("sha256", accessCodeHash)
+function sign(
+  encodedPayload: string,
+  binding: CapabilityBinding,
+  secret: string,
+) {
+  return createHmac("sha256", secret)
+    .update("admission-share-capability-v1")
+    .update("\0")
     .update(encodedPayload)
+    .update("\0")
+    .update(binding.boardId)
+    .update("\0")
+    .update(binding.tokenHash)
+    .update("\0")
+    .update(binding.accessCodeHash)
     .digest("base64url");
 }
 
 function safeEqual(actual: string, expected: string) {
-  const actualBuffer = Buffer.from(actual);
-  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(actual, "base64url");
+  const expectedBuffer = Buffer.from(expected, "base64url");
   return (
     actualBuffer.length === expectedBuffer.length &&
     timingSafeEqual(actualBuffer, expectedBuffer)

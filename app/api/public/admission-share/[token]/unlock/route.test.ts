@@ -46,6 +46,8 @@ const preparedAccess = {
 describe("public admission share unlock route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    rpc.mockReset();
+    vi.stubEnv("ADMISSION_SHARE_CAPABILITY_SECRET", "s".repeat(64));
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
     rpc.mockResolvedValue({
       data: [{ allowed: true, retry_after_seconds: 0, remaining: 4 }],
@@ -93,7 +95,7 @@ describe("public admission share unlock route", () => {
     expect(cookie).not.toContain("2468");
   });
 
-  it("rate-limits before access lookup and code verification", async () => {
+  it("IP-rate-limits before access lookup and code verification", async () => {
     rpc.mockResolvedValue({
       data: [{ allowed: false, retry_after_seconds: 99, remaining: 0 }],
       error: null,
@@ -116,6 +118,101 @@ describe("public admission share unlock route", () => {
       "consume_admission_share_rate_limit",
       expect.objectContaining({ p_limit: 5, p_window_seconds: 600 }),
     );
+    expect(preparePublicAdmissionShareAccess).not.toHaveBeenCalled();
+    expect(verifyPublicAdmissionShareAccessCode).not.toHaveBeenCalled();
+  });
+
+  it("still verifies a correct code when a token bucket would deny", async () => {
+    rpc
+      .mockResolvedValueOnce({
+        data: [{ allowed: true, retry_after_seconds: 0, remaining: 0 }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ allowed: false, retry_after_seconds: 99, remaining: 0 }],
+        error: null,
+      });
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token/unlock",
+        {
+          method: "POST",
+          body: JSON.stringify({ accessCode: "2468" }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    expect(verifyPublicAdmissionShareAccessCode).toHaveBeenCalledOnce();
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith(
+      "consume_admission_share_rate_limit",
+      expect.objectContaining({
+        p_scope: "admission-share-unlock:ip",
+        p_limit: 5,
+        p_window_seconds: 600,
+      }),
+    );
+  });
+
+  it("keeps wrong-code DB lockout and unavailable tokens behind one generic error", async () => {
+    vi.mocked(verifyPublicAdmissionShareAccessCode).mockRejectedValueOnce(
+      new Error("Access code is temporarily locked"),
+    );
+    const lockedResponse = await POST(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token/unlock",
+        {
+          method: "POST",
+          body: JSON.stringify({ accessCode: "0000" }),
+        },
+      ),
+      { params },
+    );
+    vi.mocked(preparePublicAdmissionShareAccess).mockRejectedValueOnce(
+      new Error("Share link is not available"),
+    );
+    const unavailableResponse = await POST(
+      new Request(
+        "http://localhost/api/public/admission-share/unknown-token/unlock",
+        {
+          method: "POST",
+          body: JSON.stringify({ accessCode: "0000" }),
+        },
+      ),
+      { params: Promise.resolve({ token: "unknown-token" }) },
+    );
+
+    expect(lockedResponse.status).toBe(400);
+    expect(unavailableResponse.status).toBe(400);
+    await expect(lockedResponse.json()).resolves.toEqual({
+      error: "Unable to unlock share",
+    });
+    await expect(unavailableResponse.json()).resolves.toEqual({
+      error: "Unable to unlock share",
+    });
+  });
+
+  it("fails closed with 503 when the capability secret is missing", async () => {
+    vi.stubEnv("ADMISSION_SHARE_CAPABILITY_SECRET", "");
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token/unlock",
+        {
+          method: "POST",
+          body: JSON.stringify({ accessCode: "2468" }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Public share unlock service is unavailable",
+    });
     expect(preparePublicAdmissionShareAccess).not.toHaveBeenCalled();
     expect(verifyPublicAdmissionShareAccessCode).not.toHaveBeenCalled();
   });

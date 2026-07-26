@@ -31,6 +31,7 @@ describe("parseServerEnv", () => {
       )({
         SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
         STORAGE_BUCKET_PRIVATE: "jy-private",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
         XINGYAO_HERMES_GATEWAY_ENABLED: "true",
         XINGYAO_HERMES_GATEWAY_ALLOWLIST:
           "11111111-1111-4111-8111-111111111111/*",
@@ -42,6 +43,7 @@ describe("parseServerEnv", () => {
     ).toMatchObject({
       SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
       STORAGE_BUCKET_PRIVATE: "jy-private",
+      ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
       XINGYAO_HERMES_GATEWAY_ENABLED: true,
       XINGYAO_HERMES_GATEWAY_ALLOWLIST:
         "11111111-1111-4111-8111-111111111111/*",
@@ -61,10 +63,12 @@ describe("parseServerEnv", () => {
     expect(
       parseServerEnv({
         SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
       }),
     ).toMatchObject({
       SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
       STORAGE_BUCKET_PRIVATE: "jy-private",
+      ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
       XINGYAO_HERMES_GATEWAY_ENABLED: false,
       XINGYAO_HERMES_GATEWAY_ALLOWLIST: "",
       XINGYAO_HERMES_GATEWAY_BASE_URL: null,
@@ -82,12 +86,14 @@ describe("parseServerEnv", () => {
     expect(() =>
       parseServerEnv({
         SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
         XINGYAO_HERMES_GATEWAY_ENABLED: "yes",
       }),
     ).toThrow();
     expect(() =>
       parseServerEnv({
         SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
         XINGYAO_HERMES_GATEWAY_ALLOWLIST:
           "11111111-1111-4111-8111-111111111111",
       }),
@@ -95,7 +101,28 @@ describe("parseServerEnv", () => {
     expect(() =>
       parseServerEnv({
         SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
         XINGYAO_HERMES_GATEWAY_BASE_URL: "not-a-url",
+      }),
+    ).toThrow();
+  });
+
+  it("requires a strong admission share capability secret", () => {
+    const parseServerEnv = (envConfig as Record<string, unknown>)
+      .parseServerEnv as (
+      env: Record<string, string | undefined>,
+    ) => Record<string, unknown>;
+
+    expect(() =>
+      parseServerEnv({
+        SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "",
+      }),
+    ).toThrow();
+    expect(() =>
+      parseServerEnv({
+        SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "too-short",
       }),
     ).toThrow();
   });

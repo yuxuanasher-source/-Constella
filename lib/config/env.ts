@@ -18,6 +18,7 @@ const privateStorageEnvSchema = z.object({
 const serverEnvSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   STORAGE_BUCKET_PRIVATE: privateStorageEnvSchema.shape.STORAGE_BUCKET_PRIVATE,
+  ADMISSION_SHARE_CAPABILITY_SECRET: z.string().min(32),
 });
 
 export type PublicEnv = z.infer<typeof publicEnvSchema>;
@@ -53,6 +54,8 @@ export function getServerEnv(): ServerEnv {
   return parseServerEnv({
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
     STORAGE_BUCKET_PRIVATE: process.env.STORAGE_BUCKET_PRIVATE,
+    ADMISSION_SHARE_CAPABILITY_SECRET:
+      process.env.ADMISSION_SHARE_CAPABILITY_SECRET,
     XINGYAO_HERMES_GATEWAY_ENABLED:
       process.env.XINGYAO_HERMES_GATEWAY_ENABLED,
     XINGYAO_HERMES_GATEWAY_ALLOWLIST:

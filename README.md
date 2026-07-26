@@ -12,6 +12,11 @@ pnpm supabase:migrate
 pnpm dev
 ```
 
+部署预览或生产环境前，必须配置至少 32 字符的服务端随机密钥
+`ADMISSION_SHARE_CAPABILITY_SECRET`。该密钥只用于公开上播审核分享的短期
+HttpOnly capability 签名，不得暴露为 `NEXT_PUBLIC_*`；缺失或过短时服务端
+环境校验失败，解锁接口也会 fail closed 返回 503。
+
 访问：
 
 - 经营 Web：`http://localhost:3000/console/projects`

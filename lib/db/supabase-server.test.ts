@@ -27,6 +27,8 @@ const envSnapshot = {
   NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
   NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  ADMISSION_SHARE_CAPABILITY_SECRET:
+    process.env.ADMISSION_SHARE_CAPABILITY_SECRET,
   SUPABASE_INTERNAL_URL: process.env.SUPABASE_INTERNAL_URL,
 };
 
@@ -36,6 +38,7 @@ describe("supabase server client factories", () => {
     process.env.NEXT_PUBLIC_SUPABASE_URL = "https://db.example.com";
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key";
     process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-key";
+    process.env.ADMISSION_SHARE_CAPABILITY_SECRET = "s".repeat(64);
     delete process.env.SUPABASE_INTERNAL_URL;
   });
 
