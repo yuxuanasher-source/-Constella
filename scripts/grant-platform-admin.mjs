@@ -1,8 +1,9 @@
 import { createRequire } from "node:module";
 import process from "node:process";
 
-import { createClient } from "@supabase/supabase-js";
 import { tsImport } from "tsx/esm/api";
+
+import { createPlatformAdminClient } from "./platform-admin-client.mjs";
 
 const require = createRequire(import.meta.url);
 const nextRequire = createRequire(require.resolve("next/package.json"));
@@ -30,12 +31,7 @@ if (args.length !== 1 || !args[0]?.trim()) {
         "../features/platform-admin/grant-platform-admin.ts",
         import.meta.url,
       );
-      const client = createClient(url, serviceRoleKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        },
-      });
+      const client = createPlatformAdminClient(url, serviceRoleKey);
       const granted = await grantPlatformAdmin({
         client,
         email: args[0],
