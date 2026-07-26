@@ -20,7 +20,7 @@ describe("toProjectCardDto", () => {
       allow_direct_invite: false,
       force_recording: false,
       force_system_timing: true,
-      default_hourly_rate: 4500,
+      default_hourly_rate: 45,
       default_settlement_method: "cpt",
       vendor_name: "厂商 A",
       product_name: "产品 A",
@@ -99,6 +99,13 @@ describe("toProjectCardDto", () => {
       status: "settling",
       statusLabel: "\u7ed3\u7b97\u4e2d",
     });
+  });
+
+  it("renders an 80-yuan database hourly rate without a cent conversion", () => {
+    expect(
+      toProjectCardDto(baseProjectRow({ default_hourly_rate: 80 }))
+        .hourlyRateLabel,
+    ).toBe("80.00 元/小时");
   });
 
   it("marks an approved unbatched settlement-pool report as settling", () => {
@@ -208,7 +215,7 @@ function baseProjectRow(overrides = {}) {
     allow_direct_invite: false,
     force_recording: false,
     force_system_timing: true,
-    default_hourly_rate: 4500,
+    default_hourly_rate: 45,
     default_settlement_method: "cpt",
     vendor_name: "Vendor A",
     product_name: "Product A",

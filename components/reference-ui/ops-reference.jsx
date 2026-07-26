@@ -8022,7 +8022,6 @@ function ProjectDetail({ id, go }) {
 
   // B1 指标前端实算：真实环境 p.metrics 恒 0，这里由项目内任务 / 报数 / 批次实时算出。
   // p.metrics 仅允许作 pickMetric 的展示兜底（演示 / 测试 fixture），图表一律不读 p.metrics。
-  // 应收口径与 role-home-loader 同源（已审核报数结算小时 × 厂家时薪，单位=元），
   // 但范围是项目全周期——展示处须标注「项目周期内 · 估算」。
   const projectComputedMetrics = React.useMemo(() => {
     const empty = {

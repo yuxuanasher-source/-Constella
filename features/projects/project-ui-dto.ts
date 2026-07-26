@@ -1,3 +1,5 @@
+import { toYuan } from "@/features/billing/hourly-rate-units";
+
 import type { ProjectListItem } from "./project-queries";
 
 const statusLabels: Record<string, string> = {
@@ -122,7 +124,7 @@ export function toProjectCardDto(row: ProjectListItem): ProjectCardDto {
     product: textOrFallback(row.product_name, row.name),
     status: uiStatus,
     statusLabel: statusLabels[uiStatus] ?? uiStatus,
-    hourlyRateLabel: `${(row.default_hourly_rate / 100).toFixed(2)} 元/小时`,
+    hourlyRateLabel: `${toYuan(row.default_hourly_rate).toFixed(2)} 元/小时`,
     timingLabel: row.force_system_timing ? "系统计时" : "人工校验",
     publishedAtLabel: row.published_at
       ? row.published_at.slice(0, 10)
