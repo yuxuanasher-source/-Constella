@@ -4,6 +4,7 @@ import { POST } from "./route";
 
 import {
   submitVendorAdmissionReviews,
+  preparePublicAdmissionShareAccess,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
@@ -15,6 +16,7 @@ vi.mock("@/features/applications/admission-share-board", () => ({
       return { repo: "share-repo" };
     }),
   submitVendorAdmissionReviews: vi.fn(),
+  preparePublicAdmissionShareAccess: vi.fn(),
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
@@ -24,6 +26,11 @@ vi.mock("@/lib/db/supabase-server", () => ({
 const params = Promise.resolve({ token: "plain-token" });
 const rpc = vi.fn();
 const supabase = { client: "supabase", rpc };
+const preparedAccess = {
+  token: "plain-token",
+  tokenHash: "a".repeat(64),
+  access: { id: "share-1", accessCodeHash: null },
+};
 
 describe("public admission share review route", () => {
   beforeEach(() => {
@@ -32,6 +39,9 @@ describe("public admission share review route", () => {
       data: [{ allowed: true, retry_after_seconds: 0, remaining: 9 }],
       error: null,
     });
+    vi.mocked(preparePublicAdmissionShareAccess).mockResolvedValue(
+      preparedAccess as never,
+    );
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
     vi.mocked(submitVendorAdmissionReviews).mockResolvedValue({
       submittedCount: 2,
@@ -43,9 +53,12 @@ describe("public admission share review route", () => {
   it("submits vendor reviews through the server-side token lookup", async () => {
     const response = await POST(
       new Request(
-        "http://localhost/api/public/admission-share/plain-token/reviews?accessCode=2468",
+        "http://localhost/api/public/admission-share/plain-token/reviews",
         {
           method: "POST",
+          headers: {
+            Cookie: "admission_share_capability=signed-capability",
+          },
           body: JSON.stringify({
             reviewerName: "Vendor Reviewer",
             reviewerContact: "reviewer@example.com",
@@ -80,7 +93,8 @@ describe("public admission share review route", () => {
     expect(submitVendorAdmissionReviews).toHaveBeenCalledWith({
       repo: { repo: "share-repo" },
       token: "plain-token",
-      accessCode: "2468",
+      capability: "signed-capability",
+      preparedAccess,
       recordEvaluation: expect.any(Function),
       input: expect.objectContaining({
         reviewerName: "Vendor Reviewer",

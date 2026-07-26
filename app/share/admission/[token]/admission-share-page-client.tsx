@@ -75,7 +75,6 @@ type SubmitResult = {
 
 type AdmissionSharePageClientProps = {
   token: string;
-  initialAccessCode?: string;
 };
 
 const decisionOptions: Array<{ value: VendorDecision; label: string }> = [
@@ -104,9 +103,7 @@ const statusLabels: Record<string, string> = {
 
 export default function AdmissionSharePageClient({
   token,
-  initialAccessCode = "",
 }: AdmissionSharePageClientProps) {
-  const accessCode = initialAccessCode;
   const [shareBoard, setShareBoard] =
     useState<PublicAdmissionShareBoard | null>(null);
   const [vendorCheckpoints, setVendorCheckpoints] = useState<
@@ -115,6 +112,9 @@ export default function AdmissionSharePageClient({
   const [drafts, setDrafts] = useState<Record<string, ReviewDraft>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUnlocking, setIsUnlocking] = useState(false);
+  const [requiresUnlock, setRequiresUnlock] = useState(false);
+  const [unlockCode, setUnlockCode] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
@@ -144,40 +144,41 @@ export default function AdmissionSharePageClient({
     setErrorMessage("");
     setSuccessMessage("");
     try {
-      applyShareBoard(await requestShareBoard(token, accessCode));
+      applyShareBoard(await requestShareBoard(token));
+      setRequiresUnlock(false);
     } catch (error) {
       setShareBoard(null);
       setDrafts({});
-      setErrorMessage(
-        error instanceof Error ? error.message : "无法读取复核链接",
-      );
+      const message =
+        error instanceof Error ? error.message : "无法读取复核链接";
+      setRequiresUnlock(message === "Access code is required");
+      setErrorMessage(message);
     } finally {
       setIsLoading(false);
     }
-  }, [accessCode, applyShareBoard, token]);
+  }, [applyShareBoard, token]);
 
   useEffect(() => {
     let isCurrent = true;
 
     async function loadInitialShareBoard() {
       try {
-        const nextShareBoard = await requestShareBoard(
-          token,
-          initialAccessCode,
-        );
+        const nextShareBoard = await requestShareBoard(token);
         if (!isCurrent) {
           return;
         }
         applyShareBoard(nextShareBoard);
+        setRequiresUnlock(false);
       } catch (error) {
         if (!isCurrent) {
           return;
         }
         setShareBoard(null);
         setDrafts({});
-        setErrorMessage(
-          error instanceof Error ? error.message : "无法读取复核链接",
-        );
+        const message =
+          error instanceof Error ? error.message : "无法读取复核链接";
+        setRequiresUnlock(message === "Access code is required");
+        setErrorMessage(message);
       } finally {
         if (isCurrent) {
           setIsLoading(false);
@@ -190,7 +191,45 @@ export default function AdmissionSharePageClient({
     return () => {
       isCurrent = false;
     };
-  }, [applyShareBoard, initialAccessCode, token]);
+  }, [applyShareBoard, token]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("accessCode")) {
+      return;
+    }
+    url.searchParams.delete("accessCode");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  }, []);
+
+  const unlockShareBoard = async () => {
+    setIsUnlocking(true);
+    setErrorMessage("");
+    try {
+      const response = await fetch(publicUnlockUrl(token), {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessCode: unlockCode }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(errorText(payload, "访问码校验失败"));
+      }
+      setUnlockCode("");
+      await loadShareBoard();
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "访问码校验失败",
+      );
+    } finally {
+      setIsUnlocking(false);
+    }
+  };
 
   const updateDraft = (
     recordingSubmissionId: string,
@@ -256,8 +295,9 @@ export default function AdmissionSharePageClient({
     setErrorMessage("");
     setSuccessMessage("");
     try {
-      const response = await fetch(publicReviewUrl(token, accessCode), {
+      const response = await fetch(publicReviewUrl(token), {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           reviewerName: "",
@@ -339,6 +379,36 @@ export default function AdmissionSharePageClient({
           <div className="rounded-md border border-[var(--danger-600)] bg-[var(--danger-50)] px-4 py-3 text-sm text-[var(--danger-600)]">
             {errorMessage}
           </div>
+        ) : null}
+
+        {requiresUnlock ? (
+          <section className="rounded-md border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-card)]">
+            <form
+              className="flex max-w-md flex-col gap-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void unlockShareBoard();
+              }}
+            >
+              <label className="grid gap-1 text-sm font-medium text-[var(--ink-700)]">
+                访问码
+                <input
+                  className="h-10 rounded-md border border-[var(--line)] px-3 outline-none focus:border-[var(--blue-500)]"
+                  type="password"
+                  autoComplete="one-time-code"
+                  value={unlockCode}
+                  onChange={(event) => setUnlockCode(event.target.value)}
+                />
+              </label>
+              <button
+                className="inline-flex h-10 items-center justify-center rounded-md bg-[var(--blue-600)] px-4 text-sm font-semibold text-white disabled:opacity-60"
+                type="submit"
+                disabled={isUnlocking || !unlockCode.trim()}
+              >
+                {isUnlocking ? "正在校验..." : "解锁复核链接"}
+              </button>
+            </form>
+          </section>
         ) : null}
 
         {successMessage ? (
@@ -672,12 +742,10 @@ type ShareBoardResponse = {
   vendorCheckpoints: VendorCheckpointOption[];
 };
 
-async function requestShareBoard(
-  token: string,
-  accessCode: string,
-): Promise<ShareBoardResponse> {
-  const response = await fetch(publicShareUrl(token, accessCode), {
+async function requestShareBoard(token: string): Promise<ShareBoardResponse> {
+  const response = await fetch(publicShareUrl(token), {
     method: "GET",
+    credentials: "same-origin",
   });
   const payload = await response.json();
   if (!response.ok) {
@@ -691,21 +759,16 @@ async function requestShareBoard(
   };
 }
 
-function publicShareUrl(token: string, accessCode: string) {
-  return `/api/public/admission-share/${encodeURIComponent(token)}${queryString(
-    accessCode,
-  )}`;
+function publicShareUrl(token: string) {
+  return `/api/public/admission-share/${encodeURIComponent(token)}`;
 }
 
-function publicReviewUrl(token: string, accessCode: string) {
-  return `/api/public/admission-share/${encodeURIComponent(token)}/reviews${queryString(
-    accessCode,
-  )}`;
+function publicReviewUrl(token: string) {
+  return `/api/public/admission-share/${encodeURIComponent(token)}/reviews`;
 }
 
-function queryString(accessCode: string) {
-  const trimmed = accessCode.trim();
-  return trimmed ? `?accessCode=${encodeURIComponent(trimmed)}` : "";
+function publicUnlockUrl(token: string) {
+  return `/api/public/admission-share/${encodeURIComponent(token)}/unlock`;
 }
 
 function errorText(payload: unknown, fallback: string) {

@@ -4,6 +4,7 @@ import { GET } from "./route";
 
 import {
   getPublicAdmissionShareBoard,
+  preparePublicAdmissionShareAccess,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
@@ -15,6 +16,7 @@ vi.mock("@/features/applications/admission-share-board", () => ({
       return { repo: "share-repo" };
     }),
   getPublicAdmissionShareBoard: vi.fn(),
+  preparePublicAdmissionShareAccess: vi.fn(),
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
@@ -24,6 +26,11 @@ vi.mock("@/lib/db/supabase-server", () => ({
 const params = Promise.resolve({ token: "plain-token" });
 const rpc = vi.fn();
 const supabase = { client: "supabase", rpc };
+const preparedAccess = {
+  token: "plain-token",
+  tokenHash: "a".repeat(64),
+  access: { id: "share-1", accessCodeHash: null },
+};
 
 describe("public admission share route", () => {
   beforeEach(() => {
@@ -33,6 +40,9 @@ describe("public admission share route", () => {
       error: null,
     });
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
+    vi.mocked(preparePublicAdmissionShareAccess).mockResolvedValue(
+      preparedAccess as never,
+    );
     vi.mocked(getPublicAdmissionShareBoard).mockResolvedValue({
       id: "share-1",
       title: "Vendor review",
@@ -56,9 +66,9 @@ describe("public admission share route", () => {
 
   it("returns the public share snapshot without requiring auth", async () => {
     const response = await GET(
-      new Request(
-        "http://localhost/api/public/admission-share/plain-token?accessCode=2468",
-      ),
+      new Request("http://localhost/api/public/admission-share/plain-token", {
+        headers: { Cookie: "admission_share_capability=signed-capability" },
+      }),
       { params },
     );
 
@@ -76,7 +86,8 @@ describe("public admission share route", () => {
     expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith({
       repo: { repo: "share-repo" },
       token: "plain-token",
-      accessCode: "2468",
+      capability: "signed-capability",
+      preparedAccess,
     });
     expect(JSON.stringify(body)).not.toContain("tokenHash");
     expect(JSON.stringify(body)).not.toContain("storagePath");
@@ -121,6 +132,44 @@ describe("public admission share route", () => {
     expect(rpc).toHaveBeenCalledWith(
       "consume_admission_share_rate_limit",
       expect.objectContaining({ p_limit: 60, p_window_seconds: 60 }),
+    );
+    expect(getPublicAdmissionShareBoard).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ message: "database unavailable" }, null],
+    [null, []],
+  ])(
+    "fails closed with 503 for RPC error or malformed data",
+    async (error, data) => {
+      rpc.mockResolvedValue({ data, error });
+
+      const response = await GET(
+        new Request("http://localhost/api/public/admission-share/plain-token"),
+        { params },
+      );
+
+      expect(response.status).toBe(503);
+      expect(preparePublicAdmissionShareAccess).not.toHaveBeenCalled();
+      expect(getPublicAdmissionShareBoard).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not allocate a token bucket when the token has no real board", async () => {
+    vi.mocked(preparePublicAdmissionShareAccess).mockRejectedValue(
+      new Error("Share link is not available"),
+    );
+
+    const response = await GET(
+      new Request("http://localhost/api/public/admission-share/random-token"),
+      { params: Promise.resolve({ token: "random-token" }) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith(
+      "consume_admission_share_rate_limit",
+      expect.objectContaining({ p_scope: "admission-share-board:ip" }),
     );
     expect(getPublicAdmissionShareBoard).not.toHaveBeenCalled();
   });

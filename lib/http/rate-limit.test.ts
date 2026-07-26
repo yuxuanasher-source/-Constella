@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ADMISSION_SHARE_RATE_LIMITS,
   enforceAdmissionShareRateLimit,
+  enforceAdmissionShareIpRateLimit,
+  enforceAdmissionShareTokenRateLimit,
   RateLimitDeniedError,
   RateLimitUnavailableError,
 } from "./rate-limit";
@@ -82,6 +84,46 @@ describe("admission share public rate limiting", () => {
 
     await expect(
       enforceAdmissionShareRateLimit({
+        client: { rpc },
+        request: new Request("https://example.test/share"),
+        token: "plain-share-token",
+        policy: ADMISSION_SHARE_RATE_LIMITS.board,
+      }),
+    ).rejects.toBeInstanceOf(RateLimitUnavailableError);
+  });
+
+  it("can enforce the IP dimension before a real-token lookup and token allocation", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: [{ allowed: true, retry_after_seconds: 0, remaining: 4 }],
+      error: null,
+    });
+    const input = {
+      client: { rpc },
+      request: new Request("https://example.test/share"),
+      token: "real-token",
+      policy: ADMISSION_SHARE_RATE_LIMITS.unlock,
+    };
+
+    await enforceAdmissionShareIpRateLimit(input);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenLastCalledWith(
+      "consume_admission_share_rate_limit",
+      expect.objectContaining({ p_scope: "admission-share-unlock:ip" }),
+    );
+
+    await enforceAdmissionShareTokenRateLimit(input);
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(rpc).toHaveBeenLastCalledWith(
+      "consume_admission_share_rate_limit",
+      expect.objectContaining({ p_scope: "admission-share-unlock:token" }),
+    );
+  });
+
+  it("fails closed when an RPC returns a malformed result", async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: [], error: null });
+
+    await expect(
+      enforceAdmissionShareIpRateLimit({
         client: { rpc },
         request: new Request("https://example.test/share"),
         token: "plain-share-token",

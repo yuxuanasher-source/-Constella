@@ -12,6 +12,7 @@ import {
 import { recordMcnVsVendorSignal } from "@/features/admission-review/signals";
 import {
   submitVendorAdmissionReviews,
+  preparePublicAdmissionShareAccess,
   SupabaseAdmissionShareBoardRepository,
   type SubmitVendorAdmissionReviewsInput,
 } from "@/features/applications/admission-share-board";
@@ -23,9 +24,11 @@ import {
   RouteError,
 } from "@/features/applications/application-route-utils";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { admissionShareCapabilityFromRequest } from "@/lib/http/admission-share-capability";
 import {
   ADMISSION_SHARE_RATE_LIMITS,
-  enforceAdmissionShareRateLimit,
+  enforceAdmissionShareIpRateLimit,
+  enforceAdmissionShareTokenRateLimit,
   RateLimitDeniedError,
   RateLimitUnavailableError,
 } from "@/lib/http/rate-limit";
@@ -43,22 +46,30 @@ export async function POST(
     if (!supabase) {
       throw new RouteError("Public share service is unavailable", 500);
     }
-    await enforceAdmissionShareRateLimit({
+    const rateLimitInput = {
       client: supabase,
       request,
       token,
       policy: ADMISSION_SHARE_RATE_LIMITS.review,
-    });
+    };
+    await enforceAdmissionShareIpRateLimit(rateLimitInput);
 
-    const body = await readJsonBody(request);
     const repo = new SupabaseAdmissionShareBoardRepository(supabase);
+    const preparedAccess = await preparePublicAdmissionShareAccess({
+      repo,
+      token,
+      now: new Date().toISOString(),
+    });
+    await enforceAdmissionShareTokenRateLimit(rateLimitInput);
+    const body = await readJsonBody(request);
     const reviewClient = supabase as unknown as AdmissionReviewClient;
     const rubricCache = new Map<string, AdmissionRubric>();
 
     const result = await submitVendorAdmissionReviews({
       repo,
       token,
-      accessCode: optionalSearchParam(request, "accessCode"),
+      capability: admissionShareCapabilityFromRequest(request),
+      preparedAccess,
       input: toVendorReviewInput(body),
       // 厂家勾选理由标签时直接落人工评估；非法标签宽容过滤（外部输入）。
       recordEvaluation: async (evaluation) => {
@@ -158,11 +169,6 @@ function stringArrayValue(value: unknown): string[] {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function optionalSearchParam(request: Request, key: string) {
-  const value = new URL(request.url).searchParams.get(key);
-  return value?.trim() || undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

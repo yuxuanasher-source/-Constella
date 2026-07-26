@@ -56,8 +56,7 @@ const shareBoard = {
       recordingVersion: 1,
       recordingStatus: "approved",
       recordingUrl: null,
-      playbackUrl:
-        "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
+      playbackUrl: "/api/public/admission-share/plain-token/recordings/rec-3",
       hasPrivateStorage: true,
       streamer: {
         id: "streamer-3",
@@ -81,8 +80,7 @@ describe("AdmissionSharePageClient", () => {
       "fetch",
       vi.fn(async (url, init) => {
         if (
-          String(url) ===
-            "/api/public/admission-share/plain-token?accessCode=2468" &&
+          String(url) === "/api/public/admission-share/plain-token" &&
           init?.method === "GET"
         ) {
           return {
@@ -92,8 +90,7 @@ describe("AdmissionSharePageClient", () => {
         }
 
         if (
-          String(url) ===
-            "/api/public/admission-share/plain-token/reviews?accessCode=2468" &&
+          String(url) === "/api/public/admission-share/plain-token/reviews" &&
           init?.method === "POST"
         ) {
           return {
@@ -115,13 +112,80 @@ describe("AdmissionSharePageClient", () => {
   });
 
   afterEach(() => {
+    window.history.replaceState({}, "", "/");
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
+  it("unlocks with a JSON-body code and then loads using the capability cookie", async () => {
+    const fetchMock = vi.mocked(globalThis.fetch);
+    let boardRequests = 0;
+    fetchMock.mockImplementation((async (url, init) => {
+      if (
+        String(url) === "/api/public/admission-share/plain-token" &&
+        init?.method === "GET"
+      ) {
+        boardRequests += 1;
+        return boardRequests === 1
+          ? {
+              ok: false,
+              json: async () => ({ error: "Access code is required" }),
+            }
+          : {
+              ok: true,
+              json: async () => ({ shareBoard }),
+            };
+      }
+      if (
+        String(url) === "/api/public/admission-share/plain-token/unlock" &&
+        init?.method === "POST"
+      ) {
+        return { ok: true, json: async () => ({ unlocked: true }) };
+      }
+      return {
+        ok: false,
+        json: async () => ({ error: "unexpected request" }),
+      };
+    }) as typeof fetch);
+
+    render(<AdmissionSharePageClient token="plain-token" />);
+
+    fireEvent.change(await screen.findByLabelText("访问码"), {
+      target: { value: "2468" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "解锁复核链接" }));
+
+    expect(await screen.findByText("Alpha Project")).toBeInTheDocument();
+    const unlockCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/unlock") && init?.method === "POST",
+    );
+    expect(JSON.parse(String(unlockCall?.[1]?.body))).toEqual({
+      accessCode: "2468",
+    });
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("accessCode")),
+    ).toBe(false);
+  });
+
+  it("strips a legacy accessCode query without using it", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/share/admission/plain-token?accessCode=legacy-secret&source=email",
+    );
+    const fetchMock = vi.mocked(globalThis.fetch);
+
+    render(<AdmissionSharePageClient token="plain-token" />);
+
+    expect(await screen.findByText("Alpha Project")).toBeInTheDocument();
+    await waitFor(() => expect(window.location.search).toBe("?source=email"));
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("legacy-secret");
+  });
+
   it("loads the public share board without rendering token hashes or storage paths", async () => {
     const { container } = render(
-      <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
+      <AdmissionSharePageClient token="plain-token" />,
     );
 
     expect(await screen.findByText("Alpha Project")).toBeInTheDocument();
@@ -141,9 +205,7 @@ describe("AdmissionSharePageClient", () => {
   });
 
   it("renders professional delivery copy and switches recording players by source type", async () => {
-    render(
-      <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
-    );
+    render(<AdmissionSharePageClient token="plain-token" />);
 
     expect(await screen.findByText("Alpha Project")).toBeInTheDocument();
     expect(screen.getByText("录屏交付复核包")).toBeInTheDocument();
@@ -160,15 +222,13 @@ describe("AdmissionSharePageClient", () => {
       screen.getByLabelText("Streamer Three 原始录屏播放器"),
     ).toHaveAttribute(
       "src",
-      "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
+      "/api/public/admission-share/plain-token/recordings/rec-3",
     );
   });
 
   it("submits reviewer decisions with locked recording versions", async () => {
     const fetchMock = vi.mocked(globalThis.fetch);
-    render(
-      <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
-    );
+    render(<AdmissionSharePageClient token="plain-token" />);
 
     await screen.findByText("Alpha Project");
     fireEvent.change(screen.getByLabelText("Streamer One 决策"), {
@@ -182,7 +242,7 @@ describe("AdmissionSharePageClient", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/public/admission-share/plain-token/reviews?accessCode=2468",
+        "/api/public/admission-share/plain-token/reviews",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -224,9 +284,7 @@ describe("AdmissionSharePageClient", () => {
 
   it("requires remarks before submitting vendor rejection decisions", async () => {
     const fetchMock = vi.mocked(globalThis.fetch);
-    render(
-      <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
-    );
+    render(<AdmissionSharePageClient token="plain-token" />);
 
     await screen.findByText("Alpha Project");
     fireEvent.change(screen.getByLabelText("Streamer One 决策"), {
