@@ -33,12 +33,32 @@ const auth = {
 };
 const adminSupabase = { client: "admin-supabase" };
 
+function createProjectScopedClient({
+  report = { id: "report-1", project_id: "project-1" },
+  project = { id: "project-1" },
+}: {
+  report?: { id: string; project_id: string } | null;
+  project?: { id: string } | null;
+} = {}) {
+  const from = vi.fn((table: string) => ({
+    select: vi.fn(() => ({
+      eq: vi.fn(() => ({
+        maybeSingle: vi.fn(async () => ({
+          data: table === "live_reports" ? report : project,
+          error: null,
+        })),
+      })),
+    })),
+  }));
+  return { from };
+}
+
 describe("/api/ocr/jobs", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(createSupabaseServerClient).mockResolvedValue({
-      from: vi.fn(),
-    } as never);
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(
+      createProjectScopedClient() as never,
+    );
     vi.mocked(createSupabaseAdminClient).mockReturnValue(
       adminSupabase as never,
     );
@@ -102,6 +122,33 @@ describe("/api/ocr/jobs", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Supabase admin client is unavailable",
     });
+    expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("does not elevate an operator without access to the report project", async () => {
+    vi.mocked(getAuthContext).mockResolvedValue({
+      ...auth,
+      role: "operator_business",
+    });
+    vi.mocked(createSupabaseServerClient).mockResolvedValueOnce(
+      createProjectScopedClient({ project: null }) as never,
+    );
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          liveReportId: "report-1",
+          imageBase64: "ZmFrZQ==",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      error: "Live report not found",
+    });
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(createOcrJob).not.toHaveBeenCalled();
   });
 

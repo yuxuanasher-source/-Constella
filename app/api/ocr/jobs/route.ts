@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createOcrJob, listOcrJobs } from "@/features/ai/ocr-jobs";
 import { getAuthContext } from "@/lib/auth/context";
@@ -44,6 +45,20 @@ export async function POST(request: Request) {
         { status: 403 },
       );
     }
+    const body = (await request.json()) as Record<string, unknown>;
+    const liveReportId = requiredString(body.liveReportId, "liveReportId");
+    if (
+      !(await canAccessOcrReportProject(
+        authResult.supabase as SupabaseClient,
+        liveReportId,
+      ))
+    ) {
+      return NextResponse.json(
+        { error: "Live report not found" },
+        { status: 404 },
+      );
+    }
+
     const enqueueClient = createSupabaseAdminClient();
     if (!enqueueClient) {
       return NextResponse.json(
@@ -52,12 +67,11 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = (await request.json()) as Record<string, unknown>;
     const job = await createOcrJob({
       client: enqueueClient as never,
       actor: authResult.auth,
       input: {
-        liveReportId: requiredString(body.liveReportId, "liveReportId"),
+        liveReportId,
         screenshotId: optionalString(body.screenshotId),
         imageBase64: optionalString(body.imageBase64),
         imageUrl: optionalString(body.imageUrl),
@@ -96,6 +110,35 @@ async function requireMcnStaff() {
   }
 
   return { auth, supabase };
+}
+
+async function canAccessOcrReportProject(
+  client: SupabaseClient,
+  liveReportId: string,
+): Promise<boolean> {
+  const { data: report, error: reportError } = await client
+    .from("live_reports")
+    .select("id, project_id")
+    .eq("id", liveReportId)
+    .maybeSingle();
+  if (reportError) {
+    throw reportError;
+  }
+  if (!report?.project_id) {
+    return false;
+  }
+
+  // projects SELECT remains protected by can_access_project. Perform this
+  // user-context read before switching to the service-role enqueue client.
+  const { data: project, error: projectError } = await client
+    .from("projects")
+    .select("id")
+    .eq("id", report.project_id)
+    .maybeSingle();
+  if (projectError) {
+    throw projectError;
+  }
+  return Boolean(project);
 }
 
 function toSafeJob(job: {

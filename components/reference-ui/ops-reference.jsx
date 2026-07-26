@@ -4823,15 +4823,17 @@ function OcrOperationsPanel({
                         </label>
                       ),
                     )}
-                    <Button
-                      kind="default"
-                      onClick={() =>
-                        runAction(`retry-${job.id}`, () => onRetry?.(job.id))
-                      }
-                      disabled={Boolean(busy)}
-                    >
-                      手动重试
-                    </Button>
+                    {job.status === "failed" ? (
+                      <Button
+                        kind="default"
+                        onClick={() =>
+                          runAction(`retry-${job.id}`, () => onRetry?.(job.id))
+                        }
+                        disabled={Boolean(busy)}
+                      >
+                        手动重试
+                      </Button>
+                    ) : null}
                     <Button
                       kind="default"
                       onClick={() =>

@@ -108,6 +108,7 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
           id: "00000000-0000-4000-8000-000000000101",
           organizationId: "org-1",
           liveReportId: "report-1",
+          screenshotFileHash: "sha256:abc123",
         });
         const job = await queueOcrJob({
           liveReportId: "report-1",
@@ -171,6 +172,7 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
       id: "00000000-0000-4000-8000-000000000101",
       organizationId: "org-1",
       liveReportId: "report-1",
+      screenshotFileHash: "sha256:abc123",
     });
     expect(JSON.stringify(vi.mocked(createOcrJob).mock.calls)).not.toContain(
       "must-not-be-forwarded",

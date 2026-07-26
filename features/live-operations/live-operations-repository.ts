@@ -404,23 +404,31 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
 export async function deleteReportScreenshotForOcr(
   client: SupabaseClient,
   input: {
-    id: string;
+    id?: string;
     organizationId: string;
     liveReportId: string;
+    screenshotFileHash: string;
   },
 ): Promise<void> {
-  const { error, count } = await client
+  let query = client
     .from("report_screenshots")
     .delete({ count: "exact" })
-    .eq("id", input.id)
     .eq("organization_id", input.organizationId)
-    .eq("live_report_id", input.liveReportId);
+    .eq("live_report_id", input.liveReportId)
+    .eq("file_hash", input.screenshotFileHash);
+  if (input.id) {
+    query = query.eq("id", input.id);
+  }
+  const { error, count } = await query;
 
   if (error) {
     throw error;
   }
-  if (count !== 1) {
+  if (input.id && count !== 1) {
     throw new Error("OCR screenshot cleanup did not delete exactly one row");
+  }
+  if (!input.id && count !== 0 && count !== 1) {
+    throw new Error("OCR screenshot cleanup deleted an unexpected row count");
   }
 }
 
