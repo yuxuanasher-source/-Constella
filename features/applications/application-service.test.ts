@@ -594,6 +594,33 @@ describe("application service", () => {
     expect(repo.markApplicationRecordingReviewing).not.toHaveBeenCalled();
   });
 
+  it("rejects a blank storage path without an external URL before persistence", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_required",
+      }),
+    });
+
+    await expect(
+      submitRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: streamerActor,
+        input: {
+          applicationId: "app-1",
+          storagePath: "   ",
+        },
+      }),
+    ).rejects.toThrow(
+      "Recording submission requires a storage path or external URL",
+    );
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+    expect(repo.markApplicationRecordingReviewing).not.toHaveBeenCalled();
+  });
+
   it("copies application collaboration attribution onto recording submissions", async () => {
     const repo = makeRepo({
       getApplicationById: vi.fn().mockResolvedValue({
