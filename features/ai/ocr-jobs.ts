@@ -11,6 +11,10 @@ import type {
   TencentOcrInput,
   TencentOcrProvider,
 } from "./providers/tencent-ocr-provider";
+import {
+  writeStreamerMetricsFromOcr,
+  type StreamerMetricSinkClient,
+} from "./streamer-metric-sink";
 
 export type OcrJobStatus =
   | "queued"
@@ -132,6 +136,10 @@ type LiveReportAccessRow = {
   organizationId?: string;
   project_id?: string;
   projectId?: string;
+  streamer_id?: string;
+  streamerId?: string;
+  created_at?: string;
+  createdAt?: string;
 };
 
 export async function createOcrJob({
@@ -151,7 +159,7 @@ export async function createOcrJob({
   if (!input.imageBase64 && !input.imageUrl && !input.imagePath) {
     throw new Error("OCR job requires imageBase64, imageUrl, or imagePath");
   }
-  await assertLiveReportAccessible({
+  const liveReport = await assertLiveReportAccessible({
     client,
     actor,
     liveReportId: input.liveReportId,
@@ -209,6 +217,7 @@ export async function createOcrJob({
   await insertOrThrow(client, "ocr_results", {
     organization_id: actor.organizationId,
     live_report_id: input.liveReportId,
+    ...toOcrAttributionColumns(liveReport),
     screenshot_id: input.screenshotId,
     status: "pending",
     raw_result: {},
@@ -557,9 +566,14 @@ async function runLockedOcrJob({
     parsed.status === "trusted" && providerResult.confidence >= 70
       ? "succeeded"
       : "needs_confirmation";
+  const liveReport = await loadLiveReportForOcrAdvance({
+    client,
+    liveReportId: job.payload.liveReportId,
+  });
 
   await updateOcrResult(client, job, {
     status,
+    ...toOcrAttributionColumns(liveReport),
     raw_result: {
       textLines: providerResult.textLines,
       requestId: providerResult.requestId,
@@ -607,8 +621,11 @@ async function runLockedOcrJob({
   await advanceLiveReportAfterOcr({
     client,
     liveReportId: job.payload.liveReportId,
+    report: liveReport,
     extractedDuration: parsed.extractedDuration,
     extractedViewers: parsed.extractedViewers,
+    metricCandidates: parsed.metricCandidates,
+    sourceInvocationId: job.aiInvocationId,
     needsConfirmation: status === "needs_confirmation",
     reasons,
   });
@@ -658,6 +675,10 @@ export async function confirmOcrJob({
   const job = await requireOcrJob(client, jobId);
   await assertOcrJobAccessible({ client, actor, job });
   const reviewedAt = now().toISOString();
+  const liveReport = await loadLiveReportForOcrAdvance({
+    client,
+    liveReportId: job.payload.liveReportId,
+  });
   const result = {
     ...(job.result ?? {}),
     manualResult,
@@ -665,6 +686,7 @@ export async function confirmOcrJob({
 
   await updateOcrResult(client, job, {
     status: "succeeded",
+    ...toOcrAttributionColumns(liveReport),
     needs_confirmation: false,
     manual_result: manualResult,
     reviewed_by: actor.userId,
@@ -689,6 +711,7 @@ export async function confirmOcrJob({
   await advanceLiveReportAfterOcr({
     client,
     liveReportId: job.payload.liveReportId,
+    report: liveReport,
     extractedDuration: pickPositiveNumericField(
       manualResult.extractedDuration,
       manualResult.duration,
@@ -699,6 +722,10 @@ export async function confirmOcrJob({
       manualResult.viewers,
       job.result?.extractedViewers,
     ),
+    metricCandidates: Array.isArray(job.result?.metricCandidates)
+      ? job.result.metricCandidates
+      : [],
+    sourceInvocationId: job.aiInvocationId,
     needsConfirmation: false,
     reasons: [],
   });
@@ -815,10 +842,10 @@ async function assertLiveReportAccessible({
   client: OcrJobClient;
   actor: AiActor;
   liveReportId: string;
-}): Promise<void> {
+}): Promise<LiveReportAccessRow> {
   const { data, error } = await client
     .from("live_reports")
-    .select("id, organization_id, project_id")
+    .select("id, organization_id, project_id, streamer_id, created_at")
     .eq("id", liveReportId)
     .maybeSingle();
 
@@ -831,6 +858,29 @@ async function assertLiveReportAccessible({
   if (!report || organizationId !== actor.organizationId) {
     throw new Error("Live report not found or inaccessible");
   }
+  return report;
+}
+
+function toOcrAttributionColumns(
+  report: LiveReportAccessRow | LiveReportAdvanceRow | null,
+): Record<string, unknown> {
+  if (!report) return {};
+  return {
+    streamer_id: report.streamer_id ?? report.streamerId ?? null,
+    project_id: report.project_id ?? report.projectId ?? null,
+    report_date: reportDateFromLiveReport(report),
+  };
+}
+
+function reportDateFromLiveReport(
+  report: LiveReportAccessRow | LiveReportAdvanceRow,
+): string | null {
+  const createdAt = report.created_at ?? report.createdAt;
+  if (!createdAt) return null;
+  const parsed = new Date(createdAt);
+  return Number.isFinite(parsed.valueOf())
+    ? parsed.toISOString().slice(0, 10)
+    : null;
 }
 
 async function insertOrThrow(
@@ -875,6 +925,14 @@ async function updateOcrResult(
 
 type LiveReportAdvanceRow = {
   id: string;
+  organization_id?: string | null;
+  organizationId?: string | null;
+  project_id?: string | null;
+  projectId?: string | null;
+  streamer_id?: string | null;
+  streamerId?: string | null;
+  created_at?: string | null;
+  createdAt?: string | null;
   status?: string | null;
   system_duration?: number | null;
   systemDuration?: number | null;
@@ -884,33 +942,69 @@ type LiveReportAdvanceRow = {
   riskFlags?: string[] | null;
 };
 
-async function advanceLiveReportAfterOcr({
+async function loadLiveReportForOcrAdvance({
   client,
   liveReportId,
-  extractedDuration,
-  extractedViewers,
-  needsConfirmation,
-  reasons,
 }: {
   client: OcrJobClient;
   liveReportId: string;
-  extractedDuration: number | null;
-  extractedViewers: number | null;
-  needsConfirmation: boolean;
-  reasons: string[];
-}): Promise<void> {
+}): Promise<LiveReportAdvanceRow | null> {
   const { data, error } = await client
     .from("live_reports")
-    .select("id, status, system_duration, claimed_duration, risk_flags")
+    .select(
+      "id, organization_id, project_id, streamer_id, created_at, status, system_duration, claimed_duration, risk_flags",
+    )
     .eq("id", liveReportId)
     .maybeSingle();
   if (error) {
     throw error;
   }
+  return data as LiveReportAdvanceRow | null;
+}
 
-  const report = data as LiveReportAdvanceRow | null;
+async function advanceLiveReportAfterOcr({
+  client,
+  liveReportId,
+  report,
+  extractedDuration,
+  extractedViewers,
+  metricCandidates,
+  sourceInvocationId,
+  needsConfirmation,
+  reasons,
+}: {
+  client: OcrJobClient;
+  liveReportId: string;
+  report: LiveReportAdvanceRow | null;
+  extractedDuration: number | null;
+  extractedViewers: number | null;
+  metricCandidates: readonly unknown[];
+  sourceInvocationId?: string;
+  needsConfirmation: boolean;
+  reasons: string[];
+}): Promise<void> {
   if (!report) {
     return;
+  }
+
+  try {
+    await writeStreamerMetricsFromOcr({
+      client: client as unknown as StreamerMetricSinkClient,
+      attribution: {
+        organizationId: report.organization_id ?? report.organizationId,
+        streamerId: report.streamer_id ?? report.streamerId,
+        projectId: report.project_id ?? report.projectId,
+        sourceReportId: report.id,
+        reportDate: reportDateFromLiveReport(report),
+        sourceInvocationId,
+      },
+      metricCandidates,
+    });
+  } catch (error) {
+    console.error(
+      `[ocr] streamer metric sink failed for report ${liveReportId}`,
+      error,
+    );
   }
 
   // Only advance reports that are still waiting on OCR. If a human or an

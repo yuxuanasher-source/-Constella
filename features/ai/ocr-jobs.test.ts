@@ -17,6 +17,8 @@ function createClient(
       id: string;
       organization_id: string;
       project_id: string;
+      streamer_id?: string;
+      created_at?: string;
       status?: string;
       system_duration?: number | null;
       claimed_duration?: number | null;
@@ -26,20 +28,28 @@ function createClient(
       live_report_id: string;
       background_job_id: string | null;
     }>;
+    upsertErrors?: Record<string, Error>;
   } = {},
 ) {
   const ocrResults = [...(fixtures.ocrResults ?? [])];
   const inserts: Record<string, Record<string, unknown>[]> = {};
   const updates: Record<string, Record<string, unknown>[]> = {};
+  const upserts: Record<string, Record<string, unknown>[][]> = {};
   const jobs = [...(fixtures.jobs ?? [])];
   const liveReports = [
-    ...(fixtures.liveReports ?? []),
+    ...(fixtures.liveReports ?? []).map((report) => ({
+      streamer_id: "streamer-1",
+      created_at: "2026-07-16T08:00:00.000Z",
+      ...report,
+    })),
     ...(fixtures.liveReports
       ? []
       : jobs.map((job) => ({
           id: job.payload.liveReportId,
           organization_id: job.organizationId,
           project_id: "project-1",
+          streamer_id: "streamer-1",
+          created_at: "2026-07-16T08:00:00.000Z",
         }))),
   ];
   const client = {
@@ -50,6 +60,10 @@ function createClient(
       }),
     ),
     from: vi.fn((table: string) => ({
+      upsert: vi.fn(async (payload: Record<string, unknown>[]) => {
+        upserts[table] = [...(upserts[table] ?? []), payload];
+        return { error: fixtures.upsertErrors?.[table] ?? null };
+      }),
       insert: vi.fn(async (payload: Record<string, unknown>) => {
         inserts[table] = [...(inserts[table] ?? []), payload];
         if (table === "background_jobs") {
@@ -111,7 +125,7 @@ function createClient(
     })),
   };
 
-  return { client, inserts, updates, jobs };
+  return { client, inserts, updates, upserts, jobs };
 }
 
 const actor = {
@@ -184,6 +198,9 @@ describe("OCR jobs", () => {
       expect.objectContaining({
         organization_id: "org-1",
         live_report_id: "report-1",
+        streamer_id: "streamer-1",
+        project_id: "project-1",
+        report_date: "2026-07-16",
         screenshot_id: "screenshot-1",
         status: "pending",
         ai_invocation_id: "invocation-1",
@@ -351,6 +368,142 @@ describe("OCR jobs", () => {
     ]);
     expect(updates.live_reports.at(-1)?.payload).not.toHaveProperty("pcu");
     expect(updates.live_reports.at(-1)?.payload).not.toHaveProperty("acu");
+  });
+
+  it("writes GMV and follower growth into streamer metrics using live report attribution", async () => {
+    const { client, updates, upserts } = createClient({
+      jobs: [
+        {
+          id: "job-streamer-metrics",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          aiInvocationId: "invocation-streamer-metrics",
+          payload: {
+            liveReportId: "report-streamer-metrics",
+            imageBase64: "ZmFrZQ==",
+          },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-streamer-metrics",
+          organization_id: "org-1",
+          project_id: "project-metrics",
+          streamer_id: "streamer-metrics",
+          created_at: "2026-07-15T23:30:00.000Z",
+          status: "ocr_ing",
+        },
+      ],
+    });
+
+    await runOcrJobOnce({
+      client,
+      actor,
+      jobId: "job-streamer-metrics",
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "succeeded" as const,
+          textLines: ["直播时长 80分钟", "GMV 12,345", "涨粉 67"],
+          textItems: [],
+          confidence: 96,
+          requestId: "request-streamer-metrics",
+          rawResponse: {},
+        })),
+      },
+    });
+
+    expect(upserts.streamer_metrics?.flat()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          organization_id: "org-1",
+          streamer_id: "streamer-metrics",
+          metric_key: "gmv",
+          metric_value: 12345,
+          metric_window: "2026-07-15",
+          source_report_id: "report-streamer-metrics",
+          source_invocation_id: "invocation-streamer-metrics",
+        }),
+        expect.objectContaining({
+          metric_key: "follows",
+          metric_value: 67,
+        }),
+      ]),
+    );
+    expect(updates.ocr_results).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          streamer_id: "streamer-metrics",
+          project_id: "project-metrics",
+          report_date: "2026-07-15",
+        }),
+      }),
+    ]);
+  });
+
+  it("continues advancing the report when the metric sink fails", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-metric-failure",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          aiInvocationId: "invocation-metric-failure",
+          payload: {
+            liveReportId: "report-metric-failure",
+            imageBase64: "ZmFrZQ==",
+          },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-metric-failure",
+          organization_id: "org-1",
+          project_id: "project-1",
+          streamer_id: "streamer-1",
+          created_at: "2026-07-16T08:00:00.000Z",
+          status: "ocr_ing",
+        },
+      ],
+      upsertErrors: {
+        streamer_metrics: new Error("metric write failed"),
+      },
+    });
+
+    const result = await runOcrJobOnce({
+      client,
+      actor,
+      jobId: "job-metric-failure",
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "succeeded" as const,
+          textLines: ["直播时长 80分钟", "GMV 100"],
+          textItems: [],
+          confidence: 96,
+          requestId: "request-metric-failure",
+          rawResponse: {},
+        })),
+      },
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(updates.live_reports).toEqual([
+      expect.objectContaining({
+        value: "report-metric-failure",
+        payload: expect.objectContaining({ status: "pending_review" }),
+      }),
+    ]);
+    expect(consoleError).toHaveBeenCalledWith(
+      "[ocr] streamer metric sink failed for report report-metric-failure",
+      expect.objectContaining({ message: "metric write failed" }),
+    );
+    consoleError.mockRestore();
   });
 
   it("uses an injected image resolver before calling the OCR provider", async () => {
@@ -970,7 +1123,10 @@ describe("OCR jobs", () => {
           status: "needs_confirmation",
           attempt: 1,
           maxAttempts: 3,
-          payload: { liveReportId: "report-confirm-zero", imageBase64: "ZmFrZQ==" },
+          payload: {
+            liveReportId: "report-confirm-zero",
+            imageBase64: "ZmFrZQ==",
+          },
           result: { extractedDuration: 180, extractedViewers: 2488 },
         },
       ],
