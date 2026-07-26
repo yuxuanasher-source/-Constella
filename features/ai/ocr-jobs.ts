@@ -59,21 +59,24 @@ export type OcrJobRecord = {
   payload: OcrJobPayload;
 };
 
+type OcrJobMutationResult = { error: Error | null };
+type OcrJobUpdateFilter = PromiseLike<OcrJobMutationResult> & {
+  eq(column: string, value: string): OcrJobUpdateFilter;
+};
+
 type OcrJobClient = {
   rpc?: (
     name: string,
     args: Record<string, unknown>,
   ) => PromiseLike<{
-    data: Record<string, unknown>[] | null;
+    data: Record<string, unknown>[] | number | null;
     error: Error | null;
   }>;
   from(table: string): {
     insert(
       payload: Record<string, unknown>,
     ): PromiseLike<{ error: Error | null }>;
-    update(payload: Record<string, unknown>): {
-      eq(column: string, value: string): PromiseLike<{ error: Error | null }>;
-    };
+    update(payload: Record<string, unknown>): OcrJobUpdateFilter;
     select(columns: string): {
       eq(
         column: string,
@@ -136,10 +139,6 @@ type LiveReportAccessRow = {
   organizationId?: string;
   project_id?: string;
   projectId?: string;
-  streamer_id?: string;
-  streamerId?: string;
-  created_at?: string;
-  createdAt?: string;
 };
 
 export async function createOcrJob({
@@ -159,7 +158,7 @@ export async function createOcrJob({
   if (!input.imageBase64 && !input.imageUrl && !input.imagePath) {
     throw new Error("OCR job requires imageBase64, imageUrl, or imagePath");
   }
-  const liveReport = await assertLiveReportAccessible({
+  await assertLiveReportAccessible({
     client,
     actor,
     liveReportId: input.liveReportId,
@@ -217,7 +216,6 @@ export async function createOcrJob({
   await insertOrThrow(client, "ocr_results", {
     organization_id: actor.organizationId,
     live_report_id: input.liveReportId,
-    ...toOcrAttributionColumns(liveReport),
     screenshot_id: input.screenshotId,
     status: "pending",
     raw_result: {},
@@ -363,7 +361,10 @@ export async function claimRunnableOcrJobs({
     if (error) {
       throw error;
     }
-    return (data ?? []).map((row) => toOcrJobRecord(row as OcrJobRow));
+    if (!Array.isArray(data)) {
+      throw new Error("OCR claim RPC returned an invalid payload");
+    }
+    return data.map((row) => toOcrJobRecord(row as OcrJobRow));
   }
 
   return listRunnableOcrJobs({
@@ -573,7 +574,6 @@ async function runLockedOcrJob({
 
   await updateOcrResult(client, job, {
     status,
-    ...toOcrAttributionColumns(liveReport),
     raw_result: {
       textLines: providerResult.textLines,
       requestId: providerResult.requestId,
@@ -626,6 +626,8 @@ async function runLockedOcrJob({
     extractedViewers: parsed.extractedViewers,
     metricCandidates: parsed.metricCandidates,
     sourceInvocationId: job.aiInvocationId,
+    writeMetrics: status === "succeeded",
+    humanConfirmed: false,
     needsConfirmation: status === "needs_confirmation",
     reasons,
   });
@@ -686,7 +688,6 @@ export async function confirmOcrJob({
 
   await updateOcrResult(client, job, {
     status: "succeeded",
-    ...toOcrAttributionColumns(liveReport),
     needs_confirmation: false,
     manual_result: manualResult,
     reviewed_by: actor.userId,
@@ -722,10 +723,10 @@ export async function confirmOcrJob({
       manualResult.viewers,
       job.result?.extractedViewers,
     ),
-    metricCandidates: Array.isArray(job.result?.metricCandidates)
-      ? job.result.metricCandidates
-      : [],
+    metricCandidates: pickConfirmedMetricCandidates(manualResult, job.result),
     sourceInvocationId: job.aiInvocationId,
+    writeMetrics: true,
+    humanConfirmed: true,
     needsConfirmation: false,
     reasons: [],
   });
@@ -845,7 +846,7 @@ async function assertLiveReportAccessible({
 }): Promise<LiveReportAccessRow> {
   const { data, error } = await client
     .from("live_reports")
-    .select("id, organization_id, project_id, streamer_id, created_at")
+    .select("id, organization_id, project_id")
     .eq("id", liveReportId)
     .maybeSingle();
 
@@ -859,28 +860,6 @@ async function assertLiveReportAccessible({
     throw new Error("Live report not found or inaccessible");
   }
   return report;
-}
-
-function toOcrAttributionColumns(
-  report: LiveReportAccessRow | LiveReportAdvanceRow | null,
-): Record<string, unknown> {
-  if (!report) return {};
-  return {
-    streamer_id: report.streamer_id ?? report.streamerId ?? null,
-    project_id: report.project_id ?? report.projectId ?? null,
-    report_date: reportDateFromLiveReport(report),
-  };
-}
-
-function reportDateFromLiveReport(
-  report: LiveReportAccessRow | LiveReportAdvanceRow,
-): string | null {
-  const createdAt = report.created_at ?? report.createdAt;
-  if (!createdAt) return null;
-  const parsed = new Date(createdAt);
-  return Number.isFinite(parsed.valueOf())
-    ? parsed.toISOString().slice(0, 10)
-    : null;
 }
 
 async function insertOrThrow(
@@ -925,14 +904,6 @@ async function updateOcrResult(
 
 type LiveReportAdvanceRow = {
   id: string;
-  organization_id?: string | null;
-  organizationId?: string | null;
-  project_id?: string | null;
-  projectId?: string | null;
-  streamer_id?: string | null;
-  streamerId?: string | null;
-  created_at?: string | null;
-  createdAt?: string | null;
   status?: string | null;
   system_duration?: number | null;
   systemDuration?: number | null;
@@ -951,9 +922,7 @@ async function loadLiveReportForOcrAdvance({
 }): Promise<LiveReportAdvanceRow | null> {
   const { data, error } = await client
     .from("live_reports")
-    .select(
-      "id, organization_id, project_id, streamer_id, created_at, status, system_duration, claimed_duration, risk_flags",
-    )
+    .select("id, status, system_duration, claimed_duration, risk_flags")
     .eq("id", liveReportId)
     .maybeSingle();
   if (error) {
@@ -970,6 +939,8 @@ async function advanceLiveReportAfterOcr({
   extractedViewers,
   metricCandidates,
   sourceInvocationId,
+  writeMetrics,
+  humanConfirmed,
   needsConfirmation,
   reasons,
 }: {
@@ -980,6 +951,8 @@ async function advanceLiveReportAfterOcr({
   extractedViewers: number | null;
   metricCandidates: readonly unknown[];
   sourceInvocationId?: string;
+  writeMetrics: boolean;
+  humanConfirmed: boolean;
   needsConfirmation: boolean;
   reasons: string[];
 }): Promise<void> {
@@ -987,31 +960,32 @@ async function advanceLiveReportAfterOcr({
     return;
   }
 
-  try {
-    await writeStreamerMetricsFromOcr({
-      client: client as unknown as StreamerMetricSinkClient,
-      attribution: {
-        organizationId: report.organization_id ?? report.organizationId,
-        streamerId: report.streamer_id ?? report.streamerId,
-        projectId: report.project_id ?? report.projectId,
-        sourceReportId: report.id,
-        reportDate: reportDateFromLiveReport(report),
-        sourceInvocationId,
-      },
-      metricCandidates,
-    });
-  } catch (error) {
-    console.error(
-      `[ocr] streamer metric sink failed for report ${liveReportId}`,
-      error,
-    );
+  const currentStatus = report.status ?? undefined;
+  if (!currentStatus) {
+    return;
+  }
+  const canAdvance = humanConfirmed
+    ? currentStatus === "ocr_ing" || currentStatus === "pending_review"
+    : currentStatus === "ocr_ing";
+  if (!canAdvance) {
+    return;
   }
 
-  // Only advance reports that are still waiting on OCR. If a human or an
-  // earlier run already moved the report forward we must not regress it.
-  const currentStatus = report.status ?? undefined;
-  if (currentStatus && currentStatus !== "ocr_ing") {
-    return;
+  if (writeMetrics) {
+    try {
+      await writeStreamerMetricsFromOcr({
+        client: client as unknown as StreamerMetricSinkClient,
+        sourceReportId: report.id,
+        sourceInvocationId,
+        humanConfirmed,
+        metricCandidates,
+      });
+    } catch (error) {
+      console.error(
+        `[ocr] streamer metric sink failed for report ${liveReportId}`,
+        error,
+      );
+    }
   }
 
   const systemDuration =
@@ -1072,7 +1046,8 @@ async function advanceLiveReportAfterOcr({
   const { error: updateError } = await client
     .from("live_reports")
     .update(patch)
-    .eq("id", liveReportId);
+    .eq("id", liveReportId)
+    .eq("status", currentStatus);
   if (updateError) {
     throw updateError;
   }
@@ -1094,6 +1069,20 @@ function pickPositiveNumericField(...values: unknown[]): number | null {
     }
   }
   return null;
+}
+
+function pickConfirmedMetricCandidates(
+  manualResult: Record<string, unknown>,
+  ocrResult?: Record<string, unknown>,
+): unknown[] {
+  if (Object.prototype.hasOwnProperty.call(manualResult, "metricCandidates")) {
+    return Array.isArray(manualResult.metricCandidates)
+      ? manualResult.metricCandidates
+      : [];
+  }
+  return Array.isArray(ocrResult?.metricCandidates)
+    ? ocrResult.metricCandidates
+    : [];
 }
 
 async function failOcrJobAttempt({

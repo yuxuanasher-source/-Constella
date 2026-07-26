@@ -28,18 +28,18 @@ function createClient(
       live_report_id: string;
       background_job_id: string | null;
     }>;
-    upsertErrors?: Record<string, Error>;
+    rpcErrors?: Record<string, Error>;
   } = {},
 ) {
   const ocrResults = [...(fixtures.ocrResults ?? [])];
   const inserts: Record<string, Record<string, unknown>[]> = {};
   const updates: Record<string, Record<string, unknown>[]> = {};
-  const upserts: Record<string, Record<string, unknown>[][]> = {};
   const jobs = [...(fixtures.jobs ?? [])];
   const liveReports = [
     ...(fixtures.liveReports ?? []).map((report) => ({
       streamer_id: "streamer-1",
       created_at: "2026-07-16T08:00:00.000Z",
+      status: "ocr_ing",
       ...report,
     })),
     ...(fixtures.liveReports
@@ -50,20 +50,72 @@ function createClient(
           project_id: "project-1",
           streamer_id: "streamer-1",
           created_at: "2026-07-16T08:00:00.000Z",
+          status: "ocr_ing",
         }))),
   ];
+  type TestUpdateResult = { error: null };
+  type TestUpdateFilter = PromiseLike<TestUpdateResult> & {
+    eq(column: string, value: string): TestUpdateFilter;
+  };
+  const createUpdateFilter = (
+    table: string,
+    payload: Record<string, unknown>,
+  ): TestUpdateFilter => {
+    const filters: Array<{ column: string; value: string }> = [];
+    let executed = false;
+    const execute = async (): Promise<TestUpdateResult> => {
+      if (!executed) {
+        executed = true;
+        const first = filters[0] ?? { column: "", value: "" };
+        updates[table] = [
+          ...(updates[table] ?? []),
+          {
+            payload,
+            column: first.column,
+            value: first.value,
+            filters: [...filters],
+          },
+        ];
+        if (table === "background_jobs" && first.column === "id") {
+          const index = jobs.findIndex((job) => job.id === first.value);
+          if (index >= 0) {
+            jobs[index] = { ...jobs[index], ...toJobPatch(payload) };
+          }
+        }
+      }
+      return { error: null };
+    };
+    const builder = {
+      eq: vi.fn((column: string, value: string): TestUpdateFilter => {
+        filters.push({ column, value });
+        return builder;
+      }),
+      then<TResult1 = TestUpdateResult, TResult2 = never>(
+        onfulfilled?:
+          | ((value: TestUpdateResult) => TResult1 | PromiseLike<TResult1>)
+          | null,
+        onrejected?:
+          | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+          | null,
+      ): PromiseLike<TResult1 | TResult2> {
+        return execute().then(onfulfilled, onrejected);
+      },
+    } as TestUpdateFilter;
+    return builder;
+  };
   const client = {
     rpc: vi.fn(
-      async (): Promise<{ data: Record<string, unknown>[]; error: null }> => ({
-        data: [],
-        error: null,
+      async (
+        name: string,
+      ): Promise<{
+        data: Record<string, unknown>[] | number;
+        error: Error | null;
+      }> => ({
+        data: name === "upsert_ocr_streamer_metrics" ? 2 : [],
+        error: fixtures.rpcErrors?.[name] ?? null,
       }),
     ),
     from: vi.fn((table: string) => ({
-      upsert: vi.fn(async (payload: Record<string, unknown>[]) => {
-        upserts[table] = [...(upserts[table] ?? []), payload];
-        return { error: fixtures.upsertErrors?.[table] ?? null };
-      }),
       insert: vi.fn(async (payload: Record<string, unknown>) => {
         inserts[table] = [...(inserts[table] ?? []), payload];
         if (table === "background_jobs") {
@@ -71,21 +123,9 @@ function createClient(
         }
         return { error: null };
       }),
-      update: vi.fn((payload: Record<string, unknown>) => ({
-        eq: vi.fn(async (column: string, value: string) => {
-          updates[table] = [
-            ...(updates[table] ?? []),
-            { payload, column, value },
-          ];
-          if (table === "background_jobs" && column === "id") {
-            const index = jobs.findIndex((job) => job.id === value);
-            if (index >= 0) {
-              jobs[index] = { ...jobs[index], ...toJobPatch(payload) };
-            }
-          }
-          return { error: null };
-        }),
-      })),
+      update: vi.fn((payload: Record<string, unknown>) =>
+        createUpdateFilter(table, payload),
+      ),
       select: vi.fn(() => ({
         eq: vi.fn((column: string, value: string) => ({
           maybeSingle: vi.fn(async () => {
@@ -125,7 +165,7 @@ function createClient(
     })),
   };
 
-  return { client, inserts, updates, upserts, jobs };
+  return { client, inserts, updates, jobs };
 }
 
 const actor = {
@@ -198,15 +238,15 @@ describe("OCR jobs", () => {
       expect.objectContaining({
         organization_id: "org-1",
         live_report_id: "report-1",
-        streamer_id: "streamer-1",
-        project_id: "project-1",
-        report_date: "2026-07-16",
         screenshot_id: "screenshot-1",
         status: "pending",
         ai_invocation_id: "invocation-1",
         background_job_id: "job-1",
       }),
     ]);
+    expect(inserts.ocr_results?.[0]).not.toHaveProperty("streamer_id");
+    expect(inserts.ocr_results?.[0]).not.toHaveProperty("project_id");
+    expect(inserts.ocr_results?.[0]).not.toHaveProperty("report_date");
   });
 
   it("creates an OCR job with only storage image path input", async () => {
@@ -371,7 +411,7 @@ describe("OCR jobs", () => {
   });
 
   it("writes GMV and follower growth into streamer metrics using live report attribution", async () => {
-    const { client, updates, upserts } = createClient({
+    const { client, updates } = createClient({
       jobs: [
         {
           id: "job-streamer-metrics",
@@ -414,32 +454,28 @@ describe("OCR jobs", () => {
       },
     });
 
-    expect(upserts.streamer_metrics?.flat()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          organization_id: "org-1",
-          streamer_id: "streamer-metrics",
-          metric_key: "gmv",
-          metric_value: 12345,
-          metric_window: "2026-07-15",
-          source_report_id: "report-streamer-metrics",
-          source_invocation_id: "invocation-streamer-metrics",
-        }),
-        expect.objectContaining({
-          metric_key: "follows",
-          metric_value: 67,
-        }),
-      ]),
+    expect(client.rpc).toHaveBeenCalledWith(
+      "upsert_ocr_streamer_metrics",
+      expect.objectContaining({
+        p_live_report_id: "report-streamer-metrics",
+        p_metrics: [
+          { key: "gmv", value: 12345 },
+          { key: "follows", value: 67 },
+        ],
+        p_source_invocation_id: "invocation-streamer-metrics",
+        p_human_confirmed: false,
+      }),
     );
     expect(updates.ocr_results).toEqual([
       expect.objectContaining({
         payload: expect.objectContaining({
-          streamer_id: "streamer-metrics",
-          project_id: "project-metrics",
-          report_date: "2026-07-15",
+          status: "succeeded",
         }),
       }),
     ]);
+    expect(updates.ocr_results?.[0]?.payload).not.toHaveProperty("streamer_id");
+    expect(updates.ocr_results?.[0]?.payload).not.toHaveProperty("project_id");
+    expect(updates.ocr_results?.[0]?.payload).not.toHaveProperty("report_date");
   });
 
   it("continues advancing the report when the metric sink fails", async () => {
@@ -471,8 +507,8 @@ describe("OCR jobs", () => {
           status: "ocr_ing",
         },
       ],
-      upsertErrors: {
-        streamer_metrics: new Error("metric write failed"),
+      rpcErrors: {
+        upsert_ocr_streamer_metrics: new Error("metric write failed"),
       },
     });
 
@@ -757,6 +793,10 @@ describe("OCR jobs", () => {
     };
     expect(String(ocrUpdate.payload.error_message)).toContain(
       "low_provider_confidence",
+    );
+    expect(client.rpc).not.toHaveBeenCalledWith(
+      "upsert_ocr_streamer_metrics",
+      expect.anything(),
     );
   });
 
@@ -1081,8 +1121,29 @@ describe("OCR jobs", () => {
           status: "needs_confirmation",
           attempt: 1,
           maxAttempts: 3,
+          aiInvocationId: "invocation-confirm",
           payload: { liveReportId: "report-confirm", imageBase64: "ZmFrZQ==" },
-          result: { extractedDuration: 78, extractedViewers: 300 },
+          result: {
+            extractedDuration: 78,
+            extractedViewers: 300,
+            metricCandidates: [
+              {
+                key: "gmv",
+                label: "GMV",
+                value: 100,
+                sourceText: "GMV 100",
+                confidence: 90,
+              },
+            ],
+          },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-confirm",
+          organization_id: "org-1",
+          project_id: "project-1",
+          status: "pending_review",
         },
       ],
     });
@@ -1111,6 +1172,139 @@ describe("OCR jobs", () => {
         }),
       }),
     ]);
+    expect(client.rpc).toHaveBeenCalledWith(
+      "upsert_ocr_streamer_metrics",
+      expect.objectContaining({
+        p_live_report_id: "report-confirm",
+        p_metrics: [{ key: "gmv", value: 100 }],
+        p_source_invocation_id: "invocation-confirm",
+        p_human_confirmed: true,
+      }),
+    );
+  });
+
+  it("uses manually confirmed metric candidates instead of the original OCR candidates", async () => {
+    const { client } = createClient({
+      jobs: [
+        {
+          id: "job-confirm-metrics",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "needs_confirmation",
+          attempt: 1,
+          maxAttempts: 3,
+          aiInvocationId: "invocation-confirm-metrics",
+          payload: {
+            liveReportId: "report-confirm-metrics",
+            imageBase64: "ZmFrZQ==",
+          },
+          result: {
+            metricCandidates: [
+              {
+                key: "gmv",
+                label: "GMV",
+                value: 100,
+                sourceText: "GMV 100",
+                confidence: 90,
+              },
+            ],
+          },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-confirm-metrics",
+          organization_id: "org-1",
+          project_id: "project-1",
+          status: "pending_review",
+        },
+      ],
+    });
+
+    await confirmOcrJob({
+      client,
+      actor,
+      jobId: "job-confirm-metrics",
+      manualResult: {
+        metricCandidates: [
+          {
+            key: "gmv",
+            label: "GMV",
+            value: 250,
+            sourceText: "人工确认 GMV 250",
+            confidence: 100,
+          },
+          {
+            key: "follows",
+            label: "涨粉",
+            value: 20,
+            sourceText: "人工确认 涨粉 20",
+            confidence: 100,
+          },
+        ],
+      },
+    });
+
+    expect(client.rpc).toHaveBeenCalledWith(
+      "upsert_ocr_streamer_metrics",
+      expect.objectContaining({
+        p_metrics: [
+          { key: "gmv", value: 250 },
+          { key: "follows", value: 20 },
+        ],
+        p_human_confirmed: true,
+      }),
+    );
+  });
+
+  it("does not fall back to OCR candidates when a manual metric override is malformed", async () => {
+    const { client } = createClient({
+      jobs: [
+        {
+          id: "job-confirm-malformed-metrics",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "needs_confirmation",
+          attempt: 1,
+          maxAttempts: 3,
+          payload: {
+            liveReportId: "report-confirm-malformed-metrics",
+            imageBase64: "ZmFrZQ==",
+          },
+          result: {
+            metricCandidates: [
+              {
+                key: "gmv",
+                label: "GMV",
+                value: 100,
+                sourceText: "GMV 100",
+                confidence: 90,
+              },
+            ],
+          },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-confirm-malformed-metrics",
+          organization_id: "org-1",
+          project_id: "project-1",
+          status: "pending_review",
+        },
+      ],
+    });
+
+    await confirmOcrJob({
+      client,
+      actor,
+      jobId: "job-confirm-malformed-metrics",
+      manualResult: { metricCandidates: "invalid" },
+    });
+
+    expect(client.rpc).not.toHaveBeenCalledWith(
+      "upsert_ocr_streamer_metrics",
+      expect.anything(),
+    );
   });
 
   it("keeps the OCR-extracted duration when a confirmation submits zero", async () => {
@@ -1234,6 +1428,14 @@ describe("OCR jobs", () => {
     ).payload;
     expect(advancePayload.risk_flags).not.toContain("ocr_pending");
     expect(advancePayload.risk_flags).not.toContain("ocr_needs_review");
+    expect(updates.live_reports[0]).toEqual(
+      expect.objectContaining({
+        filters: [
+          { column: "id", value: "report-advance" },
+          { column: "status", value: "ocr_ing" },
+        ],
+      }),
+    );
   });
 
   it("flags conflicting OCR results in the review pool but still admits them", async () => {
@@ -1337,6 +1539,10 @@ describe("OCR jobs", () => {
     });
 
     expect(updates.live_reports).toBeUndefined();
+    expect(client.rpc).not.toHaveBeenCalledWith(
+      "upsert_ocr_streamer_metrics",
+      expect.anything(),
+    );
   });
 });
 
