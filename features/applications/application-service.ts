@@ -6,6 +6,7 @@ import type {
   NormalizedRecordingSelfCheck,
   RecordingSelfAssessmentLevel,
 } from "@/features/recordings/recording-production-standard";
+import { normalizeRecordingStoragePath } from "@/features/storage/recording-path-guard";
 
 import {
   assertApplicationTransition,
@@ -369,7 +370,12 @@ export async function submitRecording({
     throw new Error("Only streamers can submit screening recordings");
   }
 
-  if (!input.storagePath && !input.externalUrl) {
+  const storagePath = normalizeRecordingStoragePath(
+    input.storagePath,
+    actor.organizationId,
+  );
+  const externalUrl = input.externalUrl?.trim() || undefined;
+  if (!storagePath && !externalUrl) {
     throw new Error(
       "Recording submission requires a storage path or external URL",
     );
@@ -396,8 +402,8 @@ export async function submitRecording({
     projectId: application.projectId,
     streamerId: application.streamerId,
     version: (latest?.version ?? 0) + 1,
-    storagePath: input.storagePath,
-    externalUrl: input.externalUrl,
+    storagePath,
+    externalUrl,
     durationSeconds: input.durationSeconds,
     collaborationId: application.collaborationId,
     contributorOrganizationId: application.contributorOrganizationId,

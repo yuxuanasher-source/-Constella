@@ -8,10 +8,11 @@ import {
 } from "@/features/applications/application-route-utils";
 import { getStreamerIdForUser } from "@/features/applications/application-repository";
 import { submitRecording } from "@/features/applications/application-service";
+import { normalizeRecordingStoragePath } from "@/features/storage/recording-path-guard";
 import { parseJsonBody } from "@/lib/http/parse-json-body";
 
 const submitRecordingBodySchema = z.object({
-  storagePath: z.string().trim().min(1).optional(),
+  storagePath: z.string().optional(),
   externalUrl: z.string().trim().min(1).optional(),
   durationSeconds: z.number().int().nonnegative().optional(),
 });
@@ -42,7 +43,10 @@ export async function POST(
       },
       input: {
         applicationId,
-        storagePath: body.storagePath,
+        storagePath: normalizeRecordingStoragePath(
+          body.storagePath,
+          context.auth.organizationId,
+        ),
         externalUrl: body.externalUrl,
         durationSeconds: body.durationSeconds,
       },

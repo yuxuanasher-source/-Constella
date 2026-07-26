@@ -106,4 +106,20 @@ describe("POST /api/applications/[applicationId]/videos", () => {
     });
     expect(submitRecording).not.toHaveBeenCalled();
   });
+
+  it("rejects a storage path outside the current organization before submitting", async () => {
+    const response = await POST(
+      jsonRequest({
+        storagePath: "org-2/recordings/project-1/demo.mp4",
+        externalUrl: "https://videos.example.com/submission",
+      }),
+      { params: Promise.resolve({ applicationId: "app-1" }) },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Invalid recording storage path",
+    });
+    expect(submitRecording).not.toHaveBeenCalled();
+  });
 });

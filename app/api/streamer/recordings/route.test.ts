@@ -313,6 +313,25 @@ describe("streamer recordings route", () => {
     expect(submitProjectRecording).not.toHaveBeenCalled();
   });
 
+  it("rejects an uploaded project recording path outside the current organization", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/streamer/recordings", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId: "project-1",
+          storagePath: "org-2/recordings/project-1/demo.mp4",
+          selfCheck: projectSelfCheck,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Invalid recording storage path",
+    });
+    expect(submitProjectRecording).not.toHaveBeenCalled();
+  });
+
   it("rejects non-streamer users", async () => {
     vi.mocked(getLiveOperationsRouteContext).mockResolvedValue({
       ...context,

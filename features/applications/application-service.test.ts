@@ -494,13 +494,18 @@ describe("application service", () => {
       actor: streamerActor,
       input: {
         applicationId: "app-1",
-        storagePath: "org/applications/app-1/video.mp4",
+        storagePath:
+          "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/recordings/project-1/video.mp4",
         durationSeconds: 3600,
       },
     });
 
     expect(repo.createRecordingSubmission).toHaveBeenCalledWith(
-      expect.objectContaining({ version: 2 }),
+      expect.objectContaining({
+        version: 2,
+        storagePath:
+          "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/recordings/project-1/video.mp4",
+      }),
     );
     expect(repo.markApplicationRecordingReviewing).toHaveBeenCalledWith(
       "app-1",
@@ -532,6 +537,58 @@ describe("application service", () => {
         },
       }),
     ).rejects.toThrow("Application is not available for the current streamer");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+    expect(repo.markApplicationRecordingReviewing).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-organization storage paths before persistence", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_required",
+      }),
+    });
+
+    await expect(
+      submitRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: streamerActor,
+        input: {
+          applicationId: "app-1",
+          storagePath: "other-org/recordings/project-1/video.mp4",
+          externalUrl: "https://videos.example.com/submission",
+        },
+      }),
+    ).rejects.toThrow("Invalid recording storage path");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+    expect(repo.markApplicationRecordingReviewing).not.toHaveBeenCalled();
+  });
+
+  it("rejects storage path traversal before persistence", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_required",
+      }),
+    });
+
+    await expect(
+      submitRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: streamerActor,
+        input: {
+          applicationId: "app-1",
+          storagePath:
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/recordings/..\\other/video.mp4",
+        },
+      }),
+    ).rejects.toThrow("Invalid recording storage path");
 
     expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
     expect(repo.markApplicationRecordingReviewing).not.toHaveBeenCalled();
