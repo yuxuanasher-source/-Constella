@@ -146,6 +146,10 @@ describe("loadStreamerProjectReviewInput", () => {
       "in",
       ["recording_submissions", "application_id", ["application-1"]],
     ]);
+    expect(calls).toContainEqual([
+      "select",
+      ["recording_submissions", "id, status, duration_seconds, review_note"],
+    ]);
   });
 
   it("fails closed when streamer or project is outside the organization", async () => {
