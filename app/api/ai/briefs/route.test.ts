@@ -59,7 +59,7 @@ function serverCandidates() {
         ],
       },
     ],
-    dataGaps: ["candidate_roi_proxy"],
+    dataGaps: [],
   };
 }
 
@@ -103,7 +103,7 @@ describe("AI briefs route", () => {
         },
       ],
       validation: { valid: true, errors: [] },
-      dataGaps: ["candidate_roi_proxy"],
+      dataGaps: [],
     });
     expect(body.agentOutput.facts).toEqual(
       expect.arrayContaining([
@@ -113,14 +113,11 @@ describe("AI briefs route", () => {
         }),
       ]),
     );
-    expect(body.agentOutput.caveats).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          summary: "候选主播投产比为观众密度的代理口径",
-          unverifiedExternalFactor: true,
-        }),
-      ]),
-    );
+    expect(
+      body.agentOutput.caveats.map(
+        (caveat: { summary: string }) => caveat.summary,
+      ),
+    ).not.toContain("候选主播投产比为观众密度的代理口径");
   });
 
   it("rejects the legacy casting payload with client-supplied candidates", async () => {

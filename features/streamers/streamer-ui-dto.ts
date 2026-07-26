@@ -1,5 +1,9 @@
 import type { StreamerListRow } from "./streamer-queries";
 import { toYuan } from "@/features/billing/hourly-rate-units";
+import {
+  deriveAuthoritativeReportEconomics,
+  selectAuthoritativeApprovedReports,
+} from "./streamer-report-economics";
 
 const sourceLabels: Record<string, string> = {
   signed: "签约",
@@ -37,7 +41,10 @@ export type StreamerCardDto = {
   metrics: {
     screenPass: number | null;
     projectFinish: number | null;
+    avgSessionMinutes: number | null;
+    actualHourlyRate: number | null;
     roi: number | null;
+    viewsPerHour: number | null;
     grossContrib: number | null;
     vendorPassRateBps: number | null;
     rejectionReasonHistogram: Record<string, number>;
@@ -148,8 +155,7 @@ export function toStreamerCardDto(
     metrics: {
       ...liveMetrics.metrics,
       vendorPassRateBps: row.admission_stats?.vendorPassRateBps ?? null,
-      rejectionReasonHistogram:
-        admissionStats?.rejectionReasonHistogram ?? {},
+      rejectionReasonHistogram: admissionStats?.rejectionReasonHistogram ?? {},
       evaluatedCount: admissionStats?.evaluatedCount ?? 0,
       mcnFirstPassRateBps: admissionStats?.mcnFirstPassRateBps ?? null,
       mcnFirstEvaluatedCount: admissionStats?.mcnFirstEvaluatedCount ?? 0,
@@ -167,13 +173,16 @@ export function toStreamerDesktopProfileDto(
   row: StreamerListRow,
   options: { organizationName?: string } = {},
 ): StreamerDesktopProfileDto {
+  const authoritativeReports = selectAuthoritativeApprovedReports(
+    row.live_reports ?? [],
+  );
   const projectIds = new Set<string>();
   row.project_streamers?.forEach((item) => {
     const project = first(item.projects);
     const id = item.project_id ?? project?.id;
     if (id) projectIds.add(id);
   });
-  row.live_reports?.forEach((item) => {
+  authoritativeReports.forEach((item) => {
     if (item.project_id) projectIds.add(item.project_id);
   });
 
@@ -194,7 +203,7 @@ export function toStreamerDesktopProfileDto(
       projectCount: projectIds.size,
       recordingCount: row.recording_submissions?.length ?? 0,
       totalLiveHours: roundHours(
-        (row.live_reports ?? []).reduce(
+        authoritativeReports.reduce(
           (sum, report) =>
             sum + minutesToHours(report.settlement_duration ?? 0),
           0,
@@ -234,10 +243,7 @@ export function toStreamerDesktopProfileDto(
 
 function streamerAiInsights(row: StreamerListRow): StreamerAiInsightDto[] {
   return [...(row.streamer_profile_insights ?? [])]
-    .sort(
-      (a, b) =>
-        dateMs(b.confirmed_at ?? "") - dateMs(a.confirmed_at ?? ""),
-    )
+    .sort((a, b) => dateMs(b.confirmed_at ?? "") - dateMs(a.confirmed_at ?? ""))
     .slice(0, 5)
     .map((insight) => ({
       id: insight.id,
@@ -247,7 +253,8 @@ function streamerAiInsights(row: StreamerListRow): StreamerAiInsightDto[] {
       risks: cleanStringList(insight.risks),
       recommendations: cleanStringList(insight.recommendations),
       tags: cleanStringList(insight.tags),
-      sourceRef: insight.source_ref || `streamer_profile_insights:${insight.id}`,
+      sourceRef:
+        insight.source_ref || `streamer_profile_insights:${insight.id}`,
       confirmedAtLabel: insight.confirmed_at
         ? insight.confirmed_at.slice(0, 10)
         : "未标注",
@@ -255,9 +262,7 @@ function streamerAiInsights(row: StreamerListRow): StreamerAiInsightDto[] {
 }
 
 function cleanStringList(values?: string[] | null): string[] {
-  return (values ?? [])
-    .map((value) => String(value).trim())
-    .filter(Boolean);
+  return (values ?? []).map((value) => String(value).trim()).filter(Boolean);
 }
 
 function dateMs(value: string): number {
@@ -382,9 +387,16 @@ function deriveLivePerformance(
   const recentRecordings = recentRows(row.recording_submissions, now, (item) =>
     item.submitted_at ? new Date(item.submitted_at) : null,
   );
-  const recentReports = recentRows(row.live_reports, now, (item) =>
+  const recentReportRows = recentRows(row.live_reports, now, (item) =>
     item.created_at ? new Date(item.created_at) : null,
   );
+  const reportEconomics =
+    deriveAuthoritativeReportEconomics(
+      recentReportRows,
+      undefined,
+      row.id,
+    );
+  const recentReports = reportEconomics.authoritativeReports;
   const recentTasks = recentRows(row.live_tasks, now, (item) =>
     item.planned_start_at ? new Date(item.planned_start_at) : null,
   ).filter((item) => item.status !== "cancelled");
@@ -392,7 +404,7 @@ function deriveLivePerformance(
 
   const hasPerformanceData =
     recentRecordings.length > 0 ||
-    recentReports.length > 0 ||
+    recentReportRows.length > 0 ||
     recentTasks.length > 0;
   if (!hasPerformanceData) {
     return {
@@ -402,7 +414,10 @@ function deriveLivePerformance(
       metrics: {
         screenPass: null,
         projectFinish: null,
+        avgSessionMinutes: null,
+        actualHourlyRate: null,
         roi: null,
+        viewsPerHour: null,
         grossContrib: null,
       },
       projects: streamerProjectContributions(projectRows, recentReports),
@@ -426,7 +441,7 @@ function deriveLivePerformance(
         )
       : null;
   const grossContrib = aggregateReportContribution(recentReports);
-  const roi = reportRoi(recentReports);
+  const roi = reportEconomics.roi;
 
   const matchScore = performanceMatchScore({
     screenPass,
@@ -443,17 +458,17 @@ function deriveLivePerformance(
     metrics: {
       screenPass,
       projectFinish,
+      avgSessionMinutes: reportEconomics.avgSessionMinutes,
+      actualHourlyRate: reportEconomics.actualHourlyRate,
       roi,
+      viewsPerHour: reportEconomics.viewsPerHour,
       grossContrib,
     },
     projects: streamerProjectContributions(projectRows, recentReports),
   };
 }
 
-function weeklyMatchTrend(
-  row: StreamerListRow,
-  now: Date,
-) {
+function weeklyMatchTrend(row: StreamerListRow, now: Date) {
   const weekMs = 7 * 24 * 60 * 60 * 1000;
   const trend: Array<number | null> = [];
 
@@ -466,14 +481,25 @@ function weeklyMatchTrend(
       end,
       (item) => (item.submitted_at ? new Date(item.submitted_at) : null),
     );
-    const reports = rowsBetween(row.live_reports, start, end, (item) =>
+    const reportRows = rowsBetween(row.live_reports, start, end, (item) =>
       item.created_at ? new Date(item.created_at) : null,
     );
+    const reportEconomics =
+      deriveAuthoritativeReportEconomics(
+        reportRows,
+        undefined,
+        row.id,
+      );
+    const reports = reportEconomics.authoritativeReports;
     const tasks = rowsBetween(row.live_tasks, start, end, (item) =>
       item.planned_start_at ? new Date(item.planned_start_at) : null,
     ).filter((item) => item.status !== "cancelled");
 
-    if (recordings.length === 0 && reports.length === 0 && tasks.length === 0) {
+    if (
+      recordings.length === 0 &&
+      reportRows.length === 0 &&
+      tasks.length === 0
+    ) {
       trend.push(null);
       continue;
     }
@@ -492,7 +518,7 @@ function weeklyMatchTrend(
             tasks.length,
           )
         : null;
-    const roi = reportRoi(reports);
+    const roi = reportEconomics.roi;
     trend.push(
       performanceMatchScore({
         screenPass,
@@ -557,10 +583,7 @@ function reportContribution(
   report: NonNullable<StreamerListRow["live_reports"]>[number],
 ): number | null {
   const rate = first(report.projects)?.default_hourly_rate;
-  if (
-    !isFiniteNumber(report.settlement_duration) ||
-    !isFiniteNumber(rate)
-  ) {
+  if (!isFiniteNumber(report.settlement_duration) || !isFiniteNumber(rate)) {
     return null;
   }
   return minutesToHours(report.settlement_duration) * toYuan(rate);
@@ -573,32 +596,9 @@ function aggregateReportContribution(
   const contributions = reports.map(reportContribution);
   const completeContributions = contributions.filter(isFiniteNumber);
   if (completeContributions.length !== contributions.length) return null;
-  return roundMoney(completeContributions.reduce((sum, value) => sum + value, 0));
-}
-
-function reportRoi(
-  reports: NonNullable<StreamerListRow["live_reports"]>,
-): number | null {
-  if (
-    reports.length === 0 ||
-    reports.some(
-      (report) =>
-        !isFiniteNumber(report.settlement_duration) ||
-        !isFiniteNumber(report.viewers),
-    )
-  ) {
-    return null;
-  }
-  const settlementHours = reports.reduce(
-    (sum, report) => sum + minutesToHours(report.settlement_duration as number),
-    0,
+  return roundMoney(
+    completeContributions.reduce((sum, value) => sum + value, 0),
   );
-  if (settlementHours <= 0) return null;
-  const viewers = reports.reduce(
-    (sum, report) => sum + Math.max(report.viewers as number, 0),
-    0,
-  );
-  return Number((viewers / settlementHours / 1000).toFixed(2));
 }
 
 function streamerProjectContributions(
@@ -695,21 +695,16 @@ function performanceMatchScore({
   );
   if (dimensions.length === 0) return null;
 
-  const observedScore =
-    dimensions.reduce(
-      (sum, dimension) => sum + dimension.value * dimension.weight,
-      0,
-    );
+  const observedScore = dimensions.reduce(
+    (sum, dimension) => sum + dimension.value * dimension.weight,
+    0,
+  );
   const riskPenalty = risk === "high" ? 12 : risk === "medium" ? 6 : 0;
   return Math.max(
     0,
     Math.min(
       99,
-      Math.round(
-        observedScore +
-          Math.min(10, reportCount * 3) -
-          riskPenalty,
-      ),
+      Math.round(observedScore + Math.min(10, reportCount * 3) - riskPenalty),
     ),
   );
 }

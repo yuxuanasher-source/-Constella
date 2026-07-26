@@ -112,9 +112,14 @@ export type PerformanceSnapshotRecord = {
   completedSessions: number;
   broadcastRateBps: number;
   totalLiveMinutes: number;
+  avgSessionMinutes: number;
   totalRevenueAmount: number;
   avgSessionRevenueAmount: number;
-  avgSessionRoiBps: number | null;
+  totalSettlementAmount: number | null;
+  actualHourlyRate: number | null;
+  totalGmvAmount: number | null;
+  roiBps: number | null;
+  viewsPerHour: number | null;
   totalViewers: number;
   avgSessionViewers: number;
   computedAt: string;
@@ -239,9 +244,14 @@ export type StreamerLifecycleRepository = {
       completed_sessions: number;
       broadcast_rate_bps: number;
       total_live_minutes: number;
+      avg_session_minutes: number;
       total_revenue_amount: number;
       avg_session_revenue_amount: number;
-      avg_session_roi_bps: number | null;
+      total_settlement_amount: number | null;
+      actual_hourly_rate: number | null;
+      total_gmv_amount: number | null;
+      roi_bps: number | null;
+      views_per_hour: number | null;
       total_viewers: number;
       avg_session_viewers: number;
     };
@@ -1167,7 +1177,7 @@ export async function syncStreamerPerformance({
     throw new Error("periodEnd cannot be earlier than periodStart");
   }
 
-  const streamer = await getStreamerOrThrow(repo, streamerId);
+  await getStreamerOrThrow(repo, streamerId);
   const tasks = await repo.listPerformanceSourceTasks(
     actor.organizationId,
     streamerId,
@@ -1175,7 +1185,7 @@ export async function syncStreamerPerformance({
     periodEnd,
   );
 
-  const metrics = computeStreamerPerformance(tasks, streamer.defaultHourlyRate);
+  const metrics = computeStreamerPerformance(tasks);
 
   const snapshot = await repo.upsertPerformanceSnapshot({
     organizationId: actor.organizationId,
@@ -1188,9 +1198,14 @@ export async function syncStreamerPerformance({
       completed_sessions: metrics.completedSessions,
       broadcast_rate_bps: metrics.broadcastRateBps,
       total_live_minutes: metrics.totalLiveMinutes,
+      avg_session_minutes: metrics.avgSessionMinutes,
       total_revenue_amount: metrics.totalRevenueAmount,
       avg_session_revenue_amount: metrics.avgSessionRevenueAmount,
-      avg_session_roi_bps: metrics.avgSessionRoiBps,
+      total_settlement_amount: metrics.totalSettlementAmount,
+      actual_hourly_rate: metrics.actualHourlyRate,
+      total_gmv_amount: metrics.totalGmvAmount,
+      roi_bps: metrics.roiBps,
+      views_per_hour: metrics.viewsPerHour,
       total_viewers: metrics.totalViewers,
       avg_session_viewers: metrics.avgSessionViewers,
     },

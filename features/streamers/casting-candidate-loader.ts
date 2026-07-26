@@ -18,7 +18,7 @@ export type CastingCandidateLoadResult = {
 // 与 listStreamerPool 的 select 同源,追加 risk_tags 真实列;显式组织过滤
 // 是在 RLS 之上的第二道防线。
 const CANDIDATE_SELECT =
-  "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, risk_tags, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))";
+  "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, risk_tags, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(id, live_task_id, status, settlement_duration, evidence_level, viewers, created_at, project_id, settlement_batch_items!settlement_batch_items_live_report_id_fkey(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status)), settlement_batch_item_reports(settlement_batch_item_id, settlement_batch_items(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status))), streamer_metrics(source_report_id, metric_key, metric_value), projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))";
 
 // 防线:候选池一次最多取 200 人,与 listOpsSettlementBatches 的防线一致。
 const CANDIDATE_LIMIT = 200;
@@ -40,6 +40,27 @@ export async function loadCastingCandidates(
     .from("streamers")
     .select(CANDIDATE_SELECT)
     .eq("organization_id", params.organizationId)
+    .eq(
+      "live_reports.settlement_batch_items.organization_id",
+      params.organizationId,
+    )
+    .eq(
+      "live_reports.settlement_batch_items.settlement_batches.organization_id",
+      params.organizationId,
+    )
+    .eq(
+      "live_reports.settlement_batch_item_reports.organization_id",
+      params.organizationId,
+    )
+    .eq(
+      "live_reports.settlement_batch_item_reports.settlement_batch_items.organization_id",
+      params.organizationId,
+    )
+    .eq(
+      "live_reports.settlement_batch_item_reports.settlement_batch_items.settlement_batches.organization_id",
+      params.organizationId,
+    )
+    .eq("live_reports.streamer_metrics.organization_id", params.organizationId)
     .order("created_at", { ascending: false })
     .limit(CANDIDATE_LIMIT);
   if (params.candidateIds?.length) {
@@ -52,11 +73,7 @@ export async function loadCastingCandidates(
   }
   const rows = (data ?? []) as unknown as CandidateRow[];
 
-  // ROI 是观众密度代理口径,恒定声明;可排期时长按候选人逐个判断。
   const dataGaps = new Set<string>();
-  if (rows.length > 0) {
-    dataGaps.add("candidate_roi_proxy");
-  }
 
   const candidates = rows.map((row) => {
     const card = toStreamerCardDto(row, {
@@ -95,12 +112,9 @@ export async function loadCastingCandidates(
         card.metrics.screenPass === null
           ? null
           : Math.round(card.metrics.screenPass * 100),
-      // 代理口径(dataGap: candidate_roi_proxy):roi 是"千观众/结算小时"
-      // 密度值,不是真实投产比。
+      // 真实 ROI：归因 GMV / confirmed-or-locked payable 实际结算。
       roiBps:
-        card.metrics.roi === null
-          ? null
-          : Math.round(card.metrics.roi * 10000),
+        card.metrics.roi === null ? null : Math.round(card.metrics.roi * 10000),
       grossMarginContributionCents:
         card.metrics.grossContrib === null
           ? null

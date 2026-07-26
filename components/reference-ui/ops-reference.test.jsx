@@ -4968,7 +4968,10 @@ describe("OpsReferenceApp streamer smoke", () => {
             metrics: {
               screenPass: 50,
               projectFinish: 100,
-              roi: 0.9,
+              avgSessionMinutes: 90,
+              actualHourlyRate: 50,
+              roi: 1.8,
+              viewsPerHour: 900,
               grossContrib: 150,
             },
             projects: [
@@ -4996,7 +4999,14 @@ describe("OpsReferenceApp streamer smoke", () => {
 
     expect(screen.getAllByText("50%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("100%").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("0.90").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1.80").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("真实 ROI").length).toBeGreaterThan(0);
+    expect(screen.getByText("场均直播时长")).toBeInTheDocument();
+    expect(screen.getByText("实际时薪")).toBeInTheDocument();
+    expect(screen.getByText("每小时观看")).toBeInTheDocument();
+    expect(screen.getByText(/90\.0\s*分钟/)).toBeInTheDocument();
+    expect(screen.getByText(/50\.00\s*元\/小时/)).toBeInTheDocument();
+    expect(screen.getByText(/900\s*人/)).toBeInTheDocument();
     expect(screen.getByText("¥0.2k")).toBeInTheDocument();
     expect(screen.getByText("Live Project")).toBeInTheDocument();
     expect(screen.getByText("3.0 h · ¥150.0")).toBeInTheDocument();

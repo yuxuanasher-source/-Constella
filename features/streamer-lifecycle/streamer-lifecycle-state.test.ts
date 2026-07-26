@@ -114,84 +114,201 @@ describe("shift change transitions", () => {
 });
 
 describe("computeStreamerPerformance", () => {
-  it("aggregates broadcast rate, revenue and viewers over the window", () => {
-    const metrics = computeStreamerPerformance(
-      [
-        {
-          taskId: "t1",
-          status: "completed",
-          plannedStartAt: "2026-07-01T12:00:00Z",
-          systemStartedAt: "2026-07-01T12:00:00Z",
-          systemDuration: 120,
-          settlementDuration: 120,
-          viewers: 3000,
-          projectHourlyRate: 100,
-        },
-        {
-          taskId: "t2",
-          status: "pending_live",
-          plannedStartAt: "2026-07-02T12:00:00Z",
-          systemStartedAt: null,
-          systemDuration: 0,
-          settlementDuration: null,
-          viewers: null,
-          projectHourlyRate: 100,
-        },
-        {
-          taskId: "t3",
-          status: "cancelled",
-          plannedStartAt: "2026-07-03T12:00:00Z",
-          systemStartedAt: null,
-          systemDuration: 0,
-          settlementDuration: null,
-          viewers: null,
-          projectHourlyRate: 100,
-        },
-      ],
-      50,
-    );
+  it("aggregates average session minutes and real economics over the window", () => {
+    const metrics = computeStreamerPerformance([
+      {
+        taskId: "t1",
+        status: "completed",
+        plannedStartAt: "2026-07-01T12:00:00Z",
+        systemStartedAt: "2026-07-01T12:00:00Z",
+        systemDuration: 120,
+        settlementDuration: 120,
+        viewers: 3000,
+        projectHourlyRate: 100,
+        settlementItems: [{ id: "item-t1", amount: 150 }],
+        attributedGmvAmount: 300,
+      },
+      {
+        taskId: "t2",
+        status: "pending_live",
+        plannedStartAt: "2026-07-02T12:00:00Z",
+        systemStartedAt: null,
+        systemDuration: 0,
+        settlementDuration: null,
+        viewers: null,
+        projectHourlyRate: 100,
+        settlementItems: null,
+        attributedGmvAmount: null,
+      },
+      {
+        taskId: "t3",
+        status: "cancelled",
+        plannedStartAt: "2026-07-03T12:00:00Z",
+        systemStartedAt: null,
+        systemDuration: 0,
+        settlementDuration: null,
+        viewers: null,
+        projectHourlyRate: 100,
+        settlementItems: null,
+        attributedGmvAmount: null,
+      },
+    ]);
 
     expect(metrics.scheduledSessions).toBe(2);
     expect(metrics.liveSessions).toBe(1);
     expect(metrics.completedSessions).toBe(1);
     expect(metrics.broadcastRateBps).toBe(5000);
     expect(metrics.totalLiveMinutes).toBe(120);
+    expect(metrics.avgSessionMinutes).toBe(120);
     expect(metrics.totalRevenueAmount).toBe(200);
     expect(metrics.avgSessionRevenueAmount).toBe(200);
-    // 成本 = 2h × 50 = 100，ROI = 200 / 100 = 2x = 20000bps
-    expect(metrics.avgSessionRoiBps).toBe(20000);
+    expect(metrics.totalSettlementAmount).toBe(150);
+    expect(metrics.actualHourlyRate).toBe(75);
+    expect(metrics.totalGmvAmount).toBe(300);
+    expect(metrics.roiBps).toBe(20000);
+    expect(metrics.viewsPerHour).toBe(1500);
     expect(metrics.totalViewers).toBe(3000);
     expect(metrics.avgSessionViewers).toBe(3000);
   });
 
-  it("falls back to system duration and null ROI without a talent rate", () => {
-    const metrics = computeStreamerPerformance(
-      [
-        {
-          taskId: "t1",
-          status: "completed",
-          plannedStartAt: "2026-07-01T12:00:00Z",
-          systemStartedAt: "2026-07-01T12:00:00Z",
-          systemDuration: 60,
-          settlementDuration: null,
-          viewers: null,
-          projectHourlyRate: null,
-        },
-      ],
-      null,
-    );
+  it("weights actual hourly rate by total duration across projects", () => {
+    const metrics = computeStreamerPerformance([
+      {
+        taskId: "t1",
+        status: "completed",
+        plannedStartAt: "2026-07-01T12:00:00Z",
+        systemStartedAt: "2026-07-01T12:00:00Z",
+        systemDuration: 60,
+        settlementDuration: null,
+        viewers: 600,
+        projectHourlyRate: null,
+        settlementItems: [{ id: "item-t1", amount: 100 }],
+        attributedGmvAmount: 200,
+      },
+      {
+        taskId: "t2",
+        status: "completed",
+        plannedStartAt: "2026-07-02T12:00:00Z",
+        systemStartedAt: "2026-07-02T12:00:00Z",
+        systemDuration: 120,
+        settlementDuration: 120,
+        viewers: 2400,
+        projectHourlyRate: 999,
+        settlementItems: [{ id: "item-t2", amount: 100 }],
+        attributedGmvAmount: 400,
+      },
+    ]);
 
-    expect(metrics.totalLiveMinutes).toBe(60);
-    expect(metrics.totalRevenueAmount).toBe(0);
-    expect(metrics.avgSessionRoiBps).toBeNull();
+    expect(metrics.totalLiveMinutes).toBe(180);
+    expect(metrics.avgSessionMinutes).toBe(90);
+    expect(metrics.totalSettlementAmount).toBe(200);
+    expect(metrics.actualHourlyRate).toBe(66.67);
+    expect(metrics.totalGmvAmount).toBe(600);
+    expect(metrics.roiBps).toBe(30000);
+    expect(metrics.viewsPerHour).toBe(1000);
+  });
+
+  it("keeps real economics unavailable when any live session lacks attribution", () => {
+    const metrics = computeStreamerPerformance([
+      {
+        taskId: "t1",
+        status: "completed",
+        plannedStartAt: "2026-07-01T12:00:00Z",
+        systemStartedAt: "2026-07-01T12:00:00Z",
+        systemDuration: 60,
+        settlementDuration: 60,
+        viewers: null,
+        projectHourlyRate: 100,
+        settlementItems: null,
+        attributedGmvAmount: null,
+      },
+    ]);
+
+    expect(metrics.totalSettlementAmount).toBeNull();
+    expect(metrics.actualHourlyRate).toBeNull();
+    expect(metrics.totalGmvAmount).toBeNull();
+    expect(metrics.roiBps).toBeNull();
+    expect(metrics.viewsPerHour).toBeNull();
+  });
+
+  it("preserves observed zero GMV and settlement amounts", () => {
+    const baseTask = {
+      taskId: "t1",
+      status: "completed",
+      plannedStartAt: "2026-07-01T12:00:00Z",
+      systemStartedAt: "2026-07-01T12:00:00Z",
+      systemDuration: 60,
+      settlementDuration: 60,
+      viewers: 0,
+      projectHourlyRate: null,
+    };
+
+    const zeroGmv = computeStreamerPerformance([
+      {
+        ...baseTask,
+        settlementItems: [{ id: "item-zero-gmv", amount: 100 }],
+        attributedGmvAmount: 0,
+      },
+    ]);
+    expect(zeroGmv.totalGmvAmount).toBe(0);
+    expect(zeroGmv.roiBps).toBe(0);
+    expect(zeroGmv.viewsPerHour).toBe(0);
+
+    const zeroSettlement = computeStreamerPerformance([
+      {
+        ...baseTask,
+        settlementItems: [{ id: "item-zero-cost", amount: 0 }],
+        attributedGmvAmount: 100,
+      },
+    ]);
+    expect(zeroSettlement.totalSettlementAmount).toBe(0);
+    expect(zeroSettlement.actualHourlyRate).toBe(0);
+    expect(zeroSettlement.roiBps).toBeNull();
+  });
+
+  it("dedupes one aggregate settlement item linked to multiple live tasks", () => {
+    const sharedItem = [{ id: "item-shared", amount: 100 }];
+    const metrics = computeStreamerPerformance([
+      {
+        taskId: "t1",
+        status: "completed",
+        plannedStartAt: "2026-07-01T12:00:00Z",
+        systemStartedAt: "2026-07-01T12:00:00Z",
+        systemDuration: 60,
+        settlementDuration: 60,
+        viewers: 1000,
+        projectHourlyRate: null,
+        settlementItems: sharedItem,
+        attributedGmvAmount: 200,
+      },
+      {
+        taskId: "t2",
+        status: "completed",
+        plannedStartAt: "2026-07-02T12:00:00Z",
+        systemStartedAt: "2026-07-02T12:00:00Z",
+        systemDuration: 60,
+        settlementDuration: 60,
+        viewers: 1000,
+        projectHourlyRate: null,
+        settlementItems: sharedItem,
+        attributedGmvAmount: 100,
+      },
+    ]);
+
+    expect(metrics.totalSettlementAmount).toBe(100);
+    expect(metrics.actualHourlyRate).toBe(50);
+    expect(metrics.roiBps).toBe(30000);
   });
 
   it("returns zeroed metrics for an empty window", () => {
-    const metrics = computeStreamerPerformance([], 50);
+    const metrics = computeStreamerPerformance([]);
     expect(metrics.scheduledSessions).toBe(0);
     expect(metrics.broadcastRateBps).toBe(0);
+    expect(metrics.avgSessionMinutes).toBe(0);
     expect(metrics.avgSessionRevenueAmount).toBe(0);
-    expect(metrics.avgSessionRoiBps).toBeNull();
+    expect(metrics.actualHourlyRate).toBeNull();
+    expect(metrics.roiBps).toBeNull();
+    expect(metrics.viewsPerHour).toBeNull();
   });
 });
 
