@@ -143,7 +143,7 @@ describe("OCR streamer attribution schema contract", () => {
       /update public\.ocr_results[\s\S]*updated_at = p_reviewed_at/,
     );
     expect(migration).toMatch(
-      /update public\.live_reports[\s\S]*status = case[\s\S]*screenshot_duration = v_confirmed_duration[\s\S]*viewers = v_confirmed_viewers[\s\S]*settlement_duration = v_settlement_duration[\s\S]*time_source = v_time_source[\s\S]*evidence_level = v_evidence_level[\s\S]*divergence_pct = v_divergence_pct[\s\S]*risk_flags = v_risk_flags[\s\S]*updated_at = p_reviewed_at/,
+      /update public\.live_reports[\s\S]*status = case[\s\S]*screenshot_duration = v_confirmed_duration[\s\S]*viewers = v_effective_viewers[\s\S]*settlement_duration = v_settlement_duration[\s\S]*time_source = v_time_source[\s\S]*evidence_level = v_evidence_level[\s\S]*divergence_pct = v_divergence_pct[\s\S]*risk_flags = v_risk_flags[\s\S]*updated_at = p_reviewed_at/,
     );
     expect(migration).toMatch(
       /revoke all on function public\.confirm_ocr_job_metrics\(\s*uuid, uuid, timestamptz, jsonb, jsonb, integer, integer\s*\) from public, anon, authenticated, service_role/,
@@ -154,6 +154,33 @@ describe("OCR streamer attribution schema contract", () => {
     expect(migration).not.toMatch(
       /grant execute on function public\.confirm_ocr_job_metrics\([\s\S]*to authenticated/,
     );
+  });
+
+  it("uses one effective viewers value for both report and metric persistence", () => {
+    const confirmationFunction = migration.slice(
+      migration.indexOf(
+        "create or replace function public.confirm_ocr_job_metrics(",
+      ),
+    );
+
+    expect(confirmationFunction).toMatch(
+      /v_effective_viewers := coalesce\(\s*nullif\(p_confirmed_viewers, 0\),\s*nullif\(v_report\.viewers, 0\)\s*\)/,
+    );
+    expect(confirmationFunction).not.toMatch(
+      /v_effective_viewers := coalesce\([\s\S]*v_ocr\.extracted_viewers/,
+    );
+    expect(
+      confirmationFunction.match(
+        /if v_metric_key = 'viewers' then\s*continue;\s*end if;/g,
+      ),
+    ).toHaveLength(2);
+    expect(confirmationFunction).toMatch(
+      /if v_effective_viewers is not null then[\s\S]*'viewers'[\s\S]*v_effective_viewers[\s\S]*end if;[\s\S]*update public\.live_reports[\s\S]*viewers = v_effective_viewers/,
+    );
+    expect(confirmationFunction).toMatch(
+      /v_metric_key := v_metric ->> 'key';[\s\S]*v_metric_value := \(v_metric ->> 'value'\)::numeric;[\s\S]*values \([\s\S]*v_metric_key,[\s\S]*v_metric_value::integer/,
+    );
+    expect(confirmationFunction).toContain("'gmv'");
   });
 
   it("computes aligned, divergent, and missing-system evidence under the report row lock", () => {

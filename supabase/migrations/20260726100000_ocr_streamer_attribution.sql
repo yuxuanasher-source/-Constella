@@ -314,7 +314,7 @@ declare
   v_seen_keys text[] := array[]::text[];
   v_written integer := 0;
   v_confirmed_duration integer;
-  v_confirmed_viewers integer;
+  v_effective_viewers integer;
   v_settlement_duration integer;
   v_time_source public.time_source;
   v_evidence_level public.evidence_level;
@@ -371,8 +371,7 @@ begin
     ocr.status,
     ocr.needs_confirmation,
     ocr.reviewed_at,
-    ocr.extracted_duration,
-    ocr.extracted_viewers
+    ocr.extracted_duration
   into v_ocr
   from public.ocr_results as ocr
   where ocr.background_job_id = v_job.id
@@ -432,10 +431,9 @@ begin
     nullif(p_confirmed_duration, 0),
     nullif(v_ocr.extracted_duration, 0)
   );
-  v_confirmed_viewers := coalesce(
+  v_effective_viewers := coalesce(
     nullif(p_confirmed_viewers, 0),
-    nullif(v_ocr.extracted_viewers, 0),
-    v_report.viewers
+    nullif(v_report.viewers, 0)
   );
 
   select coalesce(
@@ -532,6 +530,9 @@ begin
         using errcode = '22023';
     end if;
     v_metric_key := v_metric ->> 'key';
+    if v_metric_key = 'viewers' then
+      continue;
+    end if;
     if not (
       v_metric_key = any (
         array[
@@ -587,6 +588,9 @@ begin
     from jsonb_array_elements(p_metrics) as item(value)
   loop
     v_metric_key := v_metric ->> 'key';
+    if v_metric_key = 'viewers' then
+      continue;
+    end if;
     v_metric_value := (v_metric ->> 'value')::numeric;
     insert into public.streamer_metrics as existing (
       organization_id,
@@ -614,6 +618,33 @@ begin
     v_written := v_written + 1;
   end loop;
 
+  if v_effective_viewers is not null then
+    insert into public.streamer_metrics as existing (
+      organization_id,
+      streamer_id,
+      metric_key,
+      metric_value,
+      metric_window,
+      source_invocation_id,
+      source_report_id
+    )
+    values (
+      v_report.organization_id,
+      v_report.streamer_id,
+      'viewers',
+      v_effective_viewers,
+      v_report.report_date::text,
+      v_job.ai_invocation_id,
+      v_report.id
+    )
+    on conflict (organization_id, streamer_id, metric_key, metric_window, source_report_id)
+    do update
+      set metric_value = excluded.metric_value,
+          source_invocation_id = excluded.source_invocation_id,
+          recorded_at = now();
+    v_written := v_written + 1;
+  end if;
+
   update public.live_reports
   set status = case
         when v_report.status = 'ocr_ing'
@@ -621,7 +652,7 @@ begin
         else v_report.status
       end,
       screenshot_duration = v_confirmed_duration,
-      viewers = v_confirmed_viewers,
+      viewers = v_effective_viewers,
       settlement_duration = v_settlement_duration,
       time_source = v_time_source,
       evidence_level = v_evidence_level,
