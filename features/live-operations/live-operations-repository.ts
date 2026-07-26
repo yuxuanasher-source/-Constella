@@ -345,21 +345,27 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     fileHash: string;
     uploadedBy: string;
     metadata?: Record<string, unknown>;
-  }): Promise<void> {
-    const { error } = await this.client.from("report_screenshots").insert({
-      organization_id: input.organizationId,
-      live_report_id: input.liveReportId,
-      project_id: input.projectId,
-      streamer_id: input.streamerId,
-      storage_path: input.storagePath,
-      file_hash: input.fileHash,
-      uploaded_by: input.uploadedBy,
-      metadata: input.metadata ?? {},
-    });
+  }): Promise<{ id: string }> {
+    const { data, error } = await this.client
+      .from("report_screenshots")
+      .insert({
+        organization_id: input.organizationId,
+        live_report_id: input.liveReportId,
+        project_id: input.projectId,
+        streamer_id: input.streamerId,
+        storage_path: input.storagePath,
+        file_hash: input.fileHash,
+        uploaded_by: input.uploadedBy,
+        metadata: input.metadata ?? {},
+      })
+      .select("id")
+      .single<{ id: string }>();
 
     if (error) {
       throw error;
     }
+
+    return { id: data.id };
   }
 
   async createReportChangeLog(input: {

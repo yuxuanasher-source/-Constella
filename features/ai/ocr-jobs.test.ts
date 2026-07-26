@@ -242,11 +242,23 @@ describe("OCR jobs", () => {
         id: "job-1",
         organization_id: "org-1",
         job_type: "ocr.extract_live_report",
+        payload: expect.objectContaining({
+          screenshotId: "screenshot-1",
+        }),
         status: "queued",
         ai_invocation_id: "invocation-1",
         requested_by: "user-ops",
         priority: 0,
         idempotency_key: "ocr:live-report:report-1",
+      }),
+    ]);
+    expect(inserts.ai_invocations).toEqual([
+      expect.objectContaining({
+        id: "invocation-1",
+        metadata: {
+          jobId: "job-1",
+          screenshotId: "screenshot-1",
+        },
       }),
     ]);
     expect(inserts.ocr_results).toEqual([

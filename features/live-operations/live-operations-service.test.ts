@@ -141,7 +141,9 @@ function createRepo(): LiveOperationsRepository {
       ...baseReport,
       ...patch,
     })),
-    createReportScreenshot: vi.fn(async () => undefined),
+    createReportScreenshot: vi.fn(async () => ({
+      id: "screenshot-db-1",
+    })),
     createReportChangeLog: vi.fn(async () => undefined),
   };
 }
@@ -539,6 +541,7 @@ describe("live operations service", () => {
     expect(createOcrJob).toHaveBeenCalledWith(
       expect.objectContaining({
         liveReportId: "report-1",
+        screenshotId: "screenshot-db-1",
         imageBucket: "evidence-private",
         imagePath: "org/report-screenshots/task-1/end.png",
         expectedDuration: 80,

@@ -165,7 +165,7 @@ export type LiveOperationsRepository = {
     fileHash: string;
     uploadedBy: string;
     metadata?: Record<string, unknown>;
-  }): Promise<void>;
+  }): Promise<{ id: string }>;
   createReportChangeLog(input: {
     organizationId: string;
     liveReportId: string;
@@ -728,7 +728,7 @@ export async function submitLiveReportScreenshotForOcr({
       collaborationAttribution?.contributorOrganizationId,
   });
 
-  await repo.createReportScreenshot({
+  const screenshot = await repo.createReportScreenshot({
     organizationId: actor.organizationId,
     liveReportId: report.id,
     projectId: report.projectId,
@@ -748,6 +748,7 @@ export async function submitLiveReportScreenshotForOcr({
   try {
     job = await createOcrJob({
       liveReportId: report.id,
+      screenshotId: screenshot.id,
       imageBucket: input.imageBucket,
       imagePath: input.screenshotStoragePath,
       expectedDuration: task.systemDuration,
