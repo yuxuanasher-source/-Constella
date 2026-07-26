@@ -20,7 +20,7 @@ const bodySchema = z
     role: z.enum(appRoles).optional(),
     status: z.enum(["invited", "active", "suspended"]).optional(),
     sendPasswordReset: z.literal(true).optional(),
-    expectedUpdatedAt: z.iso.datetime(),
+    expectedUpdatedAt: z.iso.datetime({ offset: true }),
     reason: z.string().trim().min(1).max(500),
     idempotencyKey: z.string().trim().min(1).max(160),
   })

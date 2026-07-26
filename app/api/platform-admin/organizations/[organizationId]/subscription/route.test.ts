@@ -37,7 +37,7 @@ describe("platform-admin subscription route", () => {
       targetPlanId: "11111111-1111-4111-8111-111111111111",
       targetBillingCycle: "annual",
       timing: "next_cycle",
-      expectedUpdatedAt: "2026-07-26T08:00:00.000Z",
+      expectedUpdatedAt: "2026-07-26T08:00:00.101036+00:00",
       reason: "客户升级",
       idempotencyKey: "subscription-change-1",
     };

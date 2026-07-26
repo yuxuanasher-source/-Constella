@@ -124,7 +124,7 @@ export function CreateOrganizationAction({
   async function create(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    await action.submit({
+    const result = await action.submit({
       url: "/api/platform-admin/organizations",
       method: "POST",
       successMessage: "组织、主账号与订阅已创建。",
@@ -151,6 +151,9 @@ export function CreateOrganizationAction({
         idempotencyKey: key,
       }),
     });
+    if (result) {
+      close();
+    }
   }
 
   return (
@@ -185,6 +188,7 @@ export function CreateOrganizationAction({
       >
         <form
           id="create-platform-organization"
+          autoComplete="off"
           className="space-y-5"
           onSubmit={(event) => void create(event)}
         >
@@ -198,12 +202,14 @@ export function CreateOrganizationAction({
               label="主账号邮箱"
               name="primaryEmail"
               type="email"
+              autoComplete="off"
               required
             />
             <Field
               label="初始密码"
               name="primaryPassword"
               type="password"
+              autoComplete="new-password"
               minLength={8}
               required
             />
@@ -542,6 +548,7 @@ function MemberCreateAction({
         ) : (
           <form
             id="create-organization-member"
+            autoComplete="off"
             className="space-y-4"
             onSubmit={(event) => void create(event)}
           >
@@ -557,12 +564,19 @@ function MemberCreateAction({
             />
             <Field label="账号名称" name="name" required />
             {mode === "invite" ? (
-              <Field label="邀请邮箱" name="email" type="email" required />
+              <Field
+                label="邀请邮箱"
+                name="email"
+                type="email"
+                autoComplete="off"
+                required
+              />
             ) : (
               <Field
                 label="临时密码（留空自动生成）"
                 name="temporaryPassword"
                 type="password"
+                autoComplete="new-password"
                 minLength={8}
               />
             )}

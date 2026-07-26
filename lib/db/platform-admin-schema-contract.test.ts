@@ -9,6 +9,13 @@ const sql = readFileSync(
   ),
   "utf8",
 );
+const createOrganizationSubscriptionFixSql = readFileSync(
+  join(
+    process.cwd(),
+    "supabase/migrations/20260726082500_platform_admin_create_organization_subscription_upsert.sql",
+  ),
+  "utf8",
+);
 
 describe("platform admin schema", () => {
   it.each([
@@ -42,6 +49,21 @@ describe("platform admin schema", () => {
     );
     expect(sql).toMatch(
       /revoke all on function public\.platform_create_organization/i,
+    );
+  });
+
+  it("reuses the default subscription provisioned by the organization trigger", () => {
+    expect(createOrganizationSubscriptionFixSql).toMatch(
+      /insert into public\.organization_subscriptions[\s\S]+on conflict \(organization_id\) do update/i,
+    );
+    expect(createOrganizationSubscriptionFixSql).toMatch(
+      /returning id into v_subscription_id/i,
+    );
+    expect(createOrganizationSubscriptionFixSql).toMatch(
+      /cancel_at = excluded\.cancel_at/i,
+    );
+    expect(createOrganizationSubscriptionFixSql).not.toMatch(
+      /cancel_at_period_end|canceled_at/i,
     );
   });
 });

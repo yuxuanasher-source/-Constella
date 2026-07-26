@@ -16,7 +16,7 @@ const bodySchema = z
     priceCents: z.number().int().nonnegative(),
     currency: z.string().trim().length(3),
     effectiveFrom: z.iso.datetime(),
-    expectedUpdatedAt: z.iso.datetime(),
+    expectedUpdatedAt: z.iso.datetime({ offset: true }),
     reason: z.string().trim().min(1).max(500),
     idempotencyKey: z.string().trim().min(1).max(160),
   })

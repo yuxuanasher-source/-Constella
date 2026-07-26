@@ -13,7 +13,7 @@ const paramsSchema = z.object({
 const bodySchema = z
   .object({
     action: z.literal("cancel"),
-    expectedUpdatedAt: z.iso.datetime(),
+    expectedUpdatedAt: z.iso.datetime({ offset: true }),
     reason: z.string().trim().min(1).max(500),
     idempotencyKey: z.string().trim().min(1).max(160),
   })

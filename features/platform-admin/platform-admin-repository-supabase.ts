@@ -814,7 +814,7 @@ const organizationSelect = `
     current_period_start,
     current_period_end,
     updated_at,
-    billing_plans(id, code, name)
+    billing_plans!organization_subscriptions_plan_id_fkey(id, code, name)
   )
 `;
 

@@ -27,12 +27,13 @@ const patchSchema = z
     name: z.string().trim().min(1).max(120).optional(),
     code: z.string().trim().min(1).max(80).optional(),
     lifecycleStatus: z.enum(["active", "frozen", "archived"]).optional(),
-    expectedUpdatedAt: z.iso.datetime(),
+    expectedUpdatedAt: z.iso.datetime({ offset: true }),
     reason: z.string().trim().min(1).max(500),
     idempotencyKey: z.string().trim().min(1).max(160),
   })
   .superRefine((value, context) => {
-    const identityFields = Number(value.name !== undefined) + Number(value.code !== undefined);
+    const identityFields =
+      Number(value.name !== undefined) + Number(value.code !== undefined);
     if (
       (value.lifecycleStatus !== undefined && identityFields > 0) ||
       (value.lifecycleStatus === undefined && identityFields === 0)

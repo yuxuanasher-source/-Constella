@@ -100,7 +100,14 @@ afterEach(() => {
 });
 
 describe("CreateOrganizationAction", () => {
-  it("collects organization, primary account, subscription, and optional payment data", () => {
+  it("collects organization data and closes after a successful creation", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 201,
+      json: async () => ({ data: { organizationId: "org-new" } }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
     render(
       <CreateOrganizationAction
         plans={plans}
@@ -114,8 +121,14 @@ describe("CreateOrganizationAction", () => {
     expect(screen.getByLabelText("组织名称")).toBeInTheDocument();
     expect(screen.getByLabelText("组织编码")).toBeInTheDocument();
     expect(screen.getByLabelText("主账号姓名")).toBeInTheDocument();
-    expect(screen.getByLabelText("主账号邮箱")).toBeInTheDocument();
-    expect(screen.getByLabelText("初始密码")).toBeInTheDocument();
+    expect(screen.getByLabelText("主账号邮箱")).toHaveAttribute(
+      "autocomplete",
+      "off",
+    );
+    expect(screen.getByLabelText("初始密码")).toHaveAttribute(
+      "autocomplete",
+      "new-password",
+    );
     expect(screen.getByLabelText("套餐")).toBeInTheDocument();
     expect(screen.getByLabelText("计费周期")).toBeInTheDocument();
     expect(screen.getByLabelText("生效日期")).toBeInTheDocument();
@@ -126,6 +139,32 @@ describe("CreateOrganizationAction", () => {
     expect(screen.getByLabelText("实收金额（元）")).toBeInTheDocument();
     expect(screen.getByLabelText("付款流水号")).toBeInTheDocument();
     expect(screen.getByLabelText("操作原因")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("记录首笔线下付款"));
+    fireEvent.change(screen.getByLabelText("组织名称"), {
+      target: { value: "测试组织" },
+    });
+    fireEvent.change(screen.getByLabelText("组织编码"), {
+      target: { value: "test-org" },
+    });
+    fireEvent.change(screen.getByLabelText("主账号姓名"), {
+      target: { value: "测试主账号" },
+    });
+    fireEvent.change(screen.getByLabelText("主账号邮箱"), {
+      target: { value: "owner@example.test" },
+    });
+    fireEvent.change(screen.getByLabelText("初始密码"), {
+      target: { value: "OneTime#2026" },
+    });
+    fireEvent.change(screen.getByLabelText("操作原因"), {
+      target: { value: "创建测试组织" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建组织" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "新建组织" })).toBeNull();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -167,9 +206,17 @@ describe("OrganizationActions", () => {
 
     fireEvent.click(screen.getByText("管理操作"));
     fireEvent.click(screen.getByRole("button", { name: "新增账号" }));
+    expect(screen.getByLabelText("邀请邮箱")).toHaveAttribute(
+      "autocomplete",
+      "off",
+    );
     fireEvent.change(screen.getByLabelText("创建方式"), {
       target: { value: "subaccount" },
     });
+    expect(screen.getByLabelText("临时密码（留空自动生成）")).toHaveAttribute(
+      "autocomplete",
+      "new-password",
+    );
     fireEvent.change(screen.getByLabelText("账号名称"), {
       target: { value: "临时运营" },
     });
