@@ -88,9 +88,9 @@ describe("loadStreamerProjectReviewInput", () => {
       recording_submissions: [
         {
           id: "rec-1",
-          status: "approved",
+          status: "rejected",
           duration_seconds: 1800,
-          decision_reason: null,
+          review_note: "时长不足；音画不同步",
         },
       ],
     });
@@ -129,9 +129,9 @@ describe("loadStreamerProjectReviewInput", () => {
       recordings: [
         {
           id: "rec-1",
-          status: "approved",
-          adopted: true,
-          rejectionReasons: [],
+          status: "rejected",
+          adopted: false,
+          rejectionReasons: ["时长不足", "音画不同步"],
           durationSeconds: 1800,
         },
       ],
