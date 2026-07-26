@@ -4563,11 +4563,31 @@ function OcrOperationsPanel({
       },
     }));
   };
-  const manualResultFor = (jobId) => {
-    const value = manualResults[jobId] ?? {};
+  const updateManualMetric = (jobId, metricKey, value) => {
+    setManualResults((current) => ({
+      ...current,
+      [jobId]: {
+        ...(current[jobId] ?? {}),
+        metricValues: {
+          ...(current[jobId]?.metricValues ?? {}),
+          [metricKey]: value,
+        },
+      },
+    }));
+  };
+  const manualResultFor = (job) => {
+    const value = manualResults[job.id] ?? {};
     return {
       duration: Number(value.duration || 0),
       viewers: Number(value.viewers || 0),
+      metricCandidates: job.result.metricCandidates.map((candidate) => ({
+        key: candidate.key,
+        label: candidate.label,
+        value: normalizeOcrMetricInput(
+          value.metricValues?.[candidate.key] ?? candidate.value,
+        ),
+        confidence: candidate.confidence,
+      })),
     };
   };
   const safeJobs = jobs.map(toSafeOcrJobView);
@@ -4697,6 +4717,15 @@ function OcrOperationsPanel({
                   <div style={{ color: "var(--ink-400)", marginTop: 2 }}>
                     场观 {formatOcrResultNumber(job.result.extractedViewers)}
                   </div>
+                  {job.result.metricCandidates.map((candidate) => (
+                    <div
+                      key={candidate.key}
+                      style={{ color: "var(--ink-400)", marginTop: 2 }}
+                    >
+                      {ocrMetricDisplayLabel(candidate)} · {candidate.key}{" "}
+                      {formatOcrResultNumber(candidate.value)}
+                    </div>
+                  ))}
                 </td>
                 <td style={ocrCellStyle}>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -4750,6 +4779,40 @@ function OcrOperationsPanel({
                         style={ocrNumberInputStyle}
                       />
                     </label>
+                    {job.result.metricCandidates.map((candidate) => (
+                      <label
+                        key={candidate.key}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 12,
+                          color: "var(--ink-400)",
+                        }}
+                      >
+                        {ocrMetricDisplayLabel(candidate)} · {candidate.key}
+                        <input
+                          aria-label={`修正 ${ocrMetricDisplayLabel(candidate)} ${candidate.key} ${displayRecordId(job.id, "OCR 任务")}`}
+                          type="number"
+                          min="0"
+                          max="2147483647"
+                          step="1"
+                          value={
+                            manualResults[job.id]?.metricValues?.[
+                              candidate.key
+                            ] ?? candidate.value
+                          }
+                          onChange={(event) =>
+                            updateManualMetric(
+                              job.id,
+                              candidate.key,
+                              event.target.value,
+                            )
+                          }
+                          style={ocrNumberInputStyle}
+                        />
+                      </label>
+                    ))}
                     <Button
                       kind="default"
                       onClick={() =>
@@ -4774,7 +4837,7 @@ function OcrOperationsPanel({
                       kind="default"
                       onClick={() =>
                         runAction(`confirm-${job.id}`, () =>
-                          onConfirm?.(job.id, manualResultFor(job.id)),
+                          onConfirm?.(job.id, manualResultFor(job)),
                         )
                       }
                       disabled={Boolean(busy)}
@@ -4816,8 +4879,73 @@ function toSafeOcrJobView(job) {
     result: {
       extractedDuration: result.extractedDuration,
       extractedViewers: result.extractedViewers,
+      metricCandidates: sanitizeOcrMetricCandidates(result.metricCandidates),
     },
   };
+}
+
+const OCR_METRIC_LABELS = {
+  viewers: "场观",
+  pcu: "峰值在线",
+  acu: "平均在线",
+  exposure: "曝光",
+  clicks: "点击",
+  interactions: "互动",
+  comments: "评论",
+  likes: "点赞",
+  shares: "分享",
+  follows: "涨粉",
+  gmv: "GMV",
+};
+
+function sanitizeOcrMetricCandidates(value) {
+  if (!Array.isArray(value)) return [];
+  const byKey = new Map();
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const key =
+      typeof candidate.key === "string" ? candidate.key.trim() : "";
+    if (!Object.prototype.hasOwnProperty.call(OCR_METRIC_LABELS, key)) continue;
+    const metricValue = Number(candidate.value);
+    if (
+      !Number.isFinite(metricValue) ||
+      metricValue < 0 ||
+      metricValue > 2147483647
+    ) {
+      continue;
+    }
+    const suppliedLabel =
+      typeof candidate.label === "string" ? candidate.label.trim() : "";
+    const label =
+      key === "gmv"
+        ? "GMV"
+        : suppliedLabel && suppliedLabel.length <= 40
+          ? suppliedLabel
+          : OCR_METRIC_LABELS[key];
+    const confidence = Number(candidate.confidence);
+    byKey.set(key, {
+      key,
+      label,
+      value: Math.round(metricValue),
+      confidence: Number.isFinite(confidence)
+        ? Math.max(0, Math.min(100, confidence))
+        : 0,
+    });
+  }
+  return [...byKey.values()];
+}
+
+function ocrMetricDisplayLabel(candidate) {
+  return candidate.key === "gmv"
+    ? `${candidate.label}（整数元）`
+    : candidate.label;
+}
+
+function normalizeOcrMetricInput(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric)
+    ? Math.max(0, Math.min(2147483647, Math.round(numeric)))
+    : 0;
 }
 
 function formatOcrResultNumber(value) {

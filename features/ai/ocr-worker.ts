@@ -240,6 +240,7 @@ async function runOneClaimedJob({
       actor,
       job,
       provider,
+      metricClient: client as never,
       startedAt: now(),
       imageResolver,
       deferTerminalJobUpdate: true,

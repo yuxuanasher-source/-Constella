@@ -6,7 +6,10 @@ import { resolveOcrImageInput } from "@/features/ai/ocr-image-source";
 import { claimRunnableOcrJobs, runOcrJobOnce } from "@/features/ai/ocr-jobs";
 import { createTencentOcrProvider } from "@/features/ai/providers/tencent-ocr-provider";
 import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 
 vi.mock("@/features/ai/ocr-image-source", () => ({
   resolveOcrImageInput: vi.fn(async () => ({ imageBase64: "AQID" })),
@@ -27,6 +30,7 @@ vi.mock("@/lib/auth/context", () => ({
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseAdminClient: vi.fn(),
   createSupabaseServerClient: vi.fn(),
 }));
 
@@ -43,12 +47,14 @@ const supabase = {
   from: vi.fn(),
   storage: { from: vi.fn() },
 };
+const admin = { rpc: vi.fn() };
 
 describe("/api/ocr/jobs/run", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("STORAGE_BUCKET_PRIVATE", "evidence-private");
     vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(admin as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth);
     vi.mocked(createTencentOcrProvider).mockReturnValue({
       runGeneralBasicOcr: vi.fn(),
@@ -122,6 +128,7 @@ describe("/api/ocr/jobs/run", () => {
     expect(JSON.stringify(body)).not.toContain("org/report-screenshots");
     expect(runOcrJobOnce).toHaveBeenCalledWith(
       expect.objectContaining({
+        metricClient: admin,
         imageResolver: expect.any(Function),
       }),
     );
@@ -264,6 +271,7 @@ describe("/api/ocr/jobs/run", () => {
     );
 
     expect(response.status).toBe(403);
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(runOcrJobOnce).not.toHaveBeenCalled();
   });
 
@@ -278,7 +286,43 @@ describe("/api/ocr/jobs/run", () => {
     );
 
     expect(response.status).toBe(403);
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(claimRunnableOcrJobs).not.toHaveBeenCalled();
     expect(runOcrJobOnce).not.toHaveBeenCalled();
+  });
+
+  it("keeps automatic OCR processing available when the admin metric sink is unavailable", async () => {
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(null);
+    vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
+      {
+        id: "job-no-admin",
+        organizationId: "org-1",
+        jobType: "ocr.extract_live_report",
+        status: "queued",
+        attempt: 0,
+        payload: { liveReportId: "report-no-admin" },
+      },
+    ]);
+    vi.mocked(runOcrJobOnce).mockResolvedValue({
+      id: "job-no-admin",
+      organizationId: "org-1",
+      jobType: "ocr.extract_live_report",
+      status: "succeeded",
+      attempt: 1,
+      payload: { liveReportId: "report-no-admin" },
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs/run", {
+        method: "POST",
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(claimRunnableOcrJobs).toHaveBeenCalled();
+    expect(runOcrJobOnce).toHaveBeenCalledWith(
+      expect.objectContaining({ metricClient: null }),
+    );
   });
 });
