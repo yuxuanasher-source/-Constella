@@ -23,6 +23,7 @@ export type StreamerListRow = {
   default_price?: number | null;
   default_base_salary?: number | null;
   default_cps_rate_bps?: number | null;
+  rating?: string | null;
   risk_level: string;
   clean_report_count: number;
   created_at: string;
@@ -31,9 +32,24 @@ export type StreamerListRow = {
   streamer_profile_insights?: StreamerProfileInsightMetricRow[];
   project_applications?: StreamerAdmissionApplicationRow[];
   admission_stats?: StreamerAdmissionStats;
+  streamer_capability_reports?: StreamerCapabilityReportRow[];
   live_tasks?: StreamerTaskMetricRow[];
   live_reports?: StreamerReportMetricRow[];
   project_streamers?: StreamerProjectMetricRow[];
+};
+
+export type StreamerCapabilityReportRow = {
+  id: string;
+  organization_id: string;
+  streamer_id: string;
+  asset_id: string;
+  dimensions: unknown;
+  overall_score: number;
+  grade: string;
+  growth_advice: unknown;
+  history_stats: unknown;
+  calibration_version: number;
+  created_at: string;
 };
 
 export type StreamerAccountMetricRow = {
@@ -147,10 +163,11 @@ export async function listStreamerPool(
   const { data, error } = await supabase
     .from("streamers")
     .select(
-      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), project_applications(organization_id, project_recording_vendor_reviews(id, organization_id, decision), admission_review_evaluations(id, vendor_review_id, submission_id, organization_id, stage, decision, created_at, admission_review_checkpoint_results(organization_id, checkpoint_key, verdict))), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(id, live_task_id, status, settlement_duration, evidence_level, viewers, created_at, project_id, settlement_batch_items!settlement_batch_items_live_report_id_fkey(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status)), settlement_batch_item_reports(settlement_batch_item_id, settlement_batch_items(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status))), streamer_metrics(source_report_id, metric_key, metric_value), projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
+      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, rating, risk_level, clean_report_count, created_at, streamer_capability_reports(id, organization_id, streamer_id, asset_id, dimensions, overall_score, grade, growth_advice, history_stats, calibration_version, created_at), recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), project_applications(organization_id, project_recording_vendor_reviews(id, organization_id, decision, submitted_at), admission_review_evaluations(id, vendor_review_id, submission_id, organization_id, stage, decision, created_at, admission_review_checkpoint_results(organization_id, checkpoint_key, verdict))), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(id, live_task_id, status, settlement_duration, evidence_level, viewers, created_at, project_id, settlement_batch_items!settlement_batch_items_live_report_id_fkey(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status)), settlement_batch_item_reports(settlement_batch_item_id, settlement_batch_items(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status))), streamer_metrics(source_report_id, metric_key, metric_value), projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
     )
     // 组织过滤放在查询层（RLS 仍作为第二道防线）。
     .eq("organization_id", organizationId)
+    .eq("streamer_capability_reports.organization_id", organizationId)
     .eq("live_reports.settlement_batch_items.organization_id", organizationId)
     .eq(
       "live_reports.settlement_batch_items.settlement_batches.organization_id",
@@ -208,6 +225,15 @@ export async function listStreamerPool(
       ascending: false,
     })
     .limit(20, { referencedTable: "streamer_profile_insights" })
+    .order("created_at", {
+      referencedTable: "streamer_capability_reports",
+      ascending: false,
+    })
+    .order("id", {
+      referencedTable: "streamer_capability_reports",
+      ascending: false,
+    })
+    .limit(1, { referencedTable: "streamer_capability_reports" })
     .order("created_at", { referencedTable: "live_tasks", ascending: false })
     .limit(200, { referencedTable: "live_tasks" })
     .order("created_at", { referencedTable: "live_reports", ascending: false })
@@ -240,7 +266,7 @@ export async function getStreamerProfileRow(
   const { data, error } = await supabase
     .from("streamers")
     .select(
-      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, skills, availability, equipment, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, streamer_accounts(id, platform, account_handle, follower_count, is_primary, verified_at), recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), live_reports(id, live_task_id, status, settlement_duration, evidence_level, viewers, created_at, project_id, settlement_batch_items!settlement_batch_items_live_report_id_fkey(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status)), settlement_batch_item_reports(settlement_batch_item_id, settlement_batch_items(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status))), streamer_metrics(source_report_id, metric_key, metric_value), projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
+      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, skills, availability, equipment, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, rating, risk_level, clean_report_count, created_at, streamer_accounts(id, platform, account_handle, follower_count, is_primary, verified_at), recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), live_reports(id, live_task_id, status, settlement_duration, evidence_level, viewers, created_at, project_id, settlement_batch_items!settlement_batch_items_live_report_id_fkey(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status)), settlement_batch_item_reports(settlement_batch_item_id, settlement_batch_items(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status))), streamer_metrics(source_report_id, metric_key, metric_value), projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
     )
     .eq("id", streamerId)
     .maybeSingle<StreamerListRow>();

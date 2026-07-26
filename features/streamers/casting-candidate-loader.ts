@@ -78,6 +78,7 @@ export async function loadCastingCandidates(
   const candidates = rows.map((row) => {
     const card = toStreamerCardDto(row, {
       ...(params.now ? { now: params.now } : {}),
+      organizationId: params.organizationId,
     });
     if (card.metrics.screenPass === null) {
       dataGaps.add("candidate_screening_pass_rate");

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  performanceMatchScore,
   toStreamerCardDto,
   toStreamerDesktopProfileDto,
 } from "./streamer-ui-dto";
@@ -40,6 +41,123 @@ describe("toStreamerCardDto", () => {
     });
     expect(dto).not.toHaveProperty("grossMargin");
     expect(dto).not.toHaveProperty("manufacturerReceivable");
+    expect(dto.capability).toBeNull();
+  });
+
+  it("selects the latest capability report by created_at then id within organization and streamer", () => {
+    const dto = toStreamerCardDto(
+      {
+        id: "s1",
+        display_name: "小鹿",
+        real_name: null,
+        gender: null,
+        source_type: "signed",
+        cooperation_status: "active",
+        categories: [],
+        platforms: [],
+        styles: [],
+        default_settlement_method: "cpt",
+        risk_level: "low",
+        clean_report_count: 0,
+        created_at: "2026-06-01T00:00:00.000Z",
+        streamer_capability_reports: [
+          capabilityReport("cap-a", "org-1", "s1", "2026-07-01T10:00:00Z", 80),
+          capabilityReport("cap-b", "org-1", "s1", "2026-07-01T10:00:00Z", 88),
+          capabilityReport("cap-other-org", "org-2", "s1", "2026-07-03T10:00:00Z", 99),
+          capabilityReport("cap-other-streamer", "org-1", "s2", "2026-07-04T10:00:00Z", 100),
+        ],
+      },
+      { organizationId: "org-1" },
+    );
+
+    expect(dto.capability).toEqual({
+      id: "cap-b",
+      assetId: "asset-cap-b",
+      dimensions: [
+        {
+          key: "game_proficiency",
+          label: "游戏熟练度",
+          score: 88,
+          finding: "游戏画面稳定。",
+        },
+        {
+          key: "script_fluency",
+          label: "话术流畅度",
+          score: 88,
+          finding: "话术表达稳定。",
+        },
+        {
+          key: "interaction_activity",
+          label: "互动积极性",
+          score: 88,
+          finding: "互动表现稳定。",
+        },
+        {
+          key: "conversion_guidance",
+          label: "转化引导能力",
+          score: 88,
+          finding: "转化引导稳定。",
+        },
+      ],
+      overallScore: 88,
+      grade: "A",
+      growthAdvice: ["保持稳定"],
+      historyStats: {
+        uploadCount: 4,
+        goLiveRateBps: 9000,
+        liveTestPassRateBps: 8000,
+      },
+      calibrationVersion: 3,
+      createdAt: "2026-07-01T10:00:00Z",
+    });
+  });
+
+  it("fails capability reports closed without organization scope", () => {
+    const row = streamerRowWithCapability([
+      capabilityReport("cap-a", "org-1", "s1", "2026-07-01T10:00:00Z", 88),
+    ]);
+
+    expect(toStreamerCardDto(row).capability).toBeNull();
+  });
+
+  it("does not fall back when the latest scoped capability report is malformed", () => {
+    const malformed = {
+      ...capabilityReport(
+        "cap-latest",
+        "org-1",
+        "s1",
+        "2026-07-02T10:00:00Z",
+        88,
+      ),
+      overall_score: 101,
+    };
+    const row = streamerRowWithCapability([
+      capabilityReport("cap-older", "org-1", "s1", "2026-07-01T10:00:00Z", 80),
+      malformed,
+    ]);
+
+    expect(
+      toStreamerCardDto(row, { organizationId: "org-1" }).capability,
+    ).toBeNull();
+  });
+
+  it("rejects a latest scoped capability report missing one of the four dimensions without falling back", () => {
+    const latest = capabilityReport(
+      "cap-latest",
+      "org-1",
+      "s1",
+      "2026-07-02T10:00:00Z",
+      88,
+    );
+    latest.dimensions = latest.dimensions.slice(0, 3);
+    const row = streamerRowWithCapability([
+      capabilityReport("cap-older", "org-1", "s1", "2026-07-01T10:00:00Z", 80),
+      latest,
+    ]);
+
+    expect(
+      toStreamerCardDto(row, { organizationId: "org-1" }).capability,
+    ).toBeNull();
   });
 
   it("derives performance metrics from backend task, report, and project rows", () => {
@@ -338,6 +456,84 @@ describe("toStreamerCardDto", () => {
     });
   });
 
+  it("does not backfill current admission aggregates into historical match weeks", () => {
+    const dto = toStreamerCardDto(
+      {
+        id: "s-admission-history",
+        display_name: "Admission History",
+        real_name: null,
+        gender: null,
+        source_type: "external",
+        cooperation_status: "active",
+        categories: [],
+        platforms: [],
+        styles: [],
+        default_settlement_method: "cpt",
+        risk_level: "low",
+        clean_report_count: 0,
+        created_at: "2026-06-01T00:00:00.000Z",
+        admission_stats: {
+          vendorPassRateBps: 10_000,
+          rejectionReasonHistogram: {},
+          evaluatedCount: 1,
+          mcnFirstPassRateBps: 10_000,
+          mcnFirstEvaluatedCount: 1,
+        },
+        project_applications: [
+          {
+            organization_id: "org-1",
+            project_recording_vendor_reviews: [
+              {
+                id: "vendor-old-pass",
+                organization_id: "org-1",
+                decision: "selected",
+                submitted_at: "2026-05-20T00:00:00.000Z",
+              },
+              {
+                id: "vendor-current-fail",
+                organization_id: "org-1",
+                decision: "rejected",
+                submitted_at: "2026-06-03T00:00:00.000Z",
+              },
+            ],
+            admission_review_evaluations: [
+              {
+                id: "mcn-old-pass",
+                submission_id: "submission-old",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "approved",
+                created_at: "2026-05-20T00:00:00.000Z",
+              },
+              {
+                id: "mcn-current-fail",
+                submission_id: "submission-current",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "rejected",
+                created_at: "2026-06-03T00:00:00.000Z",
+              },
+            ],
+          },
+        ],
+        live_tasks: [
+          {
+            status: "pending_live",
+            planned_duration: 60,
+            system_duration: 0,
+            planned_start_at: "2026-06-03T00:00:00.000Z",
+            project_id: "project-1",
+          },
+        ],
+      },
+      { now: "2026-06-04T00:00:00.000Z", organizationId: "org-1" },
+    );
+
+    expect(dto.matchScore).toBe(50);
+    expect(dto.matchScoreCoverageBps).toBe(6000);
+    expect(dto.matchTrend).toEqual([null, null, null, 65, null, 0]);
+  });
+
   it("does not substitute report approval for a missing recording pass rate", () => {
     const dto = toStreamerCardDto(
       {
@@ -384,6 +580,38 @@ describe("toStreamerCardDto", () => {
     expect(dto.matchTrend).toEqual([null, null, null, null, null, null]);
   });
 
+  it("counts an event on an exact weekly boundary in only the following half-open bucket", () => {
+    const dto = toStreamerCardDto(
+      {
+        id: "s-week-boundary",
+        display_name: "Week Boundary",
+        real_name: null,
+        gender: null,
+        source_type: "external",
+        cooperation_status: "active",
+        categories: [],
+        platforms: [],
+        styles: [],
+        default_settlement_method: "cpt",
+        risk_level: "low",
+        clean_report_count: 0,
+        created_at: "2026-05-01T00:00:00.000Z",
+        live_tasks: [
+          {
+            status: "completed",
+            planned_duration: 60,
+            system_duration: 60,
+            planned_start_at: "2026-05-28T00:00:00.000Z",
+            project_id: "project-1",
+          },
+        ],
+      },
+      { now: "2026-06-04T00:00:00.000Z" },
+    );
+
+    expect(dto.matchTrend).toEqual([null, null, null, null, null, 65]);
+  });
+
   it("scores task-only history from the observed completion dimension", () => {
     const dto = toStreamerCardDto(
       {
@@ -421,8 +649,9 @@ describe("toStreamerCardDto", () => {
       roi: null,
       grossContrib: null,
     });
-    expect(dto.matchScore).toBe(45);
-    expect(dto.matchTrend).toEqual([null, null, null, null, null, 45]);
+    expect(dto.matchScore).toBe(65);
+    expect(dto.matchScoreCoverageBps).toBe(3000);
+    expect(dto.matchTrend).toEqual([null, null, null, null, null, 65]);
   });
 
   it("keeps match score unavailable when raw history has no observable score dimension", () => {
@@ -488,7 +717,7 @@ describe("toStreamerCardDto", () => {
       viewsPerHour: 0,
       grossContrib: 100,
     });
-    expect(dto.matchScore).toBe(3);
+    expect(dto.matchScore).toBe(0);
     expect(dto.projects[0]).toMatchObject({
       settlementHours: 2,
       grossContrib: 100,
@@ -734,6 +963,57 @@ describe("toStreamerCardDto", () => {
   });
 });
 
+describe("performanceMatchScore", () => {
+  it("uses sourced weights and reports transparent coverage", () => {
+    expect(
+      performanceMatchScore({
+        screenPass: 50,
+        vendorPassRateBps: 8000,
+        mcnFirstPassRateBps: 6000,
+        projectFinish: 100,
+        roi: 1.5,
+      }),
+    ).toEqual({ score: 84, coverageBps: 10_000 });
+    expect(
+      performanceMatchScore({
+        screenPass: null,
+        vendorPassRateBps: null,
+        mcnFirstPassRateBps: null,
+        projectFinish: 100,
+        roi: null,
+      }),
+    ).toEqual({ score: 65, coverageBps: 3000 });
+  });
+
+  it("caps ROI, preserves observed zero, and reports no-data coverage", () => {
+    const score = (roi: number | null) =>
+      performanceMatchScore({
+        screenPass: null,
+        vendorPassRateBps: null,
+        mcnFirstPassRateBps: null,
+        projectFinish: null,
+        roi,
+      });
+
+    expect(score(1.5)).toEqual({ score: 63, coverageBps: 2500 });
+    expect(score(50)).toEqual({ score: 63, coverageBps: 2500 });
+    expect(score(0)).toEqual({ score: 0, coverageBps: 2500 });
+    expect(score(null)).toEqual({ score: null, coverageBps: 0 });
+  });
+
+  it("allows 100 only when every signal is observed and excellent", () => {
+    expect(
+      performanceMatchScore({
+        screenPass: 100,
+        vendorPassRateBps: 10_000,
+        mcnFirstPassRateBps: 10_000,
+        projectFinish: 100,
+        roi: 1.5,
+      }),
+    ).toEqual({ score: 100, coverageBps: 10_000 });
+  });
+});
+
 function reportMetricRow(
   report: Pick<
     NonNullable<
@@ -817,6 +1097,80 @@ function reportMetricRow(
         },
       },
     ],
+  };
+}
+
+function capabilityReport(
+  id: string,
+  organizationId: string,
+  streamerId: string,
+  createdAt: string,
+  overallScore: number,
+) {
+  return {
+    id,
+    organization_id: organizationId,
+    streamer_id: streamerId,
+    asset_id: `asset-${id}`,
+    dimensions: [
+      {
+        key: "game_proficiency",
+        label: "游戏熟练度",
+        score: overallScore,
+        finding: "游戏画面稳定。",
+      },
+      {
+        key: "script_fluency",
+        label: "话术流畅度",
+        score: overallScore,
+        finding: "话术表达稳定。",
+      },
+      {
+        key: "interaction_activity",
+        label: "互动积极性",
+        score: overallScore,
+        finding: "互动表现稳定。",
+      },
+      {
+        key: "conversion_guidance",
+        label: "转化引导能力",
+        score: overallScore,
+        finding: "转化引导稳定。",
+      },
+    ],
+    overall_score: overallScore,
+    grade: "A",
+    growth_advice: ["保持稳定"],
+    history_stats: {
+      uploadCount: 4,
+      goLiveRateBps: 9000,
+      liveTestPassRateBps: 8000,
+    },
+    calibration_version: 3,
+    created_at: createdAt,
+  };
+}
+
+function streamerRowWithCapability(
+  reports: NonNullable<
+    Parameters<typeof toStreamerCardDto>[0]["streamer_capability_reports"]
+  >,
+): Parameters<typeof toStreamerCardDto>[0] {
+  return {
+    id: "s1",
+    display_name: "小鹿",
+    real_name: null,
+    gender: null,
+    source_type: "signed",
+    cooperation_status: "active",
+    categories: [],
+    platforms: [],
+    styles: [],
+    default_settlement_method: "cpt",
+    risk_level: "low",
+    clean_report_count: 0,
+    created_at: "2026-06-01T00:00:00.000Z",
+    streamer_capability_reports: reports,
   };
 }
 
