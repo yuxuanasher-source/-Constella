@@ -1267,6 +1267,12 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(functionSql("issue_ai_hermes_run_capability")).toContain(
       "p_depth is null or p_ai_state_writes_allowed is null",
     );
+    expect(functionSql("issue_ai_hermes_run_capability")).toContain(
+      "turn.status in ('accepted', 'grounding', 'generating', 'validating')",
+    );
+    expect(functionSql("issue_ai_hermes_run_capability")).toContain(
+      "turn.cancel_requested_at is null",
+    );
     expect(functionSql("update_ai_conversation_hermes_state")).toContain(
       "p_expected_generation is null",
     );

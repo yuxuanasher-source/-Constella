@@ -549,6 +549,10 @@ describe("Xingyao conversation repository", () => {
           hermesGateway: {
             generation: 3,
             sessionId: "session-1",
+            childSessions: ["child-1", "child-1", ""],
+            checkpoint: {
+              childSessions: ["child-2", "child-1"],
+            },
             pendingClarify: {
               turnId: v2Ids.turnId,
               clarifyId: "00000000-0000-4000-8000-000000000007",
@@ -579,6 +583,7 @@ describe("Xingyao conversation repository", () => {
     ).resolves.toEqual({
       generation: 3,
       sessionId: "session-1",
+      childSessions: ["child-1", "child-2"],
       summary: { text: "old" },
       summaryVersion: 2,
       pendingClarify: {

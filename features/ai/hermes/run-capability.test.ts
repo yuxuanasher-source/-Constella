@@ -61,6 +61,7 @@ describe("Hermes run capabilities", () => {
       {
         organizationId: ORGANIZATION_ID,
         userId: USER_ID,
+        role: actor.role,
         conversationId: CONVERSATION_ID,
         invocationId: ROOT_INVOCATION_ID,
         actorFingerprint: createHermesActorFingerprint(actor),

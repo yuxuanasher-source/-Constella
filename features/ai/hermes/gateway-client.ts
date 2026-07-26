@@ -102,8 +102,13 @@ export async function createHermesGatewaySession(
   options: HermesGatewaySessionOptions,
 ): Promise<HermesGatewaySession> {
   const client = new HermesGatewayClient(options);
-  await client.start();
-  return client.session();
+  try {
+    await client.start();
+    return client.session();
+  } catch (error) {
+    client.close();
+    throw error;
+  }
 }
 
 export async function attachHermesGatewayBytes(

@@ -44,17 +44,28 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
     activeHermesRunRegistry.clear();
   });
 
-  it("marks cancel_requested_at before interrupting the native session", async () => {
+  it("authenticates the durable control session before cancellation and interrupts afterward", async () => {
     const order: string[] = [];
     const service = serviceDouble({
       cancelTurn: vi.fn(async () => {
         order.push("persist-cancel");
         return cancelResult();
       }),
+      issueGatewayRootCapability: vi.fn(async () => {
+        order.push("issue-capability");
+        return {
+          capabilityId: CAPABILITY_ID,
+          invocationCapability: "fresh-capability",
+          expiresAt: "2026-07-22T09:05:00.000Z",
+        };
+      }),
     });
-    createSessionMock.mockResolvedValue({
-      interrupt: vi.fn(async () => order.push("interrupt")),
-      close: vi.fn(),
+    createSessionMock.mockImplementation(async () => {
+      order.push("resume-session");
+      return {
+        interrupt: vi.fn(async () => order.push("interrupt")),
+        close: vi.fn(),
+      };
     });
     getRouteContextMock.mockResolvedValue(routeContext(service));
     const { POST, maxDuration } = await import("./route");
@@ -75,10 +86,19 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
         invocationCapability: "fresh-capability",
       }),
     );
-    expect(order).toEqual(["persist-cancel", "interrupt"]);
+    expect(order).toEqual([
+      "issue-capability",
+      "resume-session",
+      "persist-cancel",
+      "interrupt",
+    ]);
   });
 
-  it("is idempotent and does not interrupt again when the turn is already terminal", async () => {
+  it("closes the pre-authenticated session without interrupting when cancellation races with a terminal turn", async () => {
+    const session = {
+      interrupt: vi.fn(),
+      close: vi.fn(),
+    };
     const service = serviceDouble({
       cancelTurn: vi.fn().mockResolvedValue({
         ...cancelResult(),
@@ -88,6 +108,7 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
         alreadyTerminal: true,
       }),
     });
+    createSessionMock.mockResolvedValue(session);
     getRouteContextMock.mockResolvedValue(routeContext(service));
     const { POST } = await import("./route");
 
@@ -95,7 +116,9 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ alreadyTerminal: true });
-    expect(createSessionMock).not.toHaveBeenCalled();
+    expect(createSessionMock).toHaveBeenCalledTimes(1);
+    expect(session.interrupt).not.toHaveBeenCalled();
+    expect(session.close).toHaveBeenCalledTimes(1);
   });
 
   it("opens a fresh authenticated control WebSocket from provider_state after product restart", async () => {
@@ -131,6 +154,7 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
     const response = await POST(request(), params());
 
     expect(response.status).toBe(202);
+    expect(service.cancelTurn).toHaveBeenCalledTimes(1);
     expect(service.compareAndSwapGatewayState).toHaveBeenCalledWith(
       ACTOR,
       CONVERSATION_ID,
@@ -145,9 +169,53 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
     );
   });
 
+  it("returns recovery after cancellation persists when the durable control session cannot be opened", async () => {
+    const service = serviceDouble();
+    createSessionMock.mockRejectedValue(new Error("gateway_connect_failed"));
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "cancelled",
+      cancelRequested: true,
+      interrupted: false,
+      recoveryRequired: true,
+    });
+    expect(service.cancelTurn).toHaveBeenCalledTimes(1);
+    expect(service.compareAndSwapGatewayState).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns recovery without a state write when cancellation reveals an unprepared child session", async () => {
+    const service = serviceDouble({
+      getGatewayState: vi.fn().mockResolvedValue(null),
+      cancelTurn: vi.fn().mockResolvedValue({
+        ...cancelResult(),
+        childSessions: ["late-child-session"],
+      }),
+    });
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "cancelled",
+      interrupted: false,
+      recoveryRequired: true,
+    });
+    expect(service.compareAndSwapGatewayState).not.toHaveBeenCalled();
+  });
+
   it("interrupts child sessions and reports revoked capabilities from the authoritative cancellation result", async () => {
     const interrupts: string[] = [];
     const service = serviceDouble({
+      getGatewayState: vi.fn().mockResolvedValue(
+        gatewayState(["child-session"]),
+      ),
       cancelTurn: vi.fn().mockResolvedValue({
         ...cancelResult(),
         childSessions: ["child-session"],
@@ -167,12 +235,16 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
     await expect(response.json()).resolves.toMatchObject({
       revokedCapabilityIds: [CAPABILITY_ID],
     });
+    expect(service.issueGatewayRootCapability).toHaveBeenCalledTimes(1);
     expect(interrupts).toEqual(["child-session", "session-owned"]);
   });
 
   it("does not interrupt the parent session twice when child control data repeats it", async () => {
     const interrupts: string[] = [];
     const service = serviceDouble({
+      getGatewayState: vi.fn().mockResolvedValue(
+        gatewayState(["session-owned", "child-session", "session-owned"]),
+      ),
       cancelTurn: vi.fn().mockResolvedValue({
         ...cancelResult(),
         childSessions: ["session-owned", "child-session", "session-owned"],
@@ -217,6 +289,101 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
     expect(response.status).toBe(200);
     expect(parentInterrupt).toHaveBeenCalledTimes(1);
     expect(createSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("returns recovery when a local session interrupt fails after cancellation persists", async () => {
+    const { activeHermesRunRegistry } = await import(
+      "@/features/ai/hermes/active-run-registry"
+    );
+    activeHermesRunRegistry.register({
+      actor: ACTOR,
+      conversationId: CONVERSATION_ID,
+      turnId: TURN_ID,
+      sessionId: "session-owned",
+      session: {
+        interrupt: vi.fn().mockRejectedValue(new Error("interrupt_failed")),
+        respondToClarify: vi.fn(),
+        close: vi.fn(),
+      },
+    });
+    const service = serviceDouble();
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "cancelled",
+      interrupted: false,
+      recoveryRequired: true,
+    });
+    expect(service.cancelTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows a cancelled turn to retry best-effort cleanup", async () => {
+    const service = serviceDouble({
+      getHistory: vi.fn().mockResolvedValue({
+        turns: [{ id: TURN_ID, status: "cancelled", mode: "deep" }],
+      }),
+      cancelTurn: vi.fn().mockResolvedValue({
+        ...cancelResult(),
+        alreadyTerminal: true,
+      }),
+    });
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "cancelled",
+      alreadyTerminal: true,
+      recoveryRequired: true,
+    });
+    expect(service.cancelTurn).toHaveBeenCalledTimes(1);
+    expect(service.issueGatewayRootCapability).not.toHaveBeenCalled();
+  });
+
+  it("preserves the cancellation response when the recovery state write fails", async () => {
+    const service = serviceDouble({
+      compareAndSwapGatewayState: vi
+        .fn()
+        .mockRejectedValue(new Error("recovery_write_failed")),
+    });
+    createSessionMock.mockRejectedValue(new Error("gateway_connect_failed"));
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "cancelled",
+      recoveryRequired: true,
+      recoveryStatePersisted: false,
+    });
+  });
+
+  it("preserves the cancellation response when closing a control session fails", async () => {
+    createSessionMock.mockResolvedValue({
+      interrupt: vi.fn(),
+      close: vi.fn(() => {
+        throw new Error("close_failed");
+      }),
+    });
+    const service = serviceDouble();
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "cancelled",
+      interrupted: true,
+    });
   });
 
   it("durable-interrupts the parent session when the registry misses the live run", async () => {
@@ -286,10 +453,11 @@ function serviceDouble(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function gatewayState() {
+function gatewayState(childSessions: string[] = []) {
   return {
     generation: 7,
     sessionId: "session-owned",
+    childSessions,
     summary: {},
     summaryVersion: 0,
   };

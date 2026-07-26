@@ -159,7 +159,127 @@ describe("Hermes active run registry", () => {
 
     await expect(
       registry.interruptTree({ actor, conversationId, turnId }),
-    ).resolves.toEqual({ interrupted: 2, parentInterrupted: true });
+    ).resolves.toEqual({
+      interrupted: 2,
+      parentInterrupted: true,
+      interruptedSessionIds: ["child-session", "parent-session"],
+    });
     expect(order).toEqual(["child", "parent"]);
+  });
+
+  it("snapshots actor-scoped child and parent session IDs without crossing tenants", () => {
+    const registry = createActiveRunRegistry();
+    const session = {
+      interrupt: vi.fn(),
+      respondToClarify: vi.fn(),
+      close: vi.fn(),
+    };
+    registry.register({
+      actor,
+      conversationId,
+      turnId,
+      sessionId: "parent-session",
+      session,
+    });
+    registry.register({
+      actor,
+      conversationId,
+      turnId: "88888888-8888-4888-8888-888888888888",
+      parentTurnId: turnId,
+      sessionId: "child-session",
+      session,
+    });
+    registry.register({
+      actor: { ...actor, userId: "99999999-9999-4999-8999-999999999999" },
+      conversationId,
+      turnId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      parentTurnId: turnId,
+      sessionId: "other-tenant-session",
+      session,
+    });
+
+    expect(
+      registry.treeSessionIds({ actor, conversationId, turnId }),
+    ).toEqual(["child-session", "parent-session"]);
+  });
+
+  it("interrupts a repeated session ID only once across the local run tree", async () => {
+    const registry = createActiveRunRegistry();
+    const interrupt = vi.fn();
+    const session = {
+      interrupt,
+      respondToClarify: vi.fn(),
+      close: vi.fn(),
+    };
+    registry.register({
+      actor,
+      conversationId,
+      turnId,
+      sessionId: "shared-session",
+      session,
+    });
+    registry.register({
+      actor,
+      conversationId,
+      turnId: "88888888-8888-4888-8888-888888888888",
+      parentTurnId: turnId,
+      sessionId: "shared-session",
+      session,
+    });
+    registry.register({
+      actor,
+      conversationId,
+      turnId: "99999999-9999-4999-8999-999999999999",
+      parentTurnId: turnId,
+      sessionId: "shared-session",
+      session,
+    });
+
+    await expect(
+      registry.interruptTree({ actor, conversationId, turnId }),
+    ).resolves.toEqual({
+      interrupted: 1,
+      parentInterrupted: true,
+      interruptedSessionIds: ["shared-session"],
+    });
+    expect(interrupt).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues interrupting the run tree after one local session fails", async () => {
+    const registry = createActiveRunRegistry();
+    const parentInterrupt = vi.fn().mockResolvedValue({ interrupted: true });
+    registry.register({
+      actor,
+      conversationId,
+      turnId,
+      sessionId: "parent-session",
+      session: {
+        interrupt: parentInterrupt,
+        respondToClarify: vi.fn(),
+        close: vi.fn(),
+      },
+    });
+    registry.register({
+      actor,
+      conversationId,
+      turnId: "88888888-8888-4888-8888-888888888888",
+      parentTurnId: turnId,
+      sessionId: "child-session",
+      session: {
+        interrupt: vi.fn().mockRejectedValue(new Error("interrupt_failed")),
+        respondToClarify: vi.fn(),
+        close: vi.fn(),
+      },
+    });
+
+    await expect(
+      registry.interruptTree({ actor, conversationId, turnId }),
+    ).resolves.toEqual({
+      interrupted: 1,
+      parentInterrupted: true,
+      interruptedSessionIds: ["parent-session"],
+      failedSessionIds: ["child-session"],
+    });
+    expect(parentInterrupt).toHaveBeenCalledTimes(1);
   });
 });

@@ -182,6 +182,7 @@ export async function issueHermesRootRunCapability({
     actorSnapshot: {
       organizationId: actor.organizationId,
       userId: actor.userId,
+      role: actor.role,
       conversationId: actor.conversationId,
       invocationId: actor.invocationId,
       actorFingerprint,

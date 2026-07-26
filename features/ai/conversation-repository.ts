@@ -112,6 +112,7 @@ export type CreatedConversationTurn = {
 export type ConversationGatewayState = {
   generation: number;
   sessionId?: string;
+  childSessions: string[];
   summary: Record<string, unknown>;
   summaryVersion: number;
   pendingClarify?: ConversationGatewayPendingClarify;
@@ -237,12 +238,22 @@ export async function getAiConversationGatewayState(
     : {};
   const generation = numberValue(hermesGateway.generation) ?? 0;
   const sessionId = stringValue(hermesGateway.sessionId);
+  const checkpoint = isRecord(hermesGateway.checkpoint)
+    ? hermesGateway.checkpoint
+    : {};
+  const childSessions = [
+    ...new Set([
+      ...stringList(hermesGateway.childSessions),
+      ...stringList(checkpoint.childSessions),
+    ]),
+  ];
   const pendingClarify = parsePendingClarify(hermesGateway.pendingClarify);
   const summary = isRecord(data.summary) ? data.summary : {};
   const summaryVersion = numberValue(data.summary_version) ?? 0;
   return {
     generation,
     ...(sessionId ? { sessionId } : {}),
+    childSessions,
     ...(pendingClarify ? { pendingClarify } : {}),
     summary,
     summaryVersion,
@@ -815,6 +826,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0,
+      )
+    : [];
 }
 
 function numberValue(value: unknown): number | null {
