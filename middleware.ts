@@ -8,8 +8,19 @@ import { NextResponse, type NextRequest } from "next/server";
 import { verifySupabaseJwt } from "@/lib/auth/verify-supabase-jwt";
 import { getPublicEnv } from "@/lib/config/env";
 
-const protectedPrefixes = ["/console", "/m", "/desktop"];
-const publicAuthPaths = new Set(["/m/login", "/m/login/"]);
+const protectedPrefixes = [
+  "/console",
+  "/m",
+  "/desktop",
+  "/platform-admin",
+  "/api/platform-admin",
+];
+const publicAuthPaths = new Set([
+  "/m/login",
+  "/m/login/",
+  "/platform-admin/login",
+  "/platform-admin/login/",
+]);
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -87,7 +98,13 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/console/:path*", "/m/:path*", "/desktop/:path*"],
+  matcher: [
+    "/console/:path*",
+    "/m/:path*",
+    "/desktop/:path*",
+    "/platform-admin/:path*",
+    "/api/platform-admin/:path*",
+  ],
 };
 
 // 从请求 cookie 中还原 Supabase 会话里的 access token。@supabase/ssr 的存储
@@ -132,6 +149,12 @@ async function readAccessTokenFromCookies(
 }
 
 function getLoginPath(pathname: string) {
+  if (
+    pathname.startsWith("/platform-admin") ||
+    pathname.startsWith("/api/platform-admin")
+  ) {
+    return "/platform-admin/login";
+  }
   return pathname.startsWith("/m") ? "/m/login" : "/login";
 }
 

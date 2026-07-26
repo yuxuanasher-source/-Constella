@@ -39,6 +39,7 @@ export type RefundInput = {
   providerTxnId: string;
   amountCents: number;
   reason: string;
+  refundExternalReference?: string;
 };
 
 export type RefundResult = {

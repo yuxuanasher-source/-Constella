@@ -45,52 +45,20 @@ export async function requestRefund({
   audit?: BillingAudit;
   notify?: RefundNotify;
 }): Promise<RefundResultSummary> {
-  if (!reason?.trim()) {
-    throw new Error("Refund requires a reason");
-  }
-
   const order = await repo.getOrderById(orderId);
   if (!order || order.organizationId !== actor.organizationId) {
     throw new Error("Order not found");
   }
-  if (order.status !== "paid") {
-    throw new Error("Only paid orders can be refunded");
-  }
-
-  await assertRefundable({ repo, order, now });
-
-  const payment = await repo.getOrderPaymentTransaction(order.id);
-  if (!payment?.providerTxnId) {
-    throw new Error("No settled payment transaction to refund");
-  }
-
-  await repo.updateOrder(order.id, { status: "refunding" });
-
-  const refund = await provider.refund({
-    orderId: order.id,
-    transactionId: payment.providerTxnId,
-    providerTxnId: payment.providerTxnId,
+  const result = await requestRefundCore({
+    repo,
+    provider,
+    organizationId: actor.organizationId,
+    orderId,
     amountCents: order.amountCents,
     reason,
+    now,
   });
-
-  await repo.insertTransaction({
-    organizationId: order.organizationId,
-    orderId: order.id,
-    type: "refund",
-    status: refund.status,
-    amountCents: order.amountCents,
-    provider: refund.provider,
-    providerTxnId: refund.refundTxnId,
-    failureReason: refund.status === "failed" ? "provider_refund_failed" : null,
-    succeededAt: refund.status === "succeeded" ? now.toISOString() : null,
-  });
-
-  let settled = false;
-  if (refund.status === "succeeded") {
-    settled = (await settleRefund({ repo, order: { ...order, status: "refunding" }, now }))
-      .applied;
-  }
+  const settled = result.status === "refunded";
 
   if (audit) {
     await audit({
@@ -110,6 +78,95 @@ export async function requestRefund({
   }
   if (notify) {
     await notify(order, settled);
+  }
+
+  return result;
+}
+
+/**
+ * 不含租户角色判断与租户审计的退款核心。调用方必须显式传入组织边界；
+ * 机构入口和平台入口分别在外围完成各自授权与审计。
+ */
+export async function requestRefundCore({
+  repo,
+  provider,
+  organizationId,
+  orderId,
+  amountCents,
+  refundExternalReference,
+  reason,
+  now = new Date(),
+}: {
+  repo: BillingRepo;
+  provider: PaymentProvider;
+  organizationId: string;
+  orderId: string;
+  amountCents?: number;
+  refundExternalReference?: string;
+  reason: string;
+  now?: Date;
+}): Promise<RefundResultSummary> {
+  if (!reason?.trim()) {
+    throw new Error("Refund requires a reason");
+  }
+
+  const order = await repo.getOrderById(orderId);
+  if (!order || order.organizationId !== organizationId) {
+    throw new Error("Order not found");
+  }
+  if (order.status !== "paid") {
+    throw new Error("Only paid orders can be refunded");
+  }
+  const refundableAmount = amountCents ?? order.amountCents;
+  if (
+    !Number.isInteger(refundableAmount) ||
+    refundableAmount <= 0 ||
+    refundableAmount !== order.amountCents
+  ) {
+    throw new Error(
+      "Refund amount must equal the full refundable order amount",
+    );
+  }
+
+  await assertRefundable({ repo, order, now });
+
+  const payment = await repo.getOrderPaymentTransaction(order.id);
+  if (!payment?.providerTxnId || payment.amountCents < refundableAmount) {
+    throw new Error("No settled payment transaction to refund");
+  }
+
+  await repo.updateOrder(order.id, { status: "refunding" });
+
+  const refund = await provider.refund({
+    orderId: order.id,
+    transactionId: payment.providerTxnId,
+    providerTxnId: payment.providerTxnId,
+    amountCents: refundableAmount,
+    reason,
+    refundExternalReference,
+  });
+
+  await repo.insertTransaction({
+    organizationId: order.organizationId,
+    orderId: order.id,
+    type: "refund",
+    status: refund.status,
+    amountCents: refundableAmount,
+    provider: refund.provider,
+    providerTxnId: refund.refundTxnId,
+    failureReason: refund.status === "failed" ? "provider_refund_failed" : null,
+    succeededAt: refund.status === "succeeded" ? now.toISOString() : null,
+  });
+
+  let settled = false;
+  if (refund.status === "succeeded") {
+    settled = (
+      await settleRefund({
+        repo,
+        order: { ...order, status: "refunding" },
+        now,
+      })
+    ).applied;
   }
 
   return {

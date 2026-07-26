@@ -1,4 +1,5 @@
 import { createMockPaymentProvider } from "./mock-provider";
+import { createOfflinePaymentProvider } from "./offline-provider";
 import type { PaymentProvider } from "./payment-provider";
 
 /**
@@ -12,6 +13,8 @@ export function getPaymentProvider(name?: string): PaymentProvider {
       return createMockPaymentProvider({
         secret: process.env.BILLING_MOCK_WEBHOOK_SECRET,
       });
+    case "offline":
+      return createOfflinePaymentProvider();
     default:
       throw new Error(`Unknown payment provider: ${resolved}`);
   }
