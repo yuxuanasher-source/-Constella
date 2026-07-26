@@ -679,6 +679,10 @@ describe("Hermes Gateway JSON-RPC client", () => {
         sessionOptions(config, { sessionId: SESSION_ID }),
       ),
     ).rejects.toThrow("hermes_gateway_session_mismatch");
+    await waitForServerClients(
+      server,
+      (client) => client.readyState === WebSocket.CLOSED,
+    );
 
     const redactionGateway = await configuredGateway();
     servers.push(redactionGateway.server);

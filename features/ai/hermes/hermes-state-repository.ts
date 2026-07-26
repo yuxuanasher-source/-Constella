@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 
 import type { AiProviderName } from "../contracts";
-import { isHermesOutcome, isUuid, type HermesOutcome } from "./contracts";
+import {
+  isHermesAuthRole,
+  isHermesOutcome,
+  isUuid,
+  type HermesAuthRole,
+  type HermesOutcome,
+} from "./contracts";
 import {
   isHermesMemoryType,
   prepareHermesMemoryContent,
@@ -49,6 +55,7 @@ export type HermesStateActor = HermesStateOwnerActor & {
 
 export type HermesCapabilityActorSnapshot = HermesStateActor & {
   actorFingerprint: string;
+  role?: HermesAuthRole;
 };
 
 export type HermesRunCapabilityBinding = {
@@ -341,7 +348,11 @@ export function createHermesStateRepository(
         invalidInput();
       }
 
-      const data = await callRpc(client, "issue_ai_hermes_run_capability", {
+      const rootCapability = binding.depth === 0;
+      if (rootCapability && !isHermesAuthRole(actorSnapshot.role)) {
+        invalidInput();
+      }
+      const rpcArgs: Record<string, unknown> = {
         p_token_sha256: binding.tokenSha256.toLowerCase(),
         p_organization_id: actorSnapshot.organizationId,
         p_owner_user_id: actorSnapshot.userId,
@@ -361,7 +372,17 @@ export function createHermesStateRepository(
         p_depth: binding.depth,
         p_ai_state_writes_allowed: binding.aiStateWritesAllowed,
         p_expires_at: expiresAt.toISOString(),
-      });
+      };
+      if (rootCapability) {
+        rpcArgs.p_actor_role = actorSnapshot.role;
+      }
+      const data = await callRpc(
+        client,
+        rootCapability
+          ? "issue_ai_hermes_root_run_capability"
+          : "issue_ai_hermes_run_capability",
+        rpcArgs,
+      );
       return parseIssuedCapability(data);
     },
 

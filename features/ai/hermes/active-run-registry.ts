@@ -112,6 +112,26 @@ export function createActiveRunRegistry() {
       return true;
     },
 
+    treeSessionIds(input: ActiveRunIdentity) {
+      const parentKey = activeRunKey(input);
+      const childSessionIds = [...runs.values()]
+        .filter(
+          (entry) =>
+            entry.actor.organizationId === input.actor.organizationId &&
+            entry.actor.userId === input.actor.userId &&
+            entry.conversationId === input.conversationId &&
+            entry.parentTurnId === input.turnId,
+        )
+        .map((entry) => entry.sessionId);
+      const parent = runs.get(parentKey);
+      return [
+        ...new Set([
+          ...childSessionIds,
+          ...(parent ? [parent.sessionId] : []),
+        ]),
+      ];
+    },
+
     async interruptTree(input: ActiveRunIdentity) {
       const parentKey = activeRunKey(input);
       const children = [...runs.values()].filter(
@@ -123,17 +143,42 @@ export function createActiveRunRegistry() {
       );
       let interrupted = 0;
       let parentInterrupted = false;
+      const interruptedSessionIds: string[] = [];
+      const failedSessionIds: string[] = [];
+      const seenSessionIds = new Set<string>();
       for (const child of children) {
-        await child.session.interrupt();
-        interrupted += 1;
+        if (seenSessionIds.has(child.sessionId)) continue;
+        seenSessionIds.add(child.sessionId);
+        try {
+          await child.session.interrupt();
+          interrupted += 1;
+          interruptedSessionIds.push(child.sessionId);
+        } catch {
+          failedSessionIds.push(child.sessionId);
+        }
       }
       const parent = runs.get(parentKey);
       if (parent) {
-        await parent.session.interrupt();
-        interrupted += 1;
-        parentInterrupted = true;
+        if (seenSessionIds.has(parent.sessionId)) {
+          parentInterrupted = interruptedSessionIds.includes(parent.sessionId);
+        } else {
+          seenSessionIds.add(parent.sessionId);
+          try {
+            await parent.session.interrupt();
+            interrupted += 1;
+            parentInterrupted = true;
+            interruptedSessionIds.push(parent.sessionId);
+          } catch {
+            failedSessionIds.push(parent.sessionId);
+          }
+        }
       }
-      return { interrupted, parentInterrupted };
+      return {
+        interrupted,
+        parentInterrupted,
+        interruptedSessionIds,
+        ...(failedSessionIds.length > 0 ? { failedSessionIds } : {}),
+      };
     },
 
     clear() {

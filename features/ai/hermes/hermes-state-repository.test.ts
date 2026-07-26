@@ -47,6 +47,11 @@ const actorSnapshot: HermesCapabilityActorSnapshot = {
   actorFingerprint: ACTOR_FINGERPRINT,
 };
 
+const rootActorSnapshot: HermesCapabilityActorSnapshot = {
+  ...actorSnapshot,
+  role: "owner",
+};
+
 const capabilityBinding: HermesRunCapabilityBinding = {
   tokenSha256: TOKEN_SHA256,
   allowedTools: ["tool.zeta", "tool.alpha"],
@@ -132,6 +137,46 @@ function payloadShapes(key: string, value: unknown): Record<string, unknown>[] {
 }
 
 describe("Hermes state repository", () => {
+  it("atomically initializes root invocation identity while issuing a root capability", async () => {
+    const { client, rpc } = rpcClient({
+      data: {
+        capability_id: CAPABILITY_ID,
+        expires_at: "2026-07-22T05:05:00.000Z",
+      },
+      error: null,
+    });
+
+    await expect(
+      createHermesStateRepository(client).issueRunCapability(
+        rootActorSnapshot,
+        { id: TURN_ID, conversationId: CONVERSATION_ID },
+        {
+          ...capabilityBinding,
+          depth: 0,
+          parentCapability: undefined,
+        },
+        new Date("2026-07-22T05:05:00.000Z"),
+      ),
+    ).resolves.toEqual({
+      capabilityId: CAPABILITY_ID,
+      expiresAt: "2026-07-22T05:05:00.000Z",
+    });
+
+    expect(rpc).toHaveBeenCalledWith(
+      "issue_ai_hermes_root_run_capability",
+      expect.objectContaining({
+        p_organization_id: ORGANIZATION_ID,
+        p_owner_user_id: USER_ID,
+        p_conversation_id: CONVERSATION_ID,
+        p_turn_id: TURN_ID,
+        p_invocation_id: INVOCATION_ID,
+        p_actor_role: "owner",
+        p_actor_fingerprint: ACTOR_FINGERPRINT,
+        p_depth: 0,
+      }),
+    );
+  });
+
   it("issues a capability with canonical bindings and never persists raw secrets", async () => {
     const { client, rpc, calls } = rpcClient({
       data: {
