@@ -252,6 +252,7 @@ export function createSupabaseBillingRepo(client: SupabaseClient): BillingRepo {
         .select("provider, provider_txn_id, amount_cents")
         .eq("order_id", orderId)
         .eq("type", "payment")
+        .eq("status", "succeeded")
         .order("succeeded_at", { ascending: false, nullsFirst: false })
         .limit(1)
         .maybeSingle<{

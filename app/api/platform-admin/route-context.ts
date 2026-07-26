@@ -1,6 +1,7 @@
 import { resolvePlatformAdminContext } from "@/features/platform-admin/platform-admin-auth";
 import { SupabasePlatformAdminBillingRepository } from "@/features/platform-admin/platform-admin-billing-repository-supabase";
 import { SupabasePlatformAdminMutationRepository } from "@/features/platform-admin/platform-admin-organization-repository-supabase";
+import { createSupabasePlatformAdminPaymentRepository } from "@/features/platform-admin/platform-admin-payment-repository-supabase";
 import { SupabasePlatformAdminRepository } from "@/features/platform-admin/platform-admin-repository-supabase";
 import { getAuthenticatedUser } from "@/lib/auth/context";
 import {
@@ -39,5 +40,6 @@ export async function getPlatformAdminRouteContext() {
     repo: new SupabasePlatformAdminRepository(admin),
     mutationRepo: new SupabasePlatformAdminMutationRepository(admin),
     billingRepo: new SupabasePlatformAdminBillingRepository(admin),
+    paymentRepo: createSupabasePlatformAdminPaymentRepository(admin),
   };
 }

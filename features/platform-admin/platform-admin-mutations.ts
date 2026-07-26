@@ -25,6 +25,7 @@ export async function executePlatformAdminOperation<T>(input: {
   execute: () => Promise<T>;
   summarizeAfter: (result: T) => Record<string, unknown>;
   log: PlatformAdminOperationLog;
+  traceId?: string;
 }): Promise<T> {
   const reason = input.reason.trim();
   if (input.highRisk && !reason) {
@@ -54,7 +55,7 @@ export async function executePlatformAdminOperation<T>(input: {
     }
   }
 
-  const traceId = randomUUID();
+  const traceId = input.traceId ?? randomUUID();
   const before = input.loadBefore ? await input.loadBefore() : {};
   const redactedRequest = redactPlatformAdminPayload(input.request);
   const redactedBefore = redactPlatformAdminPayload(before);

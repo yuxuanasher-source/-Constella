@@ -184,7 +184,10 @@ export function createMemoryBillingRepo(seed: {
     },
     async getOrderPaymentTransaction(orderId) {
       const payments = state.transactions.filter(
-        (txn) => txn.orderId === orderId && txn.type === "payment",
+        (txn) =>
+          txn.orderId === orderId &&
+          txn.type === "payment" &&
+          txn.status === "succeeded",
       );
       const txn = payments.at(-1);
       return txn

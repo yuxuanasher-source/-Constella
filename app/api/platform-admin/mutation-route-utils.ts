@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   PlatformAdminConflictError,
+  PlatformAdminProviderUnavailableError,
   PlatformAdminValidationError,
 } from "@/features/platform-admin/platform-admin-errors";
 import type { PlatformOrganizationAuthAdmin } from "@/features/platform-admin/platform-admin-organization-service";
@@ -24,6 +25,17 @@ export function createPlatformOrganizationAuthAdmin(
 }
 
 export function platformMutationErrorResponse(error: unknown) {
+  if (error instanceof PlatformAdminProviderUnavailableError) {
+    return Response.json(
+      {
+        error: {
+          code: "PROVIDER_UNAVAILABLE",
+          message: error.message,
+        },
+      },
+      { status: 503 },
+    );
+  }
   if (error instanceof PlatformAdminConflictError) {
     return Response.json(
       {

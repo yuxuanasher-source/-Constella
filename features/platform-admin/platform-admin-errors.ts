@@ -15,3 +15,12 @@ export class PlatformAdminConflictError extends Error {
     this.name = "PlatformAdminConflictError";
   }
 }
+
+export class PlatformAdminProviderUnavailableError extends Error {
+  readonly statusCode = 503;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "PlatformAdminProviderUnavailableError";
+  }
+}

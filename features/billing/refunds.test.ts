@@ -9,7 +9,11 @@ import {
   makeSubscription,
 } from "./billing-test-fixtures";
 import { createMockPaymentProvider } from "./providers/mock-provider";
-import { assertRefundable, requestRefund } from "./refunds";
+import {
+  assertRefundable,
+  requestRefund,
+  requestRefundCore,
+} from "./refunds";
 
 const NOW = new Date("2026-06-20T00:00:00.000Z");
 const PAID_AT = "2026-06-16T00:00:00.000Z";
@@ -56,6 +60,28 @@ function setup() {
 }
 
 describe("requestRefund", () => {
+  it("exposes an actor-independent core scoped to an explicit organization", async () => {
+    const { repo, state } = setup();
+    await seedPaidOrder(repo, {
+      id: "order-core",
+      kind: "subscription_new",
+      planId: "plan_pro",
+    });
+
+    const result = await requestRefundCore({
+      repo,
+      provider,
+      organizationId: "org-1",
+      orderId: "order-core",
+      amountCents: 99900,
+      reason: "平台审核退款",
+      now: NOW,
+    });
+
+    expect(result.status).toBe("refunded");
+    expect(state.orders.get("order-core")?.status).toBe("refunded");
+  });
+
   it("cancels the subscription and downgrades to free on subscription refund", async () => {
     const { repo, state } = setup();
     await seedPaidOrder(repo, { id: "order-sub", kind: "subscription_new", planId: "plan_pro" });
@@ -202,5 +228,46 @@ describe("requestRefund", () => {
         now: NOW,
       }),
     ).rejects.toThrow(/paid/);
+  });
+
+  it("requires a succeeded payment transaction", async () => {
+    const { repo } = setup();
+    await repo.insertOrder({
+      id: "order-failed-payment",
+      organizationId: "org-1",
+      kind: "subscription_new",
+      amountCents: 99900,
+      currency: "CNY",
+      target: {},
+      planId: "plan_pro",
+      billingCycle: "monthly",
+      idempotencyKey: "failed-payment",
+      createdBy: "user-owner",
+    });
+    await repo.updateOrder("order-failed-payment", {
+      status: "paid",
+      paidAt: PAID_AT,
+    });
+    await repo.insertTransaction({
+      organizationId: "org-1",
+      orderId: "order-failed-payment",
+      type: "payment",
+      status: "failed",
+      amountCents: 99900,
+      provider: "mock",
+      providerTxnId: "mock_failed_payment",
+    });
+
+    await expect(
+      requestRefundCore({
+        repo,
+        provider,
+        organizationId: "org-1",
+        orderId: "order-failed-payment",
+        amountCents: 99900,
+        reason: "退款",
+        now: NOW,
+      }),
+    ).rejects.toThrow(/settled payment/);
   });
 });
