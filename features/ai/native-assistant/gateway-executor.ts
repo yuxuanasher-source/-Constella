@@ -331,6 +331,9 @@ export function createGatewayTurnExecutor(
           }));
 
         if (!frozen) {
+          if (!sessionSetup.checkpoint) {
+            throw new GatewayExecutionError("gateway_checkpoint_invalid");
+          }
           const nextGeneration = state.generation + 1;
           const nextState = {
             generation: nextGeneration,
@@ -338,7 +341,12 @@ export function createGatewayTurnExecutor(
             provider: options.provider,
             model: options.model,
             rebuiltAt: now().toISOString(),
-            checkpoint: sessionSetup.checkpoint,
+            checkpoint: {
+              sessionId: sessionSetup.checkpoint.sessionId,
+              ...(sessionSetup.checkpoint.checkpointId
+                ? { checkpointId: sessionSetup.checkpoint.checkpointId }
+                : {}),
+            },
           };
           try {
             await service.compareAndSwapGatewayState(

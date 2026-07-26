@@ -35,8 +35,10 @@ const turn = {
 describe("native Hermes Gateway executor", () => {
   it("persists its generated Gateway context through the real conversation service validator", async () => {
     const transitionTurn = vi.fn().mockResolvedValue(true);
+    const compareAndSwapGatewayState = vi.fn().mockResolvedValue(1);
     const conversationService = createConversationService({
       transitionTurn,
+      compareAndSwapGatewayState,
     } as unknown as ConversationPersistence);
     const service = {
       ...serviceDouble({
@@ -51,6 +53,8 @@ describe("native Hermes Gateway executor", () => {
         ],
       }),
       captureGatewayContext: conversationService.captureGatewayContext,
+      compareAndSwapGatewayState:
+        conversationService.compareAndSwapGatewayState,
     };
     const gateway = gatewayDouble([
       {
@@ -100,6 +104,17 @@ describe("native Hermes Gateway executor", () => {
     expect(
       persistedSnapshot?.gatewayContext?.invocationMetadata?.gatewayCheckpoint,
     ).not.toHaveProperty("checkpointId");
+    expect(compareAndSwapGatewayState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedGeneration: 0,
+        nextState: expect.objectContaining({
+          generation: 1,
+          checkpoint: {
+            sessionId: "session-rebuilt",
+          },
+        }),
+      }),
+    );
   });
 
   it("freezes actor context, rebuilds a missing Gateway session from the product ledger, and CASes provider state", async () => {
