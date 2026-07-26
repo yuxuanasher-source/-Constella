@@ -89,7 +89,7 @@ export type CreateOrganizationMemberInput = {
   temporaryPassword?: string;
 };
 
-type NormalizedCreateOrganizationMemberInput = Omit<
+export type NormalizedCreateOrganizationMemberInput = Omit<
   CreateOrganizationMemberInput,
   "email"
 > & {
@@ -138,7 +138,7 @@ export async function createOrganizationMember({
   generateDefaultAccount?: () => string;
   generateDefaultPassword?: () => string;
 }): Promise<CreateOrganizationMemberResult> {
-  const normalized = normalizeCreateInput(input, {
+  const normalized = normalizeOrganizationMemberInput(input, {
     defaultAccount:
       input.mode === "subaccount" ? generateDefaultAccount() : undefined,
     defaultPassword:
@@ -146,10 +146,10 @@ export async function createOrganizationMember({
   });
   assertCanCreateOrganizationMemberRole(actor, normalized.role);
 
-  const authUser =
-    normalized.mode === "invite"
-      ? await inviteAuthUser(authAdmin, normalized)
-      : await createSubaccountAuthUser(authAdmin, normalized);
+  const authUser = await provisionOrganizationMemberAuthUser(
+    authAdmin,
+    normalized,
+  );
   const email = authUser.email ?? normalized.email;
 
   await repo.createOrUpdateProfile({
@@ -336,7 +336,7 @@ function assertCanCreateOrganizationMemberRole(
   }
 }
 
-function normalizeCreateInput(
+export function normalizeOrganizationMemberInput(
   input: CreateOrganizationMemberInput,
   generated: { defaultAccount?: string; defaultPassword?: string } = {},
 ): NormalizedCreateOrganizationMemberInput {
@@ -381,6 +381,15 @@ function normalizeCreateInput(
     temporaryPassword,
     defaultAccount: mode === "subaccount" ? defaultAccount : undefined,
   };
+}
+
+export async function provisionOrganizationMemberAuthUser(
+  authAdmin: OrganizationAuthAdmin,
+  input: NormalizedCreateOrganizationMemberInput,
+): Promise<{ id: string; email: string | null }> {
+  return input.mode === "invite"
+    ? inviteAuthUser(authAdmin, input)
+    : createSubaccountAuthUser(authAdmin, input);
 }
 
 function assertValidRole(role: AppRole): void {
