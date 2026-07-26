@@ -21,6 +21,7 @@ import {
   type XingyaoStreamerSlice,
   type XingyaoTimeslotSlice,
 } from "./xingyao-feature-store";
+import { toCents } from "@/features/billing/hourly-rate-units";
 
 const XINGYAO_TIME_ZONE = "Asia/Shanghai";
 const ROW_LIMIT = 2_000;
@@ -269,10 +270,7 @@ export async function loadXingyaoFeatureStoreInput({
   const projectNameById = new Map<string, string>();
   for (const row of projectRows) {
     const id = str(row.id);
-    hourlyRateCentsByProject.set(
-      id,
-      Math.round(num(row.default_hourly_rate) * 100),
-    );
+    hourlyRateCentsByProject.set(id, toCents(num(row.default_hourly_rate)));
     projectNameById.set(id, str(row.name));
   }
 
@@ -285,7 +283,7 @@ export async function loadXingyaoFeatureStoreInput({
     const rate =
       row.hourly_rate === null || row.hourly_rate === undefined
         ? (hourlyRateCentsByProject.get(projectId) ?? 0)
-        : Math.round(num(row.hourly_rate) * 100);
+        : toCents(num(row.hourly_rate));
     payableRateCents.set(`${projectId}:${streamerId}`, rate);
     if (!projectIdsByStreamer.has(streamerId)) {
       projectIdsByStreamer.set(streamerId, new Set());

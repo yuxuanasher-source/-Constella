@@ -38,7 +38,7 @@ function canonicalRows(): Record<string, Record<string, unknown>[]> {
         id: "p1",
         name: "天使之战",
         status: "recruiting",
-        default_hourly_rate: 100,
+        default_hourly_rate: 80,
       },
     ],
     live_tasks: [
@@ -230,8 +230,8 @@ describe("loadXingyaoFeatureStoreInput", () => {
     expect(project).toMatchObject({
       id: "p1",
       name: "天使之战",
-      receivableCents: 20_000,
-      previousReceivableCents: 10_000,
+      receivableCents: 16_000,
+      previousReceivableCents: 8_000,
       payableCents: 10_000,
       paidTrafficCostCents: 30_000,
       otherCostCents: 0,

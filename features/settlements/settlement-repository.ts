@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { toYuan } from "@/features/billing/hourly-rate-units";
 import type {
   SettlementBatchAtomicItemInput,
   SettlementBatchItemRecord,
@@ -1002,7 +1003,7 @@ function toSettlementRuleRecord(row: SettlementRuleRow): SettlementRuleRecord {
     projectId: row.project_id,
     streamerId: row.streamer_id,
     settlementMethod: row.settlement_method ?? "manual",
-    hourlyRate: Number(row.hourly_rate ?? 0),
+    hourlyRate: toYuan(row.hourly_rate),
     baseSalary: Number(row.base_salary ?? 0),
     cpsRateBps: Number(row.cps_rate_bps ?? 0),
   };
@@ -1014,7 +1015,7 @@ function toProjectSettlementRuleRecord(
   return {
     projectId: row.id,
     settlementMethod: row.default_settlement_method,
-    hourlyRate: Number(row.default_hourly_rate ?? 0),
+    hourlyRate: toYuan(row.default_hourly_rate),
     baseSalary: Number(row.default_base_salary ?? 0),
     ...extractStructuredSettlementRule(row.default_settlement_rule),
   };

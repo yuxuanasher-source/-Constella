@@ -187,7 +187,7 @@ describe("loadRoleHomeDashboard", () => {
       projectRow({
         id: "project-1",
         name: "Alpha",
-        default_hourly_rate: 8000,
+        default_hourly_rate: 80,
       }),
     ] as never);
     vi.mocked(listOpsLiveReportQueue).mockResolvedValue([
@@ -200,7 +200,7 @@ describe("loadRoleHomeDashboard", () => {
         taskTitle: "Local June live",
         projectName: "Alpha",
         streamerName: "Streamer A",
-        settlementDuration: 60,
+        settlementDuration: 120,
         timeSource: "system",
         evidenceLevel: "green",
         viewers: 100,
@@ -243,7 +243,7 @@ describe("loadRoleHomeDashboard", () => {
       expect.objectContaining({
         id: "project-1",
         metrics: expect.objectContaining({
-          receivable: 80,
+          receivable: 160,
         }),
       }),
     ]);
@@ -259,7 +259,7 @@ describe("loadRoleHomeDashboard", () => {
     );
     expect(dashboard.kpis).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ key: "vendorReceivable", value: 80 }),
+        expect.objectContaining({ key: "vendorReceivable", value: 160 }),
       ]),
     );
   });
@@ -269,7 +269,7 @@ describe("loadRoleHomeDashboard", () => {
       projectRow({
         id: "project-1",
         name: "Alpha",
-        default_hourly_rate: 8000,
+        default_hourly_rate: 80,
       }),
     ];
     expect(toProjectCardDtos(projectRows)[0]?.metrics).toMatchObject({
@@ -899,7 +899,7 @@ function projectRow(overrides: Partial<ProjectListItem> = {}): ProjectListItem {
     allow_direct_invite: true,
     force_recording: false,
     force_system_timing: true,
-    default_hourly_rate: 8000,
+    default_hourly_rate: 80,
     default_settlement_method: "cpt",
     vendor_name: "Vendor",
     product_name: "Product",

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { toYuan } from "@/features/billing/hourly-rate-units";
 import {
   listOpsApplicationQueue,
   type OpsApplicationQueueItem,
@@ -402,7 +403,7 @@ function minutesToHours(minutes: number) {
 }
 
 function hourlyRateYuan(project: ProjectListItem) {
-  return Math.max(project.default_hourly_rate, 0) / 100;
+  return Math.max(toYuan(project.default_hourly_rate), 0);
 }
 
 function isPendingReportStatus(status: OpsLiveReportQueueItem["status"]) {

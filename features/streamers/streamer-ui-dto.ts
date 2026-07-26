@@ -1,4 +1,5 @@
 import type { StreamerListRow } from "./streamer-queries";
+import { toYuan } from "@/features/billing/hourly-rate-units";
 
 const sourceLabels: Record<string, string> = {
   signed: "签约",
@@ -575,7 +576,7 @@ function reportContribution(
   report: NonNullable<StreamerListRow["live_reports"]>[number],
 ) {
   const rate = first(report.projects)?.default_hourly_rate ?? 0;
-  return minutesToHours(report.settlement_duration ?? 0) * (rate / 100);
+  return minutesToHours(report.settlement_duration ?? 0) * toYuan(rate);
 }
 
 function streamerProjectContributions(
