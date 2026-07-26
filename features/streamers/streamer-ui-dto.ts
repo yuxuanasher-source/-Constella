@@ -32,16 +32,18 @@ export type StreamerCardDto = {
   };
   hasPerformanceData: boolean;
   createdAtLabel: string;
-  matchScore: number;
-  matchTrend: number[];
+  matchScore: number | null;
+  matchTrend: Array<number | null>;
   metrics: {
-    screenPass: number;
-    projectFinish: number;
-    roi: number;
-    grossContrib: number;
+    screenPass: number | null;
+    projectFinish: number | null;
+    roi: number | null;
+    grossContrib: number | null;
     vendorPassRateBps: number | null;
     rejectionReasonHistogram: Record<string, number>;
     evaluatedCount: number;
+    mcnFirstPassRateBps: number | null;
+    mcnFirstEvaluatedCount: number;
   };
   projects: StreamerProjectContributionDto[];
   aiInsights: StreamerAiInsightDto[];
@@ -52,8 +54,8 @@ export type StreamerProjectContributionDto = {
   code: string;
   name: string;
   status: string;
-  settlementHours: number;
-  grossContrib: number;
+  settlementHours: number | null;
+  grossContrib: number | null;
 };
 
 export type StreamerAiInsightDto = {
@@ -118,10 +120,12 @@ export function toStreamerCardDto(
   row: StreamerListRow,
   options: { now?: string } = {},
 ): StreamerCardDto {
-  const cleanCount = Math.max(row.clean_report_count ?? 0, 0);
-  const stableScore = Math.min(95, 65 + cleanCount * 2);
-  const liveMetrics = deriveLivePerformance(row, stableScore, options);
+  const liveMetrics = deriveLivePerformance(row, options);
   const settlement = settlementSummary(row);
+  const admissionStats = row.admission_stats;
+  const hasAdmissionData =
+    (admissionStats?.evaluatedCount ?? 0) > 0 ||
+    (admissionStats?.mcnFirstEvaluatedCount ?? 0) > 0;
 
   return {
     id: row.id,
@@ -137,7 +141,7 @@ export function toStreamerCardDto(
     risk: row.risk_level,
     defaultRule: settlement.label,
     settlement,
-    hasPerformanceData: liveMetrics.hasPerformanceData,
+    hasPerformanceData: liveMetrics.hasPerformanceData || hasAdmissionData,
     createdAtLabel: row.created_at.slice(0, 10),
     matchScore: liveMetrics.matchScore,
     matchTrend: liveMetrics.matchTrend,
@@ -145,8 +149,10 @@ export function toStreamerCardDto(
       ...liveMetrics.metrics,
       vendorPassRateBps: row.admission_stats?.vendorPassRateBps ?? null,
       rejectionReasonHistogram:
-        row.admission_stats?.rejectionReasonHistogram ?? {},
-      evaluatedCount: row.admission_stats?.evaluatedCount ?? 0,
+        admissionStats?.rejectionReasonHistogram ?? {},
+      evaluatedCount: admissionStats?.evaluatedCount ?? 0,
+      mcnFirstPassRateBps: admissionStats?.mcnFirstPassRateBps ?? null,
+      mcnFirstEvaluatedCount: admissionStats?.mcnFirstEvaluatedCount ?? 0,
     },
     projects: liveMetrics.projects,
     aiInsights: streamerAiInsights(row),
@@ -370,7 +376,6 @@ function formatPercentBps(value: number) {
 
 function deriveLivePerformance(
   row: StreamerListRow,
-  fallbackScore: number,
   options: { now?: string },
 ) {
   const now = options.now ? new Date(options.now) : new Date();
@@ -392,13 +397,13 @@ function deriveLivePerformance(
   if (!hasPerformanceData) {
     return {
       hasPerformanceData: false,
-      matchScore: 0,
+      matchScore: null,
       matchTrend: [],
       metrics: {
-        screenPass: 0,
-        projectFinish: 0,
-        roi: 0,
-        grossContrib: 0,
+        screenPass: null,
+        projectFinish: null,
+        roi: null,
+        grossContrib: null,
       },
       projects: streamerProjectContributions(projectRows, recentReports),
     };
@@ -411,33 +416,17 @@ function deriveLivePerformance(
             isPassedRecordingOrReport(item),
           ),
           recentRecordings.length,
-          fallbackScore,
         )
-      : percentage(
-          passCount(recentReports, (item) => isPassedRecordingOrReport(item)),
-          recentReports.length,
-          0,
-        );
-  const projectFinish = percentage(
-    passCount(recentTasks, (item) => isFinishedTask(item.status)),
-    recentTasks.length,
-    0,
-  );
-  const grossContrib = roundMoney(
-    recentReports.reduce((sum, report) => sum + reportContribution(report), 0),
-  );
-  const settlementHours = recentReports.reduce(
-    (sum, report) => sum + minutesToHours(report.settlement_duration ?? 0),
-    0,
-  );
-  const viewers = recentReports.reduce(
-    (sum, report) => sum + Math.max(report.viewers ?? 0, 0),
-    0,
-  );
-  const roi =
-    settlementHours > 0 && viewers > 0
-      ? Number((viewers / settlementHours / 1000).toFixed(2))
-      : 0;
+      : null;
+  const projectFinish =
+    recentTasks.length > 0
+      ? percentage(
+          passCount(recentTasks, (item) => isFinishedTask(item.status)),
+          recentTasks.length,
+        )
+      : null;
+  const grossContrib = aggregateReportContribution(recentReports);
+  const roi = reportRoi(recentReports);
 
   const matchScore = performanceMatchScore({
     screenPass,
@@ -450,7 +439,7 @@ function deriveLivePerformance(
   return {
     hasPerformanceData: true,
     matchScore,
-    matchTrend: weeklyMatchTrend(row, now, fallbackScore, matchScore),
+    matchTrend: weeklyMatchTrend(row, now),
     metrics: {
       screenPass,
       projectFinish,
@@ -464,12 +453,9 @@ function deriveLivePerformance(
 function weeklyMatchTrend(
   row: StreamerListRow,
   now: Date,
-  fallbackScore: number,
-  currentScore: number,
 ) {
   const weekMs = 7 * 24 * 60 * 60 * 1000;
-  const trend: number[] = [];
-  let previous = fallbackScore;
+  const trend: Array<number | null> = [];
 
   for (let index = 5; index >= 0; index -= 1) {
     const end = new Date(now.getTime() - index * weekMs);
@@ -488,7 +474,7 @@ function weeklyMatchTrend(
     ).filter((item) => item.status !== "cancelled");
 
     if (recordings.length === 0 && reports.length === 0 && tasks.length === 0) {
-      trend.push(previous);
+      trend.push(null);
       continue;
     }
 
@@ -497,41 +483,27 @@ function weeklyMatchTrend(
         ? percentage(
             passCount(recordings, (item) => isPassedRecordingOrReport(item)),
             recordings.length,
-            previous,
           )
-        : percentage(
-            passCount(reports, (item) => isPassedRecordingOrReport(item)),
-            reports.length,
-            previous,
-          );
-    const projectFinish = percentage(
-      passCount(tasks, (item) => isFinishedTask(item.status)),
-      tasks.length,
-      previous,
+        : null;
+    const projectFinish =
+      tasks.length > 0
+        ? percentage(
+            passCount(tasks, (item) => isFinishedTask(item.status)),
+            tasks.length,
+          )
+        : null;
+    const roi = reportRoi(reports);
+    trend.push(
+      performanceMatchScore({
+        screenPass,
+        projectFinish,
+        roi,
+        reportCount: reports.length,
+        risk: row.risk_level,
+      }),
     );
-    const settlementHours = reports.reduce(
-      (sum, report) => sum + minutesToHours(report.settlement_duration ?? 0),
-      0,
-    );
-    const viewers = reports.reduce(
-      (sum, report) => sum + Math.max(report.viewers ?? 0, 0),
-      0,
-    );
-    const roi =
-      settlementHours > 0 && viewers > 0
-        ? Number((viewers / settlementHours / 1000).toFixed(2))
-        : 1;
-    previous = performanceMatchScore({
-      screenPass,
-      projectFinish,
-      roi,
-      reportCount: reports.length,
-      risk: row.risk_level,
-    });
-    trend.push(previous);
   }
 
-  trend[trend.length - 1] = currentScore;
   return trend;
 }
 
@@ -576,16 +548,57 @@ function passCount<T>(rows: T[], predicate: (row: T) => boolean) {
   return rows.filter(predicate).length;
 }
 
-function percentage(pass: number, total: number, fallback: number) {
-  if (total <= 0) return fallback;
+function percentage(pass: number, total: number) {
+  if (total <= 0) return 0;
   return Math.round((pass / total) * 100);
 }
 
 function reportContribution(
   report: NonNullable<StreamerListRow["live_reports"]>[number],
-) {
-  const rate = first(report.projects)?.default_hourly_rate ?? 0;
-  return minutesToHours(report.settlement_duration ?? 0) * toYuan(rate);
+): number | null {
+  const rate = first(report.projects)?.default_hourly_rate;
+  if (
+    !isFiniteNumber(report.settlement_duration) ||
+    !isFiniteNumber(rate)
+  ) {
+    return null;
+  }
+  return minutesToHours(report.settlement_duration) * toYuan(rate);
+}
+
+function aggregateReportContribution(
+  reports: NonNullable<StreamerListRow["live_reports"]>,
+): number | null {
+  if (reports.length === 0) return null;
+  const contributions = reports.map(reportContribution);
+  const completeContributions = contributions.filter(isFiniteNumber);
+  if (completeContributions.length !== contributions.length) return null;
+  return roundMoney(completeContributions.reduce((sum, value) => sum + value, 0));
+}
+
+function reportRoi(
+  reports: NonNullable<StreamerListRow["live_reports"]>,
+): number | null {
+  if (
+    reports.length === 0 ||
+    reports.some(
+      (report) =>
+        !isFiniteNumber(report.settlement_duration) ||
+        !isFiniteNumber(report.viewers),
+    )
+  ) {
+    return null;
+  }
+  const settlementHours = reports.reduce(
+    (sum, report) => sum + minutesToHours(report.settlement_duration as number),
+    0,
+  );
+  if (settlementHours <= 0) return null;
+  const viewers = reports.reduce(
+    (sum, report) => sum + Math.max(report.viewers as number, 0),
+    0,
+  );
+  return Number((viewers / settlementHours / 1000).toFixed(2));
 }
 
 function streamerProjectContributions(
@@ -593,6 +606,10 @@ function streamerProjectContributions(
   reports: NonNullable<StreamerListRow["live_reports"]>,
 ) {
   const rows = new Map<string, StreamerProjectContributionDto>();
+  const reportsByProject = new Map<
+    string,
+    NonNullable<StreamerListRow["live_reports"]>
+  >();
   projectRows.forEach((row) => {
     const project = first(row.projects);
     const id = row.project_id || project?.id;
@@ -602,8 +619,8 @@ function streamerProjectContributions(
       code: project?.code ?? id,
       name: project?.name ?? id,
       status: row.status || project?.status || "joined",
-      settlementHours: 0,
-      grossContrib: 0,
+      settlementHours: null,
+      grossContrib: null,
     });
   });
 
@@ -617,20 +634,34 @@ function streamerProjectContributions(
         code: id,
         name: id,
         status: "reported",
-        settlementHours: 0,
-        grossContrib: 0,
+        settlementHours: null,
+        grossContrib: null,
       } satisfies StreamerProjectContributionDto);
-    current.settlementHours = roundHours(
-      current.settlementHours + minutesToHours(report.settlement_duration ?? 0),
-    );
-    current.grossContrib = roundMoney(
-      current.grossContrib + reportContribution(report),
-    );
     rows.set(id, current);
+    const projectReports = reportsByProject.get(id) ?? [];
+    projectReports.push(report);
+    reportsByProject.set(id, projectReports);
+  });
+
+  reportsByProject.forEach((projectReports, id) => {
+    const current = rows.get(id);
+    if (!current) return;
+    current.settlementHours = projectReports.every((report) =>
+      isFiniteNumber(report.settlement_duration),
+    )
+      ? roundHours(
+          projectReports.reduce(
+            (sum, report) =>
+              sum + minutesToHours(report.settlement_duration as number),
+            0,
+          ),
+        )
+      : null;
+    current.grossContrib = aggregateReportContribution(projectReports);
   });
 
   return Array.from(rows.values()).sort(
-    (a, b) => b.settlementHours - a.settlementHours,
+    (a, b) => (b.settlementHours ?? -1) - (a.settlementHours ?? -1),
   );
 }
 
@@ -641,22 +672,41 @@ function performanceMatchScore({
   reportCount,
   risk,
 }: {
-  screenPass: number;
-  projectFinish: number;
-  roi: number;
+  screenPass: number | null;
+  projectFinish: number | null;
+  roi: number | null;
   reportCount: number;
   risk: string;
-}) {
-  const roiScore = Math.min(100, (roi / 1.5) * 100);
+}): number | null {
+  const dimensions = [
+    { value: screenPass, weight: 0.25 },
+    { value: projectFinish, weight: 0.45 },
+    {
+      value: roi === null ? null : Math.min(100, (roi / 1.5) * 100),
+      weight: 0.2,
+    },
+  ].filter(
+    (
+      dimension,
+    ): dimension is {
+      value: number;
+      weight: number;
+    } => dimension.value !== null,
+  );
+  if (dimensions.length === 0) return null;
+
+  const observedScore =
+    dimensions.reduce(
+      (sum, dimension) => sum + dimension.value * dimension.weight,
+      0,
+    );
   const riskPenalty = risk === "high" ? 12 : risk === "medium" ? 6 : 0;
   return Math.max(
     0,
     Math.min(
       99,
       Math.round(
-        screenPass * 0.25 +
-          projectFinish * 0.45 +
-          roiScore * 0.2 +
+        observedScore +
           Math.min(10, reportCount * 3) -
           riskPenalty,
       ),
@@ -666,6 +716,10 @@ function performanceMatchScore({
 
 function minutesToHours(minutes: number) {
   return Math.max(0, minutes) / 60;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 function roundHours(value: number) {

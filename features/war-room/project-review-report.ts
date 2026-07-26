@@ -36,9 +36,9 @@ export type ProjectReviewStreamer = {
   name: string;
   durationMinutes: number;
   totalViews: number;
-  completionRateBps: number;
-  roiBps: number;
-  grossMarginContributionCents: number;
+  completionRateBps: number | null;
+  roiBps: number | null;
+  grossMarginContributionCents: number | null;
   anomalyCount: number;
   disputeCount: number;
 };
@@ -99,15 +99,21 @@ export function buildProjectReviewReport(
   const targetMarginBps = safeBps(input.targetMarginBps ?? 3000);
   const reviewedStreamers = input.streamers
     .map(scoreReviewedStreamer)
+    .filter(
+      (streamer): streamer is ReviewedStreamer => streamer !== null,
+    )
     .sort((left, right) => right.score - left.score);
-  const riskNotes = buildRiskNotes({
-    receivableCents,
-    grossMarginCents,
-    marginRateBps,
-    targetMarginBps,
-    anomalyCount,
-    disputeCount,
-  });
+  const riskNotes = [
+    ...buildRiskNotes({
+      receivableCents,
+      grossMarginCents,
+      marginRateBps,
+      targetMarginBps,
+      anomalyCount,
+      disputeCount,
+    }),
+    ...buildStreamerMetricRiskNotes(input.streamers),
+  ];
   const shouldContinue =
     marginRateBps >= targetMarginBps &&
     grossMarginCents > 0 &&
@@ -156,15 +162,47 @@ export function buildProjectReviewReport(
 
 function scoreReviewedStreamer(
   streamer: ProjectReviewStreamer,
-): ReviewedStreamer {
+): ReviewedStreamer | null {
+  const dimensions = [
+    {
+      value:
+        streamer.completionRateBps === null
+          ? null
+          : safeBps(streamer.completionRateBps) / 10000,
+      weight: 35,
+    },
+    {
+      value:
+        streamer.roiBps === null
+          ? null
+          : Math.min(20000, safeBps(streamer.roiBps)) / 20000,
+      weight: 30,
+    },
+    {
+      value:
+        streamer.grossMarginContributionCents === null
+          ? null
+          : Math.max(
+                0,
+                Math.min(500000, streamer.grossMarginContributionCents),
+              ) / 500000,
+      weight: 25,
+    },
+  ].filter(
+    (
+      dimension,
+    ): dimension is {
+      value: number;
+      weight: number;
+    } => dimension.value !== null,
+  );
+  if (dimensions.length === 0) return null;
+  const performanceScore = dimensions.reduce(
+    (sum, dimension) => sum + dimension.value * dimension.weight,
+    0,
+  );
   const score = clampScore(
-    Math.round((safeBps(streamer.completionRateBps) / 10000) * 35) +
-      Math.round((Math.min(20000, safeBps(streamer.roiBps)) / 20000) * 30) +
-      Math.round(
-        (Math.max(0, Math.min(500000, streamer.grossMarginContributionCents)) /
-          500000) *
-          25,
-      ) -
+    performanceScore -
       streamer.anomalyCount * 5 -
       streamer.disputeCount * 10,
   );
@@ -174,6 +212,24 @@ function scoreReviewedStreamer(
     name: streamer.name,
     score,
   };
+}
+
+function buildStreamerMetricRiskNotes(
+  streamers: ProjectReviewStreamer[],
+): string[] {
+  const notes = new Set<string>();
+  for (const streamer of streamers) {
+    if (streamer.completionRateBps === null) {
+      notes.add("streamer_completion_rate_unavailable");
+    }
+    if (streamer.roiBps === null) {
+      notes.add("streamer_roi_unavailable");
+    }
+    if (streamer.grossMarginContributionCents === null) {
+      notes.add("streamer_gross_margin_contribution_unavailable");
+    }
+  }
+  return [...notes];
 }
 
 function buildRiskNotes({

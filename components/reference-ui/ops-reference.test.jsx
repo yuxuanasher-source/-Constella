@@ -2639,8 +2639,8 @@ describe("OpsReferenceApp project smoke", () => {
                   name: "详情项目",
                 },
                 streamer: {
-                  id: "server-streamer",
-                  displayName: "后端主播",
+                  id: "server-streamer-without-card",
+                  displayName: "无卡主播",
                   cooperationStatus: "active",
                   riskLevel: "low",
                 },
@@ -2654,7 +2654,20 @@ describe("OpsReferenceApp project smoke", () => {
       if (String(url) === "/api/streamers") {
         return {
           ok: true,
-          json: async () => ({ streamers: [] }),
+          json: async () => ({
+            streamers: [
+              {
+                id: "server-streamer",
+                alias: "后端主播",
+                real: "后端主播",
+                source: "项目邀约",
+                supplier: "未绑定",
+                defaultRule: "CPT",
+                matchScore: null,
+                risk: "low",
+              },
+            ],
+          }),
         };
       }
 
@@ -2678,6 +2691,16 @@ describe("OpsReferenceApp project smoke", () => {
       await screen.findByText("server-streamer · 后端主播"),
     ).toBeInTheDocument();
     expect(screen.getAllByText("server-streamer · 后端主播")).toHaveLength(1);
+    const restoredRosterRow = screen
+      .getByText("server-streamer · 后端主播")
+      .closest("tr");
+    expect(within(restoredRosterRow).getByText("暂无")).toBeInTheDocument();
+    expect(within(restoredRosterRow).queryByText("65")).not.toBeInTheDocument();
+    const noCardRosterRow = screen
+      .getByText("server-streamer-without-card · 无卡主播")
+      .closest("tr");
+    expect(within(noCardRosterRow).getByText("暂无")).toBeInTheDocument();
+    expect(within(noCardRosterRow).queryByText("65")).not.toBeInTheDocument();
     expect(screen.getAllByText("邀约中").length).toBeGreaterThan(0);
   });
 
@@ -4496,7 +4519,7 @@ describe("OpsReferenceApp streamer smoke", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows an empty operating profile instead of placeholder streamer metrics", () => {
+  it("shows unavailable values instead of placeholder streamer metrics", () => {
     render(
       <OpsReferenceApp
         initialRoute="streamers"
@@ -4515,10 +4538,12 @@ describe("OpsReferenceApp streamer smoke", () => {
             risk: "low",
             hasPerformanceData: false,
             metrics: {
-              screenPass: 0,
-              projectFinish: 0,
-              roi: 0,
-              grossContrib: 0,
+              screenPass: null,
+              projectFinish: null,
+              roi: null,
+              grossContrib: null,
+              vendorPassRateBps: null,
+              mcnFirstPassRateBps: null,
             },
             matchScore: 0,
             matchTrend: [],
@@ -4528,9 +4553,61 @@ describe("OpsReferenceApp streamer smoke", () => {
       />,
     );
 
-    expect(screen.getByText("暂无经营画像数据")).toBeInTheDocument();
-    expect(screen.queryByText("录屏通过率")).not.toBeInTheDocument();
-    expect(screen.queryByText("近 6 周匹配分趋势")).not.toBeInTheDocument();
+    expect(screen.queryByText("暂无经营画像数据")).not.toBeInTheDocument();
+    expect(screen.getByText("录屏通过率")).toBeInTheDocument();
+    expect(screen.getByText("厂家通过率")).toBeInTheDocument();
+    expect(screen.getByText("MCN 初审通过率")).toBeInTheDocument();
+    expect(screen.getByText("近 6 周匹配分趋势")).toBeInTheDocument();
+    expect(screen.getAllByText("暂无数据").length).toBeGreaterThanOrEqual(7);
+  });
+
+  it("renders independent review rates and leaves weekly trend gaps empty", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            id: "streamer-admission-only",
+            alias: "Admission Profile",
+            real: "Review History",
+            gender: "",
+            source: "external",
+            supplier: "",
+            games: ["rpg"],
+            platforms: ["douyin"],
+            style: "story",
+            cooperation: "active",
+            risk: "low",
+            hasPerformanceData: true,
+            metrics: {
+              screenPass: null,
+              projectFinish: null,
+              roi: null,
+              grossContrib: null,
+              vendorPassRateBps: 7500,
+              mcnFirstPassRateBps: 5000,
+            },
+            matchScore: 80,
+            matchTrend: [null, 72, null, 74, null, 80],
+            defaultRule: "CPT",
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      within(screen.getByText("厂家通过率").parentElement).getByText("75%"),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByText("MCN 初审通过率").parentElement).getByText("50%"),
+    ).toBeInTheDocument();
+    const trend = screen.getByLabelText("近 6 周匹配分趋势图");
+    expect(trend.querySelectorAll('circle[data-observed="true"]')).toHaveLength(
+      3,
+    );
+    expect(trend.querySelectorAll('path[data-series-segment="true"]')).toHaveLength(
+      0,
+    );
   });
 
   it("creates a streamer profile through the backend API and refreshes the pool", async () => {
@@ -4903,6 +4980,14 @@ describe("OpsReferenceApp streamer smoke", () => {
                 settlementHours: 3,
                 grossContrib: 150,
               },
+              {
+                id: "project-missing-metrics",
+                code: "PM",
+                name: "Missing Metrics Project",
+                status: "joined",
+                settlementHours: null,
+                grossContrib: null,
+              },
             ],
           },
         ]}
@@ -4915,6 +5000,8 @@ describe("OpsReferenceApp streamer smoke", () => {
     expect(screen.getByText("¥0.2k")).toBeInTheDocument();
     expect(screen.getByText("Live Project")).toBeInTheDocument();
     expect(screen.getByText("3.0 h · ¥150.0")).toBeInTheDocument();
+    expect(screen.getByText("Missing Metrics Project")).toBeInTheDocument();
+    expect(screen.getByText("暂无 · 暂无")).toBeInTheDocument();
   });
 
   it("updates streamer risk and refreshes the pool", async () => {
@@ -11677,6 +11764,93 @@ describe("OpsReferenceApp war room smoke", () => {
     );
     expect(await screen.findByText("11,250.00 元")).toBeInTheDocument();
     expect(await screen.findByText("margin_below_target")).toBeInTheDocument();
+  });
+
+  it("posts explicit streamer metric gaps to matching and project review", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/war-room/project-review") {
+        return {
+          ok: true,
+          json: async () => ({
+            report: {
+              shouldContinue: false,
+              grossMarginCents: 0,
+              marginRateBps: 0,
+              nextSuggestedQuoteCents: 0,
+              totalDurationMinutes: 0,
+              totalViews: 0,
+              bestStreamer: null,
+              worstStreamer: null,
+              nextRoundRecommendations: [],
+              riskNotes: [],
+            },
+          }),
+        };
+      }
+      if (String(url) === "/api/war-room/matching") {
+        return {
+          ok: true,
+          json: async () => ({ matches: [], suppliers: [] }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const streamerWithoutMetrics = {
+      ...taskStreamerCards[0],
+      metrics: {
+        screenPass: null,
+        projectFinish: null,
+        roi: null,
+        grossContrib: null,
+      },
+    };
+
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        projectCards={taskProjectCards}
+        streamerCards={[streamerWithoutMetrics]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看完整复盘" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/war-room/project-review",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /主播匹配引擎/ }));
+    fireEvent.click(screen.getByRole("button", { name: "导出厂家候选包" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/war-room/matching",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+
+    const reviewCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/war-room/project-review",
+    );
+    const matchingCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/war-room/matching",
+    );
+    expect(JSON.parse(reviewCall[1].body).streamers[0]).toMatchObject({
+      completionRateBps: null,
+      roiBps: null,
+      grossMarginContributionCents: null,
+    });
+    expect(JSON.parse(matchingCall[1].body).candidates[0]).toMatchObject({
+      completionRateBps: null,
+      screeningPassRateBps: null,
+      roiBps: null,
+      grossMarginContributionCents: null,
+      referenceProjects: [
+        expect.objectContaining({ result: "完成率 暂无数据" }),
+      ],
+    });
   });
 
   it("exposes the implemented AI copilot and script routes from M10", async () => {

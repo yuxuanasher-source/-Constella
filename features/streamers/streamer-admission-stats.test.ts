@@ -13,6 +13,8 @@ describe("aggregateStreamerAdmissionStats", () => {
       vendorPassRateBps: null,
       rejectionReasonHistogram: {},
       evaluatedCount: 0,
+      mcnFirstPassRateBps: null,
+      mcnFirstEvaluatedCount: 0,
     });
   });
 
@@ -69,6 +71,8 @@ describe("aggregateStreamerAdmissionStats", () => {
         compliance: 1,
       },
       evaluatedCount: 2,
+      mcnFirstPassRateBps: null,
+      mcnFirstEvaluatedCount: 0,
     });
   });
 
@@ -122,6 +126,8 @@ describe("aggregateStreamerAdmissionStats", () => {
       vendorPassRateBps: 10_000,
       rejectionReasonHistogram: { compliance: 1 },
       evaluatedCount: 1,
+      mcnFirstPassRateBps: null,
+      mcnFirstEvaluatedCount: 0,
     });
   });
 
@@ -182,6 +188,8 @@ describe("aggregateStreamerAdmissionStats", () => {
         compliance: 1,
       },
       evaluatedCount: 1,
+      mcnFirstPassRateBps: null,
+      mcnFirstEvaluatedCount: 0,
     });
   });
 
@@ -258,6 +266,8 @@ describe("aggregateStreamerAdmissionStats", () => {
       vendorPassRateBps: 0,
       rejectionReasonHistogram: { local_reason: 1 },
       evaluatedCount: 1,
+      mcnFirstPassRateBps: null,
+      mcnFirstEvaluatedCount: 0,
     });
   });
 
@@ -328,6 +338,101 @@ describe("aggregateStreamerAdmissionStats", () => {
       vendorPassRateBps: null,
       rejectionReasonHistogram: { legacy_reason: 1 },
       evaluatedCount: 0,
+      mcnFirstPassRateBps: null,
+      mcnFirstEvaluatedCount: 0,
+    });
+  });
+
+  it("uses the latest final MCN evaluation for each recording submission", () => {
+    expect(
+      aggregateStreamerAdmissionStats({
+        organizationId: "org-1",
+        applications: [
+          {
+            organization_id: "org-1",
+            admission_review_evaluations: [
+              {
+                id: "evaluation-sub-1-old",
+                submission_id: "submission-1",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "rejected",
+                created_at: "2026-07-24T00:00:00.000Z",
+                admission_review_checkpoint_results: [],
+              },
+              {
+                id: "evaluation-sub-1-new",
+                submission_id: "submission-1",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "approved",
+                created_at: "2026-07-25T00:00:00.000Z",
+                admission_review_checkpoint_results: [],
+              },
+              {
+                id: "evaluation-sub-2",
+                submission_id: "submission-2",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "selected",
+                created_at: "2026-07-25T00:00:00.000Z",
+                admission_review_checkpoint_results: [],
+              },
+              {
+                id: "evaluation-sub-3",
+                submission_id: "submission-3",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "needs_changes",
+                created_at: "2026-07-25T00:00:00.000Z",
+                admission_review_checkpoint_results: [],
+              },
+              {
+                id: "evaluation-sub-4-manual",
+                submission_id: "submission-4",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "manual_review",
+                created_at: "2026-07-25T00:00:00.000Z",
+                admission_review_checkpoint_results: [],
+              },
+              {
+                id: "evaluation-sub-5-pending",
+                submission_id: "submission-5",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "pending",
+                created_at: "2026-07-25T00:00:00.000Z",
+                admission_review_checkpoint_results: [],
+              },
+              {
+                id: "evaluation-sub-6-a",
+                submission_id: "submission-6",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "rejected",
+                created_at: "2026-07-25T00:00:00.000Z",
+                admission_review_checkpoint_results: [],
+              },
+              {
+                id: "evaluation-sub-6-b",
+                submission_id: "submission-6",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "approved",
+                created_at: "2026-07-25T00:00:00.000Z",
+                admission_review_checkpoint_results: [],
+              },
+            ],
+          },
+        ],
+      }),
+    ).toEqual({
+      vendorPassRateBps: null,
+      rejectionReasonHistogram: {},
+      evaluatedCount: 0,
+      mcnFirstPassRateBps: 7500,
+      mcnFirstEvaluatedCount: 4,
     });
   });
 });

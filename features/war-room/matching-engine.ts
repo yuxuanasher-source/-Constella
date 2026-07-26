@@ -17,10 +17,10 @@ export type StreamerCandidateSnapshot = {
   categories: string[];
   platforms: string[];
   styles: string[];
-  completionRateBps: number;
-  screeningPassRateBps: number;
-  roiBps: number;
-  grossMarginContributionCents: number;
+  completionRateBps: number | null;
+  screeningPassRateBps: number | null;
+  roiBps: number | null;
+  grossMarginContributionCents: number | null;
   riskTags: string[];
   availableMinutes: number;
   referenceProjects: StreamerReferenceProject[];
@@ -147,21 +147,41 @@ function scoreStreamer(
     reasons.push("style_match");
   }
 
-  const completionRate = safeBps(candidate.completionRateBps);
-  const passRate = safeBps(candidate.screeningPassRateBps);
-  score += Math.round((completionRate / 10000) * 20);
-  score += Math.round((passRate / 10000) * 15);
-  score += Math.round(
-    (Math.min(20000, safeBps(candidate.roiBps)) / 20000) * 10,
-  );
+  const completionRate =
+    candidate.completionRateBps === null
+      ? null
+      : safeBps(candidate.completionRateBps);
+  const passRate =
+    candidate.screeningPassRateBps === null
+      ? null
+      : safeBps(candidate.screeningPassRateBps);
+  if (completionRate === null) {
+    riskNotes.push("completion_rate_unavailable");
+  } else {
+    score += Math.round((completionRate / 10000) * 20);
+  }
+  if (passRate === null) {
+    riskNotes.push("screening_pass_rate_unavailable");
+  } else {
+    score += Math.round((passRate / 10000) * 15);
+  }
+  if (candidate.roiBps === null) {
+    riskNotes.push("roi_unavailable");
+  } else {
+    score += Math.round(
+      (Math.min(20000, safeBps(candidate.roiBps)) / 20000) * 10,
+    );
+  }
 
-  if (completionRate >= 8500) {
+  if (completionRate !== null && completionRate >= 8500) {
     reasons.push("high_completion_rate");
   }
-  if (passRate >= 8500) {
+  if (passRate !== null && passRate >= 8500) {
     reasons.push("high_screening_pass_rate");
   }
-  if (candidate.grossMarginContributionCents > 0) {
+  if (candidate.grossMarginContributionCents === null) {
+    riskNotes.push("gross_margin_contribution_unavailable");
+  } else if (candidate.grossMarginContributionCents > 0) {
     score += 5;
     reasons.push("positive_margin_contribution");
   } else if (candidate.grossMarginContributionCents < 0) {
@@ -194,6 +214,9 @@ function suggestSettlementMethod(
     return "base_salary";
   }
   if (
+    candidate.roiBps !== null &&
+    candidate.completionRateBps !== null &&
+    candidate.screeningPassRateBps !== null &&
     candidate.roiBps >= 10000 &&
     candidate.completionRateBps >= 8500 &&
     candidate.screeningPassRateBps >= 8500

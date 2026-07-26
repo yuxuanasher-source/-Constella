@@ -110,15 +110,19 @@ describe("loadCastingCandidates", () => {
 
     // 指标换算必须与主播池卡片同口径:百分比 ×100 = bps,元 ×100 = 分。
     const card = toStreamerCardDto(baseRow as never, { now: NOW });
+    expect(card.metrics.projectFinish).not.toBeNull();
+    expect(card.metrics.screenPass).not.toBeNull();
+    expect(card.metrics.roi).not.toBeNull();
+    expect(card.metrics.grossContrib).not.toBeNull();
     expect(candidate.completionRateBps).toBe(
-      Math.round(card.metrics.projectFinish * 100),
+      Math.round(card.metrics.projectFinish! * 100),
     );
     expect(candidate.screeningPassRateBps).toBe(
-      Math.round(card.metrics.screenPass * 100),
+      Math.round(card.metrics.screenPass! * 100),
     );
-    expect(candidate.roiBps).toBe(Math.round(card.metrics.roi * 10000));
+    expect(candidate.roiBps).toBe(Math.round(card.metrics.roi! * 10000));
     expect(candidate.grossMarginContributionCents).toBe(
-      Math.round(card.metrics.grossContrib * 100),
+      Math.round(card.metrics.grossContrib! * 100),
     );
 
     expect(candidate).toMatchObject({
@@ -160,6 +164,51 @@ describe("loadCastingCandidates", () => {
 
     expect(candidates[0].availableMinutes).toBe(900);
     expect(dataGaps).toContain("candidate_availability");
+  });
+
+  it("keeps a missing recording pass rate nullable and declares the gap", async () => {
+    const row = { ...baseRow, recording_submissions: [] };
+    const client = createClient([row]);
+
+    const { candidates, dataGaps } = await loadCastingCandidates(client, {
+      organizationId: "org-1",
+      requiredMinutes: 900,
+      now: NOW,
+    });
+
+    expect(candidates[0].screeningPassRateBps).toBeNull();
+    expect(dataGaps).toContain("candidate_screening_pass_rate");
+  });
+
+  it("declares ROI and contribution gaps for incomplete report inputs", async () => {
+    const row = {
+      ...baseRow,
+      live_reports: [
+        {
+          ...baseRow.live_reports[0],
+          viewers: null,
+          projects: { default_hourly_rate: null },
+        },
+      ],
+    };
+    const client = createClient([row]);
+
+    const { candidates, dataGaps } = await loadCastingCandidates(client, {
+      organizationId: "org-1",
+      requiredMinutes: 900,
+      now: NOW,
+    });
+
+    expect(candidates[0]).toMatchObject({
+      roiBps: null,
+      grossMarginContributionCents: null,
+    });
+    expect(dataGaps).toEqual(
+      expect.arrayContaining([
+        "candidate_roi",
+        "candidate_gross_margin_contribution",
+      ]),
+    );
   });
 
   it("filters by candidateIds when provided", async () => {

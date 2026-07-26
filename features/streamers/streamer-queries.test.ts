@@ -54,9 +54,20 @@ describe("streamer queries", () => {
             admission_review_evaluations: [
               {
                 id: "evaluation-1",
+                submission_id: "submission-1",
                 organization_id: "org-1",
                 stage: "vendor_second",
                 decision: "selected",
+                created_at: "2026-07-26T00:00:00.000Z",
+                admission_review_checkpoint_results: [],
+              },
+              {
+                id: "evaluation-mcn-1",
+                submission_id: "submission-1",
+                organization_id: "org-1",
+                stage: "mcn_first",
+                decision: "approved",
+                created_at: "2026-07-26T00:00:00.000Z",
                 admission_review_checkpoint_results: [],
               },
             ],
@@ -73,7 +84,7 @@ describe("streamer queries", () => {
     );
     expect(pool.select).toHaveBeenCalledWith(
       expect.stringContaining(
-        "admission_review_evaluations(id, vendor_review_id, organization_id",
+        "admission_review_evaluations(id, vendor_review_id, submission_id, organization_id, stage, decision, created_at",
       ),
     );
     expect(pool.select).toHaveBeenCalledWith(
@@ -94,9 +105,9 @@ describe("streamer queries", () => {
       "project_applications.admission_review_evaluations.organization_id",
       "org-1",
     );
-    expect(pool.eq).toHaveBeenCalledWith(
+    expect(pool.in).toHaveBeenCalledWith(
       "project_applications.admission_review_evaluations.stage",
-      "vendor_second",
+      ["vendor_second", "mcn_first"],
     );
     expect(pool.eq).toHaveBeenCalledWith(
       "project_applications.project_recording_vendor_reviews.organization_id",
@@ -114,6 +125,8 @@ describe("streamer queries", () => {
       vendorPassRateBps: 10_000,
       rejectionReasonHistogram: {},
       evaluatedCount: 1,
+      mcnFirstPassRateBps: 10_000,
+      mcnFirstEvaluatedCount: 1,
     });
   });
 

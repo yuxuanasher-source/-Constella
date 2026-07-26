@@ -81,6 +81,54 @@ describe("war room matching route", () => {
     });
   });
 
+  it("accepts explicit candidate metric gaps without coercing them to zero", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/war-room/matching", {
+        method: "POST",
+        body: JSON.stringify({
+          project: {
+            category: "moba",
+            platform: "douyin",
+            preferredStyles: [],
+            requiredMinutes: 0,
+          },
+          candidates: [
+            {
+              id: "streamer-gap",
+              name: "Gap",
+              categories: [],
+              platforms: [],
+              styles: [],
+              completionRateBps: null,
+              screeningPassRateBps: null,
+              roiBps: null,
+              grossMarginContributionCents: null,
+              riskTags: [],
+              availableMinutes: 0,
+              referenceProjects: [],
+            },
+          ],
+          suppliers: [],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      matches: [
+        {
+          streamerId: "streamer-gap",
+          riskNotes: expect.arrayContaining([
+            "completion_rate_unavailable",
+            "screening_pass_rate_unavailable",
+            "roi_unavailable",
+            "gross_margin_contribution_unavailable",
+          ]),
+        },
+      ],
+    });
+  });
+
   it("blocks streamers from internal matching risk notes", async () => {
     vi.mocked(getAuthContext).mockResolvedValue({
       ...auth,

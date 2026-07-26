@@ -77,6 +77,31 @@ describe("rankStreamerCandidates", () => {
       ]),
     });
   });
+
+  it("keeps a missing screening pass rate explicit in candidate risk notes", () => {
+    const [candidate] = rankStreamerCandidates({
+      project,
+      candidates: [
+        {
+          id: "streamer-no-recordings",
+          name: "No Recordings",
+          categories: ["moba"],
+          platforms: ["douyin"],
+          styles: ["高互动"],
+          completionRateBps: 9000,
+          screeningPassRateBps: null,
+          roiBps: 10000,
+          grossMarginContributionCents: 10000,
+          riskTags: [],
+          availableMinutes: 1200,
+          referenceProjects: [],
+        },
+      ],
+    });
+
+    expect(candidate.riskNotes).toContain("screening_pass_rate_unavailable");
+    expect(candidate.reasons).not.toContain("high_screening_pass_rate");
+  });
 });
 
 describe("scoreSupplierQuality", () => {
