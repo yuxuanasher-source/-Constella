@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   OrganizationLifecycleStatus,
   PlatformAuditDto,
+  PlatformCostModelDto,
   PlatformMetricTransaction,
   PlatformOrderDto,
   PlatformOrganizationCost,
@@ -227,7 +228,9 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
       await Promise.all([
         this.client
           .from("billing_plans")
-          .select("id, code, name, tier")
+          .select(
+            "id, code, name, tier, monthly_price_cents, annual_price_cents",
+          )
           .order("tier", { ascending: true }),
         this.client
           .from("organization_subscriptions")
@@ -308,6 +311,8 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
         code: plan.code as string,
         name: plan.name as string,
         tier: plan.tier as string,
+        monthlyPriceCents: plan.monthly_price_cents as number,
+        annualPriceCents: plan.annual_price_cents as number,
         activeSubscriptionCount: planSubscriptions.length,
         payingOrganizationCount: new Set(
           planTransactions
@@ -320,6 +325,46 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
           standardCostCents === null
             ? null
             : netRevenueCents - standardCostCents,
+      };
+    });
+  }
+
+  async listCostModels(): Promise<PlatformCostModelDto[]> {
+    const result = await this.client
+      .from("billing_plan_cost_versions")
+      .select(
+        `
+          id,
+          plan_id,
+          effective_from,
+          effective_to,
+          fixed_cost_cents,
+          per_seat_cost_cents,
+          per_active_streamer_cost_cents,
+          metric_unit_costs,
+          reason,
+          billing_plans!billing_plan_cost_versions_plan_id_fkey(name)
+        `,
+      )
+      .order("effective_from", { ascending: false });
+    assertNoError(result.error, "list plan cost models");
+
+    return ((result.data ?? []) as unknown as CostModelRow[]).map((row) => {
+      const metricUnitCosts = numericMetricCosts(row.metric_unit_costs);
+      return {
+        id: row.id,
+        planId: row.plan_id,
+        planName: firstRelation(row.billing_plans)?.name ?? "未知套餐",
+        effectiveFrom: row.effective_from,
+        effectiveTo: row.effective_to,
+        fixedCostCents: row.fixed_cost_cents,
+        perSeatCostCents: row.per_seat_cost_cents,
+        perActiveStreamerCostCents: row.per_active_streamer_cost_cents,
+        metricUnitCosts,
+        reason: row.reason,
+        coverageComplete: ["ocr", "ai", "storage_mb", "export"].every(
+          (metric) => typeof metricUnitCosts[metric] === "number",
+        ),
       };
     });
   }
@@ -382,6 +427,8 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
           result,
           error_message,
           trace_id,
+          before_json,
+          after_json,
           created_at,
           profiles!platform_admin_operation_logs_actor_user_id_fkey(full_name),
           organizations!platform_admin_operation_logs_target_organization_id_fkey(name)
@@ -804,6 +851,8 @@ type AuditRow = {
   result: string;
   error_message: string | null;
   trace_id: string;
+  before_json: Record<string, unknown>;
+  after_json: Record<string, unknown>;
   created_at: string;
   profiles: Relation<{ full_name: string }>;
   organizations: Relation<{ name: string }>;
@@ -814,6 +863,19 @@ type OverviewSubscriptionRow = {
   plan_id: string;
   billing_cycle: string;
   current_period_end: string;
+};
+
+type CostModelRow = {
+  id: string;
+  plan_id: string;
+  effective_from: string;
+  effective_to: string | null;
+  fixed_cost_cents: number;
+  per_seat_cost_cents: number;
+  per_active_streamer_cost_cents: number;
+  metric_unit_costs: Record<string, unknown>;
+  reason: string;
+  billing_plans: Relation<{ name: string }>;
 };
 
 function mapPrimaryAccount(
@@ -900,8 +962,27 @@ function mapAudit(row: AuditRow): PlatformAuditDto {
     result: row.result,
     errorMessage: row.error_message,
     traceId: row.trace_id,
+    beforeSummary: summarizeAuditSnapshot(row.before_json),
+    afterSummary: summarizeAuditSnapshot(row.after_json),
     createdAt: row.created_at,
   };
+}
+
+function summarizeAuditSnapshot(value: Record<string, unknown>) {
+  const keys = Object.keys(value ?? {});
+  if (keys.length === 0) {
+    return "无记录";
+  }
+  return `已记录 ${keys.length} 个字段：${keys.slice(0, 3).join("、")}`;
+}
+
+function numericMetricCosts(value: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(value ?? {}).filter(
+      (entry): entry is [string, number] =>
+        typeof entry[1] === "number" && Number.isFinite(entry[1]),
+    ),
+  );
 }
 
 function calculateOrganizationCost(

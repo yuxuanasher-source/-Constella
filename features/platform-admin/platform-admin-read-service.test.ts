@@ -28,6 +28,7 @@ function createRepository(
       pageSize: 20,
     })),
     listPlans: vi.fn(async () => []),
+    listCostModels: vi.fn(async () => []),
     listOrders: vi.fn(async () => ({
       items: [],
       total: 0,

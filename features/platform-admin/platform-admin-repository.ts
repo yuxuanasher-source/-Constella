@@ -1,6 +1,7 @@
 import type {
   OrganizationLifecycleStatus,
   PlatformAuditDto,
+  PlatformCostModelDto,
   PlatformMetricOrganization,
   PlatformMetricTransaction,
   PlatformOrderDto,
@@ -124,6 +125,7 @@ export type PlatformAdminRepository = {
   ): Promise<OrganizationDetailSource | null>;
   listUsers(query: UserListQuery): Promise<UserPageSource>;
   listPlans(period: ReportingPeriod): Promise<PlatformPlanPerformanceDto[]>;
+  listCostModels(): Promise<PlatformCostModelDto[]>;
   listOrders(query: OrderListQuery): Promise<OrderPageSource>;
   listAudit(query: AuditListQuery): Promise<AuditPageSource>;
   loadOverviewSource(period: ReportingPeriod): Promise<PlatformOverviewSource>;

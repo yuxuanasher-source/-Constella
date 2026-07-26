@@ -137,6 +137,8 @@ export type PlatformAuditDto = {
   result: string;
   errorMessage: string | null;
   traceId: string;
+  beforeSummary: string;
+  afterSummary: string;
   createdAt: string;
 };
 
@@ -145,11 +147,27 @@ export type PlatformPlanPerformanceDto = {
   code: string;
   name: string;
   tier: string;
+  monthlyPriceCents: number;
+  annualPriceCents: number;
   activeSubscriptionCount: number;
   payingOrganizationCount: number;
   netRevenueCents: number;
   standardCostCents: number | null;
   contributionMarginCents: number | null;
+};
+
+export type PlatformCostModelDto = {
+  id: string;
+  planId: string;
+  planName: string;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  fixedCostCents: number;
+  perSeatCostCents: number;
+  perActiveStreamerCostCents: number;
+  metricUnitCosts: Record<string, number>;
+  reason: string;
+  coverageComplete: boolean;
 };
 
 export type PlatformOrganizationDetailDto = PlatformOrganizationListItemDto & {
