@@ -112,7 +112,7 @@ export async function executePlatformAdminOperation<T>(input: {
   return result;
 }
 
-function operationEntry<T>(
+function operationEntry(
   input: {
     actor: PlatformAdminContext;
     action: string;

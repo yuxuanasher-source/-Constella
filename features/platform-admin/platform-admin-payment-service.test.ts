@@ -126,7 +126,7 @@ function createPaymentRepo() {
         : null;
     }),
     cancelPendingOrder: vi.fn(
-      async (orderId: string, _expectedUpdatedAt: string) => {
+      async (orderId: string) => {
         const order = await repo.getOrderById(orderId);
         if (!order || order.status !== "pending") {
           return null;

@@ -30,14 +30,16 @@ export async function PATCH(
 
   try {
     const { orderId } = paramsSchema.parse(await contextInput.params);
-    const { action: _action, ...command } = bodySchema.parse(
-      await request.json(),
-    );
+    const parsed = bodySchema.parse(await request.json());
     const data = await cancelPlatformOrder({
       repo: context.paymentRepo,
       actor: context.actor,
       orderId,
-      command,
+      command: {
+        expectedUpdatedAt: parsed.expectedUpdatedAt,
+        reason: parsed.reason,
+        idempotencyKey: parsed.idempotencyKey,
+      },
     });
     return Response.json({ data });
   } catch (error) {
