@@ -3526,3 +3526,138 @@ function defaultFetchResponse(url) {
     json: () => Promise.resolve({ matches: { recommendations: [] } }),
   });
 }
+
+describe("OverviewBoard AI conversation switcher", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function renderBoard() {
+    return render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+  }
+
+  it("lists conversation tabs and switches history on click", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url) => {
+        if (url === "/api/ai/conversations") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversations: [
+                  { id: "conversation-a", title: "会话A" },
+                  { id: "conversation-b", title: "会话B" },
+                ],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-a") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-a" },
+                messages: [{ id: "m-a", role: "user", content: "A 的历史" }],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-b") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-b" },
+                messages: [{ id: "m-b", role: "user", content: "B 的历史" }],
+              }),
+          });
+        }
+        return defaultFetchResponse(url);
+      }),
+    );
+
+    renderBoard();
+
+    await screen.findByRole("tab", { name: "会话A" });
+    await screen.findByText("A 的历史");
+
+    fireEvent.click(screen.getByRole("tab", { name: "会话B" }));
+
+    await screen.findByText("B 的历史");
+    expect(screen.queryByText("A 的历史")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "会话B" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
+  });
+
+  it("starts a fresh conversation from the new-conversation button", async () => {
+    const created = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url, options = {}) => {
+        if (url === "/api/ai/conversations" && options.method === "POST") {
+          created.push(JSON.parse(options.body || "{}"));
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: () =>
+              Promise.resolve({ conversation: { id: "conversation-new" } }),
+          });
+        }
+        if (url === "/api/ai/conversations") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversations: created.length
+                  ? [
+                      { id: "conversation-new", title: "新会话" },
+                      { id: "conversation-a", title: "会话A" },
+                    ]
+                  : [{ id: "conversation-a", title: "会话A" }],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-a") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-a" },
+                messages: [{ id: "m-a", role: "user", content: "A 的历史" }],
+              }),
+          });
+        }
+        return defaultFetchResponse(url);
+      }),
+    );
+
+    renderBoard();
+    await screen.findByText("A 的历史");
+
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+
+    await waitFor(() =>
+      expect(screen.queryByText("A 的历史")).not.toBeInTheDocument(),
+    );
+    expect(created).toHaveLength(1);
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "新会话" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
+  });
+});
