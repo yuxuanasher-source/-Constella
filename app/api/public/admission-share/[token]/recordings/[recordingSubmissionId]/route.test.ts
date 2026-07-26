@@ -4,6 +4,7 @@ import { GET } from "./route";
 
 import {
   getPublicAdmissionRecordingPlaybackSource,
+  preparePublicAdmissionShareAccess,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { createSignedDownloadUrl } from "@/features/storage/private-upload";
@@ -17,6 +18,7 @@ vi.mock("@/features/applications/admission-share-board", () => ({
       return { repo: "share-repo" };
     }),
   getPublicAdmissionRecordingPlaybackSource: vi.fn(),
+  preparePublicAdmissionShareAccess: vi.fn(),
 }));
 
 vi.mock("@/features/storage/private-upload", () => ({
@@ -37,6 +39,11 @@ const params = Promise.resolve({
 });
 const rpc = vi.fn();
 const supabase = { client: "supabase", storage: {}, rpc };
+const preparedAccess = {
+  token: "plain-token",
+  tokenHash: "a".repeat(64),
+  access: { id: "share-1", accessCodeHash: null },
+};
 
 describe("public admission recording playback route", () => {
   beforeEach(() => {
@@ -45,6 +52,9 @@ describe("public admission recording playback route", () => {
       data: [{ allowed: true, retry_after_seconds: 0, remaining: 29 }],
       error: null,
     });
+    vi.mocked(preparePublicAdmissionShareAccess).mockResolvedValue(
+      preparedAccess as never,
+    );
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
     vi.mocked(getPrivateStorageBucket).mockReturnValue("jy-private");
     vi.mocked(createSignedDownloadUrl).mockResolvedValue({
@@ -60,7 +70,10 @@ describe("public admission recording playback route", () => {
 
     const response = await GET(
       new Request(
-        "http://localhost/api/public/admission-share/plain-token/recordings/rec-2?accessCode=2468",
+        "http://localhost/api/public/admission-share/plain-token/recordings/rec-2",
+        {
+          headers: { Cookie: "admission_share_capability=signed-capability" },
+        },
       ),
       { params },
     );
@@ -75,7 +88,8 @@ describe("public admission recording playback route", () => {
     expect(getPublicAdmissionRecordingPlaybackSource).toHaveBeenCalledWith({
       repo: { repo: "share-repo" },
       token: "plain-token",
-      accessCode: "2468",
+      capability: "signed-capability",
+      preparedAccess,
       recordingSubmissionId: "rec-2",
     });
     expect(createSignedDownloadUrl).toHaveBeenCalledWith({

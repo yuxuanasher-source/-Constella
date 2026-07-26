@@ -14,8 +14,13 @@ const migration = readFileSync(
 describe("admission share public security migration", () => {
   it("adds backward-compatible salt and access-code lockout state", () => {
     expect(migration).toContain("access_code_salt text");
+    expect(migration).toContain("access_code_hash_version text");
+    expect(migration).toContain("access_code_hash_params jsonb");
     expect(migration).toContain(
       "access_code_failure_count integer not null default 0",
+    );
+    expect(migration).toContain(
+      "access_code_failure_version bigint not null default 0",
     );
     expect(migration).toContain("access_code_locked_until timestamptz");
     expect(migration).toContain("access_code_failure_count >= 0");
@@ -35,6 +40,13 @@ describe("admission share public security migration", () => {
     expect(migration).toContain(
       "p_window_seconds is null or p_window_seconds <= 0",
     );
+    expect(migration).toContain("p_limit > 1000000");
+    expect(migration).toContain(
+      "admission_share_public_rate_limit_buckets_updated_at_idx",
+    );
+    expect(migration).toMatch(
+      /delete from public\.admission_share_public_rate_limit_buckets[\s\S]+limit 100/u,
+    );
   });
 
   it("pins and restricts all public-security RPC privileges to service_role", () => {
@@ -42,6 +54,7 @@ describe("admission share public security migration", () => {
       "consume_admission_share_rate_limit",
       "record_admission_share_access_code_failure",
       "reset_admission_share_access_code_failures",
+      "mark_admission_share_board_viewed",
     ]) {
       expect(migration).toMatch(
         new RegExp(
@@ -69,8 +82,19 @@ describe("admission share public security migration", () => {
       "least(board.access_code_failure_count + 1, 5)",
     );
     expect(migration).toContain("p_failed_at + interval '15 minutes'");
+    expect(migration).toContain("p_failed_at is null");
+    expect(migration).toContain("access_code_failure_version + 1");
     expect(migration).toMatch(
-      /create or replace function public\.reset_admission_share_access_code_failures\([\s\S]+access_code_failure_count = 0,[\s\S]+access_code_locked_until = null/u,
+      /where board\.id = p_share_board_id[\s\S]+board\.access_code_locked_until is null[\s\S]+board\.access_code_locked_until <= p_failed_at/u,
+    );
+    expect(migration).toMatch(
+      /create or replace function public\.reset_admission_share_access_code_failures\([\s\S]+p_observed_failure_version bigint[\s\S]+where id = p_share_board_id[\s\S]+access_code_failure_version = p_observed_failure_version[\s\S]+returning true/u,
+    );
+  });
+
+  it("records last viewed time monotonically through a restricted RPC", () => {
+    expect(migration).toMatch(
+      /create or replace function public\.mark_admission_share_board_viewed\([\s\S]+greatest\([\s\S]+last_viewed_at[\s\S]+p_viewed_at/u,
     );
   });
 });

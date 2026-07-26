@@ -30,6 +30,11 @@ export const ADMISSION_SHARE_RATE_LIMITS = {
     limit: 10,
     windowSeconds: 600,
   },
+  unlock: {
+    scope: "admission-share-unlock",
+    limit: 5,
+    windowSeconds: 600,
+  },
 } as const satisfies Record<string, AdmissionShareRateLimitPolicy>;
 
 export class RateLimitDeniedError extends Error {
@@ -62,30 +67,20 @@ export async function enforceAdmissionShareRateLimit({
   token: string;
   policy: AdmissionShareRateLimitPolicy;
 }): Promise<void> {
-  const dimensions = [
-    { name: "ip" as const, value: clientIpFromRequest(request) },
-    { name: "token" as const, value: token.trim() },
-  ];
+  await enforceAdmissionShareIpRateLimit({ client, request, token, policy });
+  await enforceAdmissionShareTokenRateLimit({ client, request, token, policy });
+}
 
-  for (const dimension of dimensions) {
-    const result = await consumeBucket({
-      client,
-      scope: `${policy.scope}:${dimension.name}`,
-      dimensionHash: hashDimensionKey(
-        policy.scope,
-        dimension.name,
-        dimension.value,
-      ),
-      limit: policy.limit,
-      windowSeconds: policy.windowSeconds,
-    });
-    if (!result.allowed) {
-      throw new RateLimitDeniedError(
-        Math.max(1, result.retryAfterSeconds),
-        dimension.name,
-      );
-    }
-  }
+export async function enforceAdmissionShareIpRateLimit(
+  input: Parameters<typeof enforceAdmissionShareRateLimit>[0],
+) {
+  await enforceDimension(input, "ip", clientIpFromRequest(input.request));
+}
+
+export async function enforceAdmissionShareTokenRateLimit(
+  input: Parameters<typeof enforceAdmissionShareRateLimit>[0],
+) {
+  await enforceDimension(input, "token", input.token.trim());
 }
 
 export function clientIpFromRequest(request: Request): string {
@@ -141,6 +136,26 @@ function hashDimensionKey(
     .update("\0")
     .update(value)
     .digest("hex");
+}
+
+async function enforceDimension(
+  { client, policy }: Parameters<typeof enforceAdmissionShareRateLimit>[0],
+  dimension: "token" | "ip",
+  value: string,
+) {
+  const result = await consumeBucket({
+    client,
+    scope: `${policy.scope}:${dimension}`,
+    dimensionHash: hashDimensionKey(policy.scope, dimension, value),
+    limit: policy.limit,
+    windowSeconds: policy.windowSeconds,
+  });
+  if (!result.allowed) {
+    throw new RateLimitDeniedError(
+      Math.max(1, result.retryAfterSeconds),
+      dimension,
+    );
+  }
 }
 
 async function consumeBucket({

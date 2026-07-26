@@ -1,18 +1,20 @@
 import { NextResponse } from "next/server";
 
 import {
-  getPublicAdmissionRecordingPlaybackSource,
   preparePublicAdmissionShareAccess,
   SupabaseAdmissionShareBoardRepository,
+  verifyPublicAdmissionShareAccessCode,
 } from "@/features/applications/admission-share-board";
 import {
   jsonError,
+  readJsonBody,
   RouteError,
 } from "@/features/applications/application-route-utils";
-import { createSignedDownloadUrl } from "@/features/storage/private-upload";
-import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
-import { admissionShareCapabilityFromRequest } from "@/lib/http/admission-share-capability";
+import {
+  ADMISSION_SHARE_CAPABILITY_COOKIE,
+  signAdmissionShareCapability,
+} from "@/lib/http/admission-share-capability";
 import {
   ADMISSION_SHARE_RATE_LIMITS,
   enforceAdmissionShareIpRateLimit,
@@ -21,14 +23,12 @@ import {
   RateLimitUnavailableError,
 } from "@/lib/http/rate-limit";
 
-export async function GET(
+export async function POST(
   request: Request,
-  {
-    params,
-  }: { params: Promise<{ token: string; recordingSubmissionId: string }> },
+  { params }: { params: Promise<{ token: string }> },
 ) {
   try {
-    const { token, recordingSubmissionId } = await params;
+    const { token } = await params;
     const supabase = createSupabaseAdminClient();
     if (!supabase) {
       throw new RouteError("Public share service is unavailable", 500);
@@ -37,40 +37,51 @@ export async function GET(
       client: supabase,
       request,
       token,
-      policy: ADMISSION_SHARE_RATE_LIMITS.recording,
+      policy: ADMISSION_SHARE_RATE_LIMITS.unlock,
     };
     await enforceAdmissionShareIpRateLimit(rateLimitInput);
 
     const repo = new SupabaseAdmissionShareBoardRepository(supabase);
+    const now = new Date().toISOString();
     const preparedAccess = await preparePublicAdmissionShareAccess({
       repo,
       token,
-      now: new Date().toISOString(),
+      now,
     });
     await enforceAdmissionShareTokenRateLimit(rateLimitInput);
-    const source = await getPublicAdmissionRecordingPlaybackSource({
+
+    const body = await readJsonBody(request);
+    const accessCode =
+      typeof body.accessCode === "string" ? body.accessCode.trim() : "";
+    await verifyPublicAdmissionShareAccessCode({
       repo,
-      token,
-      capability: admissionShareCapabilityFromRequest(request),
-      preparedAccess,
-      recordingSubmissionId,
+      access: preparedAccess.access,
+      accessCode,
+      now,
     });
 
-    if (source.storagePath) {
-      const signed = await createSignedDownloadUrl({
-        client: supabase,
-        bucket: getPrivateStorageBucket(),
-        path: source.storagePath,
-        expiresInSeconds: 3600,
+    const response = NextResponse.json({ unlocked: true });
+    if (preparedAccess.access.accessCodeHash) {
+      const capability = signAdmissionShareCapability({
+        boardId: preparedAccess.access.id,
+        tokenHash: preparedAccess.tokenHash,
+        accessCodeHash: preparedAccess.access.accessCodeHash,
+        boardExpiresAt: preparedAccess.access.expiresAt,
+        now,
       });
-      return NextResponse.redirect(signed.signedUrl, 302);
+      response.cookies.set(
+        ADMISSION_SHARE_CAPABILITY_COOKIE,
+        capability.value,
+        {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: "lax",
+          path: `/api/public/admission-share/${encodeURIComponent(token)}`,
+          expires: new Date(capability.expiresAt),
+        },
+      );
     }
-
-    if (source.recordingUrl) {
-      return NextResponse.redirect(source.recordingUrl, 302);
-    }
-
-    throw new RouteError("Recording playback source is unavailable", 404);
+    return response;
   } catch (error) {
     if (error instanceof RateLimitDeniedError) {
       return NextResponse.json(

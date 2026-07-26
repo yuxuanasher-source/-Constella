@@ -10,6 +10,7 @@ import {
 } from "@/features/admission-review/evaluation-service";
 import {
   getPublicAdmissionShareBoard,
+  preparePublicAdmissionShareAccess,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import {
@@ -17,9 +18,11 @@ import {
   RouteError,
 } from "@/features/applications/application-route-utils";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { admissionShareCapabilityFromRequest } from "@/lib/http/admission-share-capability";
 import {
   ADMISSION_SHARE_RATE_LIMITS,
-  enforceAdmissionShareRateLimit,
+  enforceAdmissionShareIpRateLimit,
+  enforceAdmissionShareTokenRateLimit,
   RateLimitDeniedError,
   RateLimitUnavailableError,
 } from "@/lib/http/rate-limit";
@@ -37,19 +40,27 @@ export async function GET(
     if (!supabase) {
       throw new RouteError("Public share service is unavailable", 500);
     }
-    await enforceAdmissionShareRateLimit({
+    const rateLimitInput = {
       client: supabase,
       request,
       token,
       policy: ADMISSION_SHARE_RATE_LIMITS.board,
-    });
+    };
+    await enforceAdmissionShareIpRateLimit(rateLimitInput);
 
     const repo = new SupabaseAdmissionShareBoardRepository(supabase);
+    const preparedAccess = await preparePublicAdmissionShareAccess({
+      repo,
+      token,
+      now: new Date().toISOString(),
+    });
+    await enforceAdmissionShareTokenRateLimit(rateLimitInput);
     const { organizationId, ...shareBoard } =
       await getPublicAdmissionShareBoard({
         repo,
         token,
-        accessCode: optionalSearchParam(request, "accessCode"),
+        capability: admissionShareCapabilityFromRequest(request),
+        preparedAccess,
       });
 
     // 厂家端可选理由标签（仅 key/名称/说明，不泄漏内部配置）。
@@ -82,9 +93,4 @@ export async function GET(
     }
     return jsonError(error);
   }
-}
-
-function optionalSearchParam(request: Request, key: string) {
-  const value = new URL(request.url).searchParams.get(key);
-  return value?.trim() || undefined;
 }
