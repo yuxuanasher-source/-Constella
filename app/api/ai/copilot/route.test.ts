@@ -151,7 +151,7 @@ describe("AI copilot route", () => {
           referenceProjects: [],
         },
       ],
-      dataGaps: ["candidate_roi_proxy"],
+      dataGaps: [],
     });
 
     const response = await POST(
@@ -183,7 +183,7 @@ describe("AI copilot route", () => {
       }),
     );
     expect(body.intent).toBe("casting_advice");
-    expect(body.dataGaps).toEqual(["candidate_roi_proxy"]);
+    expect(body.dataGaps).toEqual([]);
     expect(body.validation).toEqual({ valid: true, errors: [] });
   });
 

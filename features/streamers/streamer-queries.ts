@@ -71,6 +71,8 @@ export type StreamerTaskMetricRow = {
 };
 
 export type StreamerReportMetricRow = {
+  id?: string;
+  live_task_id?: string | null;
   status: string;
   settlement_duration: number | null;
   evidence_level: string | null;
@@ -81,6 +83,36 @@ export type StreamerReportMetricRow = {
     | { default_hourly_rate: number | null }
     | { default_hourly_rate: number | null }[]
     | null;
+  settlement_batch_items?: Array<{
+    id: string;
+    streamer_id: string | null;
+    live_report_id: string | null;
+    computed_amount: number | string;
+    manual_amount: number | string;
+    adjustment_amount: number | string;
+    settlement_batches?:
+      | { organization_id?: string | null; batch_type: string; status: string }
+      | {
+          organization_id?: string | null;
+          batch_type: string;
+          status: string;
+        }[]
+      | null;
+  }>;
+  settlement_batch_item_reports?: Array<{
+    settlement_batch_item_id: string;
+    settlement_batch_items?:
+      | NonNullable<StreamerReportMetricRow["settlement_batch_items"]>[number]
+      | NonNullable<
+          StreamerReportMetricRow["settlement_batch_items"]
+        >[number][]
+      | null;
+  }>;
+  streamer_metrics?: Array<{
+    source_report_id: string | null;
+    metric_key: string;
+    metric_value: number;
+  }>;
 };
 
 export type StreamerProjectMetricRow = {
@@ -115,27 +147,47 @@ export async function listStreamerPool(
   const { data, error } = await supabase
     .from("streamers")
     .select(
-      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), project_applications(organization_id, project_recording_vendor_reviews(id, organization_id, decision), admission_review_evaluations(id, vendor_review_id, submission_id, organization_id, stage, decision, created_at, admission_review_checkpoint_results(organization_id, checkpoint_key, verdict))), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
+      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), project_applications(organization_id, project_recording_vendor_reviews(id, organization_id, decision), admission_review_evaluations(id, vendor_review_id, submission_id, organization_id, stage, decision, created_at, admission_review_checkpoint_results(organization_id, checkpoint_key, verdict))), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(id, live_task_id, status, settlement_duration, evidence_level, viewers, created_at, project_id, settlement_batch_items!settlement_batch_items_live_report_id_fkey(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status)), settlement_batch_item_reports(settlement_batch_item_id, settlement_batch_items(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status))), streamer_metrics(source_report_id, metric_key, metric_value), projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
     )
     // 组织过滤放在查询层（RLS 仍作为第二道防线）。
     .eq("organization_id", organizationId)
+    .eq("live_reports.settlement_batch_items.organization_id", organizationId)
+    .eq(
+      "live_reports.settlement_batch_items.settlement_batches.organization_id",
+      organizationId,
+    )
+    .eq(
+      "live_reports.settlement_batch_item_reports.organization_id",
+      organizationId,
+    )
+    .eq(
+      "live_reports.settlement_batch_item_reports.settlement_batch_items.organization_id",
+      organizationId,
+    )
+    .eq(
+      "live_reports.settlement_batch_item_reports.settlement_batch_items.settlement_batches.organization_id",
+      organizationId,
+    )
+    .eq("live_reports.streamer_metrics.organization_id", organizationId)
     .eq("project_applications.organization_id", organizationId)
     .eq(
       "project_applications.project_recording_vendor_reviews.organization_id",
       organizationId,
     )
-    .in(
-      "project_applications.project_recording_vendor_reviews.decision",
-      ["selected", "backup", "rejected", "needs_changes"],
-    )
+    .in("project_applications.project_recording_vendor_reviews.decision", [
+      "selected",
+      "backup",
+      "rejected",
+      "needs_changes",
+    ])
     .eq(
       "project_applications.admission_review_evaluations.organization_id",
       organizationId,
     )
-    .in(
-      "project_applications.admission_review_evaluations.stage",
-      ["vendor_second", "mcn_first"],
-    )
+    .in("project_applications.admission_review_evaluations.stage", [
+      "vendor_second",
+      "mcn_first",
+    ])
     .eq(
       "project_applications.admission_review_evaluations.admission_review_checkpoint_results.organization_id",
       organizationId,
@@ -188,7 +240,7 @@ export async function getStreamerProfileRow(
   const { data, error } = await supabase
     .from("streamers")
     .select(
-      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, skills, availability, equipment, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, streamer_accounts(id, platform, account_handle, follower_count, is_primary, verified_at), recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
+      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, skills, availability, equipment, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, streamer_accounts(id, platform, account_handle, follower_count, is_primary, verified_at), recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), live_reports(id, live_task_id, status, settlement_duration, evidence_level, viewers, created_at, project_id, settlement_batch_items!settlement_batch_items_live_report_id_fkey(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status)), settlement_batch_item_reports(settlement_batch_item_id, settlement_batch_items(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status))), streamer_metrics(source_report_id, metric_key, metric_value), projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
     )
     .eq("id", streamerId)
     .maybeSingle<StreamerListRow>();

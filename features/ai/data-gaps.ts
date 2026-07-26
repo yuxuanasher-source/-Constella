@@ -10,17 +10,16 @@ const DATA_GAP_CAPTIONS: Record<string, string> = {
   supplier_quality: "供应商质量评分暂无数据来源,本次复盘未纳入供应商表现",
   supplier_cost_unavailable: "供应商成本读取失败,本次按零计入",
   payable_from_pool_estimate: "应付金额来自结算池预估,尚未生成正式批次",
-  streamer_roi: "主播投产比暂无真实数据来源,相关指标按缺失处理",
+  streamer_roi: "主播缺少归因 GMV 或有效实际结算,投产比按缺失处理",
   streamer_disputes: "主播争议记录暂无数据来源,相关计数按缺失处理",
   streamer_margin_allocation: "主播毛利贡献为按直播时长分摊的估算口径",
-  candidate_roi_proxy: "候选主播投产比为观众密度的代理口径",
+  candidate_roi: "候选主播缺少归因 GMV 或有效实际结算,投产比按缺失处理",
   candidate_availability: "部分候选主播可排期时长为近期任务时长的估算口径",
 };
 
 export function dataGapCaveats(gaps: string[]): AgentOutput["caveats"] {
   return Array.from(new Set(gaps)).map((gap) => ({
-    summary:
-      DATA_GAP_CAPTIONS[gap] ?? "部分数据暂无真实来源,已按缺失口径处理",
+    summary: DATA_GAP_CAPTIONS[gap] ?? "部分数据暂无真实来源,已按缺失口径处理",
     unverifiedExternalFactor: true as const,
   }));
 }

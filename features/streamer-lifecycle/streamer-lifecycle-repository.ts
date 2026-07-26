@@ -1,4 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  readReportSettlementItems,
+  selectAuthoritativeApprovedReports,
+  type SettlementItemAmount,
+} from "@/features/streamers/streamer-report-economics";
 
 import type {
   AttendanceCandidateTask,
@@ -82,16 +87,21 @@ type SnapshotRow = {
   completed_sessions: number;
   broadcast_rate_bps: number;
   total_live_minutes: number;
+  avg_session_minutes: number | string;
   total_revenue_amount: number;
   avg_session_revenue_amount: number;
-  avg_session_roi_bps: number | null;
+  total_settlement_amount: number | string | null;
+  actual_hourly_rate: number | string | null;
+  total_gmv_amount: number | string | null;
+  roi_bps: number | null;
+  views_per_hour: number | string | null;
   total_viewers: number;
   avg_session_viewers: number;
   computed_at: string;
 };
 
 const snapshotSelect =
-  "id, streamer_id, period_start, period_end, scheduled_sessions, live_sessions, completed_sessions, broadcast_rate_bps, total_live_minutes, total_revenue_amount, avg_session_revenue_amount, avg_session_roi_bps, total_viewers, avg_session_viewers, computed_at";
+  "id, streamer_id, period_start, period_end, scheduled_sessions, live_sessions, completed_sessions, broadcast_rate_bps, total_live_minutes, avg_session_minutes, total_revenue_amount, avg_session_revenue_amount, total_settlement_amount, actual_hourly_rate, total_gmv_amount, roi_bps, views_per_hour, total_viewers, avg_session_viewers, computed_at";
 
 type MaybeArray<T> = T | T[] | null;
 
@@ -102,11 +112,41 @@ type PerformanceTaskRow = {
   system_started_at: string | null;
   system_duration: number;
   live_reports: MaybeArray<{
+    id: string;
+    live_task_id: string | null;
+    created_at: string | null;
     settlement_duration: number | null;
     viewers: number | null;
     status: string;
   }>;
   projects: MaybeArray<{ default_hourly_rate: number | null }>;
+};
+
+type PerformanceSettlementItemRow = {
+  id: string;
+  streamer_id: string | null;
+  live_report_id: string | null;
+  computed_amount: number | string;
+  manual_amount: number | string;
+  adjustment_amount: number | string;
+  settlement_batches: MaybeArray<{
+    organization_id: string | null;
+    batch_type: string;
+    status: string;
+  }>;
+};
+
+type PerformanceSettlementItemReportRow = {
+  live_report_id: string;
+  settlement_batch_item_id: string;
+  settlement_batch_items: MaybeArray<PerformanceSettlementItemRow>;
+};
+
+type PerformanceGmvRow = {
+  source_report_id: string | null;
+  metric_key: string;
+  metric_value: number;
+  recorded_at: string;
 };
 
 export class SupabaseStreamerLifecycleRepository implements StreamerLifecycleRepository {
@@ -467,7 +507,7 @@ export class SupabaseStreamerLifecycleRepository implements StreamerLifecycleRep
     const { data, error } = await this.client
       .from("live_tasks")
       .select(
-        "id, status, planned_start_at, system_started_at, system_duration, live_reports(settlement_duration, viewers, status), projects(default_hourly_rate)",
+        "id, status, planned_start_at, system_started_at, system_duration, live_reports(id, live_task_id, created_at, settlement_duration, viewers, status), projects(default_hourly_rate)",
       )
       .eq("organization_id", organizationId)
       .eq("streamer_id", streamerId)
@@ -479,10 +519,145 @@ export class SupabaseStreamerLifecycleRepository implements StreamerLifecycleRep
       throw error;
     }
 
-    return ((data ?? []) as PerformanceTaskRow[]).map((row) => {
-      const report = firstOf(row.live_reports)
-        ? pickReport(row.live_reports)
-        : null;
+    const tasks = ((data ?? []) as PerformanceTaskRow[]).map((row) => {
+      const reports = Array.isArray(row.live_reports)
+        ? row.live_reports
+        : row.live_reports
+          ? [row.live_reports]
+          : [];
+      const report =
+        selectAuthoritativeApprovedReports(
+          reports.map((candidate) => ({
+            ...candidate,
+            live_task_id: candidate.live_task_id ?? row.id,
+          })),
+        )[0] ?? null;
+      return { row, report };
+    });
+    const reportIds = [
+      ...new Set(
+        tasks
+          .map(({ report }) => report?.id ?? null)
+          .filter((reportId): reportId is string => reportId !== null),
+      ),
+    ];
+    const settlementItemsByReport = new Map<
+      string,
+      SettlementItemAmount[] | null
+    >();
+    const gmvByReport = new Map<string, number>();
+
+    if (reportIds.length > 0) {
+      const [settlementResult, settlementLinkResult, gmvResult] =
+        await Promise.all([
+        this.client
+          .from("settlement_batch_items")
+          .select(
+            "id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches!inner(organization_id, batch_type, status)",
+          )
+          .eq("organization_id", organizationId)
+          .eq("streamer_id", streamerId)
+          .in("live_report_id", reportIds)
+          .eq("settlement_batches.organization_id", organizationId)
+          .eq("settlement_batches.batch_type", "payable")
+          .in("settlement_batches.status", ["confirmed", "locked"])
+          .limit(5000),
+        this.client
+          .from("settlement_batch_item_reports")
+          .select(
+            "live_report_id, settlement_batch_item_id, settlement_batch_items!inner(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches!inner(organization_id, batch_type, status))",
+          )
+          .eq("organization_id", organizationId)
+          .in("live_report_id", reportIds)
+          .eq("settlement_batch_items.organization_id", organizationId)
+          .eq("settlement_batch_items.streamer_id", streamerId)
+          .eq(
+            "settlement_batch_items.settlement_batches.organization_id",
+            organizationId,
+          )
+          .eq("settlement_batch_items.settlement_batches.batch_type", "payable")
+          .in("settlement_batch_items.settlement_batches.status", [
+            "confirmed",
+            "locked",
+          ])
+          .limit(5000),
+        this.client
+          .from("streamer_metrics")
+          .select("source_report_id, metric_key, metric_value, recorded_at")
+          .eq("organization_id", organizationId)
+          .eq("streamer_id", streamerId)
+          .eq("metric_key", "gmv")
+          .in("source_report_id", reportIds)
+          .order("recorded_at", { ascending: false })
+          .limit(5000),
+        ]);
+
+      if (settlementResult.error) {
+        throw settlementResult.error;
+      }
+      if (settlementLinkResult.error) {
+        throw settlementLinkResult.error;
+      }
+      if (gmvResult.error) {
+        throw gmvResult.error;
+      }
+
+      const directItemsByReport = new Map<
+        string,
+        PerformanceSettlementItemRow[]
+      >();
+      for (const item of (settlementResult.data ??
+        []) as PerformanceSettlementItemRow[]) {
+        if (!item.live_report_id) continue;
+        const items = directItemsByReport.get(item.live_report_id) ?? [];
+        items.push(item);
+        directItemsByReport.set(item.live_report_id, items);
+      }
+      const linksByReport = new Map<
+        string,
+        PerformanceSettlementItemReportRow[]
+      >();
+      for (const link of (settlementLinkResult.data ??
+        []) as PerformanceSettlementItemReportRow[]) {
+        if (!link.live_report_id) continue;
+        const links = linksByReport.get(link.live_report_id) ?? [];
+        links.push(link);
+        linksByReport.set(link.live_report_id, links);
+      }
+      for (const reportId of reportIds) {
+        settlementItemsByReport.set(
+          reportId,
+          readReportSettlementItems(
+            {
+              id: reportId,
+              status: "approved",
+              settlement_batch_items:
+                directItemsByReport.get(reportId) ?? [],
+              settlement_batch_item_reports:
+                linksByReport.get(reportId) ?? [],
+            },
+            organizationId,
+            streamerId,
+          ),
+        );
+      }
+
+      for (const metric of (gmvResult.data ?? []) as PerformanceGmvRow[]) {
+        if (
+          metric.source_report_id &&
+          metric.metric_key === "gmv" &&
+          !gmvByReport.has(metric.source_report_id)
+        ) {
+          const metricValue = toFiniteNumber(metric.metric_value);
+          if (metricValue !== null) {
+            gmvByReport.set(metric.source_report_id, metricValue);
+          }
+        }
+      }
+    }
+
+    return tasks.map(({ row, report }) => {
+      const reportId = report?.id ?? null;
       return {
         taskId: row.id,
         status: row.status,
@@ -492,6 +667,14 @@ export class SupabaseStreamerLifecycleRepository implements StreamerLifecycleRep
         settlementDuration: report?.settlement_duration ?? null,
         viewers: report?.viewers ?? null,
         projectHourlyRate: firstOf(row.projects)?.default_hourly_rate ?? null,
+        settlementItems:
+          reportId && settlementItemsByReport.has(reportId)
+            ? (settlementItemsByReport.get(reportId) ?? null)
+            : null,
+        attributedGmvAmount:
+          reportId && gmvByReport.has(reportId)
+            ? (gmvByReport.get(reportId) ?? null)
+            : null,
       };
     });
   }
@@ -612,9 +795,14 @@ function toSnapshotRecord(row: SnapshotRow): PerformanceSnapshotRecord {
     completedSessions: row.completed_sessions,
     broadcastRateBps: row.broadcast_rate_bps,
     totalLiveMinutes: row.total_live_minutes,
+    avgSessionMinutes: Number(row.avg_session_minutes),
     totalRevenueAmount: Number(row.total_revenue_amount),
     avgSessionRevenueAmount: Number(row.avg_session_revenue_amount),
-    avgSessionRoiBps: row.avg_session_roi_bps,
+    totalSettlementAmount: toFiniteNumber(row.total_settlement_amount),
+    actualHourlyRate: toFiniteNumber(row.actual_hourly_rate),
+    totalGmvAmount: toFiniteNumber(row.total_gmv_amount),
+    roiBps: row.roi_bps,
+    viewsPerHour: toFiniteNumber(row.views_per_hour),
     totalViewers: row.total_viewers,
     avgSessionViewers: row.avg_session_viewers,
     computedAt: row.computed_at,
@@ -647,16 +835,10 @@ function firstOf<T>(value: MaybeArray<T>): T | null {
   return value ?? null;
 }
 
-function pickReport(
-  value: MaybeArray<{
-    settlement_duration: number | null;
-    viewers: number | null;
-    status: string;
-  }>,
-) {
-  const reports = Array.isArray(value) ? value : value ? [value] : [];
-  const usable = reports.filter((report) => report.status !== "voided");
-  return (
-    usable.find((report) => report.status === "approved") ?? usable[0] ?? null
-  );
+function toFiniteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }

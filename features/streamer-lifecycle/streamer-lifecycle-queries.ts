@@ -16,8 +16,14 @@ export type StreamerLifecycleOverviewRow = {
   lateCount: number;
   absentCount: number;
   broadcastRateBps: number | null;
+  avgSessionMinutes: number | null;
   avgSessionRevenueAmount: number | null;
   totalRevenueAmount: number | null;
+  totalSettlementAmount: number | null;
+  actualHourlyRate: number | null;
+  totalGmvAmount: number | null;
+  roiBps: number | null;
+  viewsPerHour: number | null;
   liveSessions: number | null;
   snapshotPeriodEnd: string | null;
 };
@@ -74,7 +80,7 @@ export async function getStreamerLifecycleOverview(
       client
         .from("streamer_performance_snapshots")
         .select(
-          "streamer_id, period_end, broadcast_rate_bps, avg_session_revenue_amount, total_revenue_amount, live_sessions, computed_at",
+          "streamer_id, period_end, broadcast_rate_bps, avg_session_minutes, avg_session_revenue_amount, total_revenue_amount, total_settlement_amount, actual_hourly_rate, total_gmv_amount, roi_bps, views_per_hour, live_sessions, computed_at",
         )
         .order("period_end", { ascending: false })
         .order("computed_at", { ascending: false })
@@ -114,8 +120,14 @@ export async function getStreamerLifecycleOverview(
     {
       periodEnd: string;
       broadcastRateBps: number;
+      avgSessionMinutes: number;
       avgSessionRevenueAmount: number;
       totalRevenueAmount: number;
+      totalSettlementAmount: number | null;
+      actualHourlyRate: number | null;
+      totalGmvAmount: number | null;
+      roiBps: number | null;
+      viewsPerHour: number | null;
       liveSessions: number;
     }
   >();
@@ -125,8 +137,14 @@ export async function getStreamerLifecycleOverview(
       latestSnapshotByStreamer.set(key, {
         periodEnd: row.period_end as string,
         broadcastRateBps: row.broadcast_rate_bps as number,
+        avgSessionMinutes: Number(row.avg_session_minutes ?? 0),
         avgSessionRevenueAmount: Number(row.avg_session_revenue_amount ?? 0),
         totalRevenueAmount: Number(row.total_revenue_amount ?? 0),
+        totalSettlementAmount: nullableNumber(row.total_settlement_amount),
+        actualHourlyRate: nullableNumber(row.actual_hourly_rate),
+        totalGmvAmount: nullableNumber(row.total_gmv_amount),
+        roiBps: nullableNumber(row.roi_bps),
+        viewsPerHour: nullableNumber(row.views_per_hour),
         liveSessions: row.live_sessions as number,
       });
     }
@@ -150,8 +168,14 @@ export async function getStreamerLifecycleOverview(
       lateCount: lateByStreamer.get(row.id as string) ?? 0,
       absentCount: absentByStreamer.get(row.id as string) ?? 0,
       broadcastRateBps: snapshot?.broadcastRateBps ?? null,
+      avgSessionMinutes: snapshot?.avgSessionMinutes ?? null,
       avgSessionRevenueAmount: snapshot?.avgSessionRevenueAmount ?? null,
       totalRevenueAmount: snapshot?.totalRevenueAmount ?? null,
+      totalSettlementAmount: snapshot?.totalSettlementAmount ?? null,
+      actualHourlyRate: snapshot?.actualHourlyRate ?? null,
+      totalGmvAmount: snapshot?.totalGmvAmount ?? null,
+      roiBps: snapshot?.roiBps ?? null,
+      viewsPerHour: snapshot?.viewsPerHour ?? null,
       liveSessions: snapshot?.liveSessions ?? null,
       snapshotPeriodEnd: snapshot?.periodEnd ?? null,
     };
@@ -218,4 +242,12 @@ function firstName(value: unknown): string | null {
   const row = Array.isArray(value) ? value[0] : value;
   const name = (row as { display_name?: unknown } | null)?.display_name;
   return typeof name === "string" && name ? name : null;
+}
+
+function nullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }

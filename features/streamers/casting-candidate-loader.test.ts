@@ -70,6 +70,8 @@ const baseRow = {
   ],
   live_reports: [
     {
+      id: "report-1",
+      live_task_id: "task-1",
       status: "approved",
       settlement_duration: 120,
       evidence_level: "green",
@@ -77,6 +79,28 @@ const baseRow = {
       created_at: "2026-06-29T00:00:00.000Z",
       project_id: "p1",
       projects: { default_hourly_rate: 100 },
+      settlement_batch_items: [
+        {
+          id: "item-report-1",
+          streamer_id: "s1",
+          live_report_id: "report-1",
+          computed_amount: 150,
+          manual_amount: 0,
+          adjustment_amount: 0,
+          settlement_batches: {
+            organization_id: "org-1",
+            batch_type: "payable",
+            status: "confirmed",
+          },
+        },
+      ],
+      streamer_metrics: [
+        {
+          source_report_id: "report-1",
+          metric_key: "gmv",
+          metric_value: 300,
+        },
+      ],
     },
   ],
   project_streamers: [
@@ -140,14 +164,52 @@ describe("loadCastingCandidates", () => {
       ],
     });
 
-    expect(dataGaps).toContain("candidate_roi_proxy");
+    expect(dataGaps).not.toContain("candidate_roi_proxy");
     expect(dataGaps).not.toContain("candidate_availability");
 
     // 组织隔离 + 防线上限。
     expect(calls).toEqual(
       expect.arrayContaining([
         ["eq", "organization_id", "org-1"],
+        ["eq", "live_reports.settlement_batch_items.organization_id", "org-1"],
+        [
+          "eq",
+          "live_reports.settlement_batch_item_reports.organization_id",
+          "org-1",
+        ],
+        [
+          "eq",
+          "live_reports.settlement_batch_item_reports.settlement_batch_items.settlement_batches.organization_id",
+          "org-1",
+        ],
+        ["eq", "live_reports.streamer_metrics.organization_id", "org-1"],
         ["limit", 200],
+      ]),
+    );
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        [
+          "select",
+          expect.stringContaining(
+            "settlement_batch_items!settlement_batch_items_live_report_id_fkey(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount",
+          ),
+        ],
+        [
+          "select",
+          expect.stringContaining(
+            "settlement_batch_item_reports(settlement_batch_item_id, settlement_batch_items(id, streamer_id, live_report_id, computed_amount",
+          ),
+        ],
+        [
+          "select",
+          expect.stringContaining(
+            "streamer_metrics(source_report_id, metric_key, metric_value)",
+          ),
+        ],
+        [
+          "select",
+          expect.stringContaining("live_reports(id, live_task_id, status"),
+        ],
       ]),
     );
   });
@@ -188,6 +250,8 @@ describe("loadCastingCandidates", () => {
           ...baseRow.live_reports[0],
           viewers: null,
           projects: { default_hourly_rate: null },
+          settlement_batch_items: [],
+          streamer_metrics: [],
         },
       ],
     };
@@ -222,8 +286,6 @@ describe("loadCastingCandidates", () => {
       now: NOW,
     });
 
-    expect(calls).toEqual(
-      expect.arrayContaining([["in", "id", ["s1", "s2"]]]),
-    );
+    expect(calls).toEqual(expect.arrayContaining([["in", "id", ["s1", "s2"]]]));
   });
 });

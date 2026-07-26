@@ -87,6 +87,7 @@ describe("toStreamerCardDto", () => {
         ],
         live_reports: [
           {
+            id: "report-1",
             status: "approved",
             settlement_duration: 120,
             evidence_level: "green",
@@ -94,8 +95,30 @@ describe("toStreamerCardDto", () => {
             created_at: "2026-06-01T13:00:00.000Z",
             project_id: "project-live",
             projects: { default_hourly_rate: 50 },
+            settlement_batch_items: [
+              {
+                id: "item-report-1",
+                streamer_id: "s-live",
+                live_report_id: "report-1",
+                computed_amount: 90,
+                manual_amount: 10,
+                adjustment_amount: 0,
+                settlement_batches: {
+                  batch_type: "payable",
+                  status: "confirmed",
+                },
+              },
+            ],
+            streamer_metrics: [
+              {
+                source_report_id: "report-1",
+                metric_key: "gmv",
+                metric_value: 180,
+              },
+            ],
           },
           {
+            id: "report-2",
             status: "need_more",
             settlement_duration: 60,
             evidence_level: "yellow",
@@ -103,6 +126,39 @@ describe("toStreamerCardDto", () => {
             created_at: "2026-06-02T13:00:00.000Z",
             project_id: "project-live",
             projects: { default_hourly_rate: 50 },
+            settlement_batch_items: [
+              {
+                id: "item-report-2",
+                streamer_id: "s-live",
+                live_report_id: "report-2",
+                computed_amount: 50,
+                manual_amount: 0,
+                adjustment_amount: 0,
+                settlement_batches: {
+                  batch_type: "payable",
+                  status: "locked",
+                },
+              },
+              {
+                id: "item-draft",
+                streamer_id: "s-live",
+                live_report_id: "report-2",
+                computed_amount: 999,
+                manual_amount: 0,
+                adjustment_amount: 0,
+                settlement_batches: {
+                  batch_type: "payable",
+                  status: "draft",
+                },
+              },
+            ],
+            streamer_metrics: [
+              {
+                source_report_id: "report-2",
+                metric_key: "gmv",
+                metric_value: 90,
+              },
+            ],
           },
         ],
         project_streamers: [
@@ -125,8 +181,11 @@ describe("toStreamerCardDto", () => {
     expect(dto.metrics).toEqual({
       screenPass: 50,
       projectFinish: 100,
-      roi: 0.9,
-      grossContrib: 150,
+      avgSessionMinutes: 120,
+      actualHourlyRate: 50,
+      roi: 1.8,
+      viewsPerHour: 1200,
+      grossContrib: 100,
       vendorPassRateBps: null,
       rejectionReasonHistogram: {},
       evaluatedCount: 0,
@@ -146,8 +205,8 @@ describe("toStreamerCardDto", () => {
       expect.objectContaining({
         id: "project-live",
         name: "Live Project",
-        settlementHours: 3,
-        grossContrib: 150,
+        settlementHours: 2,
+        grossContrib: 100,
       }),
     ]);
   });
@@ -173,7 +232,10 @@ describe("toStreamerCardDto", () => {
     expect(dto.metrics).toEqual({
       screenPass: null,
       projectFinish: null,
+      avgSessionMinutes: null,
+      actualHourlyRate: null,
       roi: null,
+      viewsPerHour: null,
       grossContrib: null,
       vendorPassRateBps: null,
       rejectionReasonHistogram: {},
@@ -312,11 +374,14 @@ describe("toStreamerCardDto", () => {
     expect(dto.metrics).toMatchObject({
       screenPass: null,
       projectFinish: null,
-      roi: 1,
+      avgSessionMinutes: 120,
+      actualHourlyRate: null,
+      roi: null,
+      viewsPerHour: 1000,
       grossContrib: 100,
     });
-    expect(dto.matchScore).toBe(16);
-    expect(dto.matchTrend).toEqual([null, null, null, null, null, 16]);
+    expect(dto.matchScore).toBeNull();
+    expect(dto.matchTrend).toEqual([null, null, null, null, null, null]);
   });
 
   it("scores task-only history from the observed completion dimension", () => {
@@ -404,17 +469,25 @@ describe("toStreamerCardDto", () => {
     expect(dto.matchTrend).toEqual([null, null, null, null, null, null]);
   });
 
-  it("keeps zero-viewer ROI as an observed zero when duration is complete", () => {
+  it("keeps zero GMV ROI and zero views per hour as observed zeroes", () => {
     const dto = toStreamerCardDto(
       reportMetricRow({
         settlement_duration: 120,
         viewers: 0,
         projects: { default_hourly_rate: 50 },
+        settlementAmount: 100,
+        gmvAmount: 0,
       }),
       { now: "2026-06-04T00:00:00.000Z" },
     );
 
-    expect(dto.metrics).toMatchObject({ roi: 0, grossContrib: 100 });
+    expect(dto.metrics).toMatchObject({
+      avgSessionMinutes: 120,
+      actualHourlyRate: 50,
+      roi: 0,
+      viewsPerHour: 0,
+      grossContrib: 100,
+    });
     expect(dto.matchScore).toBe(3);
     expect(dto.projects[0]).toMatchObject({
       settlementHours: 2,
@@ -422,55 +495,241 @@ describe("toStreamerCardDto", () => {
     });
   });
 
-  it("keeps ROI unavailable when viewers are missing", () => {
+  it("keeps views per hour unavailable without affecting real ROI", () => {
     const dto = toStreamerCardDto(
       reportMetricRow({
         settlement_duration: 120,
         viewers: null,
         projects: { default_hourly_rate: 50 },
+        settlementAmount: 100,
+        gmvAmount: 200,
       }),
       { now: "2026-06-04T00:00:00.000Z" },
     );
 
-    expect(dto.metrics).toMatchObject({ roi: null, grossContrib: 100 });
-    expect(dto.matchScore).toBeNull();
+    expect(dto.metrics).toMatchObject({
+      actualHourlyRate: 50,
+      roi: 2,
+      viewsPerHour: null,
+      grossContrib: 100,
+    });
+    expect(dto.matchScore).not.toBeNull();
     expect(dto.projects[0]).toMatchObject({
       settlementHours: 2,
       grossContrib: 100,
     });
   });
 
-  it("keeps ROI, duration, and contribution unavailable when duration is missing", () => {
+  it("keeps duration-derived metrics unavailable without hiding real ROI", () => {
     const dto = toStreamerCardDto(
       reportMetricRow({
         settlement_duration: null,
         viewers: 1000,
         projects: { default_hourly_rate: 50 },
+        settlementAmount: 100,
+        gmvAmount: 200,
       }),
       { now: "2026-06-04T00:00:00.000Z" },
     );
 
-    expect(dto.metrics).toMatchObject({ roi: null, grossContrib: null });
+    expect(dto.metrics).toMatchObject({
+      avgSessionMinutes: null,
+      actualHourlyRate: null,
+      roi: 2,
+      viewsPerHour: null,
+      grossContrib: null,
+    });
     expect(dto.projects[0]).toMatchObject({
       settlementHours: null,
       grossContrib: null,
     });
   });
 
-  it("keeps contribution unavailable when the hourly rate is missing", () => {
+  it("uses actual settlement for hourly rate when configured rate is missing", () => {
     const dto = toStreamerCardDto(
       reportMetricRow({
         settlement_duration: 120,
         viewers: 1000,
         projects: { default_hourly_rate: null },
+        settlementAmount: 80,
+        gmvAmount: 160,
       }),
       { now: "2026-06-04T00:00:00.000Z" },
     );
 
-    expect(dto.metrics).toMatchObject({ roi: 0.5, grossContrib: null });
+    expect(dto.metrics).toMatchObject({
+      actualHourlyRate: 40,
+      roi: 2,
+      viewsPerHour: 500,
+      grossContrib: null,
+    });
     expect(dto.projects[0]).toMatchObject({
       settlementHours: 2,
       grossContrib: null,
+    });
+  });
+
+  it("does not expose a partial cost when a valid settlement item is malformed", () => {
+    const row = reportMetricRow({
+      settlement_duration: 120,
+      viewers: 1000,
+      projects: { default_hourly_rate: 50 },
+      settlementAmount: 100,
+      gmvAmount: 200,
+    });
+    row.live_reports![0].settlement_batch_items!.push({
+      id: "item-malformed",
+      streamer_id: "s-report-metric",
+      live_report_id: "report-metric-1",
+      computed_amount: "not-a-number",
+      manual_amount: 0,
+      adjustment_amount: 0,
+      settlement_batches: {
+        batch_type: "payable",
+        status: "locked",
+      },
+    });
+
+    const dto = toStreamerCardDto(row, {
+      now: "2026-06-04T00:00:00.000Z",
+    });
+
+    expect(dto.metrics).toMatchObject({
+      actualHourlyRate: null,
+      roi: null,
+      viewsPerHour: 500,
+    });
+  });
+
+  it("uses one authoritative approved report per task and dedupes linked items", () => {
+    const sharedItem = {
+      id: "item-shared",
+      streamer_id: "streamer-authoritative",
+      live_report_id: "report-new",
+      computed_amount: 100,
+      manual_amount: 0,
+      adjustment_amount: 0,
+      settlement_batches: {
+        organization_id: "org-1",
+        batch_type: "payable",
+        status: "confirmed",
+      },
+    };
+    const dto = toStreamerCardDto(
+      {
+        id: "streamer-authoritative",
+        display_name: "Authoritative",
+        real_name: null,
+        gender: null,
+        source_type: "external",
+        cooperation_status: "active",
+        categories: [],
+        platforms: [],
+        styles: [],
+        default_settlement_method: "cpt",
+        risk_level: "low",
+        clean_report_count: 0,
+        created_at: "2026-06-01T00:00:00.000Z",
+        recording_submissions: [],
+        live_tasks: [],
+        live_reports: [
+          {
+            id: "report-old",
+            live_task_id: "task-1",
+            status: "approved",
+            settlement_duration: 60,
+            evidence_level: "green",
+            viewers: 1000,
+            created_at: "2026-06-01T10:00:00.000Z",
+            project_id: "project-1",
+            settlement_batch_items: [
+              {
+                ...sharedItem,
+                id: "item-old",
+              },
+            ],
+            streamer_metrics: [
+              {
+                source_report_id: "report-old",
+                metric_key: "gmv",
+                metric_value: 100,
+              },
+            ],
+          },
+          {
+            id: "report-new",
+            live_task_id: "task-1",
+            status: "approved",
+            settlement_duration: 120,
+            evidence_level: "green",
+            viewers: 2000,
+            created_at: "2026-06-01T11:00:00.000Z",
+            project_id: "project-1",
+            settlement_batch_items: [sharedItem],
+            settlement_batch_item_reports: [
+              {
+                settlement_batch_item_id: "item-shared",
+                settlement_batch_items: sharedItem,
+              },
+            ],
+            streamer_metrics: [
+              {
+                source_report_id: "report-new",
+                metric_key: "gmv",
+                metric_value: 200,
+              },
+            ],
+          },
+          {
+            id: "report-pending",
+            live_task_id: "task-1",
+            status: "pending",
+            settlement_duration: null,
+            evidence_level: null,
+            viewers: null,
+            created_at: "2026-06-01T12:00:00.000Z",
+            project_id: "project-1",
+            settlement_batch_items: [],
+            streamer_metrics: [],
+          },
+          {
+            id: "report-task-2",
+            live_task_id: "task-2",
+            status: "approved",
+            settlement_duration: 60,
+            evidence_level: "green",
+            viewers: 1000,
+            created_at: "2026-06-02T10:00:00.000Z",
+            project_id: "project-1",
+            settlement_batch_items: [],
+            settlement_batch_item_reports: [
+              {
+                settlement_batch_item_id: "item-task-2",
+                settlement_batch_items: {
+                  ...sharedItem,
+                  id: "item-task-2",
+                  live_report_id: "report-task-2",
+                },
+              },
+            ],
+            streamer_metrics: [
+              {
+                source_report_id: "report-task-2",
+                metric_key: "gmv",
+                metric_value: 100,
+              },
+            ],
+          },
+        ],
+      },
+      { now: "2026-06-04T00:00:00.000Z" },
+    );
+
+    expect(dto.metrics).toMatchObject({
+      avgSessionMinutes: 90,
+      actualHourlyRate: 66.67,
+      roi: 1.5,
+      viewsPerHour: 1000,
     });
   });
 });
@@ -481,7 +740,10 @@ function reportMetricRow(
       Parameters<typeof toStreamerCardDto>[0]["live_reports"]
     >[number],
     "settlement_duration" | "viewers" | "projects"
-  >,
+  > & {
+    settlementAmount?: number | null;
+    gmvAmount?: number | null;
+  },
 ): Parameters<typeof toStreamerCardDto>[0] {
   return {
     id: "s-report-metric",
@@ -501,11 +763,42 @@ function reportMetricRow(
     live_tasks: [],
     live_reports: [
       {
+        id: "report-metric-1",
         status: "approved",
         evidence_level: "green",
         created_at: "2026-06-03T00:00:00.000Z",
         project_id: "project-1",
-        ...report,
+        settlement_duration: report.settlement_duration,
+        viewers: report.viewers,
+        projects: report.projects,
+        settlement_batch_items:
+          report.settlementAmount === null ||
+          report.settlementAmount === undefined
+            ? []
+            : [
+                {
+                  id: "item-report-metric-1",
+                  streamer_id: "s-report-metric",
+                  live_report_id: "report-metric-1",
+                  computed_amount: report.settlementAmount,
+                  manual_amount: 0,
+                  adjustment_amount: 0,
+                  settlement_batches: {
+                    batch_type: "payable",
+                    status: "confirmed",
+                  },
+                },
+              ],
+        streamer_metrics:
+          report.gmvAmount === null || report.gmvAmount === undefined
+            ? []
+            : [
+                {
+                  source_report_id: "report-metric-1",
+                  metric_key: "gmv",
+                  metric_value: report.gmvAmount,
+                },
+              ],
       },
     ],
     project_streamers: [

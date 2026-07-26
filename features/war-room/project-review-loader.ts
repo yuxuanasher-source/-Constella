@@ -3,6 +3,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getProjectComplexCostDashboard } from "@/features/complex-cost/complex-cost-queries";
 import { summarizeEvidence } from "@/features/settlements/settlement-engine";
 import { listOpsSettlementPool } from "@/features/settlements/settlement-queries";
+import {
+  deriveAuthoritativeReportEconomics,
+  selectAuthoritativeApprovedReports,
+} from "@/features/streamers/streamer-report-economics";
 import type {
   ProjectReviewInput,
   ProjectReviewStreamer,
@@ -38,8 +42,11 @@ type BatchRow = {
 };
 
 type ReportRow = {
+  id: string;
+  live_task_id: string | null;
+  created_at: string | null;
   streamer_id: string | null;
-  status: string | null;
+  status: string;
   settlement_duration: number | null;
   viewers: number | null;
   evidence_level: "green" | "yellow" | "red" | null;
@@ -48,6 +55,34 @@ type ReportRow = {
     | { display_name: string | null }
     | { display_name: string | null }[]
     | null;
+  settlement_batch_items?: Array<{
+    id: string;
+    streamer_id: string | null;
+    live_report_id: string | null;
+    computed_amount: number | string;
+    manual_amount: number | string;
+    adjustment_amount: number | string;
+    settlement_batches:
+      | { organization_id: string | null; batch_type: string; status: string }
+      | {
+          organization_id: string | null;
+          batch_type: string;
+          status: string;
+        }[]
+      | null;
+  }>;
+  settlement_batch_item_reports?: Array<{
+    settlement_batch_item_id: string;
+    settlement_batch_items?:
+      | NonNullable<ReportRow["settlement_batch_items"]>[number]
+      | NonNullable<ReportRow["settlement_batch_items"]>[number][]
+      | null;
+  }>;
+  streamer_metrics?: Array<{
+    source_report_id: string | null;
+    metric_key: string;
+    metric_value: number;
+  }>;
 };
 
 type TaskRow = {
@@ -90,12 +125,11 @@ export async function loadProjectReviewInput(
   const periodEnd = params.periodEnd ?? isoDate(project.ends_at) ?? isoDay(now);
 
   // projects 表没有 category/platform 列;supplier_scores 是无读写的空脚手
-  // 架;ROI 与争议记录无真实来源。全部按缺失声明,不推导、不编造。
+  // 架;争议记录无真实来源。全部按缺失声明,不推导、不编造。
   const dataGaps = new Set<string>([
     "project_category",
     "project_platform",
     "supplier_quality",
-    "streamer_roi",
     "streamer_disputes",
   ]);
 
@@ -157,14 +191,20 @@ export async function loadProjectReviewInput(
     });
   }
 
+  const authoritativeReports =
+    selectAuthoritativeApprovedReports(reports);
   const streamers = aggregateStreamers({
-    reports,
+    reports: authoritativeReports,
     tasks,
+    organizationId: params.organizationId,
     grossMarginCents:
       receivableCents - payableCents - supplierCostCents + adjustmentCents,
   });
   if (streamers.length > 0) {
     dataGaps.add("streamer_margin_allocation");
+  }
+  if (streamers.some((streamer) => streamer.roiBps === null)) {
+    dataGaps.add("streamer_roi");
   }
 
   const input: ProjectReviewInput = {
@@ -186,7 +226,9 @@ export async function loadProjectReviewInput(
     streamers,
     suppliers: [],
     evidenceSummary: summarizeEvidence(
-      reports.map((report) => ({ evidenceLevel: report.evidence_level })),
+      authoritativeReports.map((report) => ({
+        evidenceLevel: report.evidence_level,
+      })),
     ),
     ...(params.targetMarginBps !== undefined
       ? { targetMarginBps: params.targetMarginBps }
@@ -225,9 +267,24 @@ async function loadReports(
   const { data, error } = await client
     .from("live_reports")
     .select(
-      "streamer_id, status, settlement_duration, viewers, evidence_level, risk_flags, streamers(display_name)",
+      "id, live_task_id, created_at, streamer_id, status, settlement_duration, viewers, evidence_level, risk_flags, settlement_batch_items!settlement_batch_items_live_report_id_fkey(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status)), settlement_batch_item_reports(settlement_batch_item_id, settlement_batch_items(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status))), streamer_metrics(source_report_id, metric_key, metric_value), streamers(display_name)",
     )
     .eq("organization_id", organizationId)
+    .eq("settlement_batch_items.organization_id", organizationId)
+    .eq(
+      "settlement_batch_items.settlement_batches.organization_id",
+      organizationId,
+    )
+    .eq("settlement_batch_item_reports.organization_id", organizationId)
+    .eq(
+      "settlement_batch_item_reports.settlement_batch_items.organization_id",
+      organizationId,
+    )
+    .eq(
+      "settlement_batch_item_reports.settlement_batch_items.settlement_batches.organization_id",
+      organizationId,
+    )
+    .eq("streamer_metrics.organization_id", organizationId)
     .eq("project_id", projectId)
     .gte("created_at", `${periodStart}T00:00:00.000Z`)
     .lte("created_at", `${periodEnd}T23:59:59.999Z`);
@@ -303,10 +360,12 @@ async function loadPayableEstimateCents(
 function aggregateStreamers({
   reports,
   tasks,
+  organizationId,
   grossMarginCents,
 }: {
   reports: ReportRow[];
   tasks: TaskRow[];
+  organizationId: string;
   grossMarginCents: number;
 }): ProjectReviewStreamer[] {
   type Accumulator = {
@@ -316,6 +375,7 @@ function aggregateStreamers({
     anomalyCount: number;
     finishedTasks: number;
     totalTasks: number;
+    reports: ReportRow[];
   };
   const byStreamer = new Map<string, Accumulator>();
   const ensure = (streamerId: string, name: string): Accumulator => {
@@ -333,6 +393,7 @@ function aggregateStreamers({
       anomalyCount: 0,
       finishedTasks: 0,
       totalTasks: 0,
+      reports: [],
     };
     byStreamer.set(streamerId, created);
     return created;
@@ -346,10 +407,9 @@ function aggregateStreamers({
       report.streamer_id,
       displayName(report.streamers) ?? report.streamer_id,
     );
-    if (report.status === "approved") {
-      entry.durationMinutes += Math.max(report.settlement_duration ?? 0, 0);
-      entry.totalViews += Math.max(report.viewers ?? 0, 0);
-    }
+    entry.durationMinutes += Math.max(report.settlement_duration ?? 0, 0);
+    entry.totalViews += Math.max(report.viewers ?? 0, 0);
+    entry.reports.push(report);
     if (report.risk_flags?.length) {
       entry.anomalyCount += 1;
     }
@@ -380,26 +440,35 @@ function aggregateStreamers({
     0,
   );
 
-  return Array.from(byStreamer.entries()).map(([streamerId, entry]) => ({
-    id: streamerId,
-    name: entry.name,
-    durationMinutes: entry.durationMinutes,
-    totalViews: entry.totalViews,
-    completionRateBps:
-      entry.totalTasks > 0
-        ? Math.round((entry.finishedTasks / entry.totalTasks) * 10000)
-        : 0,
-    // ROI 无真实来源(dataGap: streamer_roi);毛利贡献是按时长分摊的估算
-    // 口径(dataGap: streamer_margin_allocation);争议记录无来源(dataGap:
-    // streamer_disputes)。
-    roiBps: 0,
-    grossMarginContributionCents:
-      totalDuration > 0
-        ? Math.round((grossMarginCents * entry.durationMinutes) / totalDuration)
-        : 0,
-    anomalyCount: entry.anomalyCount,
-    disputeCount: 0,
-  }));
+  return Array.from(byStreamer.entries()).map(([streamerId, entry]) => {
+    const economics = deriveAuthoritativeReportEconomics(
+      entry.reports,
+      organizationId,
+      streamerId,
+    );
+
+    return {
+      id: streamerId,
+      name: entry.name,
+      durationMinutes: entry.durationMinutes,
+      totalViews: entry.totalViews,
+      completionRateBps:
+        entry.totalTasks > 0
+          ? Math.round((entry.finishedTasks / entry.totalTasks) * 10000)
+          : 0,
+      roiBps: economics.roiBps,
+      // 毛利贡献按时长分摊(dataGap: streamer_margin_allocation);
+      // 争议记录无来源(dataGap: streamer_disputes)。
+      grossMarginContributionCents:
+        totalDuration > 0
+          ? Math.round(
+              (grossMarginCents * entry.durationMinutes) / totalDuration,
+            )
+          : 0,
+      anomalyCount: entry.anomalyCount,
+      disputeCount: 0,
+    };
+  });
 }
 
 function sumAmount(rows: BatchRow[], columns: (keyof BatchRow)[]): number {

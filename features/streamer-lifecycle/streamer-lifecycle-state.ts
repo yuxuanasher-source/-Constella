@@ -1,4 +1,8 @@
 // 主播全生命周期的纯状态机与派生规则：无 IO，供 service 与测试复用。
+import {
+  aggregateUniqueSettlementItems,
+  type SettlementItemAmount,
+} from "@/features/streamers/streamer-report-economics";
 
 export const STREAMER_LIFECYCLE_STAGES = [
   "recruited",
@@ -152,6 +156,8 @@ export type PerformanceSourceTask = {
   settlementDuration: number | null;
   viewers: number | null;
   projectHourlyRate: number | null;
+  settlementItems: SettlementItemAmount[] | null;
+  attributedGmvAmount: number | null;
 };
 
 export type PerformanceMetrics = {
@@ -160,18 +166,23 @@ export type PerformanceMetrics = {
   completedSessions: number;
   broadcastRateBps: number;
   totalLiveMinutes: number;
+  avgSessionMinutes: number;
   totalRevenueAmount: number;
   avgSessionRevenueAmount: number;
-  avgSessionRoiBps: number | null;
+  totalSettlementAmount: number | null;
+  actualHourlyRate: number | null;
+  totalGmvAmount: number | null;
+  roiBps: number | null;
+  viewsPerHour: number | null;
   totalViewers: number;
   avgSessionViewers: number;
 };
 
-// 聚合统计窗口内的主播绩效。金额口径与结算引擎一致：结算时长(小时) × 项目时薪（元）。
-// ROI 以主播默认时薪作为成本基线：贡献流水 / 预估主播成本，万分比。
+// 聚合统计窗口内的主播绩效。旧的贡献流水字段继续使用项目配置时薪以保持
+// 历史快照兼容；真实时薪和 ROI 只使用已确认实际结算与归因 GMV，任一场
+// 缺失即保持 null。
 export function computeStreamerPerformance(
   tasks: PerformanceSourceTask[],
-  streamerHourlyRate: number | null,
 ): PerformanceMetrics {
   const scheduled = tasks.filter((task) => task.status !== "cancelled");
   const live = scheduled.filter((task) => task.systemStartedAt);
@@ -180,6 +191,9 @@ export function computeStreamerPerformance(
   let totalLiveMinutes = 0;
   let totalRevenueAmount = 0;
   let totalViewers = 0;
+  let totalGmvAmount = 0;
+  let hasCompleteGmv = live.length > 0;
+  let hasCompleteViewers = live.length > 0;
 
   for (const task of live) {
     const minutes = Math.max(
@@ -189,14 +203,29 @@ export function computeStreamerPerformance(
     totalLiveMinutes += minutes;
     totalRevenueAmount += (minutes / 60) * (task.projectHourlyRate ?? 0);
     totalViewers += Math.max(0, task.viewers ?? 0);
+
+    if (task.attributedGmvAmount === null) {
+      hasCompleteGmv = false;
+    } else {
+      totalGmvAmount += task.attributedGmvAmount;
+    }
+
+    if (task.viewers === null) {
+      hasCompleteViewers = false;
+    }
   }
 
   totalRevenueAmount = roundAmount(totalRevenueAmount);
-
-  const estimatedTalentCost =
-    streamerHourlyRate != null && streamerHourlyRate > 0
-      ? (totalLiveMinutes / 60) * streamerHourlyRate
-      : 0;
+  const settlementItems = aggregateUniqueSettlementItems(
+    live.map((task) => task.settlementItems),
+  );
+  const observedSettlementAmount = settlementItems
+    ? roundAmount(
+        settlementItems.reduce((sum, item) => sum + item.amount, 0),
+      )
+    : null;
+  const observedGmvAmount = hasCompleteGmv ? roundAmount(totalGmvAmount) : null;
+  const liveHours = totalLiveMinutes / 60;
 
   return {
     scheduledSessions: scheduled.length,
@@ -207,12 +236,26 @@ export function computeStreamerPerformance(
         ? Math.round((live.length / scheduled.length) * 10000)
         : 0,
     totalLiveMinutes,
+    avgSessionMinutes:
+      live.length > 0 ? roundAmount(totalLiveMinutes / live.length) : 0,
     totalRevenueAmount,
     avgSessionRevenueAmount:
       live.length > 0 ? roundAmount(totalRevenueAmount / live.length) : 0,
-    avgSessionRoiBps:
-      estimatedTalentCost > 0
-        ? Math.round((totalRevenueAmount / estimatedTalentCost) * 10000)
+    totalSettlementAmount: observedSettlementAmount,
+    actualHourlyRate:
+      observedSettlementAmount !== null && liveHours > 0
+        ? roundAmount(observedSettlementAmount / liveHours)
+        : null,
+    totalGmvAmount: observedGmvAmount,
+    roiBps:
+      observedGmvAmount !== null &&
+      observedSettlementAmount !== null &&
+      observedSettlementAmount > 0
+        ? Math.round((observedGmvAmount / observedSettlementAmount) * 10000)
+        : null,
+    viewsPerHour:
+      hasCompleteViewers && liveHours > 0
+        ? roundAmount(totalViewers / liveHours)
         : null,
     totalViewers,
     avgSessionViewers:

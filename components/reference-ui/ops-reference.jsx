@@ -13428,7 +13428,7 @@ function ScreenStreamers({ go, initialActiveId }) {
                 },
               },
               {
-                title: "ROI",
+                title: "真实 ROI",
                 align: "right",
                 render: (r) =>
                   hasStreamerMetricValue(r.metrics?.roi) ? (
@@ -14088,11 +14088,32 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
                 suffix="%"
               />
               <RingMetric
-                label="ROI"
+                label="真实 ROI"
                 value={s.metrics?.roi}
                 max={2}
                 dp={2}
                 highlight
+              />
+              <RingMetric
+                label="场均直播时长"
+                value={s.metrics?.avgSessionMinutes}
+                max={240}
+                dp={1}
+                suffix=" 分钟"
+              />
+              <RingMetric
+                label="实际时薪"
+                value={s.metrics?.actualHourlyRate}
+                max={500}
+                dp={2}
+                suffix=" 元/小时"
+                highlight
+              />
+              <RingMetric
+                label="每小时观看"
+                value={s.metrics?.viewsPerHour}
+                max={10000}
+                suffix=" 人"
               />
               <RingMetric
                 label="毛利贡献"

@@ -25,6 +25,57 @@ describe("streamer queries", () => {
     );
   });
 
+  it("loads report-scoped settlement and GMV evidence for real economics", async () => {
+    const pool = queryBuilder([]);
+    const profile = queryBuilder(null);
+    const from = vi.fn(() => (from.mock.calls.length === 1 ? pool : profile));
+    const client = { from };
+
+    await listStreamerPool(client as never, "org-1");
+    await getStreamerProfileRow(client as never, "streamer-1");
+
+    for (const query of [pool, profile]) {
+      expect(query.select).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "settlement_batch_items!settlement_batch_items_live_report_id_fkey(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status))",
+        ),
+      );
+      expect(query.select).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "settlement_batch_item_reports(settlement_batch_item_id, settlement_batch_items(id, streamer_id, live_report_id, computed_amount, manual_amount, adjustment_amount, settlement_batches(organization_id, batch_type, status)))",
+        ),
+      );
+      expect(query.select).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "streamer_metrics(source_report_id, metric_key, metric_value)",
+        ),
+      );
+      expect(query.select).toHaveBeenCalledWith(
+        expect.stringContaining("live_reports(id, live_task_id, status"),
+      );
+    }
+    expect(pool.eq).toHaveBeenCalledWith(
+      "live_reports.settlement_batch_items.organization_id",
+      "org-1",
+    );
+    expect(pool.eq).toHaveBeenCalledWith(
+      "live_reports.streamer_metrics.organization_id",
+      "org-1",
+    );
+    expect(pool.eq).toHaveBeenCalledWith(
+      "live_reports.settlement_batch_item_reports.organization_id",
+      "org-1",
+    );
+    expect(pool.eq).toHaveBeenCalledWith(
+      "live_reports.settlement_batch_items.settlement_batches.organization_id",
+      "org-1",
+    );
+    expect(pool.eq).toHaveBeenCalledWith(
+      "live_reports.settlement_batch_item_reports.settlement_batch_items.settlement_batches.organization_id",
+      "org-1",
+    );
+  });
+
   it("selects and aggregates vendor admission reviews for the streamer pool", async () => {
     const pool = queryBuilder([
       {
