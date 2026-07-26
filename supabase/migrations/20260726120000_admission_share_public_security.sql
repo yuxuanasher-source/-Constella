@@ -56,10 +56,10 @@ begin
   if p_dimension_hash is null or p_dimension_hash !~ '^[0-9a-f]{64}$' then
     raise exception 'rate-limit dimension hash is invalid';
   end if;
-  if p_limit <= 0 then
+  if p_limit is null or p_limit <= 0 then
     raise exception 'rate-limit limit must be positive';
   end if;
-  if p_window_seconds <= 0 then
+  if p_window_seconds is null or p_window_seconds <= 0 then
     raise exception 'rate-limit window must be positive';
   end if;
 

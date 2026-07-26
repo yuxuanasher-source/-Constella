@@ -31,8 +31,10 @@ describe("admission share public security migration", () => {
     expect(migration).toMatch(
       /create or replace function public\.consume_admission_share_rate_limit\([\s\S]+security definer[\s\S]+set search_path = pg_catalog, public[\s\S]+on conflict \(scope, dimension_hash\) do update/u,
     );
-    expect(migration).toContain("p_limit <= 0");
-    expect(migration).toContain("p_window_seconds <= 0");
+    expect(migration).toContain("p_limit is null or p_limit <= 0");
+    expect(migration).toContain(
+      "p_window_seconds is null or p_window_seconds <= 0",
+    );
   });
 
   it("pins and restricts all public-security RPC privileges to service_role", () => {
