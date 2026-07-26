@@ -53,7 +53,7 @@ type RecordingSubmissionRow = {
   id: string;
   status?: string | null;
   duration_seconds?: number | null;
-  decision_reason?: string | null;
+  review_note?: string | null;
 };
 
 export async function loadStreamerProjectReviewInput({
@@ -137,7 +137,7 @@ export async function loadStreamerProjectReviewInput({
     ? await loadList<RecordingSubmissionRow>(
         supabase
           .from("recording_submissions")
-          .select("id, status, duration_seconds, decision_reason")
+          .select("id, status, duration_seconds, review_note")
           .eq("organization_id", organizationId)
           .in("application_id", applicationIds)
           .order("created_at", { ascending: true }),
@@ -226,7 +226,7 @@ function toReviewRecording(
     id: row.id,
     status: row.status ?? "unknown",
     adopted: row.status === "approved",
-    rejectionReasons: parseDecisionReasons(row.decision_reason),
+    rejectionReasons: parseDecisionReasons(row.review_note),
     durationSeconds: row.duration_seconds ?? null,
   };
 }
