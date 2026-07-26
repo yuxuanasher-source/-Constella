@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { AuditLogInput } from "@/lib/audit/audit";
@@ -42,6 +42,9 @@ export type AdmissionShareBoardRecord = {
   title: string;
   tokenHash: string;
   accessCodeHash: string | null;
+  accessCodeSalt: string | null;
+  accessCodeFailureCount: number;
+  accessCodeLockedUntil: string | null;
   status: "active" | "expired" | "revoked";
   expiresAt: string;
   allowVendorSubmit: boolean;
@@ -57,7 +60,14 @@ export type AdmissionShareBoardRepository = {
   ): Promise<ShareableApplication[]>;
   listLatestRecordings(applicationIds: string[]): Promise<ShareableRecording[]>;
   createShareBoard(
-    input: Omit<AdmissionShareBoardRecord, "id" | "status" | "createdAt">,
+    input: Omit<
+      AdmissionShareBoardRecord,
+      | "id"
+      | "status"
+      | "createdAt"
+      | "accessCodeFailureCount"
+      | "accessCodeLockedUntil"
+    >,
   ): Promise<AdmissionShareBoardRecord>;
   createShareItems(
     items: Array<{
@@ -103,6 +113,12 @@ export type AdmissionShareBoardRepository = {
     shareBoardId: string,
     submittedAt: string,
   ): Promise<void>;
+  markShareBoardViewed(shareBoardId: string, viewedAt: string): Promise<void>;
+  recordAccessCodeFailure(input: {
+    shareBoardId: string;
+    failedAt: string;
+  }): Promise<{ failureCount: number; lockedUntil: string | null }>;
+  resetAccessCodeFailures(shareBoardId: string): Promise<void>;
 };
 
 export type CreateAdmissionShareBoardInput = {
@@ -234,7 +250,14 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
   }
 
   async createShareBoard(
-    input: Omit<AdmissionShareBoardRecord, "id" | "status" | "createdAt">,
+    input: Omit<
+      AdmissionShareBoardRecord,
+      | "id"
+      | "status"
+      | "createdAt"
+      | "accessCodeFailureCount"
+      | "accessCodeLockedUntil"
+    >,
   ): Promise<AdmissionShareBoardRecord> {
     const { data, error } = await this.client
       .from("project_recording_share_boards")
@@ -244,12 +267,13 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
         title: input.title,
         token_hash: input.tokenHash,
         access_code_hash: input.accessCodeHash,
+        access_code_salt: input.accessCodeSalt,
         expires_at: input.expiresAt,
         allow_vendor_submit: input.allowVendorSubmit,
         created_by: input.createdBy,
       })
       .select(
-        "id, organization_id, project_id, title, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, created_by, created_at",
+        "id, organization_id, project_id, title, token_hash, access_code_hash, access_code_salt, access_code_failure_count, access_code_locked_until, status, expires_at, allow_vendor_submit, created_by, created_at",
       )
       .single<AdmissionShareBoardRow>();
 
@@ -300,7 +324,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     const { data, error } = await this.client
       .from("project_recording_share_boards")
       .select(
-        "id, organization_id, project_id, title, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, created_by, created_at",
+        "id, organization_id, project_id, title, token_hash, access_code_hash, access_code_salt, access_code_failure_count, access_code_locked_until, status, expires_at, allow_vendor_submit, created_by, created_at",
       )
       .eq("project_id", projectId)
       .order("created_at", { ascending: false });
@@ -339,7 +363,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     const { data: boardData, error: boardError } = await this.client
       .from("project_recording_share_boards")
       .select(
-        "id, organization_id, project_id, title, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, created_by, created_at, projects(id, code, name, vendor_name, product_name)",
+        "id, organization_id, project_id, title, token_hash, access_code_hash, access_code_salt, access_code_failure_count, access_code_locked_until, status, expires_at, allow_vendor_submit, created_by, created_at, projects(id, code, name, vendor_name, product_name)",
       )
       .eq("token_hash", tokenHash)
       .maybeSingle<AdmissionShareBoardWithProjectRow>();
@@ -484,6 +508,58 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     }
   }
 
+  async markShareBoardViewed(
+    shareBoardId: string,
+    viewedAt: string,
+  ): Promise<void> {
+    const { error } = await this.client
+      .from("project_recording_share_boards")
+      .update({ last_viewed_at: viewedAt })
+      .eq("id", shareBoardId);
+
+    if (error) {
+      throw error;
+    }
+  }
+
+  async recordAccessCodeFailure(input: {
+    shareBoardId: string;
+    failedAt: string;
+  }): Promise<{ failureCount: number; lockedUntil: string | null }> {
+    const { data, error } = await this.client.rpc(
+      "record_admission_share_access_code_failure",
+      {
+        p_share_board_id: input.shareBoardId,
+        p_failed_at: input.failedAt,
+      },
+    );
+    if (error) {
+      throw error;
+    }
+    const row = first(data) as {
+      failure_count?: unknown;
+      locked_until?: unknown;
+    } | null;
+    if (!row || typeof row.failure_count !== "number") {
+      throw new Error("Access-code failure update returned an invalid result");
+    }
+    return {
+      failureCount: row.failure_count,
+      lockedUntil:
+        typeof row.locked_until === "string" ? row.locked_until : null,
+    };
+  }
+
+  async resetAccessCodeFailures(shareBoardId: string): Promise<void> {
+    const { error } = await this.client.rpc(
+      "reset_admission_share_access_code_failures",
+      { p_share_board_id: shareBoardId },
+    );
+    if (error) {
+      throw error;
+    }
+  }
+
   private async listVendorReviewsForShare(
     shareBoardId: string,
     recordingIds: string[],
@@ -532,6 +608,9 @@ type AdmissionShareBoardRow = {
   title: string;
   token_hash: string;
   access_code_hash: string | null;
+  access_code_salt: string | null;
+  access_code_failure_count: number;
+  access_code_locked_until: string | null;
   status: "active" | "expired" | "revoked";
   expires_at: string;
   allow_vendor_submit: boolean;
@@ -643,6 +722,7 @@ export async function createAdmissionShareBoard({
   input,
   now = new Date().toISOString(),
   tokenFactory = createShareToken,
+  accessCodeSaltFactory = createAccessCodeSalt,
 }: {
   repo: AdmissionShareBoardRepository;
   audit?: AdmissionShareBoardAuditWriter;
@@ -651,6 +731,7 @@ export async function createAdmissionShareBoard({
   input: CreateAdmissionShareBoardInput;
   now?: string;
   tokenFactory?: () => string;
+  accessCodeSaltFactory?: () => string;
 }) {
   const projectStatus = await repo.getProjectStatus(projectId);
   if (!projectStatus) {
@@ -662,6 +743,10 @@ export async function createAdmissionShareBoard({
     );
   }
 
+  const expiresAt = validateShareBoardExpiry(
+    input.expiresAt ?? daysFrom(now, 7),
+    now,
+  );
   const applicationIds = input.applicationIds
     ?.map((id) => id.trim())
     .filter(Boolean);
@@ -704,15 +789,19 @@ export async function createAdmissionShareBoard({
   }
 
   const token = tokenFactory();
+  const accessCode = input.accessCode?.trim() || "";
+  const accessCodeSalt = accessCode ? accessCodeSaltFactory() : null;
   const shareBoard = await repo.createShareBoard({
     organizationId: actor.organizationId,
     projectId,
     title: input.title?.trim() || "Admission recording review",
     tokenHash: hashShareSecret(token),
-    accessCodeHash: input.accessCode?.trim()
-      ? hashShareSecret(input.accessCode.trim())
-      : null,
-    expiresAt: input.expiresAt ?? daysFrom(now, 7),
+    accessCodeHash:
+      accessCode && accessCodeSalt
+        ? hashAccessCode(accessCode, accessCodeSalt)
+        : null,
+    accessCodeSalt,
+    expiresAt,
     allowVendorSubmit: input.allowVendorSubmit ?? true,
     createdBy: actor.userId,
   });
@@ -821,6 +910,7 @@ export async function getPublicAdmissionShareBoard({
     accessCode,
     now,
   });
+  await repo.markShareBoardViewed(snapshot.id, now);
 
   return toPublicShareDto(snapshot, { token, accessCode });
 }
@@ -850,6 +940,7 @@ export async function getPublicAdmissionRecordingPlaybackSource({
   if (!item) {
     throw new Error("Recording is not part of this share board");
   }
+  await repo.markShareBoardViewed(snapshot.id, now);
   return {
     recordingUrl: item.recordingUrl,
     storagePath: item.storagePath,
@@ -1032,8 +1123,33 @@ export function createShareToken() {
   return randomBytes(32).toString("base64url");
 }
 
+export function createAccessCodeSalt() {
+  return randomBytes(16).toString("hex");
+}
+
 export function hashShareSecret(value: string) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+export function hashAccessCode(value: string, salt: string) {
+  return createHash("sha256")
+    .update(salt)
+    .update("\0")
+    .update(value)
+    .digest("hex");
+}
+
+export function verifyAccessCode(
+  value: string,
+  expectedHash: string,
+  salt: string | null,
+) {
+  const actualHash = salt
+    ? hashAccessCode(value, salt)
+    : hashShareSecret(value);
+  const actual = Buffer.from(actualHash, "hex");
+  const expected = Buffer.from(expectedHash, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 export function mapVendorDecisionToSyncPatch(
@@ -1092,6 +1208,23 @@ function daysFrom(now: string, days: number) {
   return new Date(Date.parse(now) + days * 24 * 60 * 60 * 1000).toISOString();
 }
 
+function validateShareBoardExpiry(expiresAt: string, now: string) {
+  const nowTime = Date.parse(now);
+  const expiresTime = Date.parse(expiresAt);
+  const maxExpiresTime = nowTime + 30 * 24 * 60 * 60 * 1000;
+  if (
+    !Number.isFinite(nowTime) ||
+    !Number.isFinite(expiresTime) ||
+    expiresTime <= nowTime ||
+    expiresTime > maxExpiresTime
+  ) {
+    throw new Error(
+      "Share board expiry must be after now and no more than 30 days away",
+    );
+  }
+  return new Date(expiresTime).toISOString();
+}
+
 async function requirePublicSnapshot({
   repo,
   token,
@@ -1111,11 +1244,33 @@ async function requirePublicSnapshot({
   if (snapshot.status !== "active" || snapshot.expiresAt <= now) {
     throw new Error("Share link is expired or revoked");
   }
-  if (
-    snapshot.accessCodeHash &&
-    hashShareSecret(accessCode?.trim() || "") !== snapshot.accessCodeHash
-  ) {
-    throw new Error("Access code is invalid");
+  if (snapshot.accessCodeHash) {
+    if (
+      snapshot.accessCodeLockedUntil &&
+      Date.parse(snapshot.accessCodeLockedUntil) > Date.parse(now)
+    ) {
+      throw new Error("Access code is temporarily locked");
+    }
+
+    const isValid = verifyAccessCode(
+      accessCode?.trim() || "",
+      snapshot.accessCodeHash,
+      snapshot.accessCodeSalt,
+    );
+    if (!isValid) {
+      const failure = await repo.recordAccessCodeFailure({
+        shareBoardId: snapshot.id,
+        failedAt: now,
+      });
+      if (
+        failure.lockedUntil &&
+        Date.parse(failure.lockedUntil) > Date.parse(now)
+      ) {
+        throw new Error("Access code is temporarily locked");
+      }
+      throw new Error("Access code is invalid");
+    }
+    await repo.resetAccessCodeFailures(snapshot.id);
   }
   return snapshot;
 }
@@ -1214,6 +1369,9 @@ function toShareBoardRecord(
     title: row.title,
     tokenHash: row.token_hash,
     accessCodeHash: row.access_code_hash,
+    accessCodeSalt: row.access_code_salt,
+    accessCodeFailureCount: row.access_code_failure_count,
+    accessCodeLockedUntil: row.access_code_locked_until,
     status: row.status,
     expiresAt: row.expires_at,
     allowVendorSubmit: row.allow_vendor_submit,
