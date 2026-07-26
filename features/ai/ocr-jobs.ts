@@ -142,6 +142,7 @@ type LiveReportAccessRow = {
   organizationId?: string;
   project_id?: string;
   projectId?: string;
+  status?: string | null;
 };
 
 export async function createOcrJob({
@@ -318,7 +319,13 @@ export async function retryOcrJob({
   now?: () => Date;
 }): Promise<OcrJobRecord> {
   const job = await requireOcrJob(client, jobId);
-  await assertOcrJobAccessible({ client, actor, job });
+  const report = await assertOcrJobAccessible({ client, actor, job });
+  if (job.status !== "failed" && job.status !== "cancelled") {
+    throw new Error("OCR job is not eligible for retry");
+  }
+  if (report.status !== "ocr_ing") {
+    throw new Error("OCR job live report is not eligible for retry");
+  }
   const runAt = now().toISOString();
   const currentMaxAttempts = job.maxAttempts ?? 3;
   const maxAttempts =
@@ -453,11 +460,11 @@ async function runLockedOcrJob({
   startedAt: Date;
   imageResolver: (payload: OcrJobPayload) => Promise<TencentOcrInput>;
 }): Promise<OcrJobRecord> {
-  const liveReport = await loadLiveReportForOcrAdvance({
+  const preflightReport = await loadLiveReportForOcrAdvance({
     client,
     liveReportId: job.payload.liveReportId,
   });
-  if (liveReport?.status !== "ocr_ing") {
+  if (preflightReport?.status !== "ocr_ing") {
     return cancelOcrJobForInactiveReport({
       client,
       job,
@@ -484,6 +491,17 @@ async function runLockedOcrJob({
   }
 
   const providerResult = await provider.runGeneralBasicOcr(providerInput);
+  const liveReport = await loadLiveReportForOcrAdvance({
+    client,
+    liveReportId: job.payload.liveReportId,
+  });
+  if (liveReport?.status !== "ocr_ing") {
+    return cancelOcrJobForInactiveReport({
+      client,
+      job,
+      attempt,
+    });
+  }
 
   if (providerResult.status !== "succeeded") {
     const errorSummary =
@@ -757,11 +775,11 @@ async function assertOcrJobAccessible({
   client: OcrJobClient;
   actor: AiActor;
   job: OcrJobRecord;
-}): Promise<void> {
+}): Promise<LiveReportAccessRow> {
   if (job.organizationId !== actor.organizationId) {
     throw new Error("Cross-organization access is not allowed");
   }
-  await assertLiveReportAccessible({
+  return assertLiveReportAccessible({
     client,
     actor,
     liveReportId: job.payload.liveReportId,
@@ -779,7 +797,7 @@ async function assertLiveReportAccessible({
 }): Promise<LiveReportAccessRow> {
   const { data, error } = await client
     .from("live_reports")
-    .select("id, organization_id, project_id")
+    .select("id, organization_id, project_id, status")
     .eq("id", liveReportId)
     .maybeSingle();
 

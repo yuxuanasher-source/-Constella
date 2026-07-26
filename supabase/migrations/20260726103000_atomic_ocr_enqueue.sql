@@ -20,7 +20,9 @@ security definer
 set search_path = ''
 as $$
 declare
+  v_task public.live_tasks%rowtype;
   v_report public.live_reports%rowtype;
+  v_existing_result public.ocr_results%rowtype;
   v_job public.background_jobs%rowtype;
 begin
   if coalesce(auth.role(), '') <> 'service_role' then
@@ -64,6 +66,8 @@ begin
       using errcode = '22023';
   end if;
 
+  -- Match the repository-wide report -> task lock order used by settlement
+  -- snapshotting, then use the task status as the atomic enqueue claim.
   select lr.*
   into v_report
   from public.live_reports as lr
@@ -73,6 +77,18 @@ begin
 
   if not found then
     raise exception 'OCR enqueue live report not found or organization mismatch'
+      using errcode = '23503';
+  end if;
+
+  select task.*
+  into v_task
+  from public.live_tasks as task
+  where task.id = v_report.live_task_id
+    and task.organization_id = v_report.organization_id
+  for update;
+
+  if not found then
+    raise exception 'OCR enqueue live task not found or organization mismatch'
       using errcode = '23503';
   end if;
 
@@ -89,22 +105,45 @@ begin
       using errcode = '23503';
   end if;
 
-  -- The report row lock serializes concurrent enqueues. Re-check inside the
-  -- transaction so retries return the existing job without duplicate writes.
-  select job.*
-  into v_job
+  -- A repeated request for the same report is idempotent only if every stored
+  -- linkage still describes the exact invocation and screenshot being reused.
+  select result.*
+  into v_existing_result
   from public.ocr_results as result
-  join public.background_jobs as job
-    on job.id = result.background_job_id
-   and job.organization_id = result.organization_id
-   and job.job_type = 'ocr.extract_live_report'
   where result.live_report_id = v_report.id
     and result.organization_id = v_report.organization_id
   order by result.created_at desc
   limit 1;
 
   if found then
+    select job.*
+    into v_job
+    from public.background_jobs as job
+    where job.id = v_existing_result.background_job_id
+      and job.organization_id = v_existing_result.organization_id
+      and job.job_type = 'ocr.extract_live_report';
+
+    if not found
+      or v_existing_result.ai_invocation_id is distinct from v_job.ai_invocation_id
+      or v_existing_result.screenshot_id is distinct from p_screenshot_id
+      or v_job.payload ->> 'liveReportId' is distinct from p_live_report_id::text
+      or nullif(v_job.payload ->> 'screenshotId', '') is distinct from p_screenshot_id::text
+    then
+      raise exception 'Existing OCR enqueue linkage does not match request'
+        using errcode = '23514';
+    end if;
+
     return to_jsonb(v_job);
+  end if;
+
+  if v_report.status <> 'ocr_ing' then
+    raise exception 'OCR enqueue live report is not active'
+      using errcode = '55000';
+  end if;
+
+  if v_task.status not in ('pending_report', 'report_rejected') then
+    raise exception 'OCR enqueue live task is already claimed'
+      using errcode = '55000';
   end if;
 
   insert into public.ai_invocations (
@@ -189,6 +228,25 @@ begin
     p_job_id,
     false
   );
+
+  -- A rejected/need-more report remains historical evidence until the
+  -- replacement has a durable job. Archive it only inside this successful
+  -- enqueue transaction so a failed resubmit never erases the prior decision.
+  update public.live_reports as sibling
+  set
+    status = 'voided',
+    updated_at = now()
+  where sibling.organization_id = v_report.organization_id
+    and sibling.live_task_id = v_report.live_task_id
+    and sibling.id <> v_report.id
+    and sibling.status in ('rejected', 'need_more');
+
+  update public.live_tasks
+  set
+    status = 'report_pending_review',
+    updated_at = now()
+  where id = v_task.id
+    and organization_id = v_task.organization_id;
 
   return to_jsonb(v_job);
 end;

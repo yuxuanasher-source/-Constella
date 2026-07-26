@@ -631,17 +631,6 @@ export async function submitLiveReport({
   return report;
 }
 
-// Open report states that a fresh screenshot submission supersedes. Approved and
-// already-voided reports are intentionally excluded.
-const SUPERSEDABLE_REPORT_STATUSES = new Set<ReportStatus>([
-  "ocr_ing",
-  "pending_confirm",
-  "pending_review",
-  "pending_adjudication",
-  "rejected",
-  "need_more",
-]);
-
 export async function submitLiveReportScreenshotForOcr({
   repo,
   audit,
@@ -671,9 +660,10 @@ export async function submitLiveReportScreenshotForOcr({
     expectedDuration?: number;
   }) => Promise<{ id: string; status: string }>;
   deleteReportScreenshot: (input: {
-    id: string;
+    id?: string;
     organizationId: string;
     liveReportId: string;
+    screenshotFileHash: string;
   }) => Promise<void>;
 }): Promise<{
   report: LiveReportRecord;
@@ -693,16 +683,6 @@ export async function submitLiveReportScreenshotForOcr({
   }
   if (!task.systemDuration || task.systemDuration <= 0) {
     throw new Error("OCR report requires a recorded system duration");
-  }
-
-  // Supersede any still-open report for this task so a resubmit (e.g. after a
-  // rejection) never leaves duplicate live reports behind. Approved and
-  // already-voided reports are left untouched.
-  const priorReports = await repo.listLiveReportsByTask(task.id);
-  for (const prior of priorReports) {
-    if (SUPERSEDABLE_REPORT_STATUSES.has(prior.status)) {
-      await repo.updateLiveReport(prior.id, { status: "voided" });
-    }
   }
 
   const evidence = resolveReportEvidence({
@@ -744,7 +724,9 @@ export async function submitLiveReportScreenshotForOcr({
     errorMessage?: string;
   };
   let screenshotId: string | null = null;
+  let screenshotCreationAttempted = false;
   try {
+    screenshotCreationAttempted = true;
     const createdScreenshotId = await repo.createReportScreenshot({
       organizationId: actor.organizationId,
       liveReportId: report.id,
@@ -774,18 +756,20 @@ export async function submitLiveReportScreenshotForOcr({
     // Never advance the task into review with no worker behind the report:
     // void the just-created report and surface the failure so the streamer can
     // retry (the task stays in its current, re-uploadable status).
-    if (screenshotId) {
+    if (screenshotCreationAttempted) {
       try {
         await deleteReportScreenshot({
-          id: screenshotId,
+          id: screenshotId ?? undefined,
           organizationId: actor.organizationId,
           liveReportId: report.id,
+          screenshotFileHash: input.screenshotFileHash,
         });
       } catch {
         console.error("[live-operations] failed to clean up OCR screenshot", {
           organizationId: actor.organizationId,
           liveReportId: report.id,
           screenshotId,
+          screenshotFileHash: input.screenshotFileHash,
         });
       }
     }
@@ -794,9 +778,13 @@ export async function submitLiveReportScreenshotForOcr({
   }
 
   assertLiveTaskTransition(task.status, "report_pending_review");
-  const afterTask = await repo.updateLiveTask(task.id, {
+  // enqueue_ocr_job already claimed the task in the same transaction as the
+  // job/result rows. Do not issue an unconditional second write that could
+  // overwrite a state transition occurring after enqueue.
+  const afterTask: LiveTaskRecord = {
+    ...task,
     status: "report_pending_review",
-  });
+  };
 
   await audit({
     organizationId: actor.organizationId,

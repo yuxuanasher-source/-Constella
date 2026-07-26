@@ -8,6 +8,33 @@ import {
 
 const databaseScreenshotId = "00000000-0000-4000-8000-000000000101";
 
+function createDeleteClient(result: { error: Error | null; count: number }) {
+  const filters: Array<{ column: string; value: string }> = [];
+  type DeleteResult = typeof result;
+  type DeleteQuery = PromiseLike<DeleteResult> & {
+    eq(column: string, value: string): DeleteQuery;
+  };
+  const query = {
+    eq: vi.fn((column: string, value: string) => {
+      filters.push({ column, value });
+      return query;
+    }),
+    then<TResult1 = DeleteResult, TResult2 = never>(
+      onfulfilled?:
+        | ((value: DeleteResult) => TResult1 | PromiseLike<TResult1>)
+        | null,
+      onrejected?:
+        | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+        | null,
+    ): PromiseLike<TResult1 | TResult2> {
+      return Promise.resolve(result).then(onfulfilled, onrejected);
+    },
+  } as DeleteQuery;
+  const deleteRow = vi.fn(() => query);
+  const from = vi.fn(() => ({ delete: deleteRow }));
+  return { client: { from } as never, deleteRow, filters, from };
+}
+
 describe("getStreamerIdForUser", () => {
   it("selects one streamer binding within the current organization", async () => {
     const limit = vi.fn(async () => ({
@@ -106,41 +133,75 @@ describe("SupabaseLiveOperationsRepository", () => {
   });
 
   it("deletes only the created screenshot row for its report and organization", async () => {
-    const result = { error: null, count: 1 };
-    const eqLiveReport = vi.fn(async () => result);
-    const eqOrganization = vi.fn(() => ({ eq: eqLiveReport }));
-    const eqId = vi.fn(() => ({ eq: eqOrganization }));
-    const deleteRow = vi.fn(() => ({ eq: eqId }));
-    const from = vi.fn(() => ({ delete: deleteRow }));
+    const { client, deleteRow, filters, from } = createDeleteClient({
+      error: null,
+      count: 1,
+    });
 
     await expect(
-      deleteReportScreenshotForOcr({ from } as never, {
+      deleteReportScreenshotForOcr(client, {
         id: databaseScreenshotId,
         organizationId: "org-1",
         liveReportId: "report-1",
+        screenshotFileHash: "sha256:abc123",
       }),
     ).resolves.toBeUndefined();
 
     expect(from).toHaveBeenCalledWith("report_screenshots");
     expect(deleteRow).toHaveBeenCalledWith({ count: "exact" });
-    expect(eqId).toHaveBeenCalledWith("id", databaseScreenshotId);
-    expect(eqOrganization).toHaveBeenCalledWith("organization_id", "org-1");
-    expect(eqLiveReport).toHaveBeenCalledWith("live_report_id", "report-1");
+    expect(filters).toEqual([
+      { column: "organization_id", value: "org-1" },
+      { column: "live_report_id", value: "report-1" },
+      { column: "file_hash", value: "sha256:abc123" },
+      { column: "id", value: databaseScreenshotId },
+    ]);
   });
 
   it("rejects a cleanup that did not delete exactly one screenshot row", async () => {
-    const eqLiveReport = vi.fn(async () => ({ error: null, count: 0 }));
-    const eqOrganization = vi.fn(() => ({ eq: eqLiveReport }));
-    const eqId = vi.fn(() => ({ eq: eqOrganization }));
-    const deleteRow = vi.fn(() => ({ eq: eqId }));
-    const from = vi.fn(() => ({ delete: deleteRow }));
+    const { client } = createDeleteClient({ error: null, count: 0 });
 
     await expect(
-      deleteReportScreenshotForOcr({ from } as never, {
+      deleteReportScreenshotForOcr(client, {
         id: databaseScreenshotId,
         organizationId: "org-1",
         liveReportId: "report-1",
+        screenshotFileHash: "sha256:abc123",
       }),
     ).rejects.toThrow("OCR screenshot cleanup did not delete exactly one row");
+  });
+
+  it.each([0, 1])(
+    "accepts count %s when cleaning up a screenshot whose RETURNING response was lost",
+    async (count) => {
+      const { client, filters } = createDeleteClient({ error: null, count });
+
+      await expect(
+        deleteReportScreenshotForOcr(client, {
+          id: undefined,
+          organizationId: "org-1",
+          liveReportId: "report-1",
+          screenshotFileHash: "sha256:abc123",
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(filters).toEqual([
+        { column: "organization_id", value: "org-1" },
+        { column: "live_report_id", value: "report-1" },
+        { column: "file_hash", value: "sha256:abc123" },
+      ]);
+    },
+  );
+
+  it("rejects an unknown-id cleanup that matches more than one row", async () => {
+    const { client } = createDeleteClient({ error: null, count: 2 });
+
+    await expect(
+      deleteReportScreenshotForOcr(client, {
+        id: undefined,
+        organizationId: "org-1",
+        liveReportId: "report-1",
+        screenshotFileHash: "sha256:abc123",
+      }),
+    ).rejects.toThrow("OCR screenshot cleanup deleted an unexpected row count");
   });
 });

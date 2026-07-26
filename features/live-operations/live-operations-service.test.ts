@@ -550,10 +550,7 @@ describe("live operations service", () => {
         expectedDuration: 80,
       }),
     );
-    expect(repo.updateLiveTask).toHaveBeenCalledWith(
-      "task-1",
-      expect.objectContaining({ status: "report_pending_review" }),
-    );
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "update",
@@ -600,10 +597,7 @@ describe("live operations service", () => {
         expectedDuration: 80,
       }),
     );
-    expect(repo.updateLiveTask).toHaveBeenCalledWith(
-      "task-1",
-      expect.objectContaining({ status: "report_pending_review" }),
-    );
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
   });
 
   it("blocks OCR submission from another streamer's task", async () => {
@@ -790,6 +784,7 @@ describe("live operations service", () => {
       id: databaseScreenshotId,
       organizationId: "org-1",
       liveReportId: "report-1",
+      screenshotFileHash: "hash-1",
     });
     expect(repo.updateLiveTask).not.toHaveBeenCalledWith("task-1", {
       status: "report_pending_review",
@@ -830,7 +825,12 @@ describe("live operations service", () => {
       expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
         status: "voided",
       });
-      expect(deleteReportScreenshot).not.toHaveBeenCalled();
+      expect(deleteReportScreenshot).toHaveBeenCalledWith({
+        id: undefined,
+        organizationId: "org-1",
+        liveReportId: "report-1",
+        screenshotFileHash: "hash-1",
+      });
       expect(createOcrJob).not.toHaveBeenCalled();
       expect(repo.updateLiveTask).not.toHaveBeenCalledWith("task-1", {
         status: "report_pending_review",
@@ -874,7 +874,12 @@ describe("live operations service", () => {
       expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
         status: "voided",
       });
-      expect(deleteReportScreenshot).not.toHaveBeenCalled();
+      expect(deleteReportScreenshot).toHaveBeenCalledWith({
+        id: undefined,
+        organizationId: "org-1",
+        liveReportId: "report-1",
+        screenshotFileHash: "hash-1",
+      });
       expect(createOcrJob).not.toHaveBeenCalled();
       expect(repo.updateLiveTask).not.toHaveBeenCalledWith("task-1", {
         status: "report_pending_review",
@@ -915,6 +920,7 @@ describe("live operations service", () => {
       id: databaseScreenshotId,
       organizationId: "org-1",
       liveReportId: "report-1",
+      screenshotFileHash: "hash-1",
     });
     expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
       status: "voided",
@@ -925,6 +931,7 @@ describe("live operations service", () => {
         organizationId: "org-1",
         liveReportId: "report-1",
         screenshotId: databaseScreenshotId,
+        screenshotFileHash: "hash-1",
       },
     );
     consoleError.mockRestore();
@@ -980,7 +987,46 @@ describe("live operations service", () => {
     expect(repo.createReportScreenshot).toHaveBeenCalledTimes(2);
   });
 
-  it("supersedes prior open reports for the task on resubmit", async () => {
+  it.each(["rejected", "need_more"])(
+    "leaves prior %s report archival to the atomic enqueue transaction",
+    async (priorStatus) => {
+      vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+        ...task,
+        status: "report_rejected",
+        systemDuration: 80,
+      });
+      vi.mocked(repo.listLiveReportsByTask).mockResolvedValueOnce([
+        {
+          ...baseReport,
+          id: "old-report",
+          status: priorStatus as "rejected" | "need_more",
+        },
+      ]);
+      const createOcrJob = vi.fn(async () => ({
+        id: "job-1",
+        status: "queued",
+      }));
+
+      await submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+        deleteReportScreenshot,
+      });
+
+      expect(repo.updateLiveReport).not.toHaveBeenCalledWith("old-report", {
+        status: "voided",
+      });
+      expect(repo.createLiveReport).toHaveBeenCalled();
+      expect(repo.updateLiveTask).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves a prior rejected report when its replacement cannot be queued", async () => {
     vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
       ...task,
       status: "report_rejected",
@@ -989,29 +1035,27 @@ describe("live operations service", () => {
     vi.mocked(repo.listLiveReportsByTask).mockResolvedValueOnce([
       { ...baseReport, id: "old-report", status: "rejected" },
     ]);
-    const createOcrJob = vi.fn(async () => ({
-      id: "job-1",
-      status: "queued",
-    }));
 
-    await submitLiveReportScreenshotForOcr({
-      repo,
-      audit,
-      notify,
-      actor: streamerActor,
-      taskId: "task-1",
-      input: ocrInput,
-      createOcrJob,
-      deleteReportScreenshot,
-    });
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob: vi.fn(async () => {
+          throw new Error("task already claimed");
+        }),
+        deleteReportScreenshot,
+      }),
+    ).rejects.toThrow("OCR 入队失败，请稍后重试");
 
-    // The previously rejected report is voided before the new one is created.
-    expect(repo.updateLiveReport).toHaveBeenCalledWith("old-report", {
+    expect(repo.updateLiveReport).not.toHaveBeenCalledWith("old-report", {
       status: "voided",
     });
-    expect(repo.createLiveReport).toHaveBeenCalled();
-    expect(repo.updateLiveTask).toHaveBeenCalledWith("task-1", {
-      status: "report_pending_review",
+    expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
+      status: "voided",
     });
   });
 

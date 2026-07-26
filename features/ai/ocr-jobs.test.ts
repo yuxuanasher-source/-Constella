@@ -83,6 +83,14 @@ function createClient(
             jobs[index] = { ...jobs[index], ...toJobPatch(payload) };
           }
         }
+        if (table === "live_reports" && first.column === "id") {
+          const index = liveReports.findIndex(
+            (report) => report.id === first.value,
+          );
+          if (index >= 0) {
+            liveReports[index] = { ...liveReports[index], ...payload };
+          }
+        }
       }
       return { error: null, count: 1 };
     };
@@ -971,6 +979,241 @@ describe("OCR jobs", () => {
       }),
     ]);
   });
+
+  it.each([
+    ["needs_confirmation", "pending_review"],
+    ["needs_review", "pending_review"],
+    ["queued", "ocr_ing"],
+    ["running", "ocr_ing"],
+    ["succeeded", "pending_review"],
+  ])(
+    "rejects manual retry for a %s job without updating it",
+    async (jobStatus, reportStatus) => {
+      const { client, updates } = createClient({
+        jobs: [
+          {
+            id: "job-not-retryable",
+            organizationId: "org-1",
+            jobType: "ocr.extract_live_report",
+            status: jobStatus as OcrJobRecord["status"],
+            attempt: 1,
+            payload: {
+              liveReportId: "report-not-retryable",
+              imageBase64: "ZmFrZQ==",
+            },
+          },
+        ],
+        liveReports: [
+          {
+            id: "report-not-retryable",
+            organization_id: "org-1",
+            project_id: "project-1",
+            status: reportStatus,
+          },
+        ],
+      });
+
+      await expect(
+        retryOcrJob({
+          client,
+          actor,
+          jobId: "job-not-retryable",
+        }),
+      ).rejects.toThrow("OCR job is not eligible for retry");
+
+      expect(updates.background_jobs).toBeUndefined();
+    },
+  );
+
+  it.each(["voided", "approved", "rejected", "pending_review"])(
+    "rejects retry for a failed job whose report is %s",
+    async (reportStatus) => {
+      const { client, updates } = createClient({
+        jobs: [
+          {
+            id: "job-terminal-report",
+            organizationId: "org-1",
+            jobType: "ocr.extract_live_report",
+            status: "failed",
+            attempt: 1,
+            payload: {
+              liveReportId: "report-terminal",
+              imageBase64: "ZmFrZQ==",
+            },
+          },
+        ],
+        liveReports: [
+          {
+            id: "report-terminal",
+            organization_id: "org-1",
+            project_id: "project-1",
+            status: reportStatus,
+          },
+        ],
+      });
+
+      await expect(
+        retryOcrJob({
+          client,
+          actor,
+          jobId: "job-terminal-report",
+        }),
+      ).rejects.toThrow("OCR job live report is not eligible for retry");
+
+      expect(updates.background_jobs).toBeUndefined();
+    },
+  );
+
+  it("allows a cancelled job to retry while its report is still in OCR", async () => {
+    const { client } = createClient({
+      jobs: [
+        {
+          id: "job-cancelled-retry",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "cancelled",
+          attempt: 1,
+          payload: {
+            liveReportId: "report-cancelled-retry",
+            imageBase64: "ZmFrZQ==",
+          },
+        },
+      ],
+    });
+
+    await expect(
+      retryOcrJob({
+        client,
+        actor,
+        jobId: "job-cancelled-retry",
+      }),
+    ).resolves.toMatchObject({ status: "queued" });
+  });
+
+  it("runs the provider after a failed OCR job is retried for an active OCR report", async () => {
+    const { client } = createClient({
+      jobs: [
+        {
+          id: "job-retry-run",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "failed",
+          attempt: 1,
+          payload: {
+            liveReportId: "report-retry-run",
+            imageBase64: "ZmFrZQ==",
+            expectedDuration: 80,
+          },
+        },
+      ],
+    });
+    const runGeneralBasicOcr = vi.fn(async () => ({
+      status: "succeeded" as const,
+      textLines: ["直播时长 80分钟", "观看人数 320"],
+      textItems: [],
+      confidence: 96,
+      requestId: "request-retry-run",
+      rawResponse: {},
+    }));
+
+    await retryOcrJob({ client, actor, jobId: "job-retry-run" });
+    const result = await runOcrJobOnce({
+      client,
+      metricClient: null,
+      actor,
+      jobId: "job-retry-run",
+      provider: { runGeneralBasicOcr },
+    });
+
+    expect(runGeneralBasicOcr).toHaveBeenCalledOnce();
+    expect(result.status).toBe("succeeded");
+  });
+
+  it.each(["voided", "approved"])(
+    "cancels OCR persistence when the report becomes %s during the provider call",
+    async (reportStatus) => {
+      const { client, updates } = createClient({
+        jobs: [
+          {
+            id: "job-raced-report",
+            organizationId: "org-1",
+            jobType: "ocr.extract_live_report",
+            status: "queued",
+            attempt: 0,
+            aiInvocationId: "invocation-raced-report",
+            payload: {
+              liveReportId: "report-raced",
+              imageBase64: "ZmFrZQ==",
+              expectedDuration: 80,
+            },
+          },
+        ],
+        liveReports: [
+          {
+            id: "report-raced",
+            organization_id: "org-1",
+            project_id: "project-1",
+            status: "ocr_ing",
+          },
+        ],
+      });
+      const runGeneralBasicOcr = vi.fn(async () => {
+        await client
+          .from("live_reports")
+          .update({ status: reportStatus })
+          .eq("id", "report-raced");
+        return {
+          status: "succeeded" as const,
+          textLines: ["直播时长 80分钟", "观看人数 320"],
+          textItems: [],
+          confidence: 96,
+          requestId: "request-raced-report",
+          rawResponse: {},
+        };
+      });
+
+      const result = await runOcrJobOnce({
+        client,
+        metricClient: client as never,
+        actor,
+        jobId: "job-raced-report",
+        provider: { runGeneralBasicOcr },
+      });
+
+      expect(runGeneralBasicOcr).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({
+        status: "cancelled",
+        errorCode: "live_report_not_runnable",
+      });
+      expect(updates.ocr_results.at(-1)).toEqual(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            status: "cancelled",
+            error_code: "live_report_not_runnable",
+          }),
+        }),
+      );
+      expect(updates.background_jobs.at(-1)).toEqual(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            status: "cancelled",
+            error_code: "live_report_not_runnable",
+          }),
+        }),
+      );
+      expect(
+        updates.live_reports.some(
+          (update) =>
+            (update as { payload?: { status?: string } }).payload?.status ===
+            "pending_review",
+        ),
+      ).toBe(false);
+      expect(client.rpc).not.toHaveBeenCalledWith(
+        "upsert_ocr_streamer_metrics",
+        expect.anything(),
+      );
+    },
+  );
 
   it("claims runnable OCR jobs through the database lock primitive", async () => {
     const { client } = createClient();

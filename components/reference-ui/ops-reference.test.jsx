@@ -4145,6 +4145,9 @@ describe("OpsReferenceApp OCR operations smoke", () => {
       ),
     );
     expect(await screen.findByText("待确认")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "手动重试" }),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "标记需复核" }));
     await waitFor(() =>
@@ -4158,6 +4161,9 @@ describe("OpsReferenceApp OCR operations smoke", () => {
       ),
     );
     expect((await screen.findAllByText("需复核")).length).toBeGreaterThan(0);
+    expect(
+      screen.queryByRole("button", { name: "手动重试" }),
+    ).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("修正时长 ocr-job-1"), {
       target: { value: "80" },
@@ -4213,6 +4219,89 @@ describe("OpsReferenceApp OCR operations smoke", () => {
     expect(
       await screen.findByText("成功", { selector: "span" }),
     ).toBeInTheDocument();
+  });
+
+  it("offers manual retry only for failed OCR jobs", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      const requestUrl = String(url);
+      if (requestUrl === "/api/ocr/jobs" && init === undefined) {
+        return {
+          ok: true,
+          json: async () => ({
+            jobs: [
+              {
+                id: "job-failed",
+                status: "failed",
+                attempt: 1,
+                maxAttempts: 3,
+                liveReportId: "report-failed",
+                result: {},
+              },
+              {
+                id: "job-cancelled",
+                status: "cancelled",
+                attempt: 1,
+                maxAttempts: 3,
+                liveReportId: "report-cancelled",
+                result: {},
+              },
+            ],
+          }),
+        };
+      }
+      if (
+        requestUrl === "/api/ocr/jobs/job-failed" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            job: {
+              id: "job-failed",
+              status: "queued",
+              attempt: 1,
+              maxAttempts: 3,
+              liveReportId: "report-failed",
+              result: {},
+            },
+          }),
+        };
+      }
+      return {
+        ok: false,
+        json: async () => ({ error: `unexpected request ${requestUrl}` }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="warroom" />);
+    fireEvent.click(screen.getByRole("button", { name: "OCR 作业" }));
+
+    const failedRow = (
+      await screen.findByText("失败", { selector: "span" })
+    ).closest("tr");
+    const cancelledRow = (
+      await screen.findByText("已取消", { selector: "span" })
+    ).closest("tr");
+    expect(
+      within(failedRow).getByRole("button", { name: "手动重试" }),
+    ).toBeInTheDocument();
+    expect(
+      within(cancelledRow).queryByRole("button", { name: "手动重试" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      within(failedRow).getByRole("button", { name: "手动重试" }),
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/ocr/jobs/job-failed",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ action: "retry" }),
+        }),
+      ),
+    );
   });
 });
 
