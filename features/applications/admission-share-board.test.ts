@@ -24,6 +24,16 @@ const actor = {
   organizationId: "org-1",
 };
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function createRepo(
   overrides: Partial<AdmissionShareBoardRepository> = {},
 ): AdmissionShareBoardRepository & {
@@ -538,6 +548,60 @@ describe("admission share board service", () => {
     );
   });
 
+  it("waits for the board view audit attempt before returning the DTO", async () => {
+    const auditAttempt = deferred<void>();
+    const markShareBoardViewed = vi.fn().mockReturnValue(auditAttempt.promise);
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      markShareBoardViewed,
+    });
+    let settled = false;
+
+    const result = getPublicAdmissionShareBoard({
+      repo,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+    void result.then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(markShareBoardViewed).toHaveBeenCalledOnce());
+
+    expect(settled).toBe(false);
+    auditAttempt.resolve();
+    await expect(result).resolves.toEqual(
+      expect.objectContaining({ id: "share-1" }),
+    );
+  });
+
+  it("waits for the playback view audit attempt before returning the source", async () => {
+    const auditAttempt = deferred<void>();
+    const markShareBoardViewed = vi.fn().mockReturnValue(auditAttempt.promise);
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      markShareBoardViewed,
+    });
+    let settled = false;
+
+    const result = getPublicAdmissionRecordingPlaybackSource({
+      repo,
+      token: "plain-token",
+      recordingSubmissionId: "rec-2",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+    void result.then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(markShareBoardViewed).toHaveBeenCalledOnce());
+
+    expect(settled).toBe(false);
+    auditAttempt.resolve();
+    await expect(result).resolves.toEqual({
+      recordingUrl: null,
+      storagePath: "private/path/rec-2.mp4",
+    });
+  });
+
   it("requires a valid capability for code-protected board data", async () => {
     const access = publicAccess({
       accessCodeHash: "b".repeat(64),
@@ -571,6 +635,7 @@ describe("admission share board service", () => {
       accessCodeHash: access.accessCodeHash!,
       boardExpiresAt: access.expiresAt,
       now: "2026-06-07T01:00:00.000Z",
+      secret: "s".repeat(64),
     }).value;
     await expect(
       getPublicAdmissionShareBoard({
@@ -579,6 +644,7 @@ describe("admission share board service", () => {
         preparedAccess,
         capability,
         now: "2026-06-07T01:05:00.000Z",
+        capabilitySecret: "s".repeat(64),
       }),
     ).resolves.toEqual(expect.objectContaining({ id: "share-1" }));
   });
@@ -734,9 +800,7 @@ describe("admission share board service", () => {
     });
 
     expect(dto.id).toBe("share-1");
-    await vi.waitFor(() =>
-      expect(onViewAuditError).toHaveBeenCalledWith(auditError),
-    );
+    expect(onViewAuditError).toHaveBeenCalledWith(auditError);
   });
 
   it("rejects expired public share links", async () => {

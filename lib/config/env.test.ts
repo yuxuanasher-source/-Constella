@@ -31,10 +31,12 @@ describe("parseServerEnv", () => {
       )({
         SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
         STORAGE_BUCKET_PRIVATE: "jy-private",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
       }),
     ).toEqual({
       SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
       STORAGE_BUCKET_PRIVATE: "jy-private",
+      ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
     });
   });
 
@@ -47,11 +49,33 @@ describe("parseServerEnv", () => {
     expect(
       parseServerEnv({
         SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
       }),
     ).toEqual({
       SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
       STORAGE_BUCKET_PRIVATE: "jy-private",
+      ADMISSION_SHARE_CAPABILITY_SECRET: "s".repeat(64),
     });
+  });
+
+  it("requires a strong admission share capability secret", () => {
+    const parseServerEnv = (envConfig as Record<string, unknown>)
+      .parseServerEnv as (
+      env: Record<string, string | undefined>,
+    ) => Record<string, string>;
+
+    expect(() =>
+      parseServerEnv({
+        SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "",
+      }),
+    ).toThrow();
+    expect(() =>
+      parseServerEnv({
+        SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        ADMISSION_SHARE_CAPABILITY_SECRET: "too-short",
+      }),
+    ).toThrow();
   });
 });
 

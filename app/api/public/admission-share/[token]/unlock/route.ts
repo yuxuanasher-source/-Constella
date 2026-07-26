@@ -13,12 +13,13 @@ import {
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import {
   ADMISSION_SHARE_CAPABILITY_COOKIE,
+  AdmissionShareCapabilityUnavailableError,
+  requireAdmissionShareCapabilitySecret,
   signAdmissionShareCapability,
 } from "@/lib/http/admission-share-capability";
 import {
   ADMISSION_SHARE_RATE_LIMITS,
   enforceAdmissionShareIpRateLimit,
-  enforceAdmissionShareTokenRateLimit,
   RateLimitDeniedError,
   RateLimitUnavailableError,
 } from "@/lib/http/rate-limit";
@@ -29,6 +30,7 @@ export async function POST(
 ) {
   try {
     const { token } = await params;
+    const capabilitySecret = requireAdmissionShareCapabilitySecret();
     const supabase = createSupabaseAdminClient();
     if (!supabase) {
       throw new RouteError("Public share service is unavailable", 500);
@@ -48,7 +50,6 @@ export async function POST(
       token,
       now,
     });
-    await enforceAdmissionShareTokenRateLimit(rateLimitInput);
 
     const body = await readJsonBody(request);
     const accessCode =
@@ -68,6 +69,7 @@ export async function POST(
         accessCodeHash: preparedAccess.access.accessCodeHash,
         boardExpiresAt: preparedAccess.access.expiresAt,
         now,
+        secret: capabilitySecret,
       });
       response.cookies.set(
         ADMISSION_SHARE_CAPABILITY_COOKIE,
@@ -83,6 +85,12 @@ export async function POST(
     }
     return response;
   } catch (error) {
+    if (error instanceof AdmissionShareCapabilityUnavailableError) {
+      return NextResponse.json(
+        { error: "Public share unlock service is unavailable" },
+        { status: 503 },
+      );
+    }
     if (error instanceof RateLimitDeniedError) {
       return NextResponse.json(
         { error: "Too many requests" },
@@ -95,6 +103,12 @@ export async function POST(
     if (error instanceof RateLimitUnavailableError) {
       return NextResponse.json({ error: error.message }, { status: 503 });
     }
-    return jsonError(error);
+    if (error instanceof RouteError) {
+      return jsonError(error);
+    }
+    return NextResponse.json(
+      { error: "Unable to unlock share" },
+      { status: 400 },
+    );
   }
 }

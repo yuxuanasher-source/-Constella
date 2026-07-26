@@ -963,6 +963,7 @@ export async function getPublicAdmissionShareBoard({
   repo,
   token,
   capability,
+  capabilitySecret,
   preparedAccess,
   now = new Date().toISOString(),
   onViewAuditError = observeViewAuditError,
@@ -970,6 +971,7 @@ export async function getPublicAdmissionShareBoard({
   repo: AdmissionShareBoardRepository;
   token: string;
   capability?: string;
+  capabilitySecret?: string;
   preparedAccess?: PreparedPublicAdmissionShareAccess;
   now?: string;
   onViewAuditError?: (error: unknown) => void;
@@ -978,10 +980,16 @@ export async function getPublicAdmissionShareBoard({
     repo,
     token,
     capability,
+    capabilitySecret,
     preparedAccess,
     now,
   });
-  markShareBoardViewedBestEffort(repo, snapshot.id, now, onViewAuditError);
+  await markShareBoardViewedBestEffort(
+    repo,
+    snapshot.id,
+    now,
+    onViewAuditError,
+  );
 
   return toPublicShareDto(snapshot, { token });
 }
@@ -990,6 +998,7 @@ export async function getPublicAdmissionRecordingPlaybackSource({
   repo,
   token,
   capability,
+  capabilitySecret,
   preparedAccess,
   recordingSubmissionId,
   now = new Date().toISOString(),
@@ -998,6 +1007,7 @@ export async function getPublicAdmissionRecordingPlaybackSource({
   repo: AdmissionShareBoardRepository;
   token: string;
   capability?: string;
+  capabilitySecret?: string;
   preparedAccess?: PreparedPublicAdmissionShareAccess;
   recordingSubmissionId: string;
   now?: string;
@@ -1007,6 +1017,7 @@ export async function getPublicAdmissionRecordingPlaybackSource({
     repo,
     token,
     capability,
+    capabilitySecret,
     preparedAccess,
     now,
   });
@@ -1016,7 +1027,12 @@ export async function getPublicAdmissionRecordingPlaybackSource({
   if (!item) {
     throw new Error("Recording is not part of this share board");
   }
-  markShareBoardViewedBestEffort(repo, snapshot.id, now, onViewAuditError);
+  await markShareBoardViewedBestEffort(
+    repo,
+    snapshot.id,
+    now,
+    onViewAuditError,
+  );
   return {
     recordingUrl: item.recordingUrl,
     storagePath: item.storagePath,
@@ -1460,12 +1476,14 @@ async function requirePublicSnapshot({
   repo,
   token,
   capability,
+  capabilitySecret,
   preparedAccess,
   now,
 }: {
   repo: AdmissionShareBoardRepository;
   token: string;
   capability?: string;
+  capabilitySecret?: string;
   preparedAccess?: PreparedPublicAdmissionShareAccess;
   now: string;
 }) {
@@ -1486,6 +1504,7 @@ async function requirePublicSnapshot({
       accessCodeHash: prepared.access.accessCodeHash,
       capability,
       now,
+      secret: capabilitySecret,
     })
   ) {
     throw new Error("Access code is required");
@@ -1547,13 +1566,17 @@ function publicAdmissionRecordingPlaybackUrl(input: {
   )}/recordings/${encodeURIComponent(input.recordingSubmissionId)}`;
 }
 
-function markShareBoardViewedBestEffort(
+async function markShareBoardViewedBestEffort(
   repo: AdmissionShareBoardRepository,
   shareBoardId: string,
   viewedAt: string,
   onError: (error: unknown) => void,
 ) {
-  void repo.markShareBoardViewed(shareBoardId, viewedAt).catch(onError);
+  try {
+    await repo.markShareBoardViewed(shareBoardId, viewedAt);
+  } catch (error) {
+    onError(error);
+  }
 }
 
 function observeViewAuditError(error: unknown) {
