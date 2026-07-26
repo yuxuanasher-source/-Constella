@@ -82,7 +82,7 @@ describe("project api routes", () => {
         allow_direct_invite: true,
         force_recording: true,
         force_system_timing: true,
-        default_hourly_rate: 4500,
+        default_hourly_rate: 45,
         is_public_to_streamers: false,
         public_summary: "",
         game_download_url: null,
@@ -104,6 +104,7 @@ describe("project api routes", () => {
           id: "p1",
           code: "P2412",
           statusLabel: "草稿",
+          hourlyRateLabel: "45.00 元/小时",
         }),
       ],
     });
