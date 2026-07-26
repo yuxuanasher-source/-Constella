@@ -18,7 +18,7 @@
     "test:manual-acceptance-smoke": "node scripts/manual-acceptance-smoke.mjs",
     "test:dto-contracts": "vitest run features/dto-contracts/api-dto-contract.test.ts",
     "test:golden": "vitest run features/regression/settlement-golden-path.test.ts",
-    "test:p3-governance": "vitest run features/audit-center features/notifications features/anomalies features/exports features/delivery-packages features/regression/governance-golden-path.test.ts",
+    "test:p3-governance": "vitest run features/audit-center features/notifications features/anomalies features/exports features/regression/governance-golden-path.test.ts",
     "test:p4-flywheel": "vitest run features/auto-review app/api/auto-review features/war-room app/api/war-room features/ai app/api/ai features/regression/p4-flywheel.test.ts",
     "test:p5-commercialization": "vitest run lib/db/p5-schema-contract.test.ts features/billing app/api/billing features/regression/p5-commercialization.test.ts",
     "test:p6-payment": "vitest run lib/db/p6-schema-contract.test.ts features/billing features/regression/p6-payment.test.ts",

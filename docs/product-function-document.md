@@ -94,7 +94,7 @@ flowchart LR
 | Cost Import Batch               | 成本数据导入批次           | CPA/CPS/礼物/投流文件  | 待确认成本项、导入审计           |
 | Audit Log                       | 操作审计                   | 所有写动作             | 审计中心、AI rollout 统计        |
 | Notification                    | 通知和待办                 | 任务、审核、结算、异常 | 通知中心、顶部铃铛               |
-| Export Job                      | 受控导出结果               | 导出中心               | CSV、交付包、审计                |
+| Export Job                      | 受控导出结果               | 导出中心               | CSV、下载链接、审计              |
 | Billing Plan / Subscription     | 套餐与订阅                 | 商业化后台             | 权益、只读模式、用量             |
 | Usage Event / Counter           | 用量事件和月计数           | OCR、AI、导出、存储等  | 套餐额度、加量包                 |
 | AI Invocation / Tool Invocation | AI 调用账本                | AI 工具层              | 成本、审计、安全追踪             |
@@ -169,7 +169,7 @@ flowchart LR
 | M5   | 报数审核     | reports       | 证据审核、入池判断               |
 | M6   | 结算批次     | settle        | 结算池、批次、人工承载、锁定     |
 | M7   | 审计中心     | audit         | 审计日志查询                     |
-| M8   | 导出交付     | export        | 受控导出、厂家交付包             |
+| M8   | 数据导出     | export        | 内部受控导出、字段治理           |
 | M9   | 通知待办     | notifications | 待办、通知状态                   |
 | M10  | 作战台       | warroom       | 报价、匹配、复盘、AI 经营建议    |
 | M11  | 商业化与套餐 | billing       | 套餐、权益、用量、只读状态       |
@@ -188,7 +188,7 @@ flowchart LR
 | 财务            | `finance`            | 判断哪些钱可以安全结算、哪些金额有风险       | 可结算池金额、可结算报数、待生成批次、本月主播应付、弱证据/人工承载金额 |
 | 主播            | `streamer`           | 完成任务、补证据、查看安全收益状态           | 今日任务、待上传截图、审核中报数、待补充事项、可结算/已结算收益         |
 | 协作 MCN        | 协作协议范围         | 处理本组织参与项目的贡献、异常和分账         | 协作项目、已加入主播、协作直播时长、通过报数、待确认分账                |
-| 外部厂家 / 客户 | 分享链接或交付包范围 | 审核候选和验收交付，不接触内部财务           | 候选主播、待审核录屏、已通过候选、交付场次、交付包状态                  |
+| 外部厂家 / 客户 | 项目分享看板 token 范围 | 审核候选录屏，不接触内部财务                 | 候选主播、待审核录屏、已通过候选、分享看板状态                         |
 
 通用规则：
 
@@ -469,6 +469,10 @@ flowchart LR
 - 最终拒绝并记录原因。
 - 经营端读取准入队列。
 - 主播端读取自己的报名卡片。
+- 项目详情的“厂家分享看板”直接定位到当前项目的准入工作台。
+- 运营按项目创建厂家分享看板，只纳入 MCN 已通过的录屏。
+- 厂家通过随机 token 进入受控页面；私有录屏由 token 门控的播放接口返回，不输出占位符或裸存储地址。
+- 分享看板支持有效期和人工撤销；过期或撤销后，列表、录屏播放和厂家提交均拒绝访问。
 
 关键规则：
 
@@ -478,6 +482,8 @@ flowchart LR
 - 录屏审核通过不等于入项。
 - 拒绝最终入项必须填写原因。
 - 审核和入项决策均写审计并发通知。
+- 分享 token 仅在创建时返回明文，服务端保存哈希；厂家访问必须同时满足 token 有效、看板 active、未过期。
+- 厂家交付只走项目级准入分享看板，不再生成独立“厂家交付包”或 `vendor_delivery` CSV。
 
 ### 8.5 M4 排班直播
 
@@ -598,15 +604,15 @@ flowchart LR
 - 受控 CSV 导出。
 - 导出字段按 kind 定义白名单。
 - 导出动作写审计。
-- 厂家交付包只输出公开字段。
 - 报数明细、项目执行、结算批次、审计日志有各自字段集合。
+- 经营端可导出准入录屏明细；私有录屏 URL 留空，不输出 `Private recording` 等假链接，厂家查看录屏统一使用项目分享看板。
 - 复杂成本规则开通后，可导出主播付款表、供应商对账表、项目成本明细、项目毛利复盘和异常调整审计表。
 
 导出种类：
 
 | kind               | 用途         | 敏感策略               |
 | ------------------ | ------------ | ---------------------- |
-| vendor_delivery    | 厂家交付包   | 只允许 public 字段     |
+| admission_recordings | 准入录屏明细 | 经营端白名单字段       |
 | project_execution  | 项目执行数据 | 内部字段可见           |
 | report_details     | 报数明细     | 不带财务敏感字段       |
 | settlement_batch   | 结算批次     | 财务字段按角色过滤     |
@@ -850,7 +856,7 @@ P6 正式商业化规格已沉淀：
 | ------------ | -------------------------------------- |
 | 主播结算账单 | `streamer_payable_items_safe` 安全视图 |
 | 主播 DTO     | 不返回应收、毛利、成本、内部风险       |
-| 厂家交付包   | 只导出公开字段                         |
+| 厂家分享看板 | token、有效期和撤销门控；私有录屏受控播放 |
 | AI 工具      | streamerForbiddenKeys 递归过滤         |
 | 导出中心     | 字段白名单和 sensitivity 过滤          |
 
@@ -917,6 +923,11 @@ P6 正式商业化规格已沉淀：
 | `/api/streamer/recordings`                      | GET   | 主播读取录屏链接库     |
 | `/api/streamer/recordings`                      | POST  | 主播提交录屏链接       |
 | `/api/uploads/signed`                           | POST  | 创建私有上传签名 URL   |
+| `/api/projects/:projectId/admission-share-boards` | GET/POST | 查询或创建项目厂家分享看板 |
+| `/api/projects/:projectId/admission-share-boards/:shareBoardId/revoke` | POST | 撤销厂家分享看板 |
+| `/api/public/admission-share/:token`            | GET   | token 门控读取厂家分享看板 |
+| `/api/public/admission-share/:token/recordings/:recordingSubmissionId` | GET | 受控读取私有录屏 |
+| `/api/public/admission-share/:token/reviews`    | POST  | 厂家提交选择和备注     |
 
 ### 10.4 排班、报数、OCR
 
@@ -960,7 +971,7 @@ P6 正式商业化规格已沉淀：
 | `/api/notifications/:notificationId` | PATCH | 更新通知状态         |
 | `/api/anomalies/scan`                | POST  | 扫描直播异常并发通知 |
 | `/api/exports`                       | POST  | 创建受控导出         |
-| `/api/delivery-packages`             | GET   | 读取厂家交付包       |
+| `/api/delivery-packages?projectId=:projectId` | GET | 已退役，认证且具备 MCN staff 角色后返回 `410 Gone`，并指向项目准入分享看板 API |
 
 ### 10.7 作战台、自动审核、AI
 
@@ -1123,7 +1134,7 @@ MVP 新增：
 已确认的闭环证据：
 
 - P1/P2 黄金路径覆盖“报数提交 -> 审核通过 -> 结算池 -> 应付批次 -> 主播安全账单”。
-- P3 覆盖审计中心、通知、异常扫描、导出、交付包。
+- P3 覆盖审计中心、通知、异常扫描、通用治理导出和厂家分享看板安全边界。
 - P4 覆盖报价、匹配、供应商评分、复盘、AI 工具安全和自动审核边界。
 - M10 角色化看板覆盖：角色默认首页、指标口径一致性、服务端字段脱敏、空态和部分失败态、看板卡片跳转上下文。
 - P5 覆盖套餐权益、用量计量、欠费只读和账单状态。

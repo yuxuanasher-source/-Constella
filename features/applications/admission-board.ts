@@ -304,7 +304,7 @@ export function toAdmissionRecordingExportRows(
       .join(" / "),
     streamerName: detail.streamer.displayName,
     streamerAccount: detail.streamer.accountLabel,
-    recordingUrl: detail.latestRecording?.url ?? "Private recording",
+    recordingUrl: detail.latestRecording?.url ?? "",
     recordingVersion: detail.latestRecording?.version ?? "",
     recordingSubmittedAt: detail.latestRecording?.submittedAt ?? "",
     mcnReviewStatus: detail.status,

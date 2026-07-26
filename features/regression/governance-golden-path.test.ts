@@ -1,13 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { detectTaskAnomalies } from "@/features/anomalies/anomaly-rules";
-import { toVendorDeliveryPackageItem } from "@/features/delivery-packages/delivery-package-dto";
-import { getAllowedExportFields } from "@/features/exports/export-definitions";
+import { isExportKind } from "@/features/exports/export-definitions";
 import { createGovernedExport } from "@/features/exports/export-service";
 import { toNotificationCenterItem } from "@/features/notifications/notification-center-queries";
 
 describe("P3 governance golden path", () => {
-  it("keeps notifications, anomalies, exports, and delivery packages server-side governed", async () => {
+  it("keeps notifications, anomalies, and general exports server-side governed", async () => {
     const notification = toNotificationCenterItem({
       id: "notice-1",
       notification_type: "high_risk",
@@ -34,11 +33,6 @@ describe("P3 governance golden path", () => {
       },
     });
 
-    const vendorFields = getAllowedExportFields(
-      "vendor_delivery",
-      "operator_business",
-    );
-
     const auditInserts: Record<string, unknown>[] = [];
     const exportResult = await createGovernedExport({
       client: {
@@ -55,31 +49,17 @@ describe("P3 governance golden path", () => {
         role: "operator_business",
         organizationId: "org-1",
       },
-      kind: "vendor_delivery",
+      kind: "project_execution",
       rows: [
         {
           projectName: "王者荣耀暑期冲榜",
-          streamerName: "阿洛",
-          settlementDuration: 120,
-          evidenceLevel: "system",
+          status: "active",
+          operatorName: "阿洛",
           grossMarginCents: 3000,
           costCents: 10000,
         },
       ],
       now: "2026-06-02T10:00:00.000Z",
-    });
-
-    const deliveryPackage = toVendorDeliveryPackageItem({
-      project_id: "project-1",
-      project_name: "王者荣耀暑期冲榜",
-      streamer_name: "阿洛",
-      settlement_duration_minutes: 120,
-      evidence_level: "system",
-      screenshot_count: 2,
-      cost_cents: 10000,
-      gross_margin_cents: 3000,
-      vendor_receivable_cents: 13000,
-      internal_risk_note: "历史争议",
     });
 
     expect(notification).toMatchObject({
@@ -88,13 +68,7 @@ describe("P3 governance golden path", () => {
       status: "unread",
     });
     expect(anomalies.map((item) => item.type)).toContain("not_started");
-    expect(vendorFields.map((field) => field.key)).not.toEqual(
-      expect.arrayContaining([
-        "grossMarginCents",
-        "costCents",
-        "vendorReceivableCents",
-      ]),
-    );
+    expect(isExportKind("vendor_delivery")).toBe(false);
     expect(exportResult.content).not.toContain("grossMarginCents");
     expect(auditInserts).toEqual([
       expect.objectContaining({
@@ -102,8 +76,5 @@ describe("P3 governance golden path", () => {
         module: "export",
       }),
     ]);
-    expect(JSON.stringify(deliveryPackage)).not.toMatch(
-      /cost|gross|margin|receivable|internal/i,
-    );
   });
 });

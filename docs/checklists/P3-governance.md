@@ -6,7 +6,7 @@
 - [x] Export center uses field whitelists, sensitivity flags, async placeholders, and export audit logs.
 - [x] Notification center supports unread / read / handled / ignored transitions and my todos.
 - [x] Deterministic anomaly scanner covers not started, not reported, overdue report, missing screenshot, and live over 48h.
-- [x] Delivery package DTOs remove price, margin, cost, and internal risk notes.
+- [x] Manufacturer delivery uses project admission share boards; no standalone delivery-package DTO or `vendor_delivery` export kind remains.
 
 ## Scope Out
 
@@ -19,7 +19,8 @@
 - [x] No new business tables were added in P3 v1; existing writes rely on RLS-backed tables.
 - [x] Every write action uses the shared audit writer.
 - [x] Audit logs remain append-only with no update/delete API.
-- [x] Delivery/export DTOs are server-side filtered and never rely on frontend hiding.
+- [x] Export DTOs and public share-board projections are server-side filtered and never rely on frontend hiding.
+- [x] Manufacturer share access is token-gated, expires or can be revoked, and private recordings use the controlled playback route.
 - [x] Sensitive fields such as cost, margin, vendor receivable, and internal risk notes are not exposed to streamer/vendor-facing outputs.
 
 ## Verification

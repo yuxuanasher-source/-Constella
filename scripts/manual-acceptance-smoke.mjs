@@ -71,8 +71,8 @@ export const AUTOMATED_CASES = [
   },
   {
     id: "p3-export-sanitization",
-    label: "vendor delivery exports are field-whitelisted and streamer-denied",
-    caseIds: ["M3-009", "M8-001", "M8-002", "M8-004"],
+    label: "project execution exports are field-whitelisted and streamer-denied",
+    caseIds: ["M8-001", "M8-002", "M8-004"],
   },
   {
     id: "p3-notification-workflow",
@@ -383,7 +383,7 @@ const caseHandlers = {
       method: "POST",
       expectedStatus: 403,
       body: {
-        kind: "vendor_delivery",
+        kind: "project_execution",
         rows: [],
       },
     });
@@ -449,13 +449,12 @@ const caseHandlers = {
       cookie: cookies.owner,
       method: "POST",
       body: {
-        kind: "vendor_delivery",
+        kind: "project_execution",
         rows: [
           {
             projectName: "New Game Launch Week",
-            streamerName: "Streamer One",
-            settlementDuration: 120,
-            evidenceLevel: "green",
+            status: "active",
+            operatorName: "Ops One",
             streamerSettlementPrice: "主播结算价格",
             grossMarginCents: 999999,
             supplierCostCents: 88888,
@@ -466,9 +465,9 @@ const caseHandlers = {
     });
 
     assertObject(body.export, "governed export");
-    assertEqual(body.export.kind, "vendor_delivery", "export kind");
+    assertEqual(body.export.kind, "project_execution", "export kind");
     assertEqual(body.export.rowCount, 1, "export row count");
-    assertNoForbiddenText(body.export.content, "vendor delivery export");
+    assertNoForbiddenText(body.export.content, "project execution export");
   },
 
   "p3-notification-workflow": async ({ cookies, requestJson }) => {

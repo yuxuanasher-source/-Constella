@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { getAllowedExportFields, isExportKind } from "./export-definitions";
+import {
+  exportDefinitions,
+  getAllowedExportFields,
+  isExportKind,
+} from "./export-definitions";
 
 describe("export definitions", () => {
   it("keeps admission recording exports scoped to public review fields", () => {
@@ -41,17 +45,9 @@ describe("export definitions", () => {
     ).toThrow(/grossMarginCents/);
   });
 
-  it("keeps vendor delivery package free of cost and margin fields", () => {
-    const fields = getAllowedExportFields(
-      "vendor_delivery",
-      "operator_business",
-    );
-
-    expect(fields.map((field) => field.key)).not.toContain("grossMarginCents");
-    expect(fields.map((field) => field.key)).not.toContain("costCents");
-    expect(fields.map((field) => field.key)).not.toContain(
-      "vendorReceivableCents",
-    );
+  it("retires vendor_delivery as a governed export product kind", () => {
+    expect(isExportKind("vendor_delivery")).toBe(false);
+    expect(exportDefinitions).not.toHaveProperty("vendor_delivery");
   });
 
   it("blocks finance-sensitive fields from operator exports", () => {

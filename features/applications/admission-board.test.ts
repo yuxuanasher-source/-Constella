@@ -368,7 +368,7 @@ describe("admission project board DTO", () => {
       vendorProduct: "Vendor A / Game A",
       streamerName: "Streamer Two",
       streamerAccount: "Bilibili / two-live",
-      recordingUrl: "Private recording",
+      recordingUrl: "",
       recordingVersion: 1,
       recordingSubmittedAt: "2026-06-07T02:10:00.000Z",
       mcnReviewStatus: "recording_approved",
@@ -376,5 +376,6 @@ describe("admission project board DTO", () => {
       vendorRemark: "Keep as backup.",
     });
     expect(JSON.stringify(rows)).not.toContain("private/org/project");
+    expect(JSON.stringify(rows)).not.toContain("Private recording");
   });
 });

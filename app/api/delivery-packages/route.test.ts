@@ -2,13 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET } from "./route";
 
-import { listVendorDeliveryPackage } from "@/features/delivery-packages/delivery-package-dto";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-
-vi.mock("@/features/delivery-packages/delivery-package-dto", () => ({
-  listVendorDeliveryPackage: vi.fn(),
-}));
 
 vi.mock("@/lib/auth/context", () => ({
   getAuthContext: vi.fn(),
@@ -34,55 +29,64 @@ describe("delivery packages route", () => {
       client: "supabase",
     } as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth);
-    vi.mocked(listVendorDeliveryPackage).mockResolvedValue([
-      {
-        projectId: "project-1",
-        projectName: "王者荣耀暑期冲榜",
-        streamerName: "阿洛",
-        settlementDurationMinutes: 120,
-        evidenceLevel: "system",
-        screenshotCount: 2,
-      },
-    ]);
   });
 
-  it("returns vendor-safe delivery package by project id", async () => {
+  it("returns 410 with the project admission share-board replacement", async () => {
     const response = await GET(
       new Request("http://localhost/api/delivery-packages?projectId=project-1"),
     );
 
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    expect(body).toEqual({
-      items: [
-        {
-          projectId: "project-1",
-          projectName: "王者荣耀暑期冲榜",
-          streamerName: "阿洛",
-          settlementDurationMinutes: 120,
-          evidenceLevel: "system",
-          screenshotCount: 2,
-        },
-      ],
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({
+      error: "Vendor delivery packages are retired",
+      replacement: "/api/projects/project-1/admission-share-boards",
     });
-    expect(JSON.stringify(body)).not.toContain("grossMarginCents");
-    expect(listVendorDeliveryPackage).toHaveBeenCalledWith(
-      { client: "supabase" },
-      {
-        organizationId: "org-1",
-        role: "ops_manager",
-        userId: "user-ops",
-      },
-      "project-1",
-    );
   });
 
-  it("requires projectId", async () => {
+  it("requires projectId before returning the retired endpoint replacement", async () => {
     const response = await GET(
       new Request("http://localhost/api/delivery-packages"),
     );
 
     expect(response.status).toBe(400);
-    expect(listVendorDeliveryPackage).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({ error: "projectId is required" });
+  });
+
+  it("URL-encodes special characters in the replacement project segment", async () => {
+    const projectId = "project/alpha beta?#";
+    const response = await GET(
+      new Request(
+        `http://localhost/api/delivery-packages?projectId=${encodeURIComponent(projectId)}`,
+      ),
+    );
+
+    expect(response.status).toBe(410);
+    await expect(response.json()).resolves.toEqual({
+      error: "Vendor delivery packages are retired",
+      replacement:
+        "/api/projects/project%2Falpha%20beta%3F%23/admission-share-boards",
+    });
+  });
+
+  it("requires authentication before exposing the retirement response", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(null);
+    const response = await GET(
+      new Request("http://localhost/api/delivery-packages?projectId=project-1"),
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("requires an MCN staff role before exposing the replacement", async () => {
+    vi.mocked(getAuthContext).mockResolvedValue({
+      ...auth,
+      role: "streamer",
+    });
+
+    const response = await GET(
+      new Request("http://localhost/api/delivery-packages?projectId=project-1"),
+    );
+
+    expect(response.status).toBe(403);
   });
 });
