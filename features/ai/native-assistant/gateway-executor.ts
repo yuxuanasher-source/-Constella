@@ -613,7 +613,9 @@ async function buildAndCaptureFreshGatewayContext({
 
   const checkpoint: GatewayCheckpoint = {
     sessionId: session.sessionId,
-    checkpointId: sourceCheckpoint?.checkpointId,
+    ...(sourceCheckpoint?.checkpointId
+      ? { checkpointId: sourceCheckpoint.checkpointId }
+      : {}),
     turnId: input.turn.turnId,
     conversationId: input.turn.conversationId,
     organizationId: input.actor.organizationId,

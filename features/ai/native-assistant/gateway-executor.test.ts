@@ -3,6 +3,10 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AiConversationMessageDto } from "../conversation-contracts";
+import {
+  createConversationService,
+  type ConversationPersistence,
+} from "../conversation-service";
 import { verifyHermesActorAssertion } from "../hermes/actor-assertion";
 import type {
   HermesGatewaySession,
@@ -29,6 +33,75 @@ const turn = {
 };
 
 describe("native Hermes Gateway executor", () => {
+  it("persists its generated Gateway context through the real conversation service validator", async () => {
+    const transitionTurn = vi.fn().mockResolvedValue(true);
+    const conversationService = createConversationService({
+      transitionTurn,
+    } as unknown as ConversationPersistence);
+    const service = {
+      ...serviceDouble({
+        messages: [
+          message(
+            turn.userMessageId,
+            1,
+            "user",
+            "completed",
+            "current question",
+          ),
+        ],
+      }),
+      captureGatewayContext: conversationService.captureGatewayContext,
+    };
+    const gateway = gatewayDouble([
+      {
+        type: "completed",
+        sessionId: "session-rebuilt",
+        summary: { text: "done" },
+      },
+    ]);
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "owner" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      personalMemoryRevision: 0,
+    });
+
+    const events = await collect(
+      executor.execute({
+        request: jsonRequest({ message: "current question", mode: "fast" }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      }),
+    );
+
+    expect(events.at(-1)).toMatchObject({ type: "response.completed" });
+    expect(transitionTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        turnId: turn.turnId,
+        from: "grounding",
+        to: "grounding",
+        patch: expect.objectContaining({
+          contextSnapshot: expect.objectContaining({
+            gatewayContext: expect.objectContaining({
+              invocationMetadata: expect.objectContaining({
+                sessionId: "session-rebuilt",
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+    const persistedSnapshot = transitionTurn.mock.calls[0]?.[0]?.patch
+      ?.contextSnapshot;
+    expect(
+      persistedSnapshot?.gatewayContext?.invocationMetadata?.gatewayCheckpoint,
+    ).not.toHaveProperty("checkpointId");
+  });
+
   it("freezes actor context, rebuilds a missing Gateway session from the product ledger, and CASes provider state", async () => {
     const service = serviceDouble({
       messages: [
