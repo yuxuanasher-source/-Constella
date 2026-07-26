@@ -14,9 +14,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type {
   OrganizationPageDto,
+  PlatformAuditDto,
   PlatformOrganizationDetailDto,
   PlatformOrganizationListItemDto,
   PlatformOverviewDto,
+  PlatformPlanPerformanceDto,
 } from "@/features/platform-admin/platform-admin-contracts";
 import { cn } from "@/lib/utils";
 
@@ -28,6 +30,11 @@ import {
   roleLabel,
   subscriptionStatusLabel,
 } from "./platform-admin-format";
+import {
+  CreateOrganizationAction,
+  MemberActions,
+  OrganizationActions,
+} from "./organization-actions";
 
 const detailTabs = ["概览", "用户", "套餐", "订单", "操作记录"] as const;
 
@@ -35,11 +42,14 @@ export function OrganizationWorkspace({
   overview,
   initialPage,
   initialDetail,
+  plans,
 }: {
   overview: PlatformOverviewDto;
   initialPage: OrganizationPageDto;
   initialDetail: PlatformOrganizationDetailDto | null;
+  plans: PlatformPlanPerformanceDto[];
 }) {
+  const [overviewData, setOverviewData] = useState(overview);
   const [page, setPage] = useState(initialPage);
   const [selectedId, setSelectedId] = useState(
     initialDetail?.id ?? initialPage.items[0]?.id ?? "",
@@ -52,21 +62,13 @@ export function OrganizationWorkspace({
   const [subscriptionStatus, setSubscriptionStatus] = useState("");
   const [expiry, setExpiry] = useState("");
   const [loading, setLoading] = useState(false);
+  const [auditItems, setAuditItems] = useState<PlatformAuditDto[]>([]);
   const [refreshError, setRefreshError] = useState("");
   const firstFilterRun = useRef(true);
 
   const planOptions = useMemo(() => {
-    const plans = new Map<string, string>();
-    initialPage.items.forEach((organization) => {
-      if (organization.subscription) {
-        plans.set(
-          organization.subscription.plan.id,
-          organization.subscription.plan.name,
-        );
-      }
-    });
-    return [...plans];
-  }, [initialPage.items]);
+    return plans.map((plan) => [plan.id, plan.name] as [string, string]);
+  }, [plans]);
 
   useEffect(() => {
     if (firstFilterRun.current) {
@@ -88,8 +90,8 @@ export function OrganizationWorkspace({
       const params = new URLSearchParams({
         page: String(targetPage),
         pageSize: String(page.meta.pageSize),
-        start: overview.period.start,
-        end: overview.period.end,
+        start: overviewData.period.start,
+        end: overviewData.period.end,
       });
       if (search.trim()) params.set("search", search.trim());
       if (lifecycle) params.set("lifecycleStatus", lifecycle);
@@ -126,10 +128,16 @@ export function OrganizationWorkspace({
     }
   }
 
-  async function selectOrganization(organizationId: string) {
+  async function selectOrganization(
+    organizationId: string,
+    force = false,
+    preserveTab = false,
+  ) {
     setSelectedId(organizationId);
-    setTab("概览");
-    if (organizationId === initialDetail?.id) {
+    if (!preserveTab) {
+      setTab("概览");
+    }
+    if (!force && organizationId === initialDetail?.id) {
       setDetail(initialDetail);
       return;
     }
@@ -137,8 +145,8 @@ export function OrganizationWorkspace({
     setRefreshError("");
     try {
       const params = new URLSearchParams({
-        start: overview.period.start,
-        end: overview.period.end,
+        start: overviewData.period.start,
+        end: overviewData.period.end,
       });
       const response = await fetch(
         `/api/platform-admin/organizations/${organizationId}?${params.toString()}`,
@@ -157,6 +165,67 @@ export function OrganizationWorkspace({
     }
   }
 
+  async function refreshWorkspace() {
+    setLoading(true);
+    setRefreshError("");
+    try {
+      const periodParams = new URLSearchParams({
+        start: overviewData.period.start,
+        end: overviewData.period.end,
+      });
+      const overviewResponse = await fetch(
+        `/api/platform-admin/overview?${periodParams.toString()}`,
+      );
+      if (!overviewResponse.ok) {
+        throw new Error("经营指标刷新失败");
+      }
+      const overviewPayload = (await overviewResponse.json()) as {
+        data: PlatformOverviewDto;
+      };
+      setOverviewData(overviewPayload.data);
+      await refreshOrganizations(page.meta.page);
+      if (selectedId) {
+        await selectOrganization(selectedId, true, true);
+        if (tab === "操作记录") {
+          await loadOrganizationAudit(selectedId);
+        }
+      }
+    } catch {
+      setRefreshError("操作已提交，但最新数据刷新失败，请手动刷新页面。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadOrganizationAudit(organizationId: string) {
+    const params = new URLSearchParams({
+      organizationId,
+      page: "1",
+      pageSize: "20",
+      start: overviewData.period.start,
+      end: overviewData.period.end,
+    });
+    const response = await fetch(
+      `/api/platform-admin/audit?${params.toString()}`,
+    );
+    if (!response.ok) {
+      throw new Error("操作记录加载失败");
+    }
+    const payload = (await response.json()) as {
+      data: PlatformAuditDto[];
+    };
+    setAuditItems(payload.data);
+  }
+
+  function changeDetailTab(nextTab: (typeof detailTabs)[number]) {
+    setTab(nextTab);
+    if (nextTab === "操作记录" && selectedId) {
+      void loadOrganizationAudit(selectedId).catch(() => {
+        setRefreshError("无法加载该组织的操作记录，请稍后重试。");
+      });
+    }
+  }
+
   return (
     <div className="p-4 sm:p-5 lg:p-7">
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
@@ -168,17 +237,24 @@ export function OrganizationWorkspace({
             组织与订阅
           </h1>
           <p className="mt-1 text-xs text-[var(--ink-400)]">
-            {overview.period.start} 至 {overview.period.end}
+            {overviewData.period.start} 至 {overviewData.period.end}
           </p>
         </div>
-        <Badge tone={overview.expiry.expired > 0 ? "red" : "neutral"}>
-          {overview.expiry.expired > 0
-            ? `${overview.expiry.expired} 个组织已到期`
-            : "暂无已到期组织"}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge tone={overviewData.expiry.expired > 0 ? "red" : "neutral"}>
+            {overviewData.expiry.expired > 0
+              ? `${overviewData.expiry.expired} 个组织已到期`
+              : "暂无已到期组织"}
+          </Badge>
+          <CreateOrganizationAction
+            plans={plans}
+            period={overviewData.period}
+            onSuccess={refreshWorkspace}
+          />
+        </div>
       </div>
 
-      <OverviewBand overview={overview} />
+      <OverviewBand overview={overviewData} />
 
       <section className="mt-4 grid min-h-[660px] overflow-hidden rounded-[var(--r-lg)] border border-[var(--line)] bg-white shadow-[var(--shadow-card)] lg:grid-cols-[350px_minmax(0,1fr)]">
         <div className="border-b border-[var(--line)] lg:border-r lg:border-b-0">
@@ -304,8 +380,11 @@ export function OrganizationWorkspace({
           {detail ? (
             <OrganizationDetail
               detail={detail}
+              plans={plans}
+              auditItems={auditItems}
               activeTab={tab}
-              onTabChange={setTab}
+              onTabChange={changeDetailTab}
+              onSuccess={refreshWorkspace}
             />
           ) : (
             <EmptyOrganizations />
@@ -404,12 +483,18 @@ function OrganizationRow({
 
 function OrganizationDetail({
   detail,
+  plans,
+  auditItems,
   activeTab,
   onTabChange,
+  onSuccess,
 }: {
   detail: PlatformOrganizationDetailDto;
+  plans: PlatformPlanPerformanceDto[];
+  auditItems: PlatformAuditDto[];
   activeTab: (typeof detailTabs)[number];
   onTabChange: (tab: (typeof detailTabs)[number]) => void;
+  onSuccess: () => void | Promise<void>;
 }) {
   return (
     <>
@@ -427,9 +512,11 @@ function OrganizationDetail({
             {detail.code} · 创建于 {formatDateKey(detail.createdAt)}
           </p>
         </div>
-        <Button variant="secondary" size="sm" disabled>
-          管理操作
-        </Button>
+        <OrganizationActions
+          organization={detail}
+          plans={plans}
+          onSuccess={onSuccess}
+        />
       </div>
 
       <div
@@ -458,16 +545,58 @@ function OrganizationDetail({
 
       <div className="p-5">
         {activeTab === "概览" ? <OrganizationOverview detail={detail} /> : null}
-        {activeTab === "用户" ? <OrganizationUsers detail={detail} /> : null}
+        {activeTab === "用户" ? (
+          <OrganizationUsers detail={detail} onSuccess={onSuccess} />
+        ) : null}
         {activeTab === "套餐" ? <OrganizationPlan detail={detail} /> : null}
         {activeTab === "订单" ? <OrganizationOrders detail={detail} /> : null}
         {activeTab === "操作记录" ? (
-          <div className="border border-dashed border-[var(--line-strong)] px-4 py-10 text-center text-sm text-[var(--ink-400)]">
-            操作记录将在审计目录中按此组织筛选展示。
-          </div>
+          <OrganizationAudit items={auditItems} />
         ) : null}
       </div>
     </>
+  );
+}
+
+function OrganizationAudit({ items }: { items: PlatformAuditDto[] }) {
+  return items.length > 0 ? (
+    <div className="overflow-x-auto border border-[var(--line)]">
+      <table className="w-full min-w-[720px] text-left text-sm">
+        <thead className="bg-[var(--bg-soft)] text-xs text-[var(--ink-500)]">
+          <tr>
+            <th className="px-3 py-2 font-medium">时间</th>
+            <th className="px-3 py-2 font-medium">操作</th>
+            <th className="px-3 py-2 font-medium">原因</th>
+            <th className="px-3 py-2 font-medium">管理员</th>
+            <th className="px-3 py-2 font-medium">结果</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => (
+            <tr key={item.id} className="border-t border-[var(--line)]">
+              <td className="px-3 py-3 text-xs tabular-nums">
+                {item.createdAt.slice(0, 16).replace("T", " ")}
+              </td>
+              <td className="px-3 py-3 font-mono text-xs">{item.action}</td>
+              <td className="max-w-[280px] px-3 py-3">
+                {item.reason ?? "未记录原因"}
+              </td>
+              <td className="px-3 py-3">{item.actorName}</td>
+              <td className="px-3 py-3">
+                <Badge tone={item.result === "success" ? "green" : "red"}>
+                  {item.result === "success" ? "成功" : "失败"}
+                </Badge>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  ) : (
+    <EmptyState
+      title="暂无操作记录"
+      description="该组织在当前周期内还没有受治理的管理操作。"
+    />
   );
 }
 
@@ -553,8 +682,10 @@ function OrganizationOverview({
 
 function OrganizationUsers({
   detail,
+  onSuccess,
 }: {
   detail: PlatformOrganizationDetailDto;
+  onSuccess: () => void | Promise<void>;
 }) {
   return (
     <div className="overflow-x-auto border border-[var(--line)]">
@@ -565,6 +696,7 @@ function OrganizationUsers({
             <th className="px-3 py-2 font-medium">账号类型</th>
             <th className="px-3 py-2 font-medium">角色</th>
             <th className="px-3 py-2 font-medium">状态</th>
+            <th className="px-3 py-2 font-medium">管理</th>
           </tr>
         </thead>
         <tbody>
@@ -585,6 +717,13 @@ function OrganizationUsers({
               <td className="px-3 py-3">{roleLabel(member.role)}</td>
               <td className="px-3 py-3">
                 {member.status === "active" ? "正常" : member.status}
+              </td>
+              <td className="px-3 py-3">
+                <MemberActions
+                  organizationId={detail.id}
+                  member={member}
+                  onSuccess={onSuccess}
+                />
               </td>
             </tr>
           ))}

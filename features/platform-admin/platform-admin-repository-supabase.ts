@@ -34,6 +34,7 @@ type OrganizationRow = {
   code: string;
   lifecycle_status: OrganizationLifecycleStatus;
   created_at: string;
+  updated_at: string;
   organization_primary_accounts: Relation<{
     user_id: string;
     assignment_source: string;
@@ -47,6 +48,7 @@ type OrganizationRow = {
     billing_cycle: string;
     current_period_start: string;
     current_period_end: string;
+    updated_at: string;
     billing_plans: Relation<{ id: string; code: string; name: string }>;
   }>;
 };
@@ -185,6 +187,7 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
           role,
           status,
           created_at,
+          updated_at,
           profiles!organization_members_user_id_fkey(email, full_name),
           organizations!organization_members_organization_id_fkey(name)
         `,
@@ -229,7 +232,7 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
         this.client
           .from("billing_plans")
           .select(
-            "id, code, name, tier, monthly_price_cents, annual_price_cents",
+            "id, code, name, tier, monthly_price_cents, annual_price_cents, included_active_streamers, included_seats, included_ocr, included_ai, included_storage_mb, included_exports, features, updated_at",
           )
           .order("tier", { ascending: true }),
         this.client
@@ -311,6 +314,16 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
         code: plan.code as string,
         name: plan.name as string,
         tier: plan.tier as string,
+        updatedAt: plan.updated_at as string,
+        included: {
+          activeStreamers: plan.included_active_streamers as number,
+          seats: plan.included_seats as number,
+          ocr: plan.included_ocr as number,
+          ai: plan.included_ai as number,
+          storageMb: plan.included_storage_mb as number,
+          exports: plan.included_exports as number,
+        },
+        features: booleanFeatures(plan.features),
         monthlyPriceCents: plan.monthly_price_cents as number,
         annualPriceCents: plan.annual_price_cents as number,
         activeSubscriptionCount: planSubscriptions.length,
@@ -343,7 +356,7 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
           per_active_streamer_cost_cents,
           metric_unit_costs,
           reason,
-          billing_plans!billing_plan_cost_versions_plan_id_fkey(name)
+          billing_plans!billing_plan_cost_versions_plan_id_fkey(name, updated_at)
         `,
       )
       .order("effective_from", { ascending: false });
@@ -355,6 +368,9 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
         id: row.id,
         planId: row.plan_id,
         planName: firstRelation(row.billing_plans)?.name ?? "未知套餐",
+        planUpdatedAt:
+          firstRelation(row.billing_plans)?.updated_at ??
+          "1970-01-01T00:00:00.000Z",
         effectiveFrom: row.effective_from,
         effectiveTo: row.effective_to,
         fixedCostCents: row.fixed_cost_cents,
@@ -547,6 +563,7 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
       code: row.code,
       lifecycleStatus: row.lifecycle_status,
       createdAt: row.created_at,
+      updatedAt: row.updated_at,
       memberCount: row.organization_members?.[0]?.count ?? 0,
       primaryAccount: mapPrimaryAccount(row.organization_primary_accounts),
       subscription: mapSubscription(row.organization_subscriptions),
@@ -717,6 +734,7 @@ export class SupabasePlatformAdminRepository implements PlatformAdminRepository 
           role,
           status,
           created_at,
+          updated_at,
           profiles!organization_members_user_id_fkey(email, full_name),
           organizations!organization_members_organization_id_fkey(name)
         `,
@@ -781,6 +799,7 @@ const organizationSelect = `
   code,
   lifecycle_status,
   created_at,
+  updated_at,
   organization_primary_accounts(
     user_id,
     assignment_source,
@@ -794,6 +813,7 @@ const organizationSelect = `
     billing_cycle,
     current_period_start,
     current_period_end,
+    updated_at,
     billing_plans(id, code, name)
   )
 `;
@@ -809,6 +829,7 @@ const orderSelect = `
   provider,
   paid_at,
   created_at,
+  updated_at,
   organizations!billing_orders_organization_id_fkey(name),
   billing_plans!billing_orders_plan_id_fkey(name)
 `;
@@ -820,6 +841,7 @@ type MemberRow = {
   role: string;
   status: string;
   created_at: string;
+  updated_at: string;
   profiles: Relation<{ email: string; full_name: string }>;
   organizations: Relation<{ name: string }>;
 };
@@ -835,6 +857,7 @@ type OrderRow = {
   provider: string | null;
   paid_at: string | null;
   created_at: string;
+  updated_at: string;
   organizations: Relation<{ name: string }>;
   billing_plans: Relation<{ name: string }>;
 };
@@ -875,7 +898,7 @@ type CostModelRow = {
   per_active_streamer_cost_cents: number;
   metric_unit_costs: Record<string, unknown>;
   reason: string;
-  billing_plans: Relation<{ name: string }>;
+  billing_plans: Relation<{ name: string; updated_at: string }>;
 };
 
 function mapPrimaryAccount(
@@ -909,6 +932,7 @@ function mapSubscription(
     billingCycle: subscription.billing_cycle,
     currentPeriodStart: subscription.current_period_start,
     currentPeriodEnd: subscription.current_period_end,
+    updatedAt: subscription.updated_at,
     plan,
   };
 }
@@ -926,6 +950,7 @@ function mapMember(row: MemberRow, primaryPairs: Set<string>): PlatformUserDto {
     role: row.role,
     status: row.status,
     joinedAt: row.created_at,
+    updatedAt: row.updated_at,
     isPrimaryAccount: primaryPairs.has(`${row.organization_id}:${row.user_id}`),
   };
 }
@@ -944,6 +969,7 @@ function mapOrder(row: OrderRow): PlatformOrderDto {
     provider: row.provider,
     paidAt: row.paid_at,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -981,6 +1007,17 @@ function numericMetricCosts(value: Record<string, unknown>) {
     Object.entries(value ?? {}).filter(
       (entry): entry is [string, number] =>
         typeof entry[1] === "number" && Number.isFinite(entry[1]),
+    ),
+  );
+}
+
+function booleanFeatures(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
     ),
   );
 }

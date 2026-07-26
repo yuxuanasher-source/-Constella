@@ -1,8 +1,13 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+
 import { Badge } from "@/components/ui/badge";
 import type { PlatformOrderDto } from "@/features/platform-admin/platform-admin-contracts";
 
 import { DirectoryEmpty, DirectoryHeader } from "./directory-primitives";
 import { formatCurrencyCents, formatDateKey } from "./platform-admin-format";
+import { PaymentActions } from "./payment-actions";
 
 export function OrderDirectory({
   orders,
@@ -11,6 +16,8 @@ export function OrderDirectory({
   orders: PlatformOrderDto[];
   total: number;
 }) {
+  const router = useRouter();
+
   return (
     <div className="p-4 sm:p-5 lg:p-7">
       <DirectoryHeader
@@ -34,6 +41,7 @@ export function OrderDirectory({
                 <th className="px-4 py-3 font-medium">金额</th>
                 <th className="px-4 py-3 font-medium">状态</th>
                 <th className="px-4 py-3 font-medium">收款时间</th>
+                <th className="px-4 py-3 font-medium">管理</th>
               </tr>
             </thead>
             <tbody>
@@ -57,6 +65,12 @@ export function OrderDirectory({
                     </td>
                     <td className="px-4 py-3 text-[var(--ink-500)]">
                       {formatDateKey(order.paidAt ?? order.createdAt)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <PaymentActions
+                        order={order}
+                        onSuccess={() => router.refresh()}
+                      />
                     </td>
                   </tr>
                 );

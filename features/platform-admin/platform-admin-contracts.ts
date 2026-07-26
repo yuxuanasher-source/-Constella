@@ -59,6 +59,7 @@ export type PlatformSubscriptionDto = {
   billingCycle: string;
   currentPeriodStart: string;
   currentPeriodEnd: string;
+  updatedAt: string;
   plan: {
     id: string;
     code: string;
@@ -78,6 +79,7 @@ export type PlatformOrganizationListItemDto = {
   code: string;
   lifecycleStatus: OrganizationLifecycleStatus;
   createdAt: string;
+  updatedAt: string;
   memberCount: number;
   primaryAccount: PlatformPrimaryAccountDto;
   subscription: PlatformSubscriptionDto | null;
@@ -105,6 +107,7 @@ export type PlatformUserDto = {
   role: string;
   status: string;
   joinedAt: string;
+  updatedAt: string;
   isPrimaryAccount: boolean;
 };
 
@@ -121,6 +124,7 @@ export type PlatformOrderDto = {
   provider: string | null;
   paidAt: string | null;
   createdAt: string;
+  updatedAt: string;
 };
 
 export type PlatformAuditDto = {
@@ -147,6 +151,16 @@ export type PlatformPlanPerformanceDto = {
   code: string;
   name: string;
   tier: string;
+  updatedAt: string;
+  included: {
+    activeStreamers: number;
+    seats: number;
+    ocr: number;
+    ai: number;
+    storageMb: number;
+    exports: number;
+  };
+  features: Record<string, boolean>;
   monthlyPriceCents: number;
   annualPriceCents: number;
   activeSubscriptionCount: number;
@@ -160,6 +174,7 @@ export type PlatformCostModelDto = {
   id: string;
   planId: string;
   planName: string;
+  planUpdatedAt: string;
   effectiveFrom: string;
   effectiveTo: string | null;
   fixedCostCents: number;

@@ -3,6 +3,7 @@ import { PlatformAdminShell } from "@/components/platform-admin/platform-admin-s
 import {
   getPlatformOrganizationDetail,
   listPlatformOrganizations,
+  listPlatformPlans,
   loadPlatformOverview,
 } from "@/features/platform-admin/platform-admin-read-service";
 import { SupabasePlatformAdminRepository } from "@/features/platform-admin/platform-admin-repository-supabase";
@@ -18,12 +19,13 @@ export default async function OrganizationsPage() {
   }
   const repo = new SupabasePlatformAdminRepository(admin);
   const period = currentNaturalMonth();
-  const [overview, organizations] = await Promise.all([
+  const [overview, organizations, plans] = await Promise.all([
     loadPlatformOverview({ repo, period }),
     listPlatformOrganizations({
       repo,
       query: { page: 1, pageSize: 20, period },
     }),
+    listPlatformPlans({ repo, period }),
   ]);
   const firstOrganization = organizations.items[0];
   const detail = firstOrganization
@@ -43,6 +45,7 @@ export default async function OrganizationsPage() {
         overview={overview}
         initialPage={organizations}
         initialDetail={detail}
+        plans={plans}
       />
     </PlatformAdminShell>
   );

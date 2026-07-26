@@ -63,6 +63,7 @@ export type OrganizationSource = {
   code: string;
   lifecycleStatus: OrganizationLifecycleStatus;
   createdAt: string;
+  updatedAt: string;
   memberCount: number;
   primaryAccount: OrganizationPrimaryAccountSource | null;
   subscription: PlatformSubscriptionDto | null;

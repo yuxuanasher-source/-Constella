@@ -104,6 +104,7 @@ describe("listPlatformOrganizations", () => {
           code: "zhixia",
           lifecycleStatus: "active" as const,
           createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-07-21T08:00:00.000Z",
           memberCount: 4,
           primaryAccount: null,
           subscription: {
@@ -112,6 +113,7 @@ describe("listPlatformOrganizations", () => {
             billingCycle: "monthly",
             currentPeriodStart: "2026-07-01",
             currentPeriodEnd: "2026-08-20",
+            updatedAt: "2026-07-21T08:00:00.000Z",
             plan: { id: "plan-pro", code: "pro", name: "专业版" },
           },
           netRevenueCents: 20000,
@@ -123,6 +125,7 @@ describe("listPlatformOrganizations", () => {
           code: "beichen",
           lifecycleStatus: "frozen" as const,
           createdAt: "2026-01-02T00:00:00.000Z",
+          updatedAt: "2026-07-22T08:00:00.000Z",
           memberCount: 2,
           primaryAccount: {
             userId: "user-b",
@@ -137,6 +140,7 @@ describe("listPlatformOrganizations", () => {
             billingCycle: "annual",
             currentPeriodStart: "2026-01-01",
             currentPeriodEnd: "2026-08-01",
+            updatedAt: "2026-07-22T08:00:00.000Z",
             plan: { id: "plan-pro", code: "pro", name: "专业版" },
           },
           netRevenueCents: 30000,
@@ -148,6 +152,7 @@ describe("listPlatformOrganizations", () => {
           code: "anlan",
           lifecycleStatus: "active" as const,
           createdAt: "2026-01-03T00:00:00.000Z",
+          updatedAt: "2026-07-23T08:00:00.000Z",
           memberCount: 3,
           primaryAccount: null,
           subscription: {
@@ -156,6 +161,7 @@ describe("listPlatformOrganizations", () => {
             billingCycle: "monthly",
             currentPeriodStart: "2026-07-01",
             currentPeriodEnd: "2026-08-01",
+            updatedAt: "2026-07-23T08:00:00.000Z",
             plan: { id: "plan-basic", code: "basic", name: "基础版" },
           },
           netRevenueCents: 9000,
@@ -205,6 +211,10 @@ describe("listPlatformOrganizations", () => {
       costCents: 12000,
       contributionMarginCents: 18000,
     });
+    expect(result.items[0].updatedAt).toBe("2026-07-23T08:00:00.000Z");
+    expect(result.items[0].subscription?.updatedAt).toBe(
+      "2026-07-23T08:00:00.000Z",
+    );
   });
 });
 

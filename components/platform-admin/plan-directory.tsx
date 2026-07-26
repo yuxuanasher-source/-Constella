@@ -1,14 +1,21 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+
 import { Badge } from "@/components/ui/badge";
 import type { PlatformPlanPerformanceDto } from "@/features/platform-admin/platform-admin-contracts";
 
 import { DirectoryEmpty, DirectoryHeader } from "./directory-primitives";
 import { formatCurrencyCents } from "./platform-admin-format";
+import { PlanActions } from "./plan-actions";
 
 export function PlanDirectory({
   plans,
 }: {
   plans: PlatformPlanPerformanceDto[];
 }) {
+  const router = useRouter();
+
   return (
     <div className="p-4 sm:p-5 lg:p-7">
       <DirectoryHeader
@@ -27,6 +34,7 @@ export function PlanDirectory({
                 <th className="px-4 py-3 font-medium">净实收</th>
                 <th className="px-4 py-3 font-medium">标准成本</th>
                 <th className="px-4 py-3 font-medium">估算贡献毛利</th>
+                <th className="px-4 py-3 font-medium">管理</th>
               </tr>
             </thead>
             <tbody>
@@ -64,6 +72,12 @@ export function PlanDirectory({
                   </td>
                   <td className="px-4 py-3 font-medium tabular-nums">
                     {formatCurrencyCents(plan.contributionMarginCents)}
+                  </td>
+                  <td className="px-4 py-3">
+                    <PlanActions
+                      plan={plan}
+                      onSuccess={() => router.refresh()}
+                    />
                   </td>
                 </tr>
               ))}

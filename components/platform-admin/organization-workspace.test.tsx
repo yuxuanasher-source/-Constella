@@ -30,6 +30,7 @@ const organizationPage: OrganizationPageDto = {
       code: "anlan",
       lifecycleStatus: "active",
       createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-07-26T08:00:00.000Z",
       memberCount: 2,
       primaryAccount: {
         status: "confirmed",
@@ -45,6 +46,7 @@ const organizationPage: OrganizationPageDto = {
         billingCycle: "monthly",
         currentPeriodStart: "2026-07-01",
         currentPeriodEnd: "2026-08-01",
+        updatedAt: "2026-07-26T08:00:00.000Z",
         plan: { id: "plan-pro", code: "pro", name: "专业版" },
       },
       metrics: {
@@ -59,6 +61,7 @@ const organizationPage: OrganizationPageDto = {
       code: "beichen",
       lifecycleStatus: "frozen",
       createdAt: "2026-02-01T00:00:00.000Z",
+      updatedAt: "2026-07-26T08:00:00.000Z",
       memberCount: 1,
       primaryAccount: {
         status: "pending",
@@ -90,6 +93,7 @@ const initialDetail: PlatformOrganizationDetailDto = {
       role: "owner",
       status: "active",
       joinedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-07-26T08:00:00.000Z",
       isPrimaryAccount: true,
     },
     {
@@ -102,6 +106,7 @@ const initialDetail: PlatformOrganizationDetailDto = {
       role: "operator",
       status: "active",
       joinedAt: "2026-01-02T00:00:00.000Z",
+      updatedAt: "2026-07-26T08:00:00.000Z",
       isPrimaryAccount: false,
     },
   ],
@@ -135,6 +140,7 @@ describe("OrganizationWorkspace", () => {
         overview={overview}
         initialPage={organizationPage}
         initialDetail={initialDetail}
+        plans={[]}
       />,
     );
 

@@ -49,6 +49,7 @@ export function roleLabel(value: string) {
       owner: "负责人",
       ops_manager: "运营负责人",
       operator: "运营",
+      operator_business: "商务运营",
       finance: "财务",
       streamer: "主播",
     }[value] ?? value

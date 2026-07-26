@@ -1,14 +1,21 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+
 import { Badge } from "@/components/ui/badge";
 import type { PlatformCostModelDto } from "@/features/platform-admin/platform-admin-contracts";
 
 import { DirectoryEmpty, DirectoryHeader } from "./directory-primitives";
 import { formatCurrencyCents, formatDateKey } from "./platform-admin-format";
+import { CostVersionAction } from "./plan-actions";
 
 export function CostModelDirectory({
   costModels,
 }: {
   costModels: PlatformCostModelDto[];
 }) {
+  const router = useRouter();
+
   return (
     <div className="p-4 sm:p-5 lg:p-7">
       <DirectoryHeader
@@ -27,6 +34,7 @@ export function CostModelDirectory({
                 <th className="px-4 py-3 font-medium">计量成本项</th>
                 <th className="px-4 py-3 font-medium">调整原因</th>
                 <th className="px-4 py-3 font-medium">覆盖状态</th>
+                <th className="px-4 py-3 font-medium">管理</th>
               </tr>
             </thead>
             <tbody>
@@ -61,6 +69,14 @@ export function CostModelDirectory({
                         ? "成本项完整"
                         : "成本项未完全配置"}
                     </Badge>
+                  </td>
+                  <td className="px-4 py-3">
+                    <CostVersionAction
+                      planId={model.planId}
+                      planName={model.planName}
+                      expectedUpdatedAt={model.planUpdatedAt}
+                      onSuccess={() => router.refresh()}
+                    />
                   </td>
                 </tr>
               ))}

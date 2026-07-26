@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getPlatformOrganizationDetail,
   listPlatformOrganizations,
+  listPlatformPlans,
   loadPlatformOverview,
 } from "@/features/platform-admin/platform-admin-read-service";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
@@ -14,6 +15,7 @@ import OrganizationsPage from "./page";
 vi.mock("@/features/platform-admin/platform-admin-read-service", () => ({
   getPlatformOrganizationDetail: vi.fn(),
   listPlatformOrganizations: vi.fn(),
+  listPlatformPlans: vi.fn(),
   loadPlatformOverview: vi.fn(),
 }));
 
@@ -51,6 +53,7 @@ describe("platform-admin organizations page", () => {
       items: [],
       meta: { page: 1, pageSize: 20, total: 0 },
     });
+    vi.mocked(listPlatformPlans).mockResolvedValue([]);
     vi.mocked(getPlatformOrganizationDetail).mockResolvedValue(null as never);
   });
 

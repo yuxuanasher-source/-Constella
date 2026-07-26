@@ -136,6 +136,7 @@ function mapOrganization(
     code: source.code,
     lifecycleStatus: source.lifecycleStatus,
     createdAt: source.createdAt,
+    updatedAt: source.updatedAt,
     memberCount: source.memberCount,
     primaryAccount: source.primaryAccount
       ? {

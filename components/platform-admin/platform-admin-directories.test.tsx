@@ -1,5 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
+}));
 
 import type {
   PlatformAuditDto,
@@ -55,6 +59,7 @@ describe("UserDirectory", () => {
       role: "owner",
       status: "active",
       joinedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-07-26T08:00:00.000Z",
       isPrimaryAccount: true,
     },
     {
@@ -67,6 +72,7 @@ describe("UserDirectory", () => {
       role: "finance",
       status: "suspended",
       joinedAt: "2026-02-01T00:00:00.000Z",
+      updatedAt: "2026-07-26T08:00:00.000Z",
       isPrimaryAccount: false,
     },
   ];
@@ -96,6 +102,16 @@ describe("PlanDirectory", () => {
         code: "pro",
         name: "专业版",
         tier: "pro",
+        updatedAt: "2026-07-26T08:00:00.000Z",
+        included: {
+          activeStreamers: 10,
+          seats: 5,
+          ocr: 1000,
+          ai: 500,
+          storageMb: 10240,
+          exports: 100,
+        },
+        features: { exports: true },
         monthlyPriceCents: 299900,
         annualPriceCents: 2999000,
         activeSubscriptionCount: 8,
@@ -127,6 +143,7 @@ describe("OrderDirectory", () => {
       provider: "offline",
       paidAt: "2026-07-20T00:00:00.000Z",
       createdAt: "2026-07-20T00:00:00.000Z",
+      updatedAt: "2026-07-26T08:00:00.000Z",
     };
     render(
       <OrderDirectory
@@ -152,6 +169,7 @@ describe("CostModelDirectory", () => {
         id: "cost-1",
         planId: "plan-pro",
         planName: "专业版",
+        planUpdatedAt: "2026-07-26T08:00:00.000Z",
         effectiveFrom: "2026-07-01T00:00:00.000Z",
         effectiveTo: null,
         fixedCostCents: 8000,
