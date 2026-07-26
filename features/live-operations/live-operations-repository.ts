@@ -345,7 +345,7 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     fileHash: string;
     uploadedBy: string;
     metadata?: Record<string, unknown>;
-  }): Promise<{ id: string }> {
+  }): Promise<string> {
     const { data, error } = await this.client
       .from("report_screenshots")
       .insert({
@@ -365,7 +365,12 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
       throw error;
     }
 
-    return { id: data.id };
+    const screenshotId = data?.id;
+    if (typeof screenshotId !== "string" || !screenshotId.trim()) {
+      throw new Error("Report screenshot insert did not return a valid id");
+    }
+
+    return screenshotId.trim();
   }
 
   async createReportChangeLog(input: {
