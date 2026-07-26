@@ -14,6 +14,7 @@ import {
   createStreamerRecordingLink,
   listStreamerRecordingLinks,
 } from "@/features/recordings/streamer-recording-library";
+import { normalizeRecordingStoragePath } from "@/features/storage/recording-path-guard";
 import { getPrivateStorageBucket } from "@/lib/config/env";
 
 export async function GET() {
@@ -103,21 +104,4 @@ async function getStreamerRecordingContext() {
   }
 
   return { context, streamerId };
-}
-
-function normalizeRecordingStoragePath(
-  value: unknown,
-  organizationId: string,
-): string | undefined {
-  if (typeof value !== "string" || !value.trim()) {
-    return undefined;
-  }
-
-  const path = value.trim();
-  const expectedPrefix = `${organizationId}/recordings/`;
-  if (!path.startsWith(expectedPrefix) || path.includes("..")) {
-    throw new RouteError("Invalid recording storage path", 400);
-  }
-
-  return path;
 }
