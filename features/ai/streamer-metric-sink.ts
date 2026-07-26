@@ -22,8 +22,7 @@ export type StreamerMetricSinkClient = {
     args: {
       p_live_report_id: string;
       p_metrics: Array<{ key: LiveReportOcrMetricKey; value: number }>;
-      p_source_invocation_id: string | null;
-      p_human_confirmed: boolean;
+      p_source_invocation_id: string;
     },
   ): PromiseLike<{ data: number | null; error: Error | null }>;
 };
@@ -38,20 +37,42 @@ export async function writeStreamerMetricsFromOcr({
   client,
   sourceReportId,
   sourceInvocationId,
-  humanConfirmed = false,
   metricCandidates,
 }: {
   client: StreamerMetricSinkClient;
   sourceReportId?: string | null;
   sourceInvocationId?: string | null;
-  humanConfirmed?: boolean;
   metricCandidates: readonly unknown[];
 }): Promise<{ written: number }> {
   const reportId = nonEmptyString(sourceReportId);
-  if (!reportId) {
+  const invocationId = nonEmptyString(sourceInvocationId);
+  if (!reportId || !invocationId) {
     return { written: 0 };
   }
 
+  const metrics = normalizeOcrMetricCandidates(metricCandidates);
+  if (metrics.length === 0) {
+    return { written: 0 };
+  }
+
+  const { data, error } = await client.rpc("upsert_ocr_streamer_metrics", {
+    p_live_report_id: reportId,
+    p_metrics: metrics,
+    p_source_invocation_id: invocationId,
+  });
+  if (error) {
+    throw error;
+  }
+  if (typeof data !== "number" || !Number.isSafeInteger(data) || data < 0) {
+    throw new Error("OCR metric RPC returned an invalid write count");
+  }
+
+  return { written: data };
+}
+
+export function normalizeOcrMetricCandidates(
+  metricCandidates: readonly unknown[],
+): Array<{ key: LiveReportOcrMetricKey; value: number }> {
   const byKey = new Map<
     LiveReportOcrMetricKey,
     { value: number; confidence: number }
@@ -68,28 +89,10 @@ export async function writeStreamerMetricsFromOcr({
     }
   }
 
-  if (byKey.size === 0) {
-    return { written: 0 };
-  }
-
-  const metrics = [...byKey].map(([key, metric]) => ({
+  return [...byKey].map(([key, metric]) => ({
     key,
     value: metric.value,
   }));
-  const { data, error } = await client.rpc("upsert_ocr_streamer_metrics", {
-    p_live_report_id: reportId,
-    p_metrics: metrics,
-    p_source_invocation_id: nonEmptyString(sourceInvocationId),
-    p_human_confirmed: humanConfirmed,
-  });
-  if (error) {
-    throw error;
-  }
-  if (typeof data !== "number" || !Number.isSafeInteger(data) || data < 0) {
-    throw new Error("OCR metric RPC returned an invalid write count");
-  }
-
-  return { written: data };
 }
 
 function normalizeCandidate(

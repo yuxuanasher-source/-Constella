@@ -67,6 +67,7 @@ export async function POST(request: Request) {
     try {
       const result = await runOcrJobOnce({
         client: supabase as never,
+        metricClient: supabase as never,
         actor,
         jobId: job.id,
         provider,

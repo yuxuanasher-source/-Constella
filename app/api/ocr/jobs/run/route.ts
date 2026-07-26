@@ -8,7 +8,10 @@ import {
 } from "@/features/ai/providers/tencent-ocr-provider";
 import { getAuthContext } from "@/lib/auth/context";
 import { getPrivateStorageBucket } from "@/lib/config/env";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { canManageOcrJobs } from "@/lib/rbac/permissions";
 import { isMcnStaff } from "@/lib/rbac/roles";
@@ -44,6 +47,7 @@ export async function POST(request: Request) {
     const provider = createTencentOcrProvider(
       readTencentOcrConfigFromEnv(process.env),
     );
+    const metricClient = createSupabaseAdminClient();
     const runnerId = auth.userId;
     const jobs = await claimRunnableOcrJobs({
       client: supabase as never,
@@ -58,6 +62,7 @@ export async function POST(request: Request) {
       try {
         const result = await runOcrJobOnce({
           client: supabase as never,
+          metricClient: metricClient as never,
           actor: auth,
           jobId: job.id,
           provider,

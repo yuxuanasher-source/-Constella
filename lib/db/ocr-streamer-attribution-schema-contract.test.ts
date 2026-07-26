@@ -62,19 +62,25 @@ describe("OCR streamer attribution schema contract", () => {
     expect(migration).toContain("create unique index if not exists");
   });
 
-  it("exposes only a constrained OCR metric RPC to authenticated runners", () => {
+  it("exposes the automatic OCR metric RPC only to the service role", () => {
     expect(migration).toContain("function public.upsert_ocr_streamer_metrics(");
     expect(migration).toMatch(
       /function public\.upsert_ocr_streamer_metrics\([\s\S]*security definer[\s\S]*set search_path = ''/,
     );
-    expect(migration).toContain("auth.role()");
-    expect(migration).toContain("public.is_mcn_staff(");
-    expect(migration).toContain("public.can_access_project(");
+    expect(migration).toMatch(
+      /upsert_ocr_streamer_metrics\([\s\S]*auth\.role\(\)[\s\S]*service_role/,
+    );
     expect(migration).toMatch(
       /from public\.live_reports as lr[\s\S]*join public\.live_tasks as lt[\s\S]*coalesce\(\s*lt\.system_started_at,\s*lt\.planned_start_at,\s*lr\.created_at\s*\)\s+at time zone 'asia\/shanghai'/,
     );
     expect(migration).toMatch(
-      /p_source_invocation_id[\s\S]*public\.ai_invocations[\s\S]*organization_id/,
+      /p_source_invocation_id[\s\S]*public\.ai_invocations[\s\S]*scene = 'ocr\.extract_live_report'[\s\S]*object_type = 'live_report'[\s\S]*object_id = p_live_report_id::text/,
+    );
+    expect(migration).toMatch(
+      /from public\.ocr_results[\s\S]*background_job_id[\s\S]*bj\.ai_invocation_id = p_source_invocation_id[\s\S]*bj\.status = 'succeeded'[\s\S]*ocr\.ai_invocation_id = p_source_invocation_id[\s\S]*for update/,
+    );
+    expect(migration).toMatch(
+      /from public\.live_reports[\s\S]*where lr\.id = p_live_report_id[\s\S]*for update/,
     );
     expect(migration).toContain("2147483647");
     expect(migration).toContain("duplicate metric key");
@@ -85,17 +91,16 @@ describe("OCR streamer attribution schema contract", () => {
       /revoke all on function public\.upsert_ocr_streamer_metrics\([\s\S]*from public, anon, authenticated, service_role/,
     );
     expect(migration).toMatch(
-      /grant execute on function public\.upsert_ocr_streamer_metrics\([\s\S]*to authenticated, service_role/,
+      /grant execute on function public\.upsert_ocr_streamer_metrics\([\s\S]*to service_role/,
+    );
+    expect(migration).not.toMatch(
+      /grant execute on function public\.upsert_ocr_streamer_metrics\([\s\S]*to authenticated/,
     );
   });
 
-  it("keeps RPC state and payload validation effective against direct callers", () => {
-    expect(migration).toContain("p_human_confirmed boolean");
+  it("keeps the automatic RPC state and payload validation effective against direct callers", () => {
     expect(migration).toMatch(
-      /p_human_confirmed[\s\S]*pending_review[\s\S]*ocr\.reviewed_at is not null/,
-    );
-    expect(migration).toMatch(
-      /v_report\.status <> 'ocr_ing'[\s\S]*ocr\.reviewed_at is null/,
+      /v_report\.status <> 'ocr_ing'[\s\S]*v_ocr\.status <> 'succeeded'[\s\S]*v_ocr\.reviewed_at is not null/,
     );
     expect(migration).toContain(
       "jsonb_typeof(v_metric -> 'key') is distinct from 'string'",
@@ -105,6 +110,43 @@ describe("OCR streamer attribution schema contract", () => {
     );
     expect(migration).toMatch(
       /source_report_id[\s\S]*values \([\s\S]*v_report\.id/,
+    );
+  });
+
+  it("confirms OCR status and metrics in one service-role-only transaction", () => {
+    expect(migration).toContain("function public.confirm_ocr_job_metrics(");
+    expect(migration).toMatch(
+      /function public\.confirm_ocr_job_metrics\([\s\S]*security definer[\s\S]*set search_path = ''/,
+    );
+    expect(migration).toMatch(
+      /from public\.background_jobs as bj[\s\S]*where bj\.id = p_job_id[\s\S]*for update/,
+    );
+    expect(migration).toMatch(
+      /from public\.ocr_results as ocr[\s\S]*ocr\.background_job_id = v_job\.id[\s\S]*for update/,
+    );
+    expect(migration).toMatch(
+      /from public\.live_reports as lr[\s\S]*where lr\.id = v_ocr\.live_report_id[\s\S]*for update/,
+    );
+    expect(migration).toMatch(
+      /v_job\.status <> 'needs_confirmation'[\s\S]*v_ocr\.status <> 'needs_confirmation'[\s\S]*v_ocr\.reviewed_at is not null/,
+    );
+    expect(migration).toContain(
+      "v_ocr.ai_invocation_id is distinct from v_job.ai_invocation_id",
+    );
+    expect(migration).toMatch(
+      /v_report\.status not in \('ocr_ing', 'pending_review'\)/,
+    );
+    expect(migration).toMatch(
+      /update public\.ocr_results[\s\S]*update public\.background_jobs[\s\S]*insert into public\.streamer_metrics/,
+    );
+    expect(migration).toMatch(
+      /revoke all on function public\.confirm_ocr_job_metrics\([\s\S]*from public, anon, authenticated, service_role/,
+    );
+    expect(migration).toMatch(
+      /grant execute on function public\.confirm_ocr_job_metrics\([\s\S]*to service_role/,
+    );
+    expect(migration).not.toMatch(
+      /grant execute on function public\.confirm_ocr_job_metrics\([\s\S]*to authenticated/,
     );
   });
 

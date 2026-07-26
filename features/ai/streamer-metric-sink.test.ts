@@ -28,7 +28,6 @@ describe("writeStreamerMetricsFromOcr", () => {
     const result = await writeStreamerMetricsFromOcr({
       client,
       ...source,
-      humanConfirmed: false,
       metricCandidates: [
         {
           key: "gmv",
@@ -55,7 +54,6 @@ describe("writeStreamerMetricsFromOcr", () => {
         { key: "follows", value: 67 },
       ],
       p_source_invocation_id: "invocation-1",
-      p_human_confirmed: false,
     });
     const rpcArgs = rpc.mock.calls[0]?.[1];
     expect(rpcArgs).not.toHaveProperty("organization_id");
@@ -79,6 +77,19 @@ describe("writeStreamerMetricsFromOcr", () => {
           confidence: 90,
         },
       ],
+    });
+
+    expect(result).toEqual({ written: 0 });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("skips writes without an exact source invocation", async () => {
+    const { client, rpc } = createClient();
+
+    const result = await writeStreamerMetricsFromOcr({
+      client,
+      sourceReportId: "report-1",
+      metricCandidates: [{ key: "gmv", value: 100, confidence: 90 }],
     });
 
     expect(result).toEqual({ written: 0 });
@@ -154,7 +165,6 @@ describe("writeStreamerMetricsFromOcr", () => {
     await writeStreamerMetricsFromOcr({
       client,
       ...source,
-      humanConfirmed: true,
       metricCandidates: [
         {
           key: "gmv",
@@ -177,7 +187,6 @@ describe("writeStreamerMetricsFromOcr", () => {
       "upsert_ocr_streamer_metrics",
       expect.objectContaining({
         p_metrics: [{ key: "gmv", value: 200 }],
-        p_human_confirmed: true,
       }),
     );
   });

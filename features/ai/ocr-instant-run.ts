@@ -71,6 +71,7 @@ export async function kickQueuedOcrJobsInProcess({
       try {
         await runOcrJobOnce({
           client: client as never,
+          metricClient: client as never,
           actor,
           jobId: job.id,
           provider,

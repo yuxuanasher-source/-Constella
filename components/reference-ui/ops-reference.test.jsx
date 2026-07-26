@@ -3906,6 +3906,26 @@ describe("OpsReferenceApp OCR operations smoke", () => {
                 result: {
                   extractedDuration: 80,
                   extractedViewers: 320,
+                  metricCandidates: [
+                    {
+                      key: "gmv",
+                      label: "GMV",
+                      value: 100,
+                      confidence: 90,
+                    },
+                    {
+                      key: "follows",
+                      label: "涨粉",
+                      value: 20,
+                      confidence: 88,
+                    },
+                    {
+                      key: "internal_secret",
+                      label: "不应显示的内部指标",
+                      value: 1,
+                      confidence: 100,
+                    },
+                  ],
                   rawResponse: "rawResponse",
                 },
                 createdAt: "2026-06-05T01:00:00.000Z",
@@ -3932,6 +3952,19 @@ describe("OpsReferenceApp OCR operations smoke", () => {
               liveReportId: "report-1",
               errorCode: "provider_failed",
               errorMessage: "Tencent OCR HTTP 500",
+              result: {
+                extractedDuration: 80,
+                extractedViewers: 320,
+                metricCandidates: [
+                  { key: "gmv", label: "GMV", value: 100, confidence: 90 },
+                  {
+                    key: "follows",
+                    label: "涨粉",
+                    value: 20,
+                    confidence: 88,
+                  },
+                ],
+              },
             },
           }),
         };
@@ -3950,6 +3983,19 @@ describe("OpsReferenceApp OCR operations smoke", () => {
                 liveReportId: "report-1",
                 errorCode: "low_confidence",
                 errorMessage: "low_provider_confidence",
+                result: {
+                  extractedDuration: 80,
+                  extractedViewers: 320,
+                  metricCandidates: [
+                    { key: "gmv", label: "GMV", value: 100, confidence: 90 },
+                    {
+                      key: "follows",
+                      label: "涨粉",
+                      value: 20,
+                      confidence: 88,
+                    },
+                  ],
+                },
               },
             ],
           }),
@@ -3972,6 +4018,19 @@ describe("OpsReferenceApp OCR operations smoke", () => {
               liveReportId: "report-1",
               errorCode: "needs_review",
               errorMessage: "manual_review_requested",
+              result: {
+                extractedDuration: 80,
+                extractedViewers: 320,
+                metricCandidates: [
+                  { key: "gmv", label: "GMV", value: 100, confidence: 90 },
+                  {
+                    key: "follows",
+                    label: "涨粉",
+                    value: 20,
+                    confidence: 88,
+                  },
+                ],
+              },
             },
           }),
         };
@@ -4015,6 +4074,9 @@ describe("OpsReferenceApp OCR operations smoke", () => {
     expect(await screen.findByText("screenshot-1")).toBeInTheDocument();
     expect(await screen.findByText("时长 80")).toBeInTheDocument();
     expect(await screen.findByText("场观 320")).toBeInTheDocument();
+    expect(await screen.findByText("GMV（整数元） · gmv")).toBeInTheDocument();
+    expect(await screen.findByText("涨粉 · follows")).toBeInTheDocument();
+    expect(screen.queryByText("不应显示的内部指标")).not.toBeInTheDocument();
     expect(await screen.findByText("识别服务失败")).toBeInTheDocument();
     expect(await screen.findByText("2/3")).toBeInTheDocument();
     expect(
@@ -4083,6 +4145,9 @@ describe("OpsReferenceApp OCR operations smoke", () => {
     fireEvent.change(screen.getByLabelText("修正观看人数 ocr-job-1"), {
       target: { value: "320" },
     });
+    fireEvent.change(screen.getByLabelText("修正 GMV（整数元） gmv ocr-job-1"), {
+      target: { value: "250" },
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "人工确认" }));
     await waitFor(() =>
@@ -4093,7 +4158,24 @@ describe("OpsReferenceApp OCR operations smoke", () => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "confirm",
-            manualResult: { duration: 80, viewers: 320 },
+            manualResult: {
+              duration: 80,
+              viewers: 320,
+              metricCandidates: [
+                {
+                  key: "gmv",
+                  label: "GMV",
+                  value: 250,
+                  confidence: 90,
+                },
+                {
+                  key: "follows",
+                  label: "涨粉",
+                  value: 20,
+                  confidence: 88,
+                },
+              ],
+            },
           }),
         }),
       ),

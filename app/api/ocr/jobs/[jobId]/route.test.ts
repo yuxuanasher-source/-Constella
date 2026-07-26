@@ -9,7 +9,10 @@ import {
   retryOcrJob,
 } from "@/features/ai/ocr-jobs";
 import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 
 vi.mock("@/features/ai/ocr-jobs", () => ({
   confirmOcrJob: vi.fn(),
@@ -23,6 +26,7 @@ vi.mock("@/lib/auth/context", () => ({
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseAdminClient: vi.fn(),
   createSupabaseServerClient: vi.fn(),
 }));
 
@@ -36,11 +40,14 @@ const auth = {
 };
 
 describe("/api/ocr/jobs/[jobId]", () => {
+  const admin = { rpc: vi.fn() };
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(createSupabaseServerClient).mockResolvedValue({
       from: vi.fn(),
     } as never);
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(admin as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth);
   });
 
@@ -213,6 +220,7 @@ describe("/api/ocr/jobs/[jobId]", () => {
     expect(JSON.stringify(body)).not.toContain("secret-image");
     expect(confirmOcrJob).toHaveBeenCalledWith(
       expect.objectContaining({
+        confirmationClient: admin,
         actor: auth,
         jobId: "job-1",
         manualResult: { duration: 80, viewers: 320 },
@@ -287,7 +295,61 @@ describe("/api/ocr/jobs/[jobId]", () => {
     );
 
     expect(confirmResponse.status).toBe(403);
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(confirmOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("returns 503 before confirming when the privileged confirmation client is unavailable", async () => {
+    vi.mocked(getOcrJob).mockResolvedValue({
+      id: "job-1",
+      organizationId: "org-1",
+      jobType: "ocr.extract_live_report",
+      status: "needs_confirmation",
+      attempt: 1,
+      payload: { liveReportId: "report-1" },
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(null);
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs/job-1", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "confirm",
+          manualResult: { metricCandidates: [] },
+        }),
+      }),
+      { params: Promise.resolve({ jobId: "job-1" }) },
+    );
+
+    expect(response.status).toBe(503);
+    expect(confirmOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when the atomic confirmation loses a duplicate or terminal-state race", async () => {
+    vi.mocked(getOcrJob).mockResolvedValue({
+      id: "job-race",
+      organizationId: "org-1",
+      jobType: "ocr.extract_live_report",
+      status: "needs_confirmation",
+      attempt: 1,
+      payload: { liveReportId: "report-race" },
+    });
+    vi.mocked(confirmOcrJob).mockRejectedValue(
+      new Error("OCR job can no longer be confirmed"),
+    );
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs/job-race", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "confirm",
+          manualResult: { metricCandidates: [] },
+        }),
+      }),
+      { params: Promise.resolve({ jobId: "job-race" }) },
+    );
+
+    expect(response.status).toBe(409);
   });
 
   it("does not retry OCR jobs from another organization", async () => {
@@ -338,5 +400,6 @@ describe("/api/ocr/jobs/[jobId]", () => {
     );
 
     expect(response.status).toBe(403);
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
   });
 });

@@ -7,7 +7,10 @@ import {
   retryOcrJob,
 } from "@/features/ai/ocr-jobs";
 import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { canManageOcrJobs } from "@/lib/rbac/permissions";
 import { isMcnStaff } from "@/lib/rbac/roles";
@@ -81,8 +84,16 @@ export async function POST(request: Request, context: RouteContext) {
     }
 
     if (body.action === "confirm") {
+      const confirmationClient = createSupabaseAdminClient();
+      if (!confirmationClient) {
+        return NextResponse.json(
+          { error: "OCR confirmation service is unavailable" },
+          { status: 503 },
+        );
+      }
       const job = await confirmOcrJob({
         client: authResult.supabase as never,
+        confirmationClient: confirmationClient as never,
         actor: authResult.auth,
         jobId,
         manualResult: objectValue(body.manualResult),
@@ -229,10 +240,13 @@ function toSafeJob(job: {
 
 function errorResponse(error: unknown) {
   if (error instanceof Error) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: statusForServiceError(error) },
-    );
+    const status =
+      /^OCR job (?:is not awaiting confirmation|can no longer be confirmed)$/.test(
+        error.message,
+      )
+        ? 409
+        : statusForServiceError(error);
+    return NextResponse.json({ error: error.message }, { status });
   }
 
   return NextResponse.json({ error: "Unexpected error" }, { status: 500 });

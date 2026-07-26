@@ -12,6 +12,7 @@ import type {
   TencentOcrProvider,
 } from "./providers/tencent-ocr-provider";
 import {
+  normalizeOcrMetricCandidates,
   writeStreamerMetricsFromOcr,
   type StreamerMetricSinkClient,
 } from "./streamer-metric-sink";
@@ -59,7 +60,7 @@ export type OcrJobRecord = {
   payload: OcrJobPayload;
 };
 
-type OcrJobMutationResult = { error: Error | null };
+type OcrJobMutationResult = { error: Error | null; count?: number | null };
 type OcrJobUpdateFilter = PromiseLike<OcrJobMutationResult> & {
   eq(column: string, value: string): OcrJobUpdateFilter;
 };
@@ -69,14 +70,17 @@ type OcrJobClient = {
     name: string,
     args: Record<string, unknown>,
   ) => PromiseLike<{
-    data: Record<string, unknown>[] | number | null;
+    data: Record<string, unknown> | Record<string, unknown>[] | number | null;
     error: Error | null;
   }>;
   from(table: string): {
     insert(
       payload: Record<string, unknown>,
     ): PromiseLike<{ error: Error | null }>;
-    update(payload: Record<string, unknown>): OcrJobUpdateFilter;
+    update(
+      payload: Record<string, unknown>,
+      options?: { count: "exact" },
+    ): OcrJobUpdateFilter;
     select(columns: string): {
       eq(
         column: string,
@@ -430,6 +434,7 @@ export async function runOcrJobOnce({
   actor,
   jobId,
   provider,
+  metricClient,
   runnerId = "manual-runner",
   now = () => new Date(),
   lockTimeoutMs = 15 * 60 * 1000,
@@ -439,6 +444,7 @@ export async function runOcrJobOnce({
   actor: AiActor;
   jobId: string;
   provider: TencentOcrProvider;
+  metricClient: StreamerMetricSinkClient | null;
   runnerId?: string;
   now?: () => Date;
   lockTimeoutMs?: number;
@@ -473,6 +479,7 @@ export async function runOcrJobOnce({
       job,
       jobId,
       provider,
+      metricClient,
       attempt,
       maxAttempts,
       startedAt,
@@ -503,6 +510,7 @@ async function runLockedOcrJob({
   job,
   jobId,
   provider,
+  metricClient,
   attempt,
   maxAttempts,
   startedAt,
@@ -513,6 +521,7 @@ async function runLockedOcrJob({
   job: OcrJobRecord;
   jobId: string;
   provider: TencentOcrProvider;
+  metricClient: StreamerMetricSinkClient | null;
   attempt: number;
   maxAttempts: number;
   startedAt: Date;
@@ -620,6 +629,7 @@ async function runLockedOcrJob({
   // the pool; conflicting ones carry a flag so reviewers can double-check.
   await advanceLiveReportAfterOcr({
     client,
+    metricClient,
     liveReportId: job.payload.liveReportId,
     report: liveReport,
     extractedDuration: parsed.extractedDuration,
@@ -663,12 +673,14 @@ async function runLockedOcrJob({
 
 export async function confirmOcrJob({
   client,
+  confirmationClient,
   actor,
   jobId,
   manualResult,
   now = () => new Date(),
 }: {
   client: OcrJobClient;
+  confirmationClient: OcrConfirmationClient;
   actor: AiActor;
   jobId: string;
   manualResult: Record<string, unknown>;
@@ -685,32 +697,32 @@ export async function confirmOcrJob({
     ...(job.result ?? {}),
     manualResult,
   };
-
-  await updateOcrResult(client, job, {
-    status: "succeeded",
-    needs_confirmation: false,
-    manual_result: manualResult,
-    reviewed_by: actor.userId,
-    reviewed_at: reviewedAt,
-  });
-  await updateOrThrow(client, "background_jobs", jobId, {
-    status: "succeeded",
-    error_code: null,
-    error_message: null,
-    error_summary: null,
-    result,
-    review_payload: manualResult,
-    reviewed_by: actor.userId,
-    reviewed_at: reviewedAt,
-    locked_at: null,
-    locked_by: null,
-  });
+  if (job.status !== "needs_confirmation") {
+    throw new Error("OCR job is not awaiting confirmation");
+  }
+  const metricCandidates = pickConfirmedMetricCandidates(manualResult);
+  const metrics = normalizeOcrMetricCandidates(metricCandidates);
+  const { data: confirmation, error: confirmationError } =
+    await confirmationClient.rpc("confirm_ocr_job_metrics", {
+      p_job_id: jobId,
+      p_reviewed_by: actor.userId,
+      p_reviewed_at: reviewedAt,
+      p_manual_result: manualResult,
+      p_metrics: metrics,
+    });
+  if (confirmationError) {
+    throw confirmationError;
+  }
+  if (!isSuccessfulOcrConfirmation(confirmation)) {
+    throw new Error("OCR job can no longer be confirmed");
+  }
 
   // A human confirmed the OCR result, so advance the live report into the
   // review pool with the (optionally corrected) values and clear the
   // needs-review flag. No-op if a prior run already advanced the report.
   await advanceLiveReportAfterOcr({
     client,
+    metricClient: null,
     liveReportId: job.payload.liveReportId,
     report: liveReport,
     extractedDuration: pickPositiveNumericField(
@@ -723,9 +735,9 @@ export async function confirmOcrJob({
       manualResult.viewers,
       job.result?.extractedViewers,
     ),
-    metricCandidates: pickConfirmedMetricCandidates(manualResult, job.result),
+    metricCandidates,
     sourceInvocationId: job.aiInvocationId,
-    writeMetrics: true,
+    writeMetrics: false,
     humanConfirmed: true,
     needsConfirmation: false,
     reasons: [],
@@ -933,6 +945,7 @@ async function loadLiveReportForOcrAdvance({
 
 async function advanceLiveReportAfterOcr({
   client,
+  metricClient,
   liveReportId,
   report,
   extractedDuration,
@@ -945,6 +958,7 @@ async function advanceLiveReportAfterOcr({
   reasons,
 }: {
   client: OcrJobClient;
+  metricClient: StreamerMetricSinkClient | null;
   liveReportId: string;
   report: LiveReportAdvanceRow | null;
   extractedDuration: number | null;
@@ -972,19 +986,24 @@ async function advanceLiveReportAfterOcr({
   }
 
   if (writeMetrics) {
-    try {
-      await writeStreamerMetricsFromOcr({
-        client: client as unknown as StreamerMetricSinkClient,
-        sourceReportId: report.id,
-        sourceInvocationId,
-        humanConfirmed,
-        metricCandidates,
-      });
-    } catch (error) {
+    if (!metricClient) {
       console.error(
-        `[ocr] streamer metric sink failed for report ${liveReportId}`,
-        error,
+        `[ocr] streamer metric sink unavailable for report ${liveReportId}`,
       );
+    } else {
+      try {
+        await writeStreamerMetricsFromOcr({
+          client: metricClient,
+          sourceReportId: report.id,
+          sourceInvocationId,
+          metricCandidates,
+        });
+      } catch (error) {
+        console.error(
+          `[ocr] streamer metric sink failed for report ${liveReportId}`,
+          error,
+        );
+      }
     }
   }
 
@@ -1043,13 +1062,19 @@ async function advanceLiveReportAfterOcr({
 
   patch.risk_flags = [...riskFlags];
 
-  const { error: updateError } = await client
+  const { error: updateError, count: updatedCount } = await client
     .from("live_reports")
-    .update(patch)
+    .update(patch, { count: "exact" })
     .eq("id", liveReportId)
     .eq("status", currentStatus);
   if (updateError) {
     throw updateError;
+  }
+  if (humanConfirmed && updatedCount === 0) {
+    // The atomic confirmation already serialized against settlement. A zero
+    // CAS count here means another valid transition won after that transaction;
+    // do not overwrite its evidence/status with a stale report snapshot.
+    return;
   }
 }
 
@@ -1073,16 +1098,35 @@ function pickPositiveNumericField(...values: unknown[]): number | null {
 
 function pickConfirmedMetricCandidates(
   manualResult: Record<string, unknown>,
-  ocrResult?: Record<string, unknown>,
 ): unknown[] {
-  if (Object.prototype.hasOwnProperty.call(manualResult, "metricCandidates")) {
-    return Array.isArray(manualResult.metricCandidates)
-      ? manualResult.metricCandidates
-      : [];
-  }
-  return Array.isArray(ocrResult?.metricCandidates)
-    ? ocrResult.metricCandidates
+  return Object.prototype.hasOwnProperty.call(
+    manualResult,
+    "metricCandidates",
+  ) && Array.isArray(manualResult.metricCandidates)
+    ? manualResult.metricCandidates
     : [];
+}
+
+type OcrConfirmationClient = {
+  rpc(
+    name: "confirm_ocr_job_metrics",
+    args: {
+      p_job_id: string;
+      p_reviewed_by: string;
+      p_reviewed_at: string;
+      p_manual_result: Record<string, unknown>;
+      p_metrics: Array<{ key: string; value: number }>;
+    },
+  ): PromiseLike<{
+    data: Record<string, unknown> | null;
+    error: Error | null;
+  }>;
+};
+
+function isSuccessfulOcrConfirmation(
+  value: Record<string, unknown> | null,
+): boolean {
+  return value?.confirmed === true;
 }
 
 async function failOcrJobAttempt({
