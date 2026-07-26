@@ -6,7 +6,6 @@ export type ExportKind =
   | "report_settlement_details"
   | "settlement_batch"
   | "audit_logs"
-  | "vendor_delivery"
   | "admission_recordings"
   | "project_costs"
   | "supplier_reconcile";
@@ -73,12 +72,6 @@ export const exportDefinitions: Record<ExportKind, ExportField[]> = {
     { key: "vendorDecision", label: "厂商决策", sensitivity: "public" },
     { key: "vendorRemark", label: "厂商备注", sensitivity: "public" },
   ],
-  vendor_delivery: [
-    { key: "projectName", label: "项目名称", sensitivity: "public" },
-    { key: "streamerName", label: "主播", sensitivity: "public" },
-    { key: "settlementDuration", label: "结算时长", sensitivity: "public" },
-    { key: "evidenceLevel", label: "证据等级", sensitivity: "public" },
-  ],
   project_execution: [
     { key: "projectName", label: "项目名称", sensitivity: "public" },
     { key: "status", label: "状态", sensitivity: "internal" },
@@ -125,10 +118,6 @@ export function getAllowedExportFields(
   role: AppRole,
 ): ExportField[] {
   const fields = exportDefinitions[kind];
-  if (kind === "vendor_delivery") {
-    return fields.filter((field) => field.sensitivity === "public");
-  }
-
   if (role === "streamer" || role === "operator_business") {
     return fields.filter((field) => field.sensitivity !== "finance_sensitive");
   }
@@ -143,7 +132,6 @@ export function isExportKind(value: unknown): value is ExportKind {
     value === "report_settlement_details" ||
     value === "settlement_batch" ||
     value === "audit_logs" ||
-    value === "vendor_delivery" ||
     value === "admission_recordings" ||
     value === "project_costs" ||
     value === "supplier_reconcile"

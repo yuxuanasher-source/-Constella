@@ -981,7 +981,7 @@ const ORGANIZATION_FEATURE_OPTIONS = [
   {
     key: "vendorPortal",
     label: "厂家门户",
-    hint: "向厂家开放候选主播、执行进度与交付包。",
+    hint: "向厂家开放候选主播、准入进度与项目分享看板。",
   },
   {
     key: "autoReview",
@@ -8438,26 +8438,6 @@ function ProjectDetail({ id, go }) {
     p.defaultSettlementRule &&
     typeof p.defaultSettlementRule === "object" &&
     Object.keys(p.defaultSettlementRule).length > 0;
-  const exportVendorDelivery = async () => {
-    setDetailSubmitting("delivery");
-    setDetailMessage("");
-    try {
-      const packageRows = await actions.readVendorDeliveryPackage?.(p.id);
-      const result = await actions.createGovernedExport?.({
-        kind: "vendor_delivery",
-        rows: Array.isArray(packageRows) ? packageRows : [],
-      });
-      setDetailMessage(
-        result?.filename
-          ? `厂家交付包已生成：${result.filename}`
-          : "厂家交付包已生成",
-      );
-    } catch (error) {
-      setDetailMessage(error?.message || "厂家交付包导出失败，请稍后重试");
-    } finally {
-      setDetailSubmitting("");
-    }
-  };
   const openProjectSettings = () => {
     setSettingsDraft(projectSettingsInitialDraft(p));
     setSettingsError("");
@@ -8715,11 +8695,14 @@ function ProjectDetail({ id, go }) {
               <>
                 <Button
                   kind="default"
-                  icon={<Icon.Export size={14} />}
-                  onClick={exportVendorDelivery}
-                  disabled={detailSubmitting === "delivery"}
+                  icon={<Icon.Link2 size={14} />}
+                  onClick={() =>
+                    go("admission", {
+                      projectId: p.id,
+                    })
+                  }
                 >
-                  {detailSubmitting === "delivery" ? "生成中" : "厂家交付包"}
+                  厂家分享看板
                 </Button>
                 <Button
                   kind="default"
@@ -16286,7 +16269,7 @@ function ShotMetric({ label, value }) {
   );
 }
 
-function ScreenAdmission() {
+function ScreenAdmission({ focusRequest = null }) {
   const applications = useOpsApplications();
   const { applications: applicationData } =
     React.useContext(OpsLiveDataContext);
@@ -16307,6 +16290,13 @@ function ScreenAdmission() {
   const [playbackRecording, setPlaybackRecording] = React.useState(null);
   // 录屏审核工作台：非空时主体切换为「左队列 + 右播放审核」双栏视图（页头保持）。
   const [workspaceProjectId, setWorkspaceProjectId] = React.useState("");
+
+  React.useEffect(() => {
+    const projectId = String(focusRequest?.projectId || "").trim();
+    setSearchQuery(projectId);
+    setExpandedProjectId(projectId);
+    setWorkspaceProjectId("");
+  }, [focusRequest?.requestId]);
 
   const syncAdmissionProjectBoards = async () => {
     if (!actions.refreshAdmissionProjectBoards) {
@@ -30245,7 +30235,7 @@ const SENSITIVE_FIELDS = [
   {
     field: "供应商内部成本",
     roles: ["owner", "finance"],
-    note: "厂家交付包中自动剔除",
+    note: "厂家分享看板中自动剔除",
   },
   {
     field: "其他主播结算金额",
@@ -32155,7 +32145,7 @@ function SensitiveFields() {
         >
           以下字段被识别为「敏感字段」，由 <b>服务端 DTO + 安全视图</b>{" "}
           双重过滤，与前端隐藏无关。 主播端
-          AI、导出模板字段白名单与厂家交付包均会自动剔除未授权字段。
+          AI、导出模板字段白名单与厂家分享看板均会自动剔除未授权字段。
         </div>
       </div>
 
@@ -33171,7 +33161,6 @@ function ScreenExport() {
 
   const exportKinds = [
     { key: "audit_logs", label: "审计日志" },
-    { key: "vendor_delivery", label: "厂家交付包" },
     { key: "settlement_batch", label: "结算批次" },
     { key: "report_details", label: "报数明细" },
     { key: "project_costs", label: "项目成本明细" },
@@ -33179,9 +33168,7 @@ function ScreenExport() {
   ];
 
   const projectScopedKind =
-    kind === "vendor_delivery" ||
-    kind === "project_costs" ||
-    kind === "supplier_reconcile";
+    kind === "project_costs" || kind === "supplier_reconcile";
   const selectedProjectName =
     projects.find((project) => project.id === projectId)?.name ||
     displayRecordId(projectId, "导出项目");
@@ -33190,10 +33177,6 @@ function ScreenExport() {
   // 上下文没有的（审计日志 / 报数明细 / 成本明细）在导出前先取对应 /api，
   // 再按 /api/exports 的「客户端提供 rows」契约传给治理导出。
   const buildExportRows = async () => {
-    if (kind === "vendor_delivery") {
-      const items = await actions.readVendorDeliveryPackage?.(projectId);
-      return Array.isArray(items) ? items : [];
-    }
     if (kind === "audit_logs") {
       const entries = await actions.refreshAuditEntries?.();
       return Array.isArray(entries) ? entries : [];
@@ -33282,9 +33265,7 @@ function ScreenExport() {
           </div>
           <div style={{ padding: "0 16px 16px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {kind === "vendor_delivery" ||
-              kind === "project_costs" ||
-              kind === "supplier_reconcile" ? (
+              {kind === "project_costs" || kind === "supplier_reconcile" ? (
                 <label
                   style={{
                     display: "flex",
@@ -33295,9 +33276,9 @@ function ScreenExport() {
                     fontWeight: 600,
                   }}
                 >
-                  {kind === "vendor_delivery" ? "交付包项目" : "成本项目"}
+                  成本项目
                   <select
-                    aria-label="交付包项目"
+                    aria-label="成本项目"
                     value={projectId}
                     onChange={(event) => setProjectId(event.target.value)}
                     style={{
@@ -34284,6 +34265,7 @@ function ScreenFunnel({ onLoad }) {
 
 function OpsReferenceInner({
   initialRoute = "warroom",
+  admissionFocusRequest: incomingAdmissionFocusRequest = null,
   liveTasks,
   liveReports,
   liveBatches,
@@ -34319,10 +34301,35 @@ function OpsReferenceInner({
   const organizationSettingsWasOpenRef = React.useRef(false);
   const [projectId, setProjectId] = React.useState(null);
   const [streamerId, setStreamerId] = React.useState(null);
+  const [admissionFocusRequest, setAdmissionFocusRequest] = React.useState(
+    () => ({
+      projectId: String(incomingAdmissionFocusRequest?.projectId || ""),
+      requestId: Number(incomingAdmissionFocusRequest?.requestId) || 0,
+    }),
+  );
+  const admissionFocusSequenceRef = React.useRef(
+    Number(incomingAdmissionFocusRequest?.requestId) || 0,
+  );
   const [dashboardTarget, setDashboardTarget] = React.useState(null);
   // go("tasks", { view, projectId, projectName }) 的跳转请求：
   // 由 ScreenTasks 消费，预置视图与项目筛选（token 区分同参数的多次跳转）。
   const [tasksFocusRequest, setTasksFocusRequest] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!incomingAdmissionFocusRequest) return;
+    const requestId = Number(incomingAdmissionFocusRequest.requestId) || 0;
+    admissionFocusSequenceRef.current = Math.max(
+      admissionFocusSequenceRef.current,
+      requestId,
+    );
+    setAdmissionFocusRequest({
+      projectId: String(incomingAdmissionFocusRequest.projectId || ""),
+      requestId,
+    });
+  }, [
+    incomingAdmissionFocusRequest?.projectId,
+    incomingAdmissionFocusRequest?.requestId,
+  ]);
   const [tasksState, setTasksState] = React.useState(liveTasks ?? null);
   const [reportsState, setReportsState] = React.useState(() =>
     normalizeReferenceReports(liveReports),
@@ -35029,20 +35036,6 @@ function OpsReferenceInner({
       return body;
     };
 
-    const readVendorDeliveryPackage = async (projectId) => {
-      const trimmedProjectId = String(projectId || "").trim();
-      if (!trimmedProjectId) {
-        return [];
-      }
-      const params = new URLSearchParams({ projectId: trimmedProjectId });
-      const body = await fetchJson(
-        `/api/delivery-packages?${params.toString()}`,
-        "read delivery package failed",
-        { method: "GET" },
-      );
-      return Array.isArray(body.items) ? body.items : [];
-    };
-
     const scanAnomalies = async () => {
       const body = await fetchJson(
         "/api/anomalies/scan",
@@ -35063,7 +35056,6 @@ function OpsReferenceInner({
       refreshReports,
       refreshSettlementPool,
       refreshSettlementBatchDetail,
-      readVendorDeliveryPackage,
       exportAdmissionRecordings,
       requestRecordingAiAnalysis,
       confirmRecordingProfileInsight,
@@ -35856,6 +35848,16 @@ function OpsReferenceInner({
       setRoute("streamers");
       if (arg) setStreamerId(arg);
       setDashboardTarget(null);
+    } else if (r === "admission") {
+      const focusProjectId =
+        arg && typeof arg === "object" ? arg.projectId : arg;
+      admissionFocusSequenceRef.current += 1;
+      setRoute("admission");
+      setAdmissionFocusRequest({
+        projectId: String(focusProjectId || ""),
+        requestId: admissionFocusSequenceRef.current,
+      });
+      setDashboardTarget(null);
     } else if (r === "tasks" && arg && typeof arg === "object") {
       // 对象参数 = 携带初始视图/项目筛选的跳转（如项目详情「异常任务」入口），
       // 不走 dashboardTarget 横幅；字符串参数仍走下方原有分支。
@@ -36109,7 +36111,9 @@ function OpsReferenceInner({
             {route === "streamers" && (
               <ScreenStreamers go={go} initialActiveId={streamerId} />
             )}
-            {route === "admission" && <ScreenAdmission go={go} />}
+            {route === "admission" && (
+              <ScreenAdmission focusRequest={admissionFocusRequest} />
+            )}
             {route === "tasks" && (
               <ScreenTasks go={go} focusRequest={tasksFocusRequest} />
             )}
@@ -36349,10 +36353,11 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; dashboardHomeError?: string | null; currentUser?: any }} props
+ * @param {{ initialRoute?: string; admissionFocusRequest?: { projectId?: string; requestId: number } | null; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; dashboardHomeError?: string | null; currentUser?: any }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
+  admissionFocusRequest = null,
   liveTasks,
   liveReports,
   liveBatches,
@@ -36377,6 +36382,7 @@ export default function OpsReferenceApp({
   return (
     <OpsReferenceInner
       initialRoute={initialRoute}
+      admissionFocusRequest={admissionFocusRequest}
       liveTasks={liveTasks}
       liveReports={liveReports}
       liveBatches={liveBatches}

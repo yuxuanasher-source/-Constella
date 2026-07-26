@@ -53,7 +53,7 @@ describe("createGovernedExport", () => {
     );
   });
 
-  it("generates CSV using server-side field whitelist and writes export audit", async () => {
+  it("generates governance CSV using a server-side field whitelist and writes export audit", async () => {
     const { client, auditInserts } = createClient();
 
     const result = await createGovernedExport({
@@ -64,13 +64,12 @@ describe("createGovernedExport", () => {
         role: "operator_business",
         organizationId: "org-1",
       },
-      kind: "vendor_delivery",
+      kind: "project_execution",
       rows: [
         {
           projectName: "王者荣耀暑期冲榜",
-          streamerName: "阿洛",
-          settlementDuration: 120,
-          evidenceLevel: "system",
+          status: "active",
+          operatorName: "阿洛",
           grossMarginCents: 3000,
           supplierCostCents: 271828,
           internalRiskNote: "内部风险-只读",
@@ -80,9 +79,9 @@ describe("createGovernedExport", () => {
       now: "2026-06-02T10:00:00.000Z",
     });
 
-    expect(result.filename).toBe("vendor_delivery-2026-06-02.csv");
-    expect(result.content).toContain("项目名称,主播,结算时长,证据等级");
-    expect(result.content).toContain("王者荣耀暑期冲榜,阿洛,120,system");
+    expect(result.filename).toBe("project_execution-2026-06-02.csv");
+    expect(result.content).toContain("项目名称,状态,负责人");
+    expect(result.content).toContain("王者荣耀暑期冲榜,active,阿洛");
     expect(result.content).not.toContain("grossMarginCents");
     expect(result.content).not.toContain("271828");
     expect(result.content).not.toContain("内部风险-只读");
@@ -109,13 +108,12 @@ describe("createGovernedExport", () => {
         role: "operator_business",
         organizationId: "org-1",
       },
-      kind: "vendor_delivery",
+      kind: "project_execution",
       rows: [
         {
           projectName: '=HYPERLINK("http://evil.example","x")',
-          streamerName: "+1234",
-          settlementDuration: 120,
-          evidenceLevel: "system",
+          status: "+1234",
+          operatorName: "Ops",
         },
       ],
       now: "2026-06-02T10:00:00.000Z",

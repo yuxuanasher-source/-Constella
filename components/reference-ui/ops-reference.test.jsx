@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { useState } from "react";
 
 import {
   act,
@@ -3124,30 +3125,37 @@ describe("OpsReferenceApp project smoke", () => {
     expect(await screen.findByText(/项目表导出已生成/)).toBeInTheDocument();
   });
 
-  it("exports a vendor delivery package from project detail", async () => {
+  it("opens the focused admission share board from project detail without fetching a delivery package", async () => {
     const fetchMock = vi.fn(async (url) => {
-      if (String(url) === "/api/delivery-packages?projectId=project-alpha") {
+      if (String(url) === "/api/applications/admission-board") {
         return {
           ok: true,
           json: async () => ({
-            items: [
+            projects: [
               {
-                projectId: "project-alpha",
-                projectName: "Alpha Launch",
-                streamerName: "Streamer Alpha",
-                settlementDurationMinutes: 120,
-                evidenceLevel: "green",
-                screenshotCount: 2,
+                project: {
+                  id: "project-alpha",
+                  code: "PA-001",
+                  name: "Alpha Launch",
+                },
+                counts: {
+                  totalApplications: 1,
+                  recordingCount: 1,
+                  mcnPendingReview: 0,
+                  mcnApproved: 1,
+                  mcnRejected: 0,
+                  needsChanges: 0,
+                  vendorPending: 1,
+                  vendorSelected: 0,
+                  vendorBackup: 0,
+                  vendorRejected: 0,
+                  vendorNeedsChanges: 0,
+                  pendingFinalConfirm: 0,
+                },
+                share: null,
               },
             ],
           }),
-        };
-      }
-
-      if (String(url) === "/api/exports") {
-        return {
-          ok: true,
-          json: async () => ({ export: { id: "export-delivery" } }),
         };
       }
 
@@ -3160,42 +3168,53 @@ describe("OpsReferenceApp project smoke", () => {
         initialRoute="projects"
         projectCards={[projectManagementCards[0]]}
         streamerCards={[]}
-        applicationQueue={[]}
+        applicationQueue={[
+          {
+            id: "application-alpha",
+            status: "recording_approved",
+            project: { id: "project-alpha", name: "Alpha Launch" },
+            streamer: { id: "streamer-alpha", displayName: "Streamer Alpha" },
+            latestRecording: {
+              id: "recording-alpha",
+              assetId: "asset-alpha",
+              status: "approved",
+              hasPrivateStorage: true,
+            },
+          },
+        ]}
       />,
     );
 
     fireEvent.click(screen.getByText("Alpha Launch"));
-    fireEvent.click(screen.getByRole("button", { name: "厂家交付包" }));
+    fireEvent.click(screen.getByRole("button", { name: "厂家分享看板" }));
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/delivery-packages?projectId=project-alpha",
-        expect.objectContaining({ method: "GET" }),
+    expect(
+      screen.getByRole("heading", { name: "选播准入" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("项目 / 主播 / 报名编号"),
+    ).toHaveValue("project-alpha");
+    expect(
+      screen.getByText("Alpha Launch · 录屏明细"),
+    ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).startsWith("/api/delivery-packages"),
       ),
+    ).toBe(false);
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url) === "/api/exports"),
+    ).toBe(false);
+  });
+
+  it("does not expose vendor_delivery in the export center", () => {
+    render(
+      <OpsReferenceApp initialRoute="export" projectCards={taskProjectCards} />,
     );
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/exports",
-        expect.objectContaining({ method: "POST" }),
-      ),
-    );
-    const exportCall = fetchMock.mock.calls.find(
-      ([url]) => String(url) === "/api/exports",
-    );
-    expect(JSON.parse(exportCall[1].body)).toEqual({
-      kind: "vendor_delivery",
-      rows: [
-        {
-          projectId: "project-alpha",
-          projectName: "Alpha Launch",
-          streamerName: "Streamer Alpha",
-          settlementDurationMinutes: 120,
-          evidenceLevel: "green",
-          screenshotCount: 2,
-        },
-      ],
-    });
-    expect(await screen.findByText(/厂家交付包已生成/)).toBeInTheDocument();
+
+    expect(
+      screen.queryByRole("button", { name: "厂家交付包" }),
+    ).not.toBeInTheDocument();
   });
 
   it("routes new schedule to the task module", () => {
@@ -5558,6 +5577,96 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(screen.getByText("app-ui-1")).toBeInTheDocument();
     expect(screen.getByText("小鹿")).toBeInTheDocument();
   });
+
+  it("focuses the requested project and restores the full list on an unfocused admission navigation", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        admissionFocusRequest={{
+          projectId: "project-focus",
+          requestId: 1,
+        }}
+        applicationQueue={[
+          {
+            id: "app-other",
+            status: "recording_approved",
+            project: { id: "project-other", name: "Other Project" },
+            streamer: { id: "streamer-other", displayName: "Other Streamer" },
+          },
+          {
+            id: "app-focus",
+            status: "recording_approved",
+            project: { id: "project-focus", name: "Focused Project" },
+            streamer: { id: "streamer-focus", displayName: "Focus Streamer" },
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByPlaceholderText("项目 / 主播 / 报名编号"),
+    ).toHaveValue("project-focus");
+    expect(screen.getByText("Focused Project · 录屏明细")).toBeInTheDocument();
+    expect(screen.queryByText("Other Project")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "进入录屏审核" }));
+    expect(
+      screen.getByText("Focused Project · 录屏审核工作台"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "选播准入" }));
+
+    expect(
+      screen.getByPlaceholderText("项目 / 主播 / 报名编号"),
+    ).toHaveValue("");
+    expect(screen.getByText("Focused Project")).toBeInTheDocument();
+    expect(screen.getByText("Other Project")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Focused Project · 录屏明细"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("reapplies focus when the same project arrives with a newer requestId", () => {
+    function AdmissionFocusHarness() {
+      const [requestId, setRequestId] = useState(1);
+      return (
+        <>
+          <button type="button" onClick={() => setRequestId((id) => id + 1)}>
+            重复定位
+          </button>
+          <OpsReferenceApp
+            initialRoute="admission"
+            admissionFocusRequest={{
+              projectId: "project-focus",
+              requestId,
+            }}
+            applicationQueue={[
+              {
+                id: "app-focus",
+                status: "recording_approved",
+                project: { id: "project-focus", name: "Focused Project" },
+                streamer: {
+                  id: "streamer-focus",
+                  displayName: "Focus Streamer",
+                },
+              },
+            ]}
+          />
+        </>
+      );
+    }
+
+    render(<AdmissionFocusHarness />);
+    const input = screen.getByPlaceholderText("项目 / 主播 / 报名编号");
+    fireEvent.change(input, { target: { value: "manual-search" } });
+    expect(input).toHaveValue("manual-search");
+
+    fireEvent.click(screen.getByRole("button", { name: "重复定位" }));
+
+    expect(input).toHaveValue("project-focus");
+    expect(screen.getByText("Focused Project · 录屏明细")).toBeInTheDocument();
+  });
+
   it("exposes real recording view and playback entries on the admission board", () => {
     render(
       <OpsReferenceApp
@@ -11147,84 +11256,6 @@ describe("OpsReferenceApp export center smoke", () => {
     });
     expect(
       await screen.findByText("audit_logs-2026-06-02.csv"),
-    ).toBeInTheDocument();
-  });
-
-  it("loads vendor delivery package rows before generating a delivery export", async () => {
-    const fetchMock = vi.fn(async (url) => {
-      if (String(url) === "/api/delivery-packages?projectId=project-live") {
-        return {
-          ok: true,
-          json: async () => ({
-            items: [
-              {
-                projectId: "project-live",
-                projectName: "Fixture Project",
-                streamerName: "Streamer One",
-                settlementDurationMinutes: 120,
-                evidenceLevel: "green",
-                screenshotCount: 2,
-              },
-            ],
-          }),
-        };
-      }
-      if (String(url) === "/api/exports") {
-        return {
-          ok: true,
-          json: async () => ({
-            export: {
-              kind: "vendor_delivery",
-              filename: "vendor_delivery-project-live.csv",
-              content: "project,streamer",
-              fieldCount: 4,
-              rowCount: 1,
-            },
-          }),
-        };
-      }
-
-      return { ok: false, json: async () => ({ error: "unexpected request" }) };
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(
-      <OpsReferenceApp initialRoute="export" projectCards={taskProjectCards} />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "厂家交付包" }));
-    fireEvent.click(screen.getByRole("button", { name: "生成导出" }));
-
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/delivery-packages?projectId=project-live",
-        expect.objectContaining({ method: "GET" }),
-      ),
-    );
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/exports",
-        expect.objectContaining({ method: "POST" }),
-      ),
-    );
-    const exportCall = fetchMock.mock.calls.find(
-      ([url]) => String(url) === "/api/exports",
-    );
-    expect(JSON.parse(exportCall[1].body)).toEqual({
-      kind: "vendor_delivery",
-      rows: [
-        {
-          projectId: "project-live",
-          projectName: "Fixture Project",
-          streamerName: "Streamer One",
-          settlementDurationMinutes: 120,
-          evidenceLevel: "green",
-          screenshotCount: 2,
-        },
-      ],
-    });
-    expect(
-      await screen.findByText("vendor_delivery-project-live.csv"),
     ).toBeInTheDocument();
   });
 
