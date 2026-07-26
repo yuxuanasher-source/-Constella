@@ -1244,6 +1244,9 @@ export const DEFAULT_ACCESS_CODE_SCRYPT_PARAMS: AccessCodeHashParams = {
   keyLength: 32,
 };
 
+const ACCESS_CODE_SCRYPT_MAXMEM_BYTES = 64 * 1024 * 1024;
+const ACCESS_CODE_SCRYPT_MEMORY_OVERHEAD_BYTES = 1024 * 1024;
+
 export async function hashAccessCode(
   value: string,
   salt: string,
@@ -1259,7 +1262,7 @@ export async function hashAccessCode(
         N: params.N,
         r: params.r,
         p: params.p,
-        maxmem: 64 * 1024 * 1024,
+        maxmem: ACCESS_CODE_SCRYPT_MAXMEM_BYTES,
       },
       (error, result) => {
         if (error) {
@@ -1313,10 +1316,17 @@ export async function verifyAccessCode(
 }
 
 function assertScryptParams(params: AccessCodeHashParams) {
+  const estimatedMemoryBytes =
+    128 * params.N * params.r +
+    128 * params.r * params.p +
+    256 * params.r +
+    params.keyLength +
+    ACCESS_CODE_SCRYPT_MEMORY_OVERHEAD_BYTES;
   if (
     !Number.isInteger(params.N) ||
     params.N < 16384 ||
     params.N > 262144 ||
+    !Number.isInteger(Math.log2(params.N)) ||
     !Number.isInteger(params.r) ||
     params.r < 1 ||
     params.r > 16 ||
@@ -1325,7 +1335,9 @@ function assertScryptParams(params: AccessCodeHashParams) {
     params.p > 4 ||
     !Number.isInteger(params.keyLength) ||
     params.keyLength < 32 ||
-    params.keyLength > 64
+    params.keyLength > 64 ||
+    !Number.isSafeInteger(estimatedMemoryBytes) ||
+    estimatedMemoryBytes > ACCESS_CODE_SCRYPT_MAXMEM_BYTES
   ) {
     throw new Error("Access-code hash parameters are invalid");
   }

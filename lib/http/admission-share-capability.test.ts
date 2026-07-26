@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  admissionShareCapabilityFromRequest,
   signAdmissionShareCapability,
   verifyAdmissionShareCapability,
 } from "./admission-share-capability";
@@ -127,5 +128,15 @@ describe("admission share access capability", () => {
         secret: "",
       }),
     ).toBe(false);
+  });
+
+  it("treats a malformed percent-encoded cookie as no capability", () => {
+    const request = new Request("https://example.test/share", {
+      headers: {
+        cookie: "other=value; admission_share_capability=%E0%A4%A",
+      },
+    });
+
+    expect(admissionShareCapabilityFromRequest(request)).toBeUndefined();
   });
 });

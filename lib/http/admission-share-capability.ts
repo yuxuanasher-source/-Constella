@@ -122,7 +122,11 @@ export function admissionShareCapabilityFromRequest(request: Request) {
     }
     const name = part.slice(0, separator).trim();
     if (name === ADMISSION_SHARE_CAPABILITY_COOKIE) {
-      return decodeURIComponent(part.slice(separator + 1).trim());
+      try {
+        return decodeURIComponent(part.slice(separator + 1).trim());
+      } catch {
+        return undefined;
+      }
     }
   }
   return undefined;
