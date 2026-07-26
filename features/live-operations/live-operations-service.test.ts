@@ -47,6 +47,7 @@ const ocrInput = {
   screenshotFileHash: "hash-1",
   imageBucket: "evidence-private",
 };
+const databaseScreenshotId = "00000000-0000-4000-8000-000000000101";
 
 const task = {
   id: "task-1",
@@ -141,7 +142,7 @@ function createRepo(): LiveOperationsRepository {
       ...baseReport,
       ...patch,
     })),
-    createReportScreenshot: vi.fn(async () => "screenshot-db-1"),
+    createReportScreenshot: vi.fn(async () => databaseScreenshotId),
     createReportChangeLog: vi.fn(async () => undefined),
   };
 }
@@ -164,11 +165,14 @@ describe("live operations service", () => {
   let repo: LiveOperationsRepository;
   const audit = vi.fn(async () => undefined);
   const notify = vi.fn(async () => undefined);
+  const deleteReportScreenshot = vi.fn(async () => undefined);
 
   beforeEach(() => {
     repo = createRepo();
     audit.mockClear();
     notify.mockClear();
+    deleteReportScreenshot.mockReset();
+    deleteReportScreenshot.mockResolvedValue(undefined);
   });
 
   it("creates tasks only for joined project streamers", async () => {
@@ -512,6 +516,7 @@ describe("live operations service", () => {
       taskId: "task-1",
       input: ocrInput,
       createOcrJob,
+      deleteReportScreenshot,
     });
 
     expect(result.report.status).toBe("ocr_ing");
@@ -539,7 +544,7 @@ describe("live operations service", () => {
     expect(createOcrJob).toHaveBeenCalledWith(
       expect.objectContaining({
         liveReportId: "report-1",
-        screenshotId: "screenshot-db-1",
+        screenshotId: databaseScreenshotId,
         imageBucket: "evidence-private",
         imagePath: "org/report-screenshots/task-1/end.png",
         expectedDuration: 80,
@@ -585,6 +590,7 @@ describe("live operations service", () => {
       taskId: "task-1",
       input: ocrInput,
       createOcrJob,
+      deleteReportScreenshot,
     });
 
     expect(result.report.status).toBe("ocr_ing");
@@ -620,6 +626,7 @@ describe("live operations service", () => {
         taskId: "task-1",
         input: ocrInput,
         createOcrJob,
+        deleteReportScreenshot,
       }),
     ).rejects.toThrow("Streamers can only operate their own live tasks");
 
@@ -645,6 +652,7 @@ describe("live operations service", () => {
         taskId: "task-1",
         input: ocrInput,
         createOcrJob,
+        deleteReportScreenshot,
       }),
     ).rejects.toThrow(
       "OCR reports can only be submitted from pending or rejected report tasks",
@@ -678,6 +686,7 @@ describe("live operations service", () => {
           taskId: "task-1",
           input: ocrInput,
           createOcrJob,
+          deleteReportScreenshot,
         }),
       ).rejects.toThrow("OCR report requires a recorded system duration");
 
@@ -706,6 +715,7 @@ describe("live operations service", () => {
         taskId: "task-1",
         input: ocrInput,
         createOcrJob,
+        deleteReportScreenshot,
       }),
     ).rejects.toThrow("Cross-organization access is not allowed");
 
@@ -735,6 +745,7 @@ describe("live operations service", () => {
         taskId: "task-1",
         input: ocrInput,
         createOcrJob,
+        deleteReportScreenshot,
       }),
     ).rejects.toThrow("Current role cannot operate live tasks");
 
@@ -763,6 +774,7 @@ describe("live operations service", () => {
         taskId: "task-1",
         input: ocrInput,
         createOcrJob,
+        deleteReportScreenshot,
       }),
     ).rejects.toMatchObject({
       message: "OCR 入队失败，请稍后重试",
@@ -773,6 +785,11 @@ describe("live operations service", () => {
     expect(repo.createLiveReport).toHaveBeenCalled();
     expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
       status: "voided",
+    });
+    expect(deleteReportScreenshot).toHaveBeenCalledWith({
+      id: databaseScreenshotId,
+      organizationId: "org-1",
+      liveReportId: "report-1",
     });
     expect(repo.updateLiveTask).not.toHaveBeenCalledWith("task-1", {
       status: "report_pending_review",
@@ -804,6 +821,7 @@ describe("live operations service", () => {
           taskId: "task-1",
           input: ocrInput,
           createOcrJob,
+          deleteReportScreenshot,
         }),
       ).rejects.toMatchObject({
         message: "OCR 入队失败，请稍后重试",
@@ -812,6 +830,7 @@ describe("live operations service", () => {
       expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
         status: "voided",
       });
+      expect(deleteReportScreenshot).not.toHaveBeenCalled();
       expect(createOcrJob).not.toHaveBeenCalled();
       expect(repo.updateLiveTask).not.toHaveBeenCalledWith("task-1", {
         status: "report_pending_review",
@@ -823,6 +842,7 @@ describe("live operations service", () => {
     ["empty", ""],
     ["blank", "   "],
     ["non-string", 42],
+    ["non-UUID", "screenshot-db-1"],
   ])(
     "voids the report and skips OCR queueing for a %s screenshot id",
     async (_case, screenshotId) => {
@@ -845,6 +865,7 @@ describe("live operations service", () => {
           taskId: "task-1",
           input: ocrInput,
           createOcrJob,
+          deleteReportScreenshot,
         }),
       ).rejects.toMatchObject({
         message: "OCR 入队失败，请稍后重试",
@@ -853,12 +874,111 @@ describe("live operations service", () => {
       expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
         status: "voided",
       });
+      expect(deleteReportScreenshot).not.toHaveBeenCalled();
       expect(createOcrJob).not.toHaveBeenCalled();
       expect(repo.updateLiveTask).not.toHaveBeenCalledWith("task-1", {
         status: "report_pending_review",
       });
     },
   );
+
+  it("still voids the report and returns a stable error when screenshot cleanup fails", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    deleteReportScreenshot.mockRejectedValueOnce(new Error("cleanup denied"));
+    const createOcrJob = vi.fn(async () => {
+      throw new Error("queue unavailable");
+    });
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob,
+        deleteReportScreenshot,
+      }),
+    ).rejects.toMatchObject({
+      message: "OCR 入队失败，请稍后重试",
+    });
+
+    expect(deleteReportScreenshot).toHaveBeenCalledWith({
+      id: databaseScreenshotId,
+      organizationId: "org-1",
+      liveReportId: "report-1",
+    });
+    expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
+      status: "voided",
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "[live-operations] failed to clean up OCR screenshot",
+      {
+        organizationId: "org-1",
+        liveReportId: "report-1",
+        screenshotId: databaseScreenshotId,
+      },
+    );
+    consoleError.mockRestore();
+  });
+
+  it("can retry the same screenshot after a failed OCR enqueue", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValue({
+      ...task,
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    let screenshotRowExists = false;
+    vi.mocked(repo.createReportScreenshot).mockImplementation(async () => {
+      if (screenshotRowExists) {
+        throw new Error("duplicate file hash");
+      }
+      screenshotRowExists = true;
+      return databaseScreenshotId;
+    });
+    deleteReportScreenshot.mockImplementation(async () => {
+      screenshotRowExists = false;
+    });
+    const firstQueueAttempt = vi.fn(async () => {
+      throw new Error("queue unavailable");
+    });
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        createOcrJob: firstQueueAttempt,
+        deleteReportScreenshot,
+      }),
+    ).rejects.toThrow("OCR 入队失败，请稍后重试");
+
+    const result = await submitLiveReportScreenshotForOcr({
+      repo,
+      audit,
+      notify,
+      actor: streamerActor,
+      taskId: "task-1",
+      input: ocrInput,
+      createOcrJob: createQueuedOcrJob(),
+      deleteReportScreenshot,
+    });
+
+    expect(result.job.id).toBe("ocr-job-1");
+    expect(deleteReportScreenshot).toHaveBeenCalledOnce();
+    expect(repo.createReportScreenshot).toHaveBeenCalledTimes(2);
+  });
 
   it("supersedes prior open reports for the task on resubmit", async () => {
     vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
@@ -882,6 +1002,7 @@ describe("live operations service", () => {
       taskId: "task-1",
       input: ocrInput,
       createOcrJob,
+      deleteReportScreenshot,
     });
 
     // The previously rejected report is voided before the new one is created.

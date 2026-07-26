@@ -12,6 +12,9 @@ import type {
 import type { EvidenceLevel, TimeSource } from "./live-report-evidence";
 import type { LiveTaskStatus } from "./live-task-state";
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 type ProjectStreamerRow = {
   id: string;
   project_id: string;
@@ -366,11 +369,11 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     }
 
     const screenshotId = data?.id;
-    if (typeof screenshotId !== "string" || !screenshotId.trim()) {
+    if (typeof screenshotId !== "string" || !UUID_PATTERN.test(screenshotId)) {
       throw new Error("Report screenshot insert did not return a valid id");
     }
 
-    return screenshotId.trim();
+    return screenshotId;
   }
 
   async createReportChangeLog(input: {
@@ -395,6 +398,29 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     if (error) {
       throw error;
     }
+  }
+}
+
+export async function deleteReportScreenshotForOcr(
+  client: SupabaseClient,
+  input: {
+    id: string;
+    organizationId: string;
+    liveReportId: string;
+  },
+): Promise<void> {
+  const { error, count } = await client
+    .from("report_screenshots")
+    .delete({ count: "exact" })
+    .eq("id", input.id)
+    .eq("organization_id", input.organizationId)
+    .eq("live_report_id", input.liveReportId);
+
+  if (error) {
+    throw error;
+  }
+  if (count !== 1) {
+    throw new Error("OCR screenshot cleanup did not delete exactly one row");
   }
 }
 

@@ -7,6 +7,7 @@ import {
   actorFromContext,
   getLiveOperationsRouteContext,
 } from "@/features/live-operations/live-operations-route-utils";
+import { deleteReportScreenshotForOcr } from "@/features/live-operations/live-operations-repository";
 import { submitLiveReportScreenshotForOcr } from "@/features/live-operations/live-operations-service";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
@@ -28,6 +29,10 @@ vi.mock("@/features/live-operations/live-operations-route-utils", async () => {
 
 vi.mock("@/features/live-operations/live-operations-service", () => ({
   submitLiveReportScreenshotForOcr: vi.fn(),
+}));
+
+vi.mock("@/features/live-operations/live-operations-repository", () => ({
+  deleteReportScreenshotForOcr: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
@@ -98,7 +103,12 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
 
   it("queues a safe OCR job for a report screenshot", async () => {
     vi.mocked(submitLiveReportScreenshotForOcr).mockImplementationOnce(
-      async ({ createOcrJob: queueOcrJob, input }) => {
+      async ({ createOcrJob: queueOcrJob, deleteReportScreenshot, input }) => {
+        await deleteReportScreenshot({
+          id: "00000000-0000-4000-8000-000000000101",
+          organizationId: "org-1",
+          liveReportId: "report-1",
+        });
         const job = await queueOcrJob({
           liveReportId: "report-1",
           screenshotId: "screenshot-1",
@@ -156,6 +166,11 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
         imagePath: "org/report-screenshots/task-1/end.png",
         expectedDuration: 67,
       },
+    });
+    expect(deleteReportScreenshotForOcr).toHaveBeenCalledWith(adminSupabase, {
+      id: "00000000-0000-4000-8000-000000000101",
+      organizationId: "org-1",
+      liveReportId: "report-1",
     });
     expect(JSON.stringify(vi.mocked(createOcrJob).mock.calls)).not.toContain(
       "must-not-be-forwarded",

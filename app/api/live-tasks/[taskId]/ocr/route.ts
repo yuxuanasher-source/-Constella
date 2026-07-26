@@ -11,6 +11,7 @@ import {
   readJsonBody,
   requiredString,
 } from "@/features/live-operations/live-operations-route-utils";
+import { deleteReportScreenshotForOcr } from "@/features/live-operations/live-operations-repository";
 import { submitLiveReportScreenshotForOcr } from "@/features/live-operations/live-operations-service";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import { scheduleInstantKick } from "@/lib/http/schedule-instant-kick";
@@ -56,6 +57,8 @@ export async function POST(
             expectedDuration: input.expectedDuration,
           },
         }),
+      deleteReportScreenshot: (input) =>
+        deleteReportScreenshotForOcr(ocrJobClient, input),
     });
 
     // 入队成功后立即在本进程内以 OCR_RUNNER_* 身份 claim+run，消除等 cron

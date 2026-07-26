@@ -114,6 +114,30 @@ function createClient(
         error: Error | null;
       }> => {
         const metrics = Array.isArray(args.p_metrics) ? args.p_metrics : [];
+        if (name === "enqueue_ocr_job") {
+          const liveReportId = String(args.p_live_report_id);
+          const existingResult = ocrResults.find(
+            (row) => row.live_report_id === liveReportId,
+          );
+          const existingJob = jobs.find(
+            (job) => job.id === existingResult?.background_job_id,
+          );
+          return {
+            data: existingJob
+              ? { ...existingJob }
+              : {
+                  id: String(args.p_job_id),
+                  organization_id: String(args.p_organization_id),
+                  job_type: "ocr.extract_live_report",
+                  status: "queued",
+                  attempt: 0,
+                  max_attempts: 3,
+                  ai_invocation_id: String(args.p_invocation_id),
+                  payload: args.p_payload as Record<string, unknown>,
+                },
+            error: fixtures.rpcErrors?.[name] ?? null,
+          };
+        }
         return {
           data:
             name === "upsert_ocr_streamer_metrics"
@@ -187,7 +211,11 @@ const actor = {
 
 describe("OCR jobs", () => {
   it("blocks OCR job creation when the live report is not visible to the actor", async () => {
-    const { client, inserts } = createClient();
+    const { client, inserts } = createClient({
+      rpcErrors: {
+        enqueue_ocr_job: new Error("Live report not found or inaccessible"),
+      },
+    });
 
     await expect(
       createOcrJob({
@@ -202,6 +230,10 @@ describe("OCR jobs", () => {
       }),
     ).rejects.toThrow("Live report not found or inaccessible");
 
+    expect(client.rpc).toHaveBeenCalledWith(
+      "enqueue_ocr_job",
+      expect.objectContaining({ p_live_report_id: "report-missing" }),
+    );
     expect(inserts.background_jobs).toBeUndefined();
     expect(inserts.ocr_results).toBeUndefined();
   });
@@ -235,40 +267,32 @@ describe("OCR jobs", () => {
       status: "queued",
       aiInvocationId: "invocation-1",
     });
-    expect(inserts.background_jobs).toEqual([
-      expect.objectContaining({
-        id: "job-1",
-        organization_id: "org-1",
-        job_type: "ocr.extract_live_report",
-        payload: expect.objectContaining({
-          screenshotId: "screenshot-1",
-        }),
-        status: "queued",
-        ai_invocation_id: "invocation-1",
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    expect(client.rpc).toHaveBeenCalledWith("enqueue_ocr_job", {
+      p_job_id: "job-1",
+      p_invocation_id: "invocation-1",
+      p_organization_id: "org-1",
+      p_live_report_id: "report-1",
+      p_screenshot_id: "screenshot-1",
+      p_actor_user_id: "user-ops",
+      p_actor_name: "Ops Manager",
+      p_actor_role: "ops_manager",
+      p_payload: expect.objectContaining({
+        liveReportId: "report-1",
+        screenshotId: "screenshot-1",
+        expectedDuration: 80,
       }),
-    ]);
-    expect(inserts.ai_invocations).toEqual([
+      p_run_at: expect.any(String),
+    });
+    expect(inserts.ai_invocations).toBeUndefined();
+    expect(inserts.background_jobs).toBeUndefined();
+    expect(inserts.ocr_results).toBeUndefined();
+    expect(job.payload).toEqual(
       expect.objectContaining({
-        id: "invocation-1",
-        metadata: {
-          jobId: "job-1",
-          screenshotId: "screenshot-1",
-        },
+        liveReportId: "report-1",
+        screenshotId: "screenshot-1",
       }),
-    ]);
-    expect(inserts.ocr_results).toEqual([
-      expect.objectContaining({
-        organization_id: "org-1",
-        live_report_id: "report-1",
-        screenshot_id: "screenshot-1",
-        status: "pending",
-        ai_invocation_id: "invocation-1",
-        background_job_id: "job-1",
-      }),
-    ]);
-    expect(inserts.ocr_results?.[0]).not.toHaveProperty("streamer_id");
-    expect(inserts.ocr_results?.[0]).not.toHaveProperty("project_id");
-    expect(inserts.ocr_results?.[0]).not.toHaveProperty("report_date");
+    );
   });
 
   it("creates an OCR job with only storage image path input", async () => {
@@ -301,15 +325,101 @@ describe("OCR jobs", () => {
       imageBucket: "evidence-private",
       imagePath: "org/report-screenshots/task-1/end.png",
     });
-    expect(inserts.background_jobs).toEqual([
+    expect(client.rpc).toHaveBeenCalledWith(
+      "enqueue_ocr_job",
       expect.objectContaining({
-        id: "job-path",
-        payload: expect.objectContaining({
+        p_screenshot_id: "screenshot-path",
+        p_payload: expect.objectContaining({
           imageBucket: "evidence-private",
           imagePath: "org/report-screenshots/task-1/end.png",
         }),
       }),
-    ]);
+    );
+    expect(inserts.background_jobs).toBeUndefined();
+    expect(inserts.ocr_results).toBeUndefined();
+  });
+
+  it("atomically rejects enqueue failures without direct partial inserts", async () => {
+    const { client, inserts } = createClient({
+      rpcErrors: {
+        enqueue_ocr_job: new Error("atomic enqueue failed"),
+      },
+    });
+
+    await expect(
+      createOcrJob({
+        client,
+        actor,
+        input: {
+          id: "job-atomic-failure",
+          invocationId: "invocation-atomic-failure",
+          liveReportId: "report-atomic-failure",
+          imagePath: "org/report-screenshots/task-1/end.png",
+        },
+      }),
+    ).rejects.toThrow("atomic enqueue failed");
+
+    expect(client.rpc).toHaveBeenCalledOnce();
+    expect(inserts.ai_invocations).toBeUndefined();
+    expect(inserts.background_jobs).toBeUndefined();
+    expect(inserts.ocr_results).toBeUndefined();
+  });
+
+  it.each(["cross-report", "cross-organization"])(
+    "rejects a %s screenshot id without falling back to direct inserts",
+    async () => {
+      const { client, inserts } = createClient({
+        rpcErrors: {
+          enqueue_ocr_job: new Error(
+            "OCR screenshot does not belong to live report",
+          ),
+        },
+      });
+
+      await expect(
+        createOcrJob({
+          client,
+          actor,
+          input: {
+            id: "job-screenshot-mismatch",
+            invocationId: "invocation-screenshot-mismatch",
+            liveReportId: "report-1",
+            screenshotId: "screenshot-other",
+            imagePath: "org/report-screenshots/task-1/end.png",
+          },
+        }),
+      ).rejects.toThrow("OCR screenshot does not belong to live report");
+
+      expect(client.rpc).toHaveBeenCalledOnce();
+      expect(inserts.ai_invocations).toBeUndefined();
+      expect(inserts.background_jobs).toBeUndefined();
+      expect(inserts.ocr_results).toBeUndefined();
+    },
+  );
+
+  it("allows atomic enqueue without a screenshot id", async () => {
+    const { client } = createClient();
+
+    await createOcrJob({
+      client,
+      actor,
+      input: {
+        id: "job-no-screenshot",
+        invocationId: "invocation-no-screenshot",
+        liveReportId: "report-no-screenshot",
+        imagePath: "org/report-screenshots/task-1/end.png",
+      },
+    });
+
+    expect(client.rpc).toHaveBeenCalledWith(
+      "enqueue_ocr_job",
+      expect.objectContaining({
+        p_screenshot_id: null,
+        p_payload: expect.not.objectContaining({
+          screenshotId: expect.anything(),
+        }),
+      }),
+    );
   });
 
   it("runs OCR successfully, stores parsed fields, and records OCR usage", async () => {
@@ -765,6 +875,10 @@ describe("OCR jobs", () => {
     });
 
     expect(job.id).toBe("job-existing");
+    expect(client.rpc).toHaveBeenCalledWith(
+      "enqueue_ocr_job",
+      expect.objectContaining({ p_live_report_id: "report-dup" }),
+    );
     // No duplicate background job or ocr_results row inserted.
     expect(inserts.background_jobs).toBeUndefined();
     expect(inserts.ocr_results).toBeUndefined();
@@ -1760,57 +1874,82 @@ describe("OCR jobs", () => {
     expect(conflictPayload.risk_flags).toContain("ocr_duration_conflict");
   });
 
-  it("does not regress a live report that already left the OCR stage", async () => {
-    const { client, updates } = createClient({
-      jobs: [
-        {
-          id: "job-late",
-          organizationId: "org-1",
-          jobType: "ocr.extract_live_report",
-          status: "queued",
-          attempt: 0,
-          aiInvocationId: "invocation-late",
-          payload: {
-            liveReportId: "report-late",
-            imageBase64: "ZmFrZQ==",
-            expectedDuration: 180,
+  it.each(["voided", "approved", "rejected"])(
+    "cancels a historical queued job before provider billing when its report is %s",
+    async (reportStatus) => {
+      const { client, updates } = createClient({
+        jobs: [
+          {
+            id: "job-late",
+            organizationId: "org-1",
+            jobType: "ocr.extract_live_report",
+            status: "queued",
+            attempt: 0,
+            aiInvocationId: "invocation-late",
+            payload: {
+              liveReportId: "report-late",
+              imageBase64: "ZmFrZQ==",
+              expectedDuration: 180,
+            },
           },
-        },
-      ],
-      liveReports: [
-        {
-          id: "report-late",
-          organization_id: "org-1",
-          project_id: "project-1",
-          status: "approved",
-          system_duration: 180,
-        },
-      ],
-    });
+        ],
+        liveReports: [
+          {
+            id: "report-late",
+            organization_id: "org-1",
+            project_id: "project-1",
+            status: reportStatus,
+            system_duration: 180,
+          },
+        ],
+      });
+      const runGeneralBasicOcr = vi.fn(async () => ({
+        status: "succeeded" as const,
+        textLines: ["共3小时", "观看人数 2,488"],
+        textItems: [],
+        confidence: 96,
+        requestId: "request-late",
+        rawResponse: {},
+      }));
 
-    await runOcrJobOnce({
-      client,
-      metricClient: null,
-      actor,
-      jobId: "job-late",
-      provider: {
-        runGeneralBasicOcr: vi.fn(async () => ({
-          status: "succeeded" as const,
-          textLines: ["共3小时", "观看人数 2,488"],
-          textItems: [],
-          confidence: 96,
-          requestId: "request-late",
-          rawResponse: {},
-        })),
-      },
-    });
+      const result = await runOcrJobOnce({
+        client,
+        metricClient: null,
+        actor,
+        jobId: "job-late",
+        provider: { runGeneralBasicOcr },
+      });
 
-    expect(updates.live_reports).toBeUndefined();
-    expect(client.rpc).not.toHaveBeenCalledWith(
-      "upsert_ocr_streamer_metrics",
-      expect.anything(),
-    );
-  });
+      expect(result).toMatchObject({
+        status: "cancelled",
+        errorCode: "live_report_not_runnable",
+      });
+      expect(runGeneralBasicOcr).not.toHaveBeenCalled();
+      expect(updates.live_reports).toBeUndefined();
+      expect(updates.ocr_results.at(-1)).toEqual(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            status: "cancelled",
+            error_code: "live_report_not_runnable",
+          }),
+        }),
+      );
+      expect(updates.background_jobs.at(-1)).toEqual(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            status: "cancelled",
+            locked_at: null,
+            locked_by: null,
+            error_code: "live_report_not_runnable",
+          }),
+        }),
+      );
+      expect(client.rpc).not.toHaveBeenCalledWith(
+        "upsert_ocr_streamer_metrics",
+        expect.anything(),
+      );
+    },
+  );
 });
 
 function toJobRecord(payload: Record<string, unknown>): OcrJobRecord {

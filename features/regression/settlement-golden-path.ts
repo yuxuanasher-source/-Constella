@@ -310,7 +310,7 @@ class GoldenPathRepository
   }
 
   async createReportScreenshot(): Promise<string> {
-    return "screenshot-regression";
+    return "00000000-0000-4000-8000-000000000101";
   }
 
   async createReportChangeLog(): Promise<void> {}

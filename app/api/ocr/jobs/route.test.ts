@@ -4,7 +4,10 @@ import { GET, POST } from "./route";
 
 import { createOcrJob, listOcrJobs } from "@/features/ai/ocr-jobs";
 import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 
 vi.mock("@/features/ai/ocr-jobs", () => ({
   createOcrJob: vi.fn(),
@@ -16,6 +19,7 @@ vi.mock("@/lib/auth/context", () => ({
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseAdminClient: vi.fn(),
   createSupabaseServerClient: vi.fn(),
 }));
 
@@ -27,6 +31,7 @@ const auth = {
   organizationName: "Demo Org",
   role: "ops_manager" as const,
 };
+const adminSupabase = { client: "admin-supabase" };
 
 describe("/api/ocr/jobs", () => {
   beforeEach(() => {
@@ -34,6 +39,9 @@ describe("/api/ocr/jobs", () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue({
       from: vi.fn(),
     } as never);
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(
+      adminSupabase as never,
+    );
     vi.mocked(getAuthContext).mockResolvedValue(auth);
   });
 
@@ -66,6 +74,7 @@ describe("/api/ocr/jobs", () => {
     });
     expect(createOcrJob).toHaveBeenCalledWith(
       expect.objectContaining({
+        client: adminSupabase,
         actor: auth,
         input: expect.objectContaining({
           liveReportId: "report-1",
@@ -74,6 +83,26 @@ describe("/api/ocr/jobs", () => {
         }),
       }),
     );
+  });
+
+  it("returns 503 when the service-role enqueue client is unavailable", async () => {
+    vi.mocked(createSupabaseAdminClient).mockReturnValueOnce(null);
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          liveReportId: "report-1",
+          imageBase64: "ZmFrZQ==",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Supabase admin client is unavailable",
+    });
+    expect(createOcrJob).not.toHaveBeenCalled();
   });
 
   it("lists OCR jobs for MCN staff", async () => {
@@ -141,6 +170,7 @@ describe("/api/ocr/jobs", () => {
     );
 
     expect(createResponse.status).toBe(403);
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(createOcrJob).not.toHaveBeenCalled();
   });
 });
