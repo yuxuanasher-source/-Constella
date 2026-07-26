@@ -14,25 +14,18 @@ const OCR_METRIC_KEYS = new Set<LiveReportOcrMetricKey>([
   "gmv",
 ]);
 
-const OCR_METRIC_CONFLICT_KEY =
-  "organization_id,streamer_id,metric_key,metric_window,source_report_id";
+const INT4_MAX = 2_147_483_647;
 
 export type StreamerMetricSinkClient = {
-  from(table: "streamer_metrics"): {
-    upsert(
-      payload: Record<string, unknown>[],
-      options: { onConflict: string },
-    ): PromiseLike<{ error: Error | null }>;
-  };
-};
-
-export type OcrStreamerMetricAttribution = {
-  organizationId?: string | null;
-  streamerId?: string | null;
-  projectId?: string | null;
-  sourceReportId?: string | null;
-  reportDate?: string | null;
-  sourceInvocationId?: string | null;
+  rpc(
+    name: "upsert_ocr_streamer_metrics",
+    args: {
+      p_live_report_id: string;
+      p_metrics: Array<{ key: LiveReportOcrMetricKey; value: number }>;
+      p_source_invocation_id: string | null;
+      p_human_confirmed: boolean;
+    },
+  ): PromiseLike<{ data: number | null; error: Error | null }>;
 };
 
 type RuntimeMetricCandidate = {
@@ -43,18 +36,19 @@ type RuntimeMetricCandidate = {
 
 export async function writeStreamerMetricsFromOcr({
   client,
-  attribution,
+  sourceReportId,
+  sourceInvocationId,
+  humanConfirmed = false,
   metricCandidates,
 }: {
   client: StreamerMetricSinkClient;
-  attribution: OcrStreamerMetricAttribution;
+  sourceReportId?: string | null;
+  sourceInvocationId?: string | null;
+  humanConfirmed?: boolean;
   metricCandidates: readonly unknown[];
 }): Promise<{ written: number }> {
-  const organizationId = nonEmptyString(attribution.organizationId);
-  const streamerId = nonEmptyString(attribution.streamerId);
-  const sourceReportId = nonEmptyString(attribution.sourceReportId);
-  const reportDate = normalizeIsoDate(attribution.reportDate);
-  if (!organizationId || !streamerId || !sourceReportId || !reportDate) {
+  const reportId = nonEmptyString(sourceReportId);
+  if (!reportId) {
     return { written: 0 };
   }
 
@@ -78,25 +72,24 @@ export async function writeStreamerMetricsFromOcr({
     return { written: 0 };
   }
 
-  const sourceInvocationId =
-    nonEmptyString(attribution.sourceInvocationId) ?? null;
-  const rows = [...byKey].map(([metricKey, metric]) => ({
-    organization_id: organizationId,
-    streamer_id: streamerId,
-    metric_key: metricKey,
-    metric_value: metric.value,
-    metric_window: reportDate,
-    source_report_id: sourceReportId,
-    source_invocation_id: sourceInvocationId,
+  const metrics = [...byKey].map(([key, metric]) => ({
+    key,
+    value: metric.value,
   }));
-  const { error } = await client.from("streamer_metrics").upsert(rows, {
-    onConflict: OCR_METRIC_CONFLICT_KEY,
+  const { data, error } = await client.rpc("upsert_ocr_streamer_metrics", {
+    p_live_report_id: reportId,
+    p_metrics: metrics,
+    p_source_invocation_id: nonEmptyString(sourceInvocationId),
+    p_human_confirmed: humanConfirmed,
   });
   if (error) {
     throw error;
   }
+  if (typeof data !== "number" || !Number.isSafeInteger(data) || data < 0) {
+    throw new Error("OCR metric RPC returned an invalid write count");
+  }
 
-  return { written: rows.length };
+  return { written: data };
 }
 
 function normalizeCandidate(
@@ -109,7 +102,8 @@ function normalizeCandidate(
     !OCR_METRIC_KEYS.has(runtimeCandidate.key as LiveReportOcrMetricKey) ||
     typeof runtimeCandidate.value !== "number" ||
     !Number.isFinite(runtimeCandidate.value) ||
-    runtimeCandidate.value < 0
+    runtimeCandidate.value < 0 ||
+    runtimeCandidate.value > INT4_MAX
   ) {
     return null;
   }
@@ -121,6 +115,8 @@ function normalizeCandidate(
       : 0;
   return {
     key: runtimeCandidate.key as LiveReportOcrMetricKey,
+    // metric_value is int4. GMV uses whole CNY yuan, matching the parser's
+    // existing rounding convention.
     value: Math.round(runtimeCandidate.value),
     confidence,
   };
@@ -128,15 +124,4 @@ function normalizeCandidate(
 
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function normalizeIsoDate(value: unknown): string | null {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return null;
-  }
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return Number.isFinite(parsed.valueOf()) &&
-    parsed.toISOString().slice(0, 10) === value
-    ? value
-    : null;
 }
