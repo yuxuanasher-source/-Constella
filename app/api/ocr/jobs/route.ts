@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 
 import { createOcrJob, listOcrJobs } from "@/features/ai/ocr-jobs";
 import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { canManageOcrJobs } from "@/lib/rbac/permissions";
 import { isMcnStaff } from "@/lib/rbac/roles";
@@ -41,10 +44,17 @@ export async function POST(request: Request) {
         { status: 403 },
       );
     }
+    const enqueueClient = createSupabaseAdminClient();
+    if (!enqueueClient) {
+      return NextResponse.json(
+        { error: "Supabase admin client is unavailable" },
+        { status: 503 },
+      );
+    }
 
     const body = (await request.json()) as Record<string, unknown>;
     const job = await createOcrJob({
-      client: authResult.supabase as never,
+      client: enqueueClient as never,
       actor: authResult.auth,
       input: {
         liveReportId: requiredString(body.liveReportId, "liveReportId"),

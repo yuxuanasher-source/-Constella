@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  deleteReportScreenshotForOcr,
   getStreamerIdForUser,
   SupabaseLiveOperationsRepository,
 } from "./live-operations-repository";
+
+const databaseScreenshotId = "00000000-0000-4000-8000-000000000101";
 
 describe("getStreamerIdForUser", () => {
   it("selects one streamer binding within the current organization", async () => {
@@ -36,7 +39,7 @@ describe("getStreamerIdForUser", () => {
 describe("SupabaseLiveOperationsRepository", () => {
   it("returns the database-generated report screenshot id", async () => {
     const single = vi.fn(async () => ({
-      data: { id: "screenshot-db-1" },
+      data: { id: databaseScreenshotId },
       error: null,
     }));
     const select = vi.fn(() => ({ single }));
@@ -55,7 +58,7 @@ describe("SupabaseLiveOperationsRepository", () => {
         uploadedBy: "user-streamer",
         metadata: { imageBucket: "evidence-private" },
       }),
-    ).resolves.toBe("screenshot-db-1");
+    ).resolves.toBe(databaseScreenshotId);
 
     expect(from).toHaveBeenCalledWith("report_screenshots");
     expect(insert).toHaveBeenCalledWith({
@@ -78,6 +81,7 @@ describe("SupabaseLiveOperationsRepository", () => {
     ["non-string id", { id: 42 }],
     ["empty id", { id: "" }],
     ["blank id", { id: "   " }],
+    ["non-UUID id", { id: "screenshot-db-1" }],
   ])("rejects a %s from screenshot RETURNING", async (_case, data) => {
     const single = vi.fn(async () => ({
       data,
@@ -99,5 +103,44 @@ describe("SupabaseLiveOperationsRepository", () => {
         uploadedBy: "user-streamer",
       }),
     ).rejects.toThrow("Report screenshot insert did not return a valid id");
+  });
+
+  it("deletes only the created screenshot row for its report and organization", async () => {
+    const result = { error: null, count: 1 };
+    const eqLiveReport = vi.fn(async () => result);
+    const eqOrganization = vi.fn(() => ({ eq: eqLiveReport }));
+    const eqId = vi.fn(() => ({ eq: eqOrganization }));
+    const deleteRow = vi.fn(() => ({ eq: eqId }));
+    const from = vi.fn(() => ({ delete: deleteRow }));
+
+    await expect(
+      deleteReportScreenshotForOcr({ from } as never, {
+        id: databaseScreenshotId,
+        organizationId: "org-1",
+        liveReportId: "report-1",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(from).toHaveBeenCalledWith("report_screenshots");
+    expect(deleteRow).toHaveBeenCalledWith({ count: "exact" });
+    expect(eqId).toHaveBeenCalledWith("id", databaseScreenshotId);
+    expect(eqOrganization).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(eqLiveReport).toHaveBeenCalledWith("live_report_id", "report-1");
+  });
+
+  it("rejects a cleanup that did not delete exactly one screenshot row", async () => {
+    const eqLiveReport = vi.fn(async () => ({ error: null, count: 0 }));
+    const eqOrganization = vi.fn(() => ({ eq: eqLiveReport }));
+    const eqId = vi.fn(() => ({ eq: eqOrganization }));
+    const deleteRow = vi.fn(() => ({ eq: eqId }));
+    const from = vi.fn(() => ({ delete: deleteRow }));
+
+    await expect(
+      deleteReportScreenshotForOcr({ from } as never, {
+        id: databaseScreenshotId,
+        organizationId: "org-1",
+        liveReportId: "report-1",
+      }),
+    ).rejects.toThrow("OCR screenshot cleanup did not delete exactly one row");
   });
 });

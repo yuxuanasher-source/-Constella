@@ -5,7 +5,6 @@ import { recordUsageEvent } from "@/features/billing/usage-metering";
 import { resolveReportEvidence } from "@/features/live-operations/live-report-evidence";
 
 import type { AiActor, AiExecutionActor } from "./contracts";
-import { recordAiInvocation } from "./invocation-ledger";
 import { parseLiveReportOcrText } from "./ocr-template-parser";
 import type {
   TencentOcrInput,
@@ -66,7 +65,7 @@ type OcrJobUpdateFilter = PromiseLike<OcrJobMutationResult> & {
 };
 
 type OcrJobClient = {
-  rpc?: (
+  rpc: (
     name: string,
     args: Record<string, unknown>,
   ) => PromiseLike<{
@@ -162,86 +161,38 @@ export async function createOcrJob({
   if (!input.imageBase64 && !input.imageUrl && !input.imagePath) {
     throw new Error("OCR job requires imageBase64, imageUrl, or imagePath");
   }
-  await assertLiveReportAccessible({
-    client,
-    actor,
-    liveReportId: input.liveReportId,
-  });
-
-  // Idempotency: one OCR job per live report. If a job was already enqueued for
-  // this report (e.g. a retried submit), return it instead of creating a
-  // duplicate job + ledger entry.
-  const existing = await findExistingOcrJobForReport({
-    client,
-    liveReportId: input.liveReportId,
-  });
-  if (existing) {
-    return existing;
-  }
 
   const payload: OcrJobPayload = {
     liveReportId: input.liveReportId,
-    screenshotId: input.screenshotId,
-    imageBase64: input.imageBase64,
-    imageUrl: input.imageUrl,
-    imageBucket: input.imageBucket,
-    imagePath: input.imagePath,
-    expectedDuration: input.expectedDuration,
+    ...(input.screenshotId ? { screenshotId: input.screenshotId } : {}),
+    ...(input.imageBase64 ? { imageBase64: input.imageBase64 } : {}),
+    ...(input.imageUrl ? { imageUrl: input.imageUrl } : {}),
+    ...(input.imageBucket ? { imageBucket: input.imageBucket } : {}),
+    ...(input.imagePath ? { imagePath: input.imagePath } : {}),
+    ...(input.expectedDuration !== undefined
+      ? { expectedDuration: input.expectedDuration }
+      : {}),
   };
-
-  await recordAiInvocation({
-    client,
-    actor,
-    input: {
-      id: invocationId,
-      scene: "ocr.extract_live_report",
-      objectType: "live_report",
-      objectId: input.liveReportId,
-      providerName: "tencent_ocr",
-      status: "queued",
-      metadata: { jobId, screenshotId: input.screenshotId },
-    },
+  const { data, error } = await client.rpc("enqueue_ocr_job", {
+    p_job_id: jobId,
+    p_invocation_id: invocationId,
+    p_organization_id: actor.organizationId,
+    p_live_report_id: input.liveReportId,
+    p_screenshot_id: input.screenshotId ?? null,
+    p_actor_user_id: actor.userId,
+    p_actor_name: actor.name,
+    p_actor_role: actor.role,
+    p_payload: payload,
+    p_run_at: new Date().toISOString(),
   });
+  if (error) {
+    throw error;
+  }
+  if (!data || Array.isArray(data) || typeof data !== "object") {
+    throw new Error("Atomic OCR enqueue did not return a job");
+  }
 
-  await insertOrThrow(client, "background_jobs", {
-    id: jobId,
-    organization_id: actor.organizationId,
-    job_type: "ocr.extract_live_report",
-    payload,
-    status: "queued",
-    attempt: 0,
-    max_attempts: 3,
-    ai_invocation_id: invocationId,
-    requested_by: actor.userId ?? null,
-    priority: 0,
-    idempotency_key: `ocr:live-report:${input.liveReportId}`,
-    run_after: new Date().toISOString(),
-    next_run_at: new Date().toISOString(),
-    result: {},
-  });
-
-  await insertOrThrow(client, "ocr_results", {
-    organization_id: actor.organizationId,
-    live_report_id: input.liveReportId,
-    screenshot_id: input.screenshotId,
-    status: "pending",
-    raw_result: {},
-    raw_response: {},
-    ai_invocation_id: invocationId,
-    background_job_id: jobId,
-    needs_confirmation: false,
-  });
-
-  return {
-    id: jobId,
-    organizationId: actor.organizationId,
-    jobType: "ocr.extract_live_report",
-    status: "queued",
-    attempt: 0,
-    maxAttempts: 3,
-    aiInvocationId: invocationId,
-    payload,
-  };
+  return toOcrJobRecord(data as OcrJobRow);
 }
 
 export async function claimPlatformOcrJobs({
@@ -291,34 +242,6 @@ export async function getOcrJob({
   }
 
   return data ? toOcrJobRecord(data as OcrJobRow) : null;
-}
-
-// Look up the OCR job already enqueued for a live report (via its ocr_results
-// row) so job creation stays idempotent per report.
-async function findExistingOcrJobForReport({
-  client,
-  liveReportId,
-}: {
-  client: OcrJobClient;
-  liveReportId: string;
-}): Promise<OcrJobRecord | null> {
-  const { data, error } = await client
-    .from("ocr_results")
-    .select("background_job_id")
-    .eq("live_report_id", liveReportId)
-    .maybeSingle();
-
-  if (error) {
-    throw error;
-  }
-
-  const jobId = (data as { background_job_id?: string | null } | null)
-    ?.background_job_id;
-  if (!jobId) {
-    return null;
-  }
-
-  return getOcrJob({ client, jobId });
 }
 
 export async function listOcrJobs({
@@ -571,6 +494,18 @@ export async function runClaimedOcrJob({
   const attempt = job.attempt;
   const maxAttempts = job.maxAttempts ?? 3;
   const resolveImage = imageResolver ?? defaultOcrImageResolver;
+  const liveReport = await loadLiveReportForOcrAdvance({
+    client,
+    liveReportId: job.payload.liveReportId,
+  });
+  if (liveReport?.status !== "ocr_ing") {
+    return cancelOcrJobForInactiveReport({
+      client,
+      job,
+      attempt,
+    });
+  }
+
   let providerInput: TencentOcrInput;
   try {
     providerInput = await resolveImage(job.payload);
@@ -644,11 +579,6 @@ export async function runClaimedOcrJob({
     parsed.status === "trusted" && providerResult.confidence >= 70
       ? "succeeded"
       : "needs_confirmation";
-  const liveReport = await loadLiveReportForOcrAdvance({
-    client,
-    liveReportId: job.payload.liveReportId,
-  });
-
   const ocrResultUpdate = {
     status,
     raw_result: {
@@ -945,17 +875,6 @@ async function assertLiveReportAccessible({
   return report;
 }
 
-async function insertOrThrow(
-  client: OcrJobClient,
-  table: "background_jobs" | "ocr_results",
-  payload: Record<string, unknown>,
-): Promise<void> {
-  const { error } = await client.from(table).insert(payload);
-  if (error) {
-    throw error;
-  }
-}
-
 async function updateOrThrow(
   client: OcrJobClient,
   table: "background_jobs" | "ocr_results",
@@ -1197,6 +1116,46 @@ function isSuccessfulOcrConfirmation(
   value: Record<string, unknown> | null,
 ): boolean {
   return value?.confirmed === true;
+}
+
+async function cancelOcrJobForInactiveReport({
+  client,
+  job,
+  attempt,
+}: {
+  client: OcrJobClient;
+  job: OcrJobRecord;
+  attempt: number;
+}): Promise<OcrJobRecord> {
+  const errorCode = "live_report_not_runnable";
+  const errorMessage = "Live report is no longer in OCR processing";
+  await updateOcrResult(client, job, {
+    status: "cancelled",
+    error_code: errorCode,
+    error_message: errorMessage,
+    needs_confirmation: false,
+  });
+  await updateOrThrow(client, "background_jobs", job.id, {
+    status: "cancelled",
+    attempt,
+    next_run_at: null,
+    locked_at: null,
+    locked_by: null,
+    error_code: errorCode,
+    error_message: errorMessage,
+    error_summary: errorMessage,
+  });
+
+  return {
+    ...job,
+    status: "cancelled",
+    attempt,
+    nextRunAt: undefined,
+    lockedAt: undefined,
+    lockedBy: undefined,
+    errorCode,
+    errorMessage,
+  };
 }
 
 async function failOcrJobAttempt({

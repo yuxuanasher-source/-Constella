@@ -13,6 +13,9 @@ import {
   type LiveTaskStatus,
 } from "./live-task-state";
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export type ReportStatus =
   | "pending"
   | "ocr_ing"
@@ -647,6 +650,7 @@ export async function submitLiveReportScreenshotForOcr({
   taskId,
   input,
   createOcrJob,
+  deleteReportScreenshot,
 }: {
   repo: LiveOperationsRepository;
   audit: LiveOperationsAuditWriter;
@@ -666,6 +670,11 @@ export async function submitLiveReportScreenshotForOcr({
     imagePath: string;
     expectedDuration?: number;
   }) => Promise<{ id: string; status: string }>;
+  deleteReportScreenshot: (input: {
+    id: string;
+    organizationId: string;
+    liveReportId: string;
+  }) => Promise<void>;
 }): Promise<{
   report: LiveReportRecord;
   job: {
@@ -734,8 +743,9 @@ export async function submitLiveReportScreenshotForOcr({
     errorCode?: string;
     errorMessage?: string;
   };
+  let screenshotId: string | null = null;
   try {
-    const screenshotId = await repo.createReportScreenshot({
+    const createdScreenshotId = await repo.createReportScreenshot({
       organizationId: actor.organizationId,
       liveReportId: report.id,
       projectId: report.projectId,
@@ -745,13 +755,17 @@ export async function submitLiveReportScreenshotForOcr({
       uploadedBy: actor.userId,
       metadata: { imageBucket: input.imageBucket },
     });
-    if (typeof screenshotId !== "string" || !screenshotId.trim()) {
+    if (
+      typeof createdScreenshotId !== "string" ||
+      !UUID_PATTERN.test(createdScreenshotId)
+    ) {
       throw new Error("Report screenshot insert did not return a valid id");
     }
+    screenshotId = createdScreenshotId;
 
     job = await createOcrJob({
       liveReportId: report.id,
-      screenshotId: screenshotId.trim(),
+      screenshotId,
       imageBucket: input.imageBucket,
       imagePath: input.screenshotStoragePath,
       expectedDuration: task.systemDuration,
@@ -760,6 +774,21 @@ export async function submitLiveReportScreenshotForOcr({
     // Never advance the task into review with no worker behind the report:
     // void the just-created report and surface the failure so the streamer can
     // retry (the task stays in its current, re-uploadable status).
+    if (screenshotId) {
+      try {
+        await deleteReportScreenshot({
+          id: screenshotId,
+          organizationId: actor.organizationId,
+          liveReportId: report.id,
+        });
+      } catch {
+        console.error("[live-operations] failed to clean up OCR screenshot", {
+          organizationId: actor.organizationId,
+          liveReportId: report.id,
+          screenshotId,
+        });
+      }
+    }
     await repo.updateLiveReport(report.id, { status: "voided" });
     throw new Error("OCR 入队失败，请稍后重试");
   }
