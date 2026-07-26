@@ -250,7 +250,8 @@ create or replace function public.platform_create_organization(
   p_offline_payment jsonb,
   p_reason text,
   p_trace_id text,
-  p_idempotency_key text
+  p_idempotency_key text,
+  p_request_hash text
 )
 returns jsonb
 language plpgsql
@@ -302,6 +303,9 @@ begin
   if coalesce(trim(p_idempotency_key), '') = '' then
     raise exception 'Idempotency key is required';
   end if;
+  if coalesce(trim(p_request_hash), '') = '' then
+    raise exception 'Request hash is required';
+  end if;
 
   v_request := jsonb_build_object(
     'name', trim(p_name),
@@ -325,11 +329,11 @@ begin
   limit 1;
 
   if found then
-    if v_existing.before_json = v_request
+    if v_existing.before_json ->> 'requestHash' = trim(p_request_hash)
       and v_existing.result = 'success'
-      and v_existing.after_json ? 'result'
+      and v_existing.after_json ? 'resultValue'
     then
-      return v_existing.after_json -> 'result';
+      return v_existing.after_json -> 'resultValue';
     end if;
 
     raise exception 'Idempotency key conflict';
@@ -504,8 +508,18 @@ begin
     'organization',
     v_organization_id::text,
     v_organization_id,
-    v_request,
-    jsonb_build_object('result', v_result),
+    jsonb_build_object(
+      'requestHash', trim(p_request_hash),
+      'request', v_request,
+      'snapshot', '{}'::jsonb
+    ),
+    jsonb_build_object(
+      'summary', jsonb_build_object(
+        'organizationId', v_organization_id,
+        'subscriptionId', v_subscription_id
+      ),
+      'resultValue', v_result
+    ),
     trim(p_reason),
     true,
     'success',
@@ -531,6 +545,7 @@ revoke all on function public.platform_create_organization(
   jsonb,
   text,
   text,
+  text,
   text
 ) from public, anon, authenticated;
 
@@ -546,6 +561,7 @@ grant execute on function public.platform_create_organization(
   date,
   date,
   jsonb,
+  text,
   text,
   text,
   text

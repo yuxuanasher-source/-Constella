@@ -1,4 +1,5 @@
 import { resolvePlatformAdminContext } from "@/features/platform-admin/platform-admin-auth";
+import { SupabasePlatformAdminMutationRepository } from "@/features/platform-admin/platform-admin-organization-repository-supabase";
 import { SupabasePlatformAdminRepository } from "@/features/platform-admin/platform-admin-repository-supabase";
 import { getAuthenticatedUser } from "@/lib/auth/context";
 import {
@@ -35,5 +36,6 @@ export async function getPlatformAdminRouteContext() {
     actor,
     admin,
     repo: new SupabasePlatformAdminRepository(admin),
+    mutationRepo: new SupabasePlatformAdminMutationRepository(admin),
   };
 }
