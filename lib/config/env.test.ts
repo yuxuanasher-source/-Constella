@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import * as envConfig from "./env";
@@ -74,6 +76,29 @@ describe("parseServerEnv", () => {
       parseServerEnv({
         SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
         ADMISSION_SHARE_CAPABILITY_SECRET: "too-short",
+      }),
+    ).toThrow();
+  });
+
+  it("does not publish an example capability secret that passes validation", () => {
+    const parseServerEnv = (envConfig as Record<string, unknown>)
+      .parseServerEnv as (
+      env: Record<string, string | undefined>,
+    ) => Record<string, string>;
+    const example = readFileSync(
+      resolve(process.cwd(), ".env.example"),
+      "utf8",
+    );
+    const exampleSecret = example
+      .split(/\r?\n/u)
+      .find((line) => line.startsWith("ADMISSION_SHARE_CAPABILITY_SECRET="))
+      ?.slice("ADMISSION_SHARE_CAPABILITY_SECRET=".length);
+
+    expect(exampleSecret).toBeDefined();
+    expect(() =>
+      parseServerEnv({
+        SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+        ADMISSION_SHARE_CAPABILITY_SECRET: exampleSecret,
       }),
     ).toThrow();
   });

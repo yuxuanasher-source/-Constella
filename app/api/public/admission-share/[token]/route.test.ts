@@ -108,6 +108,30 @@ describe("public admission share route", () => {
     });
   });
 
+  it("treats a malformed capability cookie as an ordinary authorization failure", async () => {
+    vi.mocked(getPublicAdmissionShareBoard).mockRejectedValueOnce(
+      new Error("Access code is required"),
+    );
+
+    const response = await GET(
+      new Request("http://localhost/api/public/admission-share/plain-token", {
+        headers: { Cookie: "admission_share_capability=%E0%A4%A" },
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Access code is required",
+    });
+    expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith({
+      repo: { repo: "share-repo" },
+      token: "plain-token",
+      capability: undefined,
+      preparedAccess,
+    });
+  });
+
   it("enforces the 60-per-minute token and IP limits before loading the board", async () => {
     rpc
       .mockResolvedValueOnce({

@@ -160,6 +160,21 @@ describe("admission share board service", () => {
     ).resolves.toBe(true);
   });
 
+  it.each([
+    {
+      name: "a non-power-of-two cost",
+      params: { N: 20000, r: 8, p: 1, keyLength: 32 },
+    },
+    {
+      name: "a cost that exceeds the configured memory budget",
+      params: { N: 262144, r: 16, p: 4, keyLength: 64 },
+    },
+  ])("rejects $name with a stable validation error", async ({ params }) => {
+    await expect(
+      hashAccessCode("2468", "11".repeat(16), params),
+    ).rejects.toThrow("Access-code hash parameters are invalid");
+  });
+
   it("creates a share board without storing the plain token and locks recording versions", async () => {
     const repo = createRepo();
     const audit = vi.fn().mockResolvedValue(undefined);
