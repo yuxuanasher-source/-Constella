@@ -7,8 +7,11 @@ export type StreamerAdmissionCheckpointResultRow = {
 export type StreamerAdmissionEvaluationRow = {
   id: string;
   vendor_review_id?: string | null;
+  submission_id?: string | null;
   organization_id: string;
   stage: string;
+  decision?: string | null;
+  created_at?: string | null;
   admission_review_checkpoint_results?:
     | StreamerAdmissionCheckpointResultRow[]
     | null;
@@ -30,6 +33,8 @@ export type StreamerAdmissionStats = {
   vendorPassRateBps: number | null;
   rejectionReasonHistogram: Record<string, number>;
   evaluatedCount: number;
+  mcnFirstPassRateBps: number | null;
+  mcnFirstEvaluatedCount: number;
 };
 
 const EVALUATED_VENDOR_DECISIONS = new Set([
@@ -48,6 +53,10 @@ export function aggregateStreamerAdmissionStats({
 }): StreamerAdmissionStats {
   const reviews = new Map<string, string>();
   const failedCheckpointKeysByEvaluation = new Map<string, Set<string>>();
+  const latestMcnEvaluationBySubmission = new Map<
+    string,
+    StreamerAdmissionEvaluationRow
+  >();
 
   for (const application of applications ?? []) {
     if (application.organization_id !== organizationId) {
@@ -66,11 +75,29 @@ export function aggregateStreamerAdmissionStats({
     }
 
     for (const evaluation of application.admission_review_evaluations ?? []) {
-      if (
-        !evaluation.id ||
-        evaluation.organization_id !== organizationId ||
-        evaluation.stage !== "vendor_second"
-      ) {
+      if (!evaluation.id || evaluation.organization_id !== organizationId) {
+        continue;
+      }
+
+      if (evaluation.stage === "mcn_first") {
+        const submissionId = evaluation.submission_id?.trim();
+        const decision = evaluation.decision?.trim();
+        if (
+          !submissionId ||
+          !decision ||
+          decision === "pending" ||
+          decision === "manual_review"
+        ) {
+          continue;
+        }
+        const current = latestMcnEvaluationBySubmission.get(submissionId);
+        if (!current || isLaterEvaluation(evaluation, current)) {
+          latestMcnEvaluationBySubmission.set(submissionId, evaluation);
+        }
+        continue;
+      }
+
+      if (evaluation.stage !== "vendor_second") {
         continue;
       }
 
@@ -119,6 +146,14 @@ export function aggregateStreamerAdmissionStats({
   const passedCount = [...reviews.values()].filter(
     (decision) => decision === "selected",
   ).length;
+  const mcnFirstEvaluatedCount = latestMcnEvaluationBySubmission.size;
+  const mcnFirstPassedCount = [
+    ...latestMcnEvaluationBySubmission.values(),
+  ].filter(
+    (evaluation) =>
+      evaluation.decision === "approved" ||
+      evaluation.decision === "selected",
+  ).length;
 
   return {
     vendorPassRateBps:
@@ -133,5 +168,35 @@ export function aggregateStreamerAdmissionStats({
           ),
     rejectionReasonHistogram,
     evaluatedCount,
+    mcnFirstPassRateBps:
+      mcnFirstEvaluatedCount === 0
+        ? null
+        : Math.max(
+            0,
+            Math.min(
+              10_000,
+              Math.round(
+                (mcnFirstPassedCount * 10_000) / mcnFirstEvaluatedCount,
+              ),
+            ),
+          ),
+    mcnFirstEvaluatedCount,
   };
+}
+
+function isLaterEvaluation(
+  candidate: StreamerAdmissionEvaluationRow,
+  current: StreamerAdmissionEvaluationRow,
+): boolean {
+  const candidateTime = dateMs(candidate.created_at);
+  const currentTime = dateMs(current.created_at);
+  return (
+    candidateTime > currentTime ||
+    (candidateTime === currentTime && candidate.id.localeCompare(current.id) > 0)
+  );
+}
+
+function dateMs(value: string | null | undefined): number {
+  const parsed = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
 }

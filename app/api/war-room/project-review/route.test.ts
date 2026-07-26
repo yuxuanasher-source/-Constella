@@ -67,6 +67,57 @@ describe("war room project review route", () => {
     });
   });
 
+  it("accepts explicit streamer metric gaps and reports them", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/war-room/project-review", {
+        method: "POST",
+        body: JSON.stringify({
+          project: {
+            id: "project-gap",
+            name: "缺口项目",
+            category: "moba",
+            platform: "douyin",
+            periodStart: "2026-02-01",
+            periodEnd: "2026-02-07",
+          },
+          finance: {
+            receivableCents: 100000,
+            payableCents: 50000,
+            supplierCostCents: 10000,
+            adjustmentCents: 0,
+            manualRevenueCents: 0,
+          },
+          streamers: [
+            {
+              id: "streamer-gap",
+              name: "Gap",
+              durationMinutes: 0,
+              totalViews: 0,
+              completionRateBps: null,
+              roiBps: null,
+              grossMarginContributionCents: null,
+              anomalyCount: 0,
+              disputeCount: 0,
+            },
+          ],
+          suppliers: [],
+          evidenceSummary: { green: 0, yellow: 0, red: 0, unknown: 1 },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      report: {
+        riskNotes: expect.arrayContaining([
+          "streamer_completion_rate_unavailable",
+          "streamer_roi_unavailable",
+          "streamer_gross_margin_contribution_unavailable",
+        ]),
+      },
+    });
+  });
+
   it("blocks streamers from internal review economics", async () => {
     vi.mocked(getAuthContext).mockResolvedValue({
       ...auth,

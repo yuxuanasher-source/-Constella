@@ -24,9 +24,9 @@ const reviewStreamerSchema = z.object({
   name: z.string(),
   durationMinutes: z.number(),
   totalViews: z.number(),
-  completionRateBps: z.number(),
-  roiBps: z.number(),
-  grossMarginContributionCents: z.number(),
+  completionRateBps: z.number().nullable(),
+  roiBps: z.number().nullable(),
+  grossMarginContributionCents: z.number().nullable(),
   anomalyCount: z.number(),
   disputeCount: z.number(),
 });

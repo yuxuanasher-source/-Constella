@@ -1423,10 +1423,10 @@ const WAR_ROOM_FALLBACK_STREAMERS = [
     style: "待配置",
     risk: "low",
     metrics: {
-      projectFinish: 0,
-      screenPass: 0,
-      roi: 0,
-      grossContrib: 0,
+      projectFinish: null,
+      screenPass: null,
+      roi: null,
+      grossContrib: null,
     },
     completedProjects: 0,
   },
@@ -6782,10 +6782,19 @@ function buildWarRoomMatchingInput(streamers = STREAMERS) {
       categories: (streamer.games ?? ["moba"]).map(toWarRoomCategory),
       platforms: (streamer.platforms ?? ["抖音"]).map(toWarRoomPlatform),
       styles: [streamer.style ?? "高互动"],
-      completionRateBps: (streamer.metrics?.projectFinish ?? 80) * 100,
-      screeningPassRateBps: (streamer.metrics?.screenPass ?? 80) * 100,
-      roiBps: Math.round((streamer.metrics?.roi ?? 1) * 10000),
-      grossMarginContributionCents: (streamer.metrics?.grossContrib ?? 0) * 100,
+      completionRateBps: warRoomMetricUnit(
+        streamer.metrics?.projectFinish,
+        100,
+      ),
+      screeningPassRateBps: warRoomMetricUnit(
+        streamer.metrics?.screenPass,
+        100,
+      ),
+      roiBps: warRoomMetricUnit(streamer.metrics?.roi, 10000),
+      grossMarginContributionCents: warRoomMetricUnit(
+        streamer.metrics?.grossContrib,
+        100,
+      ),
       riskTags:
         streamer.risk === "low"
           ? []
@@ -6797,7 +6806,9 @@ function buildWarRoomMatchingInput(streamers = STREAMERS) {
         {
           id: `${streamer.id}-ref`,
           name: `${streamer.alias ?? streamer.name ?? "主播待配置"} 历史项目`,
-          result: `完成率 ${streamer.metrics?.projectFinish ?? 80}%`,
+          result: hasStreamerMetricValue(streamer.metrics?.projectFinish)
+            ? `完成率 ${streamer.metrics.projectFinish}%`
+            : "完成率 暂无数据",
         },
       ],
     })),
@@ -6841,9 +6852,15 @@ function buildWarRoomReviewInput(projects = PROJECTS, streamers = STREAMERS) {
       name: streamer.alias ?? streamer.name ?? "主播待配置",
       durationMinutes: 600 + index * 120,
       totalViews: 40000 + index * 12000,
-      completionRateBps: (streamer.metrics?.projectFinish ?? 80) * 100,
-      roiBps: Math.round((streamer.metrics?.roi ?? 1) * 10000),
-      grossMarginContributionCents: (streamer.metrics?.grossContrib ?? 0) * 100,
+      completionRateBps: warRoomMetricUnit(
+        streamer.metrics?.projectFinish,
+        100,
+      ),
+      roiBps: warRoomMetricUnit(streamer.metrics?.roi, 10000),
+      grossMarginContributionCents: warRoomMetricUnit(
+        streamer.metrics?.grossContrib,
+        100,
+      ),
       anomalyCount: streamer.risk === "low" ? 0 : 1,
       disputeCount: streamer.risk === "high" ? 1 : 0,
     })),
@@ -12229,18 +12246,21 @@ function ProjectRoster({ p, go }) {
           },
           {
             title: "匹配分",
-            render: (r) => (
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span className="num" style={{ fontWeight: 600 }}>
-                  {r.matchScore}
-                </span>
-                <MiniBar
-                  value={r.matchScore}
-                  tone={r.matchScore >= 85 ? "green" : "blue"}
-                  width={60}
-                />
-              </div>
-            ),
+            render: (r) =>
+              hasStreamerMetricValue(r.matchScore) ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span className="num" style={{ fontWeight: 600 }}>
+                    {r.matchScore}
+                  </span>
+                  <MiniBar
+                    value={r.matchScore}
+                    tone={r.matchScore >= 85 ? "green" : "blue"}
+                    width={60}
+                  />
+                </div>
+              ) : (
+                <span style={{ color: "var(--ink-300)" }}>暂无</span>
+              ),
           },
           { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
           {
@@ -12348,7 +12368,9 @@ function applicationToRosterRow(application, streamers, rosterSource) {
     source: card?.source || "项目邀约",
     supplier: card?.supplier || "未绑定",
     defaultRule: card?.defaultRule || "CPT",
-    matchScore: card?.matchScore ?? 65,
+    matchScore: hasStreamerMetricValue(card?.matchScore)
+      ? card.matchScore
+      : null,
     risk: card?.risk || streamer.riskLevel || "low",
     projectStatus: projectStatus.label,
     projectStatusTone: projectStatus.tone,
@@ -13379,7 +13401,7 @@ function ScreenStreamers({ go, initialActiveId }) {
                 title: "完成率",
                 align: "right",
                 render: (r) => {
-                  if (!hasStreamerPerformanceData(r)) {
+                  if (!hasStreamerMetricValue(r.metrics?.projectFinish)) {
                     return (
                       <span style={{ color: "var(--ink-300)" }}>暂无</span>
                     );
@@ -13409,7 +13431,7 @@ function ScreenStreamers({ go, initialActiveId }) {
                 title: "ROI",
                 align: "right",
                 render: (r) =>
-                  hasStreamerPerformanceData(r) ? (
+                  hasStreamerMetricValue(r.metrics?.roi) ? (
                     <span
                       className="num"
                       style={{
@@ -13573,7 +13595,6 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
     fontWeight: 600,
   };
   const streamerProjects = Array.isArray(s.projects) ? s.projects : [];
-  const hasPerformanceData = hasStreamerPerformanceData(s);
   const aiInsights = Array.isArray(s.aiInsights) ? s.aiInsights : [];
   const updateProfileDraft = (field) => (event) => {
     setProfileDraft((value) => ({
@@ -14034,8 +14055,7 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
       ) : null}
 
       <Card title="经营画像 · 近 90 天" padded={true}>
-        {hasPerformanceData ? (
-          <>
+        <>
             <div
               style={{
                 display: "grid",
@@ -14045,26 +14065,42 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
             >
               <RingMetric
                 label="录屏通过率"
-                value={s.metrics.screenPass}
+                value={s.metrics?.screenPass}
+                max={100}
+                suffix="%"
+              />
+              <RingMetric
+                label="厂家通过率"
+                value={streamerBpsPercent(s.metrics?.vendorPassRateBps)}
+                max={100}
+                suffix="%"
+              />
+              <RingMetric
+                label="MCN 初审通过率"
+                value={streamerBpsPercent(s.metrics?.mcnFirstPassRateBps)}
                 max={100}
                 suffix="%"
               />
               <RingMetric
                 label="项目完成率"
-                value={s.metrics.projectFinish}
+                value={s.metrics?.projectFinish}
                 max={100}
                 suffix="%"
               />
               <RingMetric
                 label="ROI"
-                value={s.metrics.roi}
+                value={s.metrics?.roi}
                 max={2}
                 dp={2}
                 highlight
               />
               <RingMetric
                 label="毛利贡献"
-                value={formatStreamerMoneyK(s.metrics.grossContrib)}
+                value={
+                  hasStreamerMetricValue(s.metrics?.grossContrib)
+                    ? formatStreamerMoneyK(s.metrics.grossContrib)
+                    : null
+                }
                 raw
               />
             </div>
@@ -14085,21 +14121,19 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
               >
                 近 6 周匹配分趋势
               </div>
-              <Sparkline
-                data={
-                  Array.isArray(s.matchTrend) && s.matchTrend.length > 1
-                    ? s.matchTrend
-                    : Array(6).fill(s.matchScore)
-                }
-              />
+              {Array.isArray(s.matchTrend) &&
+              s.matchTrend.some(hasStreamerMetricValue) ? (
+                <Sparkline
+                  data={s.matchTrend}
+                  ariaLabel="近 6 周匹配分趋势图"
+                />
+              ) : (
+                <span style={{ color: "var(--ink-300)", fontSize: 12 }}>
+                  暂无数据
+                </span>
+              )}
             </div>
-          </>
-        ) : (
-          <EmptyHint
-            title="暂无经营画像数据"
-            hint="完成录屏、排班任务或报数审核后，这里会展示近 90 天真实表现。"
-          />
-        )}
+        </>
       </Card>
 
       <Card
@@ -14277,8 +14311,13 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
                     className="mono"
                     style={{ fontSize: 11, color: "var(--ink-400)" }}
                   >
-                    {formatStreamerHours(project.settlementHours)} ·{" "}
-                    {formatStreamerMoney(project.grossContrib)}
+                    {hasStreamerMetricValue(project.settlementHours)
+                      ? formatStreamerHours(project.settlementHours)
+                      : "暂无"}{" "}
+                    ·{" "}
+                    {hasStreamerMetricValue(project.grossContrib)
+                      ? formatStreamerMoney(project.grossContrib)
+                      : "暂无"}
                   </div>
                 </div>
                 <Badge tone={project.status === "joined" ? "green" : "blue"}>
@@ -14488,8 +14527,16 @@ function formatStreamerMoneyK(value) {
   return `¥${(Math.round((Number(value) || 0) / 100) / 10).toFixed(1)}k`;
 }
 
-function hasStreamerPerformanceData(streamer) {
-  return streamer?.hasPerformanceData !== false;
+function hasStreamerMetricValue(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function streamerBpsPercent(value) {
+  return hasStreamerMetricValue(value) ? value / 100 : null;
+}
+
+function warRoomMetricUnit(value, multiplier) {
+  return hasStreamerMetricValue(value) ? Math.round(value * multiplier) : null;
 }
 
 function formatStreamerMoney(value) {
@@ -14511,12 +14558,14 @@ function RingMetric({
   // 可选环形颜色覆盖（如异常占比用 var(--danger-600)）；缺省时保持原 highlight/默认色。
   color,
 }) {
+  const unavailable =
+    value == null || (typeof value === "number" && !Number.isFinite(value));
   let pct = 0;
-  let display = value;
-  if (!raw && typeof value === "number") {
-    pct = Math.min(100, (value / max) * 100);
+  let display = unavailable ? "暂无数据" : value;
+  if (!unavailable && !raw && typeof value === "number") {
+    pct = Math.max(0, Math.min(100, (value / max) * 100));
     display = dp ? value.toFixed(dp) : value;
-  } else {
+  } else if (!unavailable) {
     pct = 75; // visual default
   }
   const size = 64,
@@ -14542,7 +14591,7 @@ function RingMetric({
           cx={size / 2}
           cy={size / 2}
           r={r}
-          stroke={ringColor}
+          stroke={unavailable ? "var(--ink-100)" : ringColor}
           strokeWidth={stroke}
           fill="none"
           strokeDasharray={circ}
@@ -14563,7 +14612,7 @@ function RingMetric({
           }}
         >
           {display}
-          {suffix}
+          {unavailable ? "" : suffix}
         </div>
       </div>
     </div>
@@ -14572,25 +14621,51 @@ function RingMetric({
 
 // gradientId：多实例共存时必须各自传入唯一 id（SVG 渐变按 document 全局取 id），
 // 默认值 "sg" 保持既有单实例向后兼容。
-function Sparkline({ data, w = 280, h = 40, gradientId = "sg" }) {
-  const min = Math.min(...data),
-    max = Math.max(...data);
-  const step = w / (data.length - 1);
+function Sparkline({
+  data,
+  w = 280,
+  h = 40,
+  gradientId = "sg",
+  ariaLabel = "趋势图",
+}) {
+  const observedValues = data.filter(
+    (value) => typeof value === "number" && Number.isFinite(value),
+  );
+  const min = observedValues.length ? Math.min(...observedValues) : 0;
+  const max = observedValues.length ? Math.max(...observedValues) : 0;
+  const step = w / Math.max(data.length - 1, 1);
   const pts = data.map((v, i) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) return null;
     const x = i * step;
     const y = h - ((v - min) / (max - min || 1)) * (h - 8) - 4;
     return [x, y];
   });
-  const path = pts
-    .map((p, i) => (i === 0 ? "M" : "L") + p[0] + " " + p[1])
-    .join(" ");
-  const area = path + ` L ${w} ${h} L 0 ${h} Z`;
+  const segments = [];
+  let currentSegment = [];
+  pts.forEach((point) => {
+    if (point) {
+      currentSegment.push(point);
+      return;
+    }
+    if (currentSegment.length) segments.push(currentSegment);
+    currentSegment = [];
+  });
+  if (currentSegment.length) segments.push(currentSegment);
+  const observedPoints = pts.filter(Boolean);
+  const lastObservedPoint = observedPoints[observedPoints.length - 1];
+  const pathFor = (points) =>
+    points
+      .map((point, index) =>
+        `${index === 0 ? "M" : "L"}${point[0]} ${point[1]}`,
+      )
+      .join(" ");
   return (
     <svg
       width="100%"
       viewBox={`0 0 ${w} ${h}`}
       preserveAspectRatio="none"
       style={{ display: "block" }}
+      aria-label={ariaLabel}
     >
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
@@ -14598,26 +14673,45 @@ function Sparkline({ data, w = 280, h = 40, gradientId = "sg" }) {
           <stop offset="100%" stopColor="#1E50C8" stopOpacity="0" />
         </linearGradient>
       </defs>
-      <path d={area} fill={`url(#${gradientId})`} />
-      <path
-        d={path}
-        fill="none"
-        stroke="#1E50C8"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      {pts.map(([x, y], i) => (
-        <circle
-          key={i}
-          cx={x}
-          cy={y}
-          r={i === pts.length - 1 ? 3 : 2}
-          fill={i === pts.length - 1 ? "#1E50C8" : "#fff"}
-          stroke="#1E50C8"
-          strokeWidth="1.4"
-        />
-      ))}
+      {segments
+        .filter((segment) => segment.length >= 2)
+        .map((segment, index) => {
+          const path = pathFor(segment);
+          const firstPoint = segment[0];
+          const lastPoint = segment[segment.length - 1];
+          const area = `${path} L ${lastPoint[0]} ${h} L ${firstPoint[0]} ${h} Z`;
+          return (
+            <g key={index}>
+              <path d={area} fill={`url(#${gradientId})`} />
+              <path
+                d={path}
+                fill="none"
+                stroke="#1E50C8"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                data-series-segment="true"
+              />
+            </g>
+          );
+        })}
+      {pts.map((point, index) => {
+        if (!point) return null;
+        const [x, y] = point;
+        const isLatest = point === lastObservedPoint;
+        return (
+          <circle
+            key={index}
+            cx={x}
+            cy={y}
+            r={isLatest ? 3 : 2}
+            fill={isLatest ? "#1E50C8" : "#fff"}
+            stroke="#1E50C8"
+            strokeWidth="1.4"
+            data-observed="true"
+          />
+        );
+      })}
     </svg>
   );
 }
@@ -25166,7 +25260,7 @@ function applicationToScheduledStreamer(application, streamers, projectId) {
     cooperation: streamer.cooperationStatus || "active",
     risk: streamer.riskLevel || "low",
     metrics: {},
-    matchScore: 65,
+    matchScore: null,
     defaultRule: "CPT",
     completedProjects: 0,
     projects: [],
@@ -25189,8 +25283,8 @@ function applicationJoinedProjectRecord(application, fallbackProjectId) {
     code: project.code,
     name: project.name,
     status: "joined",
-    settlementHours: 0,
-    grossContrib: 0,
+    settlementHours: null,
+    grossContrib: null,
   };
 }
 

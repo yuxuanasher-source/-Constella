@@ -115,4 +115,92 @@ describe("buildProjectReviewReport", () => {
     });
     expect(Number.isFinite(report.marginRateBps)).toBe(true);
   });
+
+  it("keeps unavailable streamer metrics explicit instead of scoring fabricated zeroes", () => {
+    const report = buildProjectReviewReport({
+      project: {
+        id: "project-missing-performance",
+        name: "缺口项目",
+        category: "moba",
+        platform: "douyin",
+        periodStart: "2026-02-01",
+        periodEnd: "2026-02-07",
+      },
+      finance: {
+        receivableCents: 100000,
+        payableCents: 50000,
+        supplierCostCents: 10000,
+        adjustmentCents: 0,
+        manualRevenueCents: 0,
+      },
+      streamers: [
+        {
+          id: "streamer-no-performance",
+          name: "No Performance",
+          durationMinutes: 0,
+          totalViews: 0,
+          completionRateBps: null,
+          roiBps: null,
+          grossMarginContributionCents: null,
+          anomalyCount: 0,
+          disputeCount: 0,
+        },
+      ],
+      suppliers: [],
+      evidenceSummary: { green: 0, yellow: 0, red: 0, unknown: 1 },
+    });
+
+    expect(report.bestStreamer).toBeNull();
+    expect(report.worstStreamer).toBeNull();
+    expect(report.nextRoundRecommendations).not.toContain(
+      "retain_best_streamers",
+    );
+    expect(report.riskNotes).toEqual(
+      expect.arrayContaining([
+        "streamer_completion_rate_unavailable",
+        "streamer_roi_unavailable",
+        "streamer_gross_margin_contribution_unavailable",
+      ]),
+    );
+  });
+
+  it("keeps partial streamer metrics on their original absolute weights", () => {
+    const report = buildProjectReviewReport({
+      project: {
+        id: "project-partial-performance",
+        name: "部分指标项目",
+        category: "moba",
+        platform: "douyin",
+        periodStart: "2026-02-01",
+        periodEnd: "2026-02-07",
+      },
+      finance: {
+        receivableCents: 100000,
+        payableCents: 50000,
+        supplierCostCents: 10000,
+        adjustmentCents: 0,
+        manualRevenueCents: 0,
+      },
+      streamers: [
+        {
+          id: "streamer-completion-only",
+          name: "Completion Only",
+          durationMinutes: 0,
+          totalViews: 0,
+          completionRateBps: 10000,
+          roiBps: null,
+          grossMarginContributionCents: null,
+          anomalyCount: 0,
+          disputeCount: 0,
+        },
+      ],
+      suppliers: [],
+      evidenceSummary: { green: 0, yellow: 0, red: 0, unknown: 1 },
+    });
+
+    expect(report.bestStreamer).toMatchObject({
+      streamerId: "streamer-completion-only",
+      score: 35,
+    });
+  });
 });

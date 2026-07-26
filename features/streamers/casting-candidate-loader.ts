@@ -62,6 +62,18 @@ export async function loadCastingCandidates(
     const card = toStreamerCardDto(row, {
       ...(params.now ? { now: params.now } : {}),
     });
+    if (card.metrics.screenPass === null) {
+      dataGaps.add("candidate_screening_pass_rate");
+    }
+    if (card.metrics.projectFinish === null) {
+      dataGaps.add("candidate_completion_rate");
+    }
+    if (card.metrics.roi === null) {
+      dataGaps.add("candidate_roi");
+    }
+    if (card.metrics.grossContrib === null) {
+      dataGaps.add("candidate_gross_margin_contribution");
+    }
     const demonstrated = demonstratedMinutes(row, params.now);
     if (demonstrated === null) {
       dataGaps.add("candidate_availability");
@@ -75,12 +87,24 @@ export async function loadCastingCandidates(
       styles: row.styles ?? [],
       // metrics.screenPass / projectFinish 是 0-100 百分比 → bps ×100;
       // grossContrib 是元 → 分 ×100。
-      completionRateBps: Math.round(card.metrics.projectFinish * 100),
-      screeningPassRateBps: Math.round(card.metrics.screenPass * 100),
+      completionRateBps:
+        card.metrics.projectFinish === null
+          ? null
+          : Math.round(card.metrics.projectFinish * 100),
+      screeningPassRateBps:
+        card.metrics.screenPass === null
+          ? null
+          : Math.round(card.metrics.screenPass * 100),
       // 代理口径(dataGap: candidate_roi_proxy):roi 是"千观众/结算小时"
       // 密度值,不是真实投产比。
-      roiBps: Math.round(card.metrics.roi * 10000),
-      grossMarginContributionCents: Math.round(card.metrics.grossContrib * 100),
+      roiBps:
+        card.metrics.roi === null
+          ? null
+          : Math.round(card.metrics.roi * 10000),
+      grossMarginContributionCents:
+        card.metrics.grossContrib === null
+          ? null
+          : Math.round(card.metrics.grossContrib * 100),
       riskTags: Array.from(
         new Set([
           ...(row.risk_tags ?? []),

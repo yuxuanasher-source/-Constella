@@ -115,7 +115,7 @@ export async function listStreamerPool(
   const { data, error } = await supabase
     .from("streamers")
     .select(
-      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), project_applications(organization_id, project_recording_vendor_reviews(id, organization_id, decision), admission_review_evaluations(id, vendor_review_id, organization_id, stage, admission_review_checkpoint_results(organization_id, checkpoint_key, verdict))), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
+      "id, display_name, real_name, gender, source_type, cooperation_status, categories, platforms, styles, default_settlement_method, default_price, default_base_salary, default_cps_rate_bps, risk_level, clean_report_count, created_at, recording_submissions(status, submitted_at), streamer_profile_insights(id, title, summary, strengths, risks, recommendations, tags, source_ref, confirmed_at), project_applications(organization_id, project_recording_vendor_reviews(id, organization_id, decision), admission_review_evaluations(id, vendor_review_id, submission_id, organization_id, stage, decision, created_at, admission_review_checkpoint_results(organization_id, checkpoint_key, verdict))), live_tasks(status, planned_duration, system_duration, planned_start_at, project_id), live_reports(status, settlement_duration, evidence_level, viewers, created_at, project_id, projects(default_hourly_rate)), project_streamers(status, project_id, projects(id, code, name, status, default_hourly_rate))",
     )
     // 组织过滤放在查询层（RLS 仍作为第二道防线）。
     .eq("organization_id", organizationId)
@@ -132,9 +132,9 @@ export async function listStreamerPool(
       "project_applications.admission_review_evaluations.organization_id",
       organizationId,
     )
-    .eq(
+    .in(
       "project_applications.admission_review_evaluations.stage",
-      "vendor_second",
+      ["vendor_second", "mcn_first"],
     )
     .eq(
       "project_applications.admission_review_evaluations.admission_review_checkpoint_results.organization_id",

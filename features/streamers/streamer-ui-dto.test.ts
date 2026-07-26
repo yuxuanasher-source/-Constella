@@ -130,10 +130,18 @@ describe("toStreamerCardDto", () => {
       vendorPassRateBps: null,
       rejectionReasonHistogram: {},
       evaluatedCount: 0,
+      mcnFirstPassRateBps: null,
+      mcnFirstEvaluatedCount: 0,
     });
     expect(dto.matchScore).toBeGreaterThan(70);
-    expect(dto.matchTrend).toHaveLength(6);
-    expect(dto.matchTrend.at(-1)).toBe(dto.matchScore);
+    expect(dto.matchTrend).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      dto.matchScore,
+    ]);
     expect(dto.projects).toEqual([
       expect.objectContaining({
         id: "project-live",
@@ -163,15 +171,17 @@ describe("toStreamerCardDto", () => {
 
     expect(dto.hasPerformanceData).toBe(false);
     expect(dto.metrics).toEqual({
-      screenPass: 0,
-      projectFinish: 0,
-      roi: 0,
-      grossContrib: 0,
+      screenPass: null,
+      projectFinish: null,
+      roi: null,
+      grossContrib: null,
       vendorPassRateBps: null,
       rejectionReasonHistogram: {},
       evaluatedCount: 0,
+      mcnFirstPassRateBps: null,
+      mcnFirstEvaluatedCount: 0,
     });
-    expect(dto.matchScore).toBe(0);
+    expect(dto.matchScore).toBeNull();
     expect(dto.matchTrend).toEqual([]);
     expect(dto.projects).toEqual([]);
   });
@@ -248,9 +258,12 @@ describe("toStreamerCardDto", () => {
           audio_quality: 1,
         },
         evaluatedCount: 3,
+        mcnFirstPassRateBps: 5000,
+        mcnFirstEvaluatedCount: 4,
       },
     });
 
+    expect(dto.hasPerformanceData).toBe(true);
     expect(dto.metrics).toMatchObject({
       vendorPassRateBps: 6667,
       rejectionReasonHistogram: {
@@ -258,9 +271,261 @@ describe("toStreamerCardDto", () => {
         audio_quality: 1,
       },
       evaluatedCount: 3,
+      mcnFirstPassRateBps: 5000,
+      mcnFirstEvaluatedCount: 4,
+    });
+  });
+
+  it("does not substitute report approval for a missing recording pass rate", () => {
+    const dto = toStreamerCardDto(
+      {
+        id: "s-report-only",
+        display_name: "Report Only",
+        real_name: null,
+        gender: null,
+        source_type: "external",
+        cooperation_status: "active",
+        categories: [],
+        platforms: [],
+        styles: [],
+        default_settlement_method: "cpt",
+        risk_level: "low",
+        clean_report_count: 0,
+        created_at: "2026-06-01T00:00:00.000Z",
+        recording_submissions: [],
+        live_tasks: [],
+        live_reports: [
+          {
+            status: "approved",
+            settlement_duration: 120,
+            evidence_level: "green",
+            viewers: 2000,
+            created_at: "2026-06-03T00:00:00.000Z",
+            project_id: "project-1",
+            projects: { default_hourly_rate: 50 },
+          },
+        ],
+      },
+      { now: "2026-06-04T00:00:00.000Z" },
+    );
+
+    expect(dto.metrics).toMatchObject({
+      screenPass: null,
+      projectFinish: null,
+      roi: 1,
+      grossContrib: 100,
+    });
+    expect(dto.matchScore).toBe(16);
+    expect(dto.matchTrend).toEqual([null, null, null, null, null, 16]);
+  });
+
+  it("scores task-only history from the observed completion dimension", () => {
+    const dto = toStreamerCardDto(
+      {
+        id: "s-task-only",
+        display_name: "Task Only",
+        real_name: null,
+        gender: null,
+        source_type: "external",
+        cooperation_status: "active",
+        categories: [],
+        platforms: [],
+        styles: [],
+        default_settlement_method: "cpt",
+        risk_level: "low",
+        clean_report_count: 0,
+        created_at: "2026-06-01T00:00:00.000Z",
+        recording_submissions: [],
+        live_tasks: [
+          {
+            status: "completed",
+            planned_duration: 120,
+            system_duration: 120,
+            planned_start_at: "2026-06-03T00:00:00.000Z",
+            project_id: "project-1",
+          },
+        ],
+        live_reports: [],
+      },
+      { now: "2026-06-04T00:00:00.000Z" },
+    );
+
+    expect(dto.metrics).toMatchObject({
+      screenPass: null,
+      projectFinish: 100,
+      roi: null,
+      grossContrib: null,
+    });
+    expect(dto.matchScore).toBe(45);
+    expect(dto.matchTrend).toEqual([null, null, null, null, null, 45]);
+  });
+
+  it("keeps match score unavailable when raw history has no observable score dimension", () => {
+    const dto = toStreamerCardDto(
+      {
+        id: "s-unscored-report",
+        display_name: "Unscored Report",
+        real_name: null,
+        gender: null,
+        source_type: "external",
+        cooperation_status: "active",
+        categories: [],
+        platforms: [],
+        styles: [],
+        default_settlement_method: "cpt",
+        risk_level: "low",
+        clean_report_count: 0,
+        created_at: "2026-06-01T00:00:00.000Z",
+        recording_submissions: [],
+        live_tasks: [],
+        live_reports: [
+          {
+            status: "approved",
+            settlement_duration: 0,
+            evidence_level: "green",
+            viewers: 0,
+            created_at: "2026-06-03T00:00:00.000Z",
+            project_id: "project-1",
+            projects: { default_hourly_rate: 50 },
+          },
+        ],
+      },
+      { now: "2026-06-04T00:00:00.000Z" },
+    );
+
+    expect(dto.hasPerformanceData).toBe(true);
+    expect(dto.metrics).toMatchObject({
+      screenPass: null,
+      projectFinish: null,
+      roi: null,
+      grossContrib: 0,
+    });
+    expect(dto.matchScore).toBeNull();
+    expect(dto.matchTrend).toEqual([null, null, null, null, null, null]);
+  });
+
+  it("keeps zero-viewer ROI as an observed zero when duration is complete", () => {
+    const dto = toStreamerCardDto(
+      reportMetricRow({
+        settlement_duration: 120,
+        viewers: 0,
+        projects: { default_hourly_rate: 50 },
+      }),
+      { now: "2026-06-04T00:00:00.000Z" },
+    );
+
+    expect(dto.metrics).toMatchObject({ roi: 0, grossContrib: 100 });
+    expect(dto.matchScore).toBe(3);
+    expect(dto.projects[0]).toMatchObject({
+      settlementHours: 2,
+      grossContrib: 100,
+    });
+  });
+
+  it("keeps ROI unavailable when viewers are missing", () => {
+    const dto = toStreamerCardDto(
+      reportMetricRow({
+        settlement_duration: 120,
+        viewers: null,
+        projects: { default_hourly_rate: 50 },
+      }),
+      { now: "2026-06-04T00:00:00.000Z" },
+    );
+
+    expect(dto.metrics).toMatchObject({ roi: null, grossContrib: 100 });
+    expect(dto.matchScore).toBeNull();
+    expect(dto.projects[0]).toMatchObject({
+      settlementHours: 2,
+      grossContrib: 100,
+    });
+  });
+
+  it("keeps ROI, duration, and contribution unavailable when duration is missing", () => {
+    const dto = toStreamerCardDto(
+      reportMetricRow({
+        settlement_duration: null,
+        viewers: 1000,
+        projects: { default_hourly_rate: 50 },
+      }),
+      { now: "2026-06-04T00:00:00.000Z" },
+    );
+
+    expect(dto.metrics).toMatchObject({ roi: null, grossContrib: null });
+    expect(dto.projects[0]).toMatchObject({
+      settlementHours: null,
+      grossContrib: null,
+    });
+  });
+
+  it("keeps contribution unavailable when the hourly rate is missing", () => {
+    const dto = toStreamerCardDto(
+      reportMetricRow({
+        settlement_duration: 120,
+        viewers: 1000,
+        projects: { default_hourly_rate: null },
+      }),
+      { now: "2026-06-04T00:00:00.000Z" },
+    );
+
+    expect(dto.metrics).toMatchObject({ roi: 0.5, grossContrib: null });
+    expect(dto.projects[0]).toMatchObject({
+      settlementHours: 2,
+      grossContrib: null,
     });
   });
 });
+
+function reportMetricRow(
+  report: Pick<
+    NonNullable<
+      Parameters<typeof toStreamerCardDto>[0]["live_reports"]
+    >[number],
+    "settlement_duration" | "viewers" | "projects"
+  >,
+): Parameters<typeof toStreamerCardDto>[0] {
+  return {
+    id: "s-report-metric",
+    display_name: "Report Metric",
+    real_name: null,
+    gender: null,
+    source_type: "external",
+    cooperation_status: "active",
+    categories: [],
+    platforms: [],
+    styles: [],
+    default_settlement_method: "cpt",
+    risk_level: "low",
+    clean_report_count: 0,
+    created_at: "2026-06-01T00:00:00.000Z",
+    recording_submissions: [],
+    live_tasks: [],
+    live_reports: [
+      {
+        status: "approved",
+        evidence_level: "green",
+        created_at: "2026-06-03T00:00:00.000Z",
+        project_id: "project-1",
+        ...report,
+      },
+    ],
+    project_streamers: [
+      {
+        status: "joined",
+        project_id: "project-1",
+        projects: {
+          id: "project-1",
+          code: "P1",
+          name: "Project 1",
+          status: "active",
+          default_hourly_rate:
+            Array.isArray(report.projects) || !report.projects
+              ? null
+              : report.projects.default_hourly_rate,
+        },
+      },
+    ],
+  };
+}
 
 describe("toStreamerDesktopProfileDto", () => {
   it("derives the streamer desktop profile from business rows", () => {
