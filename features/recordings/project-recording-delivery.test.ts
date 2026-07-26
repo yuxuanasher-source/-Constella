@@ -173,6 +173,33 @@ describe("submitProjectRecording", () => {
     );
   });
 
+  it.each([
+    "org-2/recordings/project-1/demo.mp4",
+    "org-1/recordings/%252e%252e/demo.mp4",
+  ])(
+    "rejects invalid uploaded storage path before creating an application: %s",
+    async (storagePath) => {
+      const repo = baseRepo();
+
+      await expect(
+        submitProjectRecording({
+          repo,
+          audit: vi.fn(),
+          notify: vi.fn(),
+          actor,
+          input: {
+            projectId: "project-1",
+            streamerId: "streamer-1",
+            storagePath,
+          },
+        }),
+      ).rejects.toThrow("Invalid recording storage path");
+
+      expect(repo.createApplication).not.toHaveBeenCalled();
+      expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+    },
+  );
+
   it("uses an existing submittable application and increments recording version", async () => {
     const repo = baseRepo();
     repo.getApplicationByProjectAndStreamer.mockResolvedValue({

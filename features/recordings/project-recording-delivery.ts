@@ -7,6 +7,7 @@ import type {
   RecordingSubmissionRecord,
 } from "@/features/applications/application-service";
 import { submitRecording } from "@/features/applications/application-service";
+import { normalizeRecordingStoragePath } from "@/features/storage/recording-path-guard";
 import {
   normalizeRecordingSelfCheck,
   parseRecordingSelfCheckInput,
@@ -68,7 +69,11 @@ export async function submitProjectRecording({
     throw new Error("Only streamers can submit project recordings");
   }
 
-  const normalized = normalizeProjectRecordingInput(input);
+  const storagePath = normalizeRecordingStoragePath(
+    input.storagePath,
+    actor.organizationId,
+  );
+  const normalized = normalizeProjectRecordingInput({ ...input, storagePath });
   const selfCheck = normalizeRecordingSelfCheck(normalized.selfCheck);
   const project = await repo.getPublicProjectForRecording(normalized.projectId);
   if (
