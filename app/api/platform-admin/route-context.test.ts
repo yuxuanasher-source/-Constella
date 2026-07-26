@@ -94,6 +94,9 @@ describe("getPlatformAdminRouteContext", () => {
       expect(context.mutationRepo.constructor.name).toBe(
         "SupabasePlatformAdminMutationRepository",
       );
+      expect(context.billingRepo.constructor.name).toBe(
+        "SupabasePlatformAdminBillingRepository",
+      );
     }
   });
 });

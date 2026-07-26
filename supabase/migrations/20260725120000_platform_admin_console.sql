@@ -5,6 +5,13 @@ alter table public.organizations
   add column lifecycle_status text not null default 'active'
   check (lifecycle_status in ('active', 'frozen', 'archived'));
 
+alter table public.billing_plans
+  add column updated_at timestamptz not null default now();
+
+create trigger billing_plans_touch_updated_at
+before update on public.billing_plans
+for each row execute function public.touch_updated_at();
+
 create table public.platform_admins (
   user_id uuid primary key references public.profiles(id) on delete cascade,
   role text not null default 'super_admin' check (role = 'super_admin'),
@@ -565,4 +572,195 @@ grant execute on function public.platform_create_organization(
   text,
   text,
   text
+) to service_role;
+
+create or replace function public.platform_create_plan_price_version(
+  p_plan_id uuid,
+  p_billing_cycle public.billing_cycle,
+  p_price_cents integer,
+  p_currency text,
+  p_effective_from timestamptz,
+  p_previous_price_version_id uuid,
+  p_expected_plan_updated_at timestamptz
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_price public.billing_plan_prices%rowtype;
+  v_updated_count integer;
+begin
+  if p_price_cents < 0 then
+    raise exception 'Price must be non-negative';
+  end if;
+
+  update public.billing_plans
+  set
+    monthly_price_cents = case
+      when p_billing_cycle = 'monthly' then p_price_cents
+      else monthly_price_cents
+    end,
+    annual_price_cents = case
+      when p_billing_cycle = 'annual' then p_price_cents
+      else annual_price_cents
+    end
+  where id = p_plan_id
+    and updated_at = p_expected_plan_updated_at;
+  get diagnostics v_updated_count = row_count;
+  if v_updated_count <> 1 then
+    raise exception 'Billing plan changed after it was loaded'
+      using errcode = '40001';
+  end if;
+
+  if p_previous_price_version_id is not null then
+    update public.billing_plan_prices
+    set
+      active = false,
+      effective_to = p_effective_from
+    where id = p_previous_price_version_id
+      and plan_id = p_plan_id
+      and billing_cycle = p_billing_cycle
+      and active = true
+      and effective_from < p_effective_from;
+    get diagnostics v_updated_count = row_count;
+    if v_updated_count <> 1 then
+      raise exception 'Active price version changed after it was loaded'
+        using errcode = '40001';
+    end if;
+  elsif exists (
+    select 1
+    from public.billing_plan_prices
+    where plan_id = p_plan_id
+      and billing_cycle = p_billing_cycle
+      and active = true
+  ) then
+    raise exception 'Active price version changed after it was loaded'
+      using errcode = '40001';
+  end if;
+
+  insert into public.billing_plan_prices (
+    plan_id,
+    billing_cycle,
+    price_cents,
+    currency,
+    active,
+    effective_from
+  )
+  values (
+    p_plan_id,
+    p_billing_cycle,
+    p_price_cents,
+    upper(trim(p_currency)),
+    true,
+    p_effective_from
+  )
+  returning * into v_price;
+
+  return to_jsonb(v_price);
+end;
+$$;
+
+revoke all on function public.platform_create_plan_price_version(
+  uuid,
+  public.billing_cycle,
+  integer,
+  text,
+  timestamptz,
+  uuid,
+  timestamptz
+) from public, anon, authenticated;
+grant execute on function public.platform_create_plan_price_version(
+  uuid,
+  public.billing_cycle,
+  integer,
+  text,
+  timestamptz,
+  uuid,
+  timestamptz
+) to service_role;
+
+create or replace function public.platform_create_plan_cost_version(
+  p_plan_id uuid,
+  p_effective_from timestamptz,
+  p_effective_to timestamptz,
+  p_fixed_cost_cents integer,
+  p_per_seat_cost_cents integer,
+  p_per_active_streamer_cost_cents integer,
+  p_metric_unit_costs jsonb,
+  p_reason text,
+  p_created_by uuid,
+  p_expected_plan_updated_at timestamptz
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_cost public.billing_plan_cost_versions%rowtype;
+  v_updated_count integer;
+begin
+  update public.billing_plans
+  set updated_at = now()
+  where id = p_plan_id
+    and updated_at = p_expected_plan_updated_at;
+  get diagnostics v_updated_count = row_count;
+  if v_updated_count <> 1 then
+    raise exception 'Billing plan changed after it was loaded'
+      using errcode = '40001';
+  end if;
+
+  insert into public.billing_plan_cost_versions (
+    plan_id,
+    effective_from,
+    effective_to,
+    fixed_cost_cents,
+    per_seat_cost_cents,
+    per_active_streamer_cost_cents,
+    metric_unit_costs,
+    reason,
+    created_by
+  )
+  values (
+    p_plan_id,
+    p_effective_from,
+    p_effective_to,
+    p_fixed_cost_cents,
+    p_per_seat_cost_cents,
+    p_per_active_streamer_cost_cents,
+    coalesce(p_metric_unit_costs, '{}'::jsonb),
+    trim(p_reason),
+    p_created_by
+  )
+  returning * into v_cost;
+
+  return to_jsonb(v_cost);
+end;
+$$;
+
+revoke all on function public.platform_create_plan_cost_version(
+  uuid,
+  timestamptz,
+  timestamptz,
+  integer,
+  integer,
+  integer,
+  jsonb,
+  text,
+  uuid,
+  timestamptz
+) from public, anon, authenticated;
+grant execute on function public.platform_create_plan_cost_version(
+  uuid,
+  timestamptz,
+  timestamptz,
+  integer,
+  integer,
+  integer,
+  jsonb,
+  text,
+  uuid,
+  timestamptz
 ) to service_role;

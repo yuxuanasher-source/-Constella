@@ -27,6 +27,40 @@ describe("resolvePlanPriceCents", () => {
       ),
     ).toThrow(/not configured/);
   });
+
+  it("uses effective windows so a future version is not charged early", () => {
+    const versioned: PlanPriceRow[] = [
+      {
+        billingCycle: "monthly",
+        priceCents: 99900,
+        active: false,
+        effectiveFrom: "2026-01-01T00:00:00.000Z",
+        effectiveTo: "2026-08-01T00:00:00.000Z",
+      },
+      {
+        billingCycle: "monthly",
+        priceCents: 129900,
+        active: true,
+        effectiveFrom: "2026-08-01T00:00:00.000Z",
+        effectiveTo: null,
+      },
+    ];
+
+    expect(
+      resolvePlanPriceCents(
+        versioned,
+        "monthly",
+        new Date("2026-07-26T00:00:00.000Z"),
+      ),
+    ).toBe(99900);
+    expect(
+      resolvePlanPriceCents(
+        versioned,
+        "monthly",
+        new Date("2026-08-01T00:00:00.000Z"),
+      ),
+    ).toBe(129900);
+  });
 });
 
 describe("usage and feature add-on pricing", () => {

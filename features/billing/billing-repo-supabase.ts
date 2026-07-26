@@ -86,25 +86,38 @@ export function createSupabaseBillingRepo(client: SupabaseClient): BillingRepo {
     async getPlanPrices(planId) {
       const { data } = await client
         .from("billing_plan_prices")
-        .select("billing_cycle, price_cents, active")
+        .select(
+          "billing_cycle, price_cents, active, effective_from, effective_to",
+        )
         .eq("plan_id", planId)
         .returns<
-          { billing_cycle: BillingCycle; price_cents: number; active: boolean }[]
+          {
+            billing_cycle: BillingCycle;
+            price_cents: number;
+            active: boolean;
+            effective_from: string;
+            effective_to: string | null;
+          }[]
         >();
       return (data ?? []).map<PlanPriceRow>((row) => ({
         billingCycle: row.billing_cycle,
         priceCents: row.price_cents,
         active: row.active,
+        effectiveFrom: row.effective_from,
+        effectiveTo: row.effective_to,
       }));
     },
 
     async getPlanPriceId(planId, cycle) {
+      const now = new Date().toISOString();
       const { data } = await client
         .from("billing_plan_prices")
         .select("id")
         .eq("plan_id", planId)
         .eq("billing_cycle", cycle)
-        .eq("active", true)
+        .lte("effective_from", now)
+        .or(`effective_to.is.null,effective_to.gt.${now}`)
+        .order("effective_from", { ascending: false })
         .limit(1)
         .maybeSingle<{ id: string }>();
       return data?.id ?? null;

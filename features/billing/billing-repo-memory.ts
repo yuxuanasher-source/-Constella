@@ -9,7 +9,7 @@ import type {
   TransactionInput,
   WebhookEventInput,
 } from "./billing-repo";
-import type { PlanPriceRow } from "./pricing";
+import { isPlanPriceEffective, type PlanPriceRow } from "./pricing";
 
 export type MemoryWebhookEvent = WebhookEventInput & { processed: boolean };
 
@@ -73,7 +73,8 @@ export function createMemoryBillingRepo(seed: {
     },
     async getPlanPriceId(planId, cycle) {
       const match = (state.prices.get(planId) ?? []).find(
-        (price) => price.active && price.billingCycle === cycle,
+        (price) =>
+          price.billingCycle === cycle && isPlanPriceEffective(price),
       );
       return match ? `price_${planId}_${cycle}` : null;
     },

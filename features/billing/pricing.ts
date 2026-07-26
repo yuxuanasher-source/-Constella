@@ -31,6 +31,8 @@ export type PlanPriceRow = {
   billingCycle: BillingCycle;
   priceCents: number;
   active: boolean;
+  effectiveFrom?: string;
+  effectiveTo?: string | null;
 };
 
 /**
@@ -40,14 +42,44 @@ export type PlanPriceRow = {
 export function resolvePlanPriceCents(
   prices: PlanPriceRow[],
   cycle: BillingCycle,
+  now = new Date(),
 ): number {
-  const match = prices.find(
-    (price) => price.active && price.billingCycle === cycle,
+  const cyclePrices = prices.filter(
+    (price) => price.billingCycle === cycle,
   );
+  const versioned = cyclePrices.filter(
+    (price) => typeof price.effectiveFrom === "string",
+  );
+  const match =
+    versioned.length > 0
+      ? versioned
+          .filter((price) => isPlanPriceEffective(price, now))
+          .sort((left, right) =>
+            (right.effectiveFrom ?? "").localeCompare(
+              left.effectiveFrom ?? "",
+            ),
+          )[0]
+      : cyclePrices.find((price) => price.active);
   if (!match) {
     throw new Error("Plan price is not configured");
   }
   return nonnegativeCents(match.priceCents);
+}
+
+export function isPlanPriceEffective(
+  price: PlanPriceRow,
+  now = new Date(),
+): boolean {
+  if (!price.effectiveFrom) {
+    return price.active;
+  }
+  const instant = now.toISOString();
+  return (
+    price.effectiveFrom <= instant &&
+    (price.effectiveTo === null ||
+      price.effectiveTo === undefined ||
+      price.effectiveTo > instant)
+  );
 }
 
 export function computeUsageAddonAmountCents(
