@@ -309,7 +309,9 @@ class GoldenPathRepository
     return after;
   }
 
-  async createReportScreenshot(): Promise<void> {}
+  async createReportScreenshot(): Promise<{ id: string }> {
+    return { id: "screenshot-regression" };
+  }
 
   async createReportChangeLog(): Promise<void> {}
 
