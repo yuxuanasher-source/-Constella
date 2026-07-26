@@ -1238,7 +1238,15 @@ describe("OCR jobs", () => {
       actor,
       jobId: "job-confirm-metrics",
       manualResult: {
+        viewers: 500,
         metricCandidates: [
+          {
+            key: "viewers",
+            label: "场观",
+            value: 999,
+            sourceText: "不应绕过确认人数",
+            confidence: 100,
+          },
           {
             key: "gmv",
             label: "GMV",
@@ -1260,6 +1268,7 @@ describe("OCR jobs", () => {
     expect(client.rpc).toHaveBeenCalledWith(
       "confirm_ocr_job_metrics",
       expect.objectContaining({
+        p_confirmed_viewers: 500,
         p_metrics: [
           { key: "gmv", value: 250 },
           { key: "follows", value: 20 },

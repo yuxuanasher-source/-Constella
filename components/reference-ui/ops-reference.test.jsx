@@ -10,7 +10,9 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import OpsReferenceApp from "./ops-reference";
+import OpsReferenceApp, {
+  buildOcrManualConfirmation,
+} from "./ops-reference";
 
 const taskProjectCards = [
   {
@@ -4211,6 +4213,56 @@ describe("OpsReferenceApp OCR operations smoke", () => {
     expect(
       await screen.findByText("成功", { selector: "span" }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("buildOcrManualConfirmation", () => {
+  it("omits viewers metrics for empty or zero input", () => {
+    const job = {
+      result: {
+        extractedViewers: null,
+        metricCandidates: [
+          { key: "viewers", label: "场观", value: 0, confidence: 80 },
+          { key: "gmv", label: "GMV", value: 250, confidence: 90 },
+        ],
+      },
+    };
+
+    expect(
+      buildOcrManualConfirmation(job, { viewers: "", metricValues: {} }),
+    ).toEqual({
+      duration: 0,
+      viewers: 0,
+      metricCandidates: [
+        { key: "gmv", label: "GMV", value: 250, confidence: 90 },
+      ],
+    });
+  });
+
+  it("keeps viewers and other metrics aligned for a valid manual value", () => {
+    const job = {
+      result: {
+        extractedViewers: 320,
+        metricCandidates: [
+          { key: "viewers", label: "场观", value: 320, confidence: 92 },
+          { key: "gmv", label: "GMV", value: 250, confidence: 90 },
+        ],
+      },
+    };
+
+    expect(
+      buildOcrManualConfirmation(job, {
+        viewers: "500",
+        metricValues: { gmv: "300" },
+      }),
+    ).toEqual({
+      duration: 0,
+      viewers: 500,
+      metricCandidates: [
+        { key: "viewers", label: "场观", value: 500, confidence: 92 },
+        { key: "gmv", label: "GMV", value: 300, confidence: 90 },
+      ],
+    });
   });
 });
 

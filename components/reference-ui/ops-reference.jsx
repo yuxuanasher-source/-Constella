@@ -4603,46 +4603,8 @@ function OcrOperationsPanel({
       },
     }));
   };
-  const manualResultFor = (job) => {
-    const value = manualResults[job.id] ?? {};
-    const viewersCandidate = job.result.metricCandidates.find(
-      (candidate) => candidate.key === "viewers",
-    );
-    const viewers = normalizeOcrMetricInput(
-      value.viewers ??
-        job.result.extractedViewers ??
-        viewersCandidate?.value ??
-        0,
-    );
-    const metricCandidates = job.result.metricCandidates.map((candidate) =>
-      candidate.key === "viewers"
-        ? {
-            ...candidate,
-            value: viewers,
-          }
-        : {
-            key: candidate.key,
-            label: candidate.label,
-            value: normalizeOcrMetricInput(
-              value.metricValues?.[candidate.key] ?? candidate.value,
-            ),
-            confidence: candidate.confidence,
-          },
-    );
-    if (!viewersCandidate) {
-      metricCandidates.push({
-        key: "viewers",
-        label: OCR_METRIC_LABELS.viewers,
-        value: viewers,
-        confidence: 100,
-      });
-    }
-    return {
-      duration: Number(value.duration || 0),
-      viewers,
-      metricCandidates,
-    };
-  };
+  const manualResultFor = (job) =>
+    buildOcrManualConfirmation(job, manualResults[job.id] ?? {});
   const safeJobs = jobs.map(toSafeOcrJobView);
 
   return (
@@ -4951,7 +4913,7 @@ function toSafeOcrJobView(job) {
     !metricCandidates.some((candidate) => candidate.key === "viewers") &&
     typeof extractedViewers === "number" &&
     Number.isFinite(extractedViewers) &&
-    extractedViewers >= 0 &&
+    extractedViewers > 0 &&
     extractedViewers <= 2147483647
   ) {
     metricCandidates.unshift({
@@ -5040,6 +5002,51 @@ function normalizeOcrMetricInput(value) {
   return Number.isFinite(numeric)
     ? Math.max(0, Math.min(2147483647, Math.round(numeric)))
     : 0;
+}
+
+export function buildOcrManualConfirmation(job, value = {}) {
+  const metricCandidates = Array.isArray(job?.result?.metricCandidates)
+    ? job.result.metricCandidates
+    : [];
+  const viewersCandidate = metricCandidates.find(
+    (candidate) => candidate.key === "viewers",
+  );
+  const viewers = normalizeOcrMetricInput(
+    value.viewers ??
+      job?.result?.extractedViewers ??
+      viewersCandidate?.value ??
+      0,
+  );
+  const confirmedMetrics = [];
+  for (const candidate of metricCandidates) {
+    if (candidate.key === "viewers") {
+      if (viewers > 0) {
+        confirmedMetrics.push({ ...candidate, value: viewers });
+      }
+      continue;
+    }
+    confirmedMetrics.push({
+      key: candidate.key,
+      label: candidate.label,
+      value: normalizeOcrMetricInput(
+        value.metricValues?.[candidate.key] ?? candidate.value,
+      ),
+      confidence: candidate.confidence,
+    });
+  }
+  if (viewers > 0 && !viewersCandidate) {
+    confirmedMetrics.push({
+      key: "viewers",
+      label: OCR_METRIC_LABELS.viewers,
+      value: viewers,
+      confidence: 100,
+    });
+  }
+  return {
+    duration: Number(value.duration || 0),
+    viewers,
+    metricCandidates: confirmedMetrics,
+  };
 }
 
 function formatOcrResultNumber(value) {

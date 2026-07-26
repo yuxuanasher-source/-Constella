@@ -696,7 +696,7 @@ export async function confirmOcrJob({
     throw new Error("OCR job is not awaiting confirmation");
   }
   const metricCandidates = pickConfirmedMetricCandidates(manualResult);
-  const metrics = normalizeOcrMetricCandidates(metricCandidates);
+  const metrics = normalizeConfirmedOcrMetricCandidates(metricCandidates);
   const confirmedDuration = pickPositiveIntegerField(
     manualResult.extractedDuration,
     manualResult.duration,
@@ -1082,6 +1082,14 @@ function pickConfirmedMetricCandidates(
   ) && Array.isArray(manualResult.metricCandidates)
     ? manualResult.metricCandidates
     : [];
+}
+
+function normalizeConfirmedOcrMetricCandidates(
+  metricCandidates: readonly unknown[],
+): Array<{ key: string; value: number }> {
+  return normalizeOcrMetricCandidates(metricCandidates).filter(
+    (metric) => metric.key !== "viewers",
+  );
 }
 
 type OcrConfirmationClient = {
