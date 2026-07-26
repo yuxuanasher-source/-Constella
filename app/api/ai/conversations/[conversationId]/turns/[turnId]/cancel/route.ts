@@ -196,6 +196,7 @@ async function prepareControlSessions(input: {
           actorAssertion: await createHermesActorAssertionForRun({
             actor: shared.actor,
             config: shared.actorAssertionConfig,
+            runtime: "gateway",
           }),
           invocationCapability: shared.invocationCapability,
           conversationId: input.conversationId,

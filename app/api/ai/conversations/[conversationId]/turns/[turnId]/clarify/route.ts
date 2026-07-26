@@ -191,6 +191,7 @@ async function openControlSession({
     actorAssertion: await createHermesActorAssertionForRun({
       actor,
       config: actorAssertionConfig,
+      runtime: "gateway",
     }),
     invocationCapability: capability.invocationCapability,
     conversationId,

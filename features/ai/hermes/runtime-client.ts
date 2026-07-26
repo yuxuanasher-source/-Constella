@@ -2,7 +2,10 @@ import {
   LEGACY_HERMES_PROFILE_VERSION,
   type HermesActorProfile,
 } from "./contracts";
-import { signHermesActorAssertion } from "./actor-assertion";
+import {
+  signHermesActorAssertion,
+  type HermesAssertionRuntime,
+} from "./actor-assertion";
 
 export type HermesRuntimeConfig = {
   baseUrl: string;
@@ -76,16 +79,19 @@ export async function createHermesActorAssertionForRun({
   actor,
   config,
   now,
+  runtime = "legacy",
 }: {
   actor: HermesActorProfile;
   config: HermesRuntimeConfig;
   now?: Date;
+  runtime?: HermesAssertionRuntime;
 }): Promise<string> {
   return signHermesActorAssertion(actor, {
     privateKeyPem: config.privateKeyPem,
     kid: config.keyId,
     now,
     ttlSeconds: 300,
+    runtime,
   });
 }
 

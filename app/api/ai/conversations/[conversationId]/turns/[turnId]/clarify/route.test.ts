@@ -164,6 +164,9 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/clarify", () 
     );
 
     expect(response.status).toBe(200);
+    expect(issueAssertionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runtime: "gateway" }),
+    );
     expect(createSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "session-owned",
