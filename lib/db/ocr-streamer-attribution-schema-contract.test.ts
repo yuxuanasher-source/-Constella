@@ -128,7 +128,7 @@ describe("OCR streamer attribution schema contract", () => {
       /from public\.live_reports as lr[\s\S]*where lr\.id = v_ocr\.live_report_id[\s\S]*for update/,
     );
     expect(migration).toMatch(
-      /v_job\.status <> 'needs_confirmation'[\s\S]*v_ocr\.status <> 'needs_confirmation'[\s\S]*v_ocr\.reviewed_at is not null/,
+      /v_job\.status not in \('needs_confirmation', 'needs_review'\)[\s\S]*v_ocr\.status <> 'needs_confirmation'[\s\S]*v_ocr\.reviewed_at is not null/,
     );
     expect(migration).toContain(
       "v_ocr.ai_invocation_id is distinct from v_job.ai_invocation_id",
@@ -137,16 +137,46 @@ describe("OCR streamer attribution schema contract", () => {
       /v_report\.status not in \('ocr_ing', 'pending_review'\)/,
     );
     expect(migration).toMatch(
-      /update public\.ocr_results[\s\S]*update public\.background_jobs[\s\S]*insert into public\.streamer_metrics/,
+      /update public\.ocr_results[\s\S]*update public\.background_jobs[\s\S]*insert into public\.streamer_metrics[\s\S]*update public\.live_reports/,
     );
     expect(migration).toMatch(
-      /revoke all on function public\.confirm_ocr_job_metrics\([\s\S]*from public, anon, authenticated, service_role/,
+      /update public\.ocr_results[\s\S]*updated_at = p_reviewed_at/,
     );
     expect(migration).toMatch(
-      /grant execute on function public\.confirm_ocr_job_metrics\([\s\S]*to service_role/,
+      /update public\.live_reports[\s\S]*status = case[\s\S]*screenshot_duration = v_confirmed_duration[\s\S]*viewers = v_confirmed_viewers[\s\S]*settlement_duration = v_settlement_duration[\s\S]*time_source = v_time_source[\s\S]*evidence_level = v_evidence_level[\s\S]*divergence_pct = v_divergence_pct[\s\S]*risk_flags = v_risk_flags[\s\S]*updated_at = p_reviewed_at/,
+    );
+    expect(migration).toMatch(
+      /revoke all on function public\.confirm_ocr_job_metrics\(\s*uuid, uuid, timestamptz, jsonb, jsonb, integer, integer\s*\) from public, anon, authenticated, service_role/,
+    );
+    expect(migration).toMatch(
+      /grant execute on function public\.confirm_ocr_job_metrics\(\s*uuid, uuid, timestamptz, jsonb, jsonb, integer, integer\s*\) to service_role/,
     );
     expect(migration).not.toMatch(
       /grant execute on function public\.confirm_ocr_job_metrics\([\s\S]*to authenticated/,
+    );
+  });
+
+  it("computes aligned, divergent, and missing-system evidence under the report row lock", () => {
+    expect(migration).toMatch(
+      /select[\s\S]*lr\.system_duration[\s\S]*lr\.claimed_duration[\s\S]*lr\.risk_flags[\s\S]*for update of lr/,
+    );
+    expect(migration).toMatch(
+      /v_confirmed_duration := coalesce\([\s\S]*nullif\(p_confirmed_duration, 0\)[\s\S]*v_ocr\.extracted_duration/,
+    );
+    expect(migration).toContain(
+      "greatest(v_report.system_duration * 0.10, 15)",
+    );
+    expect(migration).toMatch(
+      /v_divergence_pct := round\([\s\S]*abs\(v_report\.system_duration - v_confirmed_duration\)[\s\S]*v_evidence_level := 'green'[\s\S]*v_evidence_level := 'yellow'[\s\S]*duration_divergence/,
+    );
+    expect(migration).toMatch(
+      /if v_report\.system_duration is not null then[\s\S]*v_evidence_level := 'green'[\s\S]*else[\s\S]*missing_system_duration[\s\S]*v_time_source := 'screenshot'[\s\S]*v_evidence_level := 'yellow'/,
+    );
+    expect(migration).toMatch(
+      /missing_screenshot_duration[\s\S]*v_time_source := 'claimed'[\s\S]*v_evidence_level := 'red'/,
+    );
+    expect(migration).toMatch(
+      /flag not like 'ocr\\_%' escape '\\'[\s\S]*duration_divergence[\s\S]*missing_system_duration[\s\S]*missing_screenshot_duration/,
     );
   });
 

@@ -4605,17 +4605,42 @@ function OcrOperationsPanel({
   };
   const manualResultFor = (job) => {
     const value = manualResults[job.id] ?? {};
+    const viewersCandidate = job.result.metricCandidates.find(
+      (candidate) => candidate.key === "viewers",
+    );
+    const viewers = normalizeOcrMetricInput(
+      value.viewers ??
+        job.result.extractedViewers ??
+        viewersCandidate?.value ??
+        0,
+    );
+    const metricCandidates = job.result.metricCandidates.map((candidate) =>
+      candidate.key === "viewers"
+        ? {
+            ...candidate,
+            value: viewers,
+          }
+        : {
+            key: candidate.key,
+            label: candidate.label,
+            value: normalizeOcrMetricInput(
+              value.metricValues?.[candidate.key] ?? candidate.value,
+            ),
+            confidence: candidate.confidence,
+          },
+    );
+    if (!viewersCandidate) {
+      metricCandidates.push({
+        key: "viewers",
+        label: OCR_METRIC_LABELS.viewers,
+        value: viewers,
+        confidence: 100,
+      });
+    }
     return {
       duration: Number(value.duration || 0),
-      viewers: Number(value.viewers || 0),
-      metricCandidates: job.result.metricCandidates.map((candidate) => ({
-        key: candidate.key,
-        label: candidate.label,
-        value: normalizeOcrMetricInput(
-          value.metricValues?.[candidate.key] ?? candidate.value,
-        ),
-        confidence: candidate.confidence,
-      })),
+      viewers,
+      metricCandidates,
     };
   };
   const safeJobs = jobs.map(toSafeOcrJobView);
@@ -4796,7 +4821,14 @@ function OcrOperationsPanel({
                         aria-label={`修正观看人数 ${displayRecordId(job.id, "OCR 任务")}`}
                         type="number"
                         min="0"
-                        value={manualResults[job.id]?.viewers ?? ""}
+                        value={
+                          manualResults[job.id]?.viewers ??
+                          job.result.extractedViewers ??
+                          job.result.metricCandidates.find(
+                            (candidate) => candidate.key === "viewers",
+                          )?.value ??
+                          ""
+                        }
                         onChange={(event) =>
                           updateManualResult(
                             job.id,
@@ -4807,40 +4839,56 @@ function OcrOperationsPanel({
                         style={ocrNumberInputStyle}
                       />
                     </label>
-                    {job.result.metricCandidates.map((candidate) => (
-                      <label
-                        key={candidate.key}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 4,
-                          fontSize: 12,
-                          color: "var(--ink-400)",
-                        }}
-                      >
-                        {ocrMetricDisplayLabel(candidate)} · {candidate.key}
-                        <input
-                          aria-label={`修正 ${ocrMetricDisplayLabel(candidate)} ${candidate.key} ${displayRecordId(job.id, "OCR 任务")}`}
-                          type="number"
-                          min="0"
-                          max="2147483647"
-                          step="1"
-                          value={
-                            manualResults[job.id]?.metricValues?.[
-                              candidate.key
-                            ] ?? candidate.value
-                          }
-                          onChange={(event) =>
-                            updateManualMetric(
-                              job.id,
-                              candidate.key,
-                              event.target.value,
-                            )
-                          }
-                          style={ocrNumberInputStyle}
-                        />
-                      </label>
-                    ))}
+                    {job.result.metricCandidates.map((candidate) =>
+                      candidate.key === "viewers" ? (
+                        <span
+                          key={candidate.key}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            fontSize: 12,
+                            color: "var(--ink-400)",
+                          }}
+                        >
+                          {ocrMetricDisplayLabel(candidate)} · {candidate.key}
+                          <span>与人数同步</span>
+                        </span>
+                      ) : (
+                        <label
+                          key={candidate.key}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            fontSize: 12,
+                            color: "var(--ink-400)",
+                          }}
+                        >
+                          {ocrMetricDisplayLabel(candidate)} · {candidate.key}
+                          <input
+                            aria-label={`修正 ${ocrMetricDisplayLabel(candidate)} ${candidate.key} ${displayRecordId(job.id, "OCR 任务")}`}
+                            type="number"
+                            min="0"
+                            max="2147483647"
+                            step="1"
+                            value={
+                              manualResults[job.id]?.metricValues?.[
+                                candidate.key
+                              ] ?? candidate.value
+                            }
+                            onChange={(event) =>
+                              updateManualMetric(
+                                job.id,
+                                candidate.key,
+                                event.target.value,
+                              )
+                            }
+                            style={ocrNumberInputStyle}
+                          />
+                        </label>
+                      ),
+                    )}
                     <Button
                       kind="default"
                       onClick={() =>
@@ -4895,6 +4943,24 @@ function OcrOperationsPanel({
 function toSafeOcrJobView(job) {
   const result =
     job?.result && typeof job.result === "object" ? job.result : {};
+  const metricCandidates = sanitizeOcrMetricCandidates(
+    result.metricCandidates,
+  );
+  const extractedViewers = result.extractedViewers;
+  if (
+    !metricCandidates.some((candidate) => candidate.key === "viewers") &&
+    typeof extractedViewers === "number" &&
+    Number.isFinite(extractedViewers) &&
+    extractedViewers >= 0 &&
+    extractedViewers <= 2147483647
+  ) {
+    metricCandidates.unshift({
+      key: "viewers",
+      label: OCR_METRIC_LABELS.viewers,
+      value: Math.round(extractedViewers),
+      confidence: 100,
+    });
+  }
   return {
     id: job?.id,
     status: job?.status,
@@ -4907,7 +4973,7 @@ function toSafeOcrJobView(job) {
     result: {
       extractedDuration: result.extractedDuration,
       extractedViewers: result.extractedViewers,
-      metricCandidates: sanitizeOcrMetricCandidates(result.metricCandidates),
+      metricCandidates,
     },
   };
 }

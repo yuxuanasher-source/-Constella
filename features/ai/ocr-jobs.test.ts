@@ -29,16 +29,12 @@ function createClient(
       background_job_id: string | null;
     }>;
     rpcErrors?: Record<string, Error>;
-    updateCounts?: Record<string, number>;
+    insertErrors?: Record<string, Error>;
   } = {},
 ) {
   const ocrResults = [...(fixtures.ocrResults ?? [])];
   const inserts: Record<string, Record<string, unknown>[]> = {};
   const updates: Record<string, Record<string, unknown>[]> = {};
-  const updateOptions: Record<
-    string,
-    Array<Record<string, unknown> | undefined>
-  > = {};
   const jobs = [...(fixtures.jobs ?? [])];
   const liveReports = [
     ...(fixtures.liveReports ?? []).map((report) => ({
@@ -65,7 +61,6 @@ function createClient(
   const createUpdateFilter = (
     table: string,
     payload: Record<string, unknown>,
-    options?: Record<string, unknown>,
   ): TestUpdateFilter => {
     const filters: Array<{ column: string; value: string }> = [];
     let executed = false;
@@ -82,7 +77,6 @@ function createClient(
             filters: [...filters],
           },
         ];
-        updateOptions[table] = [...(updateOptions[table] ?? []), options];
         if (table === "background_jobs" && first.column === "id") {
           const index = jobs.findIndex((job) => job.id === first.value);
           if (index >= 0) {
@@ -90,7 +84,7 @@ function createClient(
           }
         }
       }
-      return { error: null, count: fixtures.updateCounts?.[table] ?? 1 };
+      return { error: null, count: 1 };
     };
     const builder = {
       eq: vi.fn((column: string, value: string): TestUpdateFilter => {
@@ -137,11 +131,10 @@ function createClient(
         if (table === "background_jobs") {
           jobs.push(toJobRecord(payload));
         }
-        return { error: null };
+        return { error: fixtures.insertErrors?.[table] ?? null };
       }),
-      update: vi.fn(
-        (payload: Record<string, unknown>, options?: Record<string, unknown>) =>
-          createUpdateFilter(table, payload, options),
+      update: vi.fn((payload: Record<string, unknown>) =>
+        createUpdateFilter(table, payload),
       ),
       select: vi.fn(() => ({
         eq: vi.fn((column: string, value: string) => ({
@@ -182,7 +175,7 @@ function createClient(
     })),
   };
 
-  return { client, inserts, updates, updateOptions, jobs };
+  return { client, inserts, updates, jobs };
 }
 
 const actor = {
@@ -1195,6 +1188,8 @@ describe("OCR jobs", () => {
       p_reviewed_at: "2026-06-05T02:30:00.000Z",
       p_manual_result: { duration: 80, viewers: 320 },
       p_metrics: [],
+      p_confirmed_duration: 80,
+      p_confirmed_viewers: 320,
     });
     expect(updates.ocr_results).toBeUndefined();
   });
@@ -1425,36 +1420,105 @@ describe("OCR jobs", () => {
     );
   });
 
-  it("requests an exact count for the post-confirmation live-report CAS", async () => {
-    const { client, updateOptions } = createClient({
+  it("allows a background job marked needs_review to complete through atomic confirmation", async () => {
+    const { client } = createClient({
       jobs: [
         {
-          id: "job-confirm-cas",
+          id: "job-needs-review-confirm",
           organizationId: "org-1",
           jobType: "ocr.extract_live_report",
-          status: "needs_confirmation",
+          status: "needs_review",
           attempt: 1,
-          aiInvocationId: "invocation-confirm-cas",
-          payload: { liveReportId: "report-confirm-cas" },
+          aiInvocationId: "invocation-needs-review-confirm",
+          payload: { liveReportId: "report-needs-review-confirm" },
         },
       ],
-      updateCounts: { live_reports: 0 },
     });
 
-    await expect(
-      confirmOcrJob({
+    await confirmOcrJob({
+      client,
+      confirmationClient: client as never,
+      actor,
+      jobId: "job-needs-review-confirm",
+      manualResult: { duration: 80, viewers: 320, metricCandidates: [] },
+    });
+
+    expect(client.rpc).toHaveBeenCalledWith(
+      "confirm_ocr_job_metrics",
+      expect.objectContaining({ p_job_id: "job-needs-review-confirm" }),
+    );
+  });
+
+  it.each([
+    {
+      name: "aligned system and screenshot duration",
+      systemDuration: 180,
+      confirmedDuration: 180,
+    },
+    {
+      name: "divergent system and screenshot duration",
+      systemDuration: 180,
+      confirmedDuration: 120,
+    },
+    {
+      name: "missing system duration",
+      systemDuration: null,
+      confirmedDuration: 180,
+    },
+  ])(
+    "delegates $name evidence calculation to the locked RPC without a follow-up report write",
+    async ({ systemDuration, confirmedDuration }) => {
+      const { client, updates } = createClient({
+        jobs: [
+          {
+            id: `job-evidence-${confirmedDuration}-${String(systemDuration)}`,
+            organizationId: "org-1",
+            jobType: "ocr.extract_live_report",
+            status: "needs_confirmation",
+            attempt: 1,
+            aiInvocationId: `invocation-evidence-${confirmedDuration}-${String(systemDuration)}`,
+            payload: {
+              liveReportId: `report-evidence-${confirmedDuration}-${String(systemDuration)}`,
+            },
+          },
+        ],
+        liveReports: [
+          {
+            id: `report-evidence-${confirmedDuration}-${String(systemDuration)}`,
+            organization_id: "org-1",
+            project_id: "project-1",
+            status: "ocr_ing",
+            system_duration: systemDuration,
+            claimed_duration: 200,
+            risk_flags: ["ocr_pending", "duration_divergence"],
+          },
+        ],
+      });
+
+      await confirmOcrJob({
         client,
         confirmationClient: client as never,
         actor,
-        jobId: "job-confirm-cas",
-        manualResult: { metricCandidates: [] },
-      }),
-    ).resolves.toMatchObject({ status: "succeeded" });
+        jobId: `job-evidence-${confirmedDuration}-${String(systemDuration)}`,
+        manualResult: {
+          duration: confirmedDuration,
+          viewers: 2488,
+          metricCandidates: [],
+        },
+      });
 
-    expect(updateOptions.live_reports).toContainEqual({ count: "exact" });
-  });
+      expect(client.rpc).toHaveBeenCalledWith(
+        "confirm_ocr_job_metrics",
+        expect.objectContaining({
+          p_confirmed_duration: confirmedDuration,
+          p_confirmed_viewers: 2488,
+        }),
+      );
+      expect(updates.live_reports).toBeUndefined();
+    },
+  );
 
-  it("keeps the OCR-extracted duration when a confirmation submits zero", async () => {
+  it("keeps OCR fallback values inside the atomic RPC when confirmation submits zero", async () => {
     const { client, updates } = createClient({
       jobs: [
         {
@@ -1495,20 +1559,51 @@ describe("OCR jobs", () => {
       now: () => new Date("2026-06-05T02:30:00.000Z"),
     });
 
-    expect(updates.live_reports).toEqual([
+    expect(client.rpc).toHaveBeenCalledWith(
+      "confirm_ocr_job_metrics",
       expect.objectContaining({
-        column: "id",
-        value: "report-confirm-zero",
-        payload: expect.objectContaining({
-          status: "pending_review",
-          screenshot_duration: 180,
-          viewers: 2488,
-          settlement_duration: 180,
-          time_source: "system",
-          evidence_level: "green",
-        }),
+        p_confirmed_duration: null,
+        p_confirmed_viewers: null,
       }),
-    ]);
+    );
+    expect(updates.live_reports).toBeUndefined();
+  });
+
+  it("returns success when post-confirmation audit logging fails", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-confirm-audit-failure",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "needs_confirmation",
+          attempt: 1,
+          aiInvocationId: "invocation-confirm-audit-failure",
+          payload: { liveReportId: "report-confirm-audit-failure" },
+        },
+      ],
+      insertErrors: { audit_logs: new Error("audit unavailable") },
+    });
+
+    await expect(
+      confirmOcrJob({
+        client,
+        confirmationClient: client as never,
+        actor,
+        jobId: "job-confirm-audit-failure",
+        manualResult: { duration: 80, viewers: 320, metricCandidates: [] },
+      }),
+    ).resolves.toMatchObject({ status: "succeeded" });
+
+    expect(updates.live_reports).toBeUndefined();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[ocr] audit log failed after atomic confirmation for job job-confirm-audit-failure",
+      expect.any(Error),
+    );
+    consoleError.mockRestore();
   });
 
   it("advances the live report into the review pool when OCR succeeds", async () => {

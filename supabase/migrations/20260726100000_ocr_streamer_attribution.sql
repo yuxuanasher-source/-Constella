@@ -286,12 +286,18 @@ grant execute on function public.upsert_ocr_streamer_metrics(
   uuid, jsonb, uuid
 ) to service_role;
 
+drop function if exists public.confirm_ocr_job_metrics(
+  uuid, uuid, timestamptz, jsonb, jsonb
+);
+
 create or replace function public.confirm_ocr_job_metrics(
   p_job_id uuid,
   p_reviewed_by uuid,
   p_reviewed_at timestamptz,
   p_manual_result jsonb,
-  p_metrics jsonb
+  p_metrics jsonb,
+  p_confirmed_duration integer,
+  p_confirmed_viewers integer
 )
 returns jsonb
 language plpgsql
@@ -307,6 +313,14 @@ declare
   v_metric_value numeric;
   v_seen_keys text[] := array[]::text[];
   v_written integer := 0;
+  v_confirmed_duration integer;
+  v_confirmed_viewers integer;
+  v_settlement_duration integer;
+  v_time_source public.time_source;
+  v_evidence_level public.evidence_level;
+  v_divergence_pct numeric(8, 4);
+  v_allowed_diff numeric;
+  v_risk_flags text[] := array[]::text[];
 begin
   if coalesce(auth.role(), '') <> 'service_role' then
     raise exception 'OCR confirmation requires the service role'
@@ -322,6 +336,10 @@ begin
   end if;
   if p_metrics is null or jsonb_typeof(p_metrics) <> 'array' then
     raise exception 'OCR metrics must be a JSON array'
+      using errcode = '22023';
+  end if;
+  if p_confirmed_duration < 0 or p_confirmed_viewers < 0 then
+    raise exception 'OCR confirmed duration and viewers must be nonnegative'
       using errcode = '22023';
   end if;
 
@@ -352,7 +370,9 @@ begin
     ocr.ai_invocation_id,
     ocr.status,
     ocr.needs_confirmation,
-    ocr.reviewed_at
+    ocr.reviewed_at,
+    ocr.extracted_duration,
+    ocr.extracted_viewers
   into v_ocr
   from public.ocr_results as ocr
   where ocr.background_job_id = v_job.id
@@ -373,6 +393,10 @@ begin
     lr.project_id,
     lr.streamer_id,
     lr.status,
+    lr.system_duration,
+    lr.claimed_duration,
+    lr.viewers,
+    lr.risk_flags,
     (
       coalesce(
         lt.system_started_at,
@@ -394,7 +418,7 @@ begin
       using errcode = '22023';
   end if;
 
-  if v_job.status <> 'needs_confirmation'
+  if v_job.status not in ('needs_confirmation', 'needs_review')
     or v_ocr.status <> 'needs_confirmation'
     or v_ocr.needs_confirmation is not true
     or v_ocr.reviewed_at is not null
@@ -402,6 +426,83 @@ begin
     or v_report.status not in ('ocr_ing', 'pending_review')
   then
     return jsonb_build_object('confirmed', false, 'metricsWritten', 0);
+  end if;
+
+  v_confirmed_duration := coalesce(
+    nullif(p_confirmed_duration, 0),
+    nullif(v_ocr.extracted_duration, 0)
+  );
+  v_confirmed_viewers := coalesce(
+    nullif(p_confirmed_viewers, 0),
+    nullif(v_ocr.extracted_viewers, 0),
+    v_report.viewers
+  );
+
+  select coalesce(
+    array_agg(item.flag order by item.ordinality),
+    array[]::text[]
+  )
+  into v_risk_flags
+  from unnest(coalesce(v_report.risk_flags, array[]::text[]))
+    with ordinality as item(flag, ordinality)
+  where item.flag <> 'ocr_pending'
+    and item.flag not like 'ocr\_%' escape '\'
+    and item.flag not in (
+      'duration_divergence',
+      'missing_system_duration',
+      'missing_screenshot_duration'
+    );
+
+  if v_report.system_duration is not null then
+    v_settlement_duration := v_report.system_duration;
+    v_time_source := 'system';
+    if v_confirmed_duration is null then
+      v_evidence_level := 'yellow';
+      v_divergence_pct := null;
+      v_risk_flags := array_append(
+        v_risk_flags,
+        'missing_screenshot_duration'
+      );
+    else
+      v_divergence_pct := round(
+        abs(v_report.system_duration - v_confirmed_duration)::numeric
+          / greatest(v_report.system_duration, 1)::numeric,
+        4
+      );
+      v_allowed_diff := greatest(v_report.system_duration * 0.10, 15);
+      if abs(v_report.system_duration - v_confirmed_duration)
+        <= v_allowed_diff
+      then
+        v_evidence_level := 'green';
+      else
+        v_evidence_level := 'yellow';
+        v_risk_flags := array_append(v_risk_flags, 'duration_divergence');
+      end if;
+    end if;
+  else
+    v_risk_flags := array_append(v_risk_flags, 'missing_system_duration');
+    if v_confirmed_duration is not null then
+      v_settlement_duration := v_confirmed_duration;
+      v_time_source := 'screenshot';
+      v_evidence_level := 'yellow';
+      v_divergence_pct := null;
+    else
+      v_risk_flags := array_append(
+        v_risk_flags,
+        'missing_screenshot_duration'
+      );
+      if v_report.claimed_duration is not null
+        and v_report.claimed_duration > 0
+      then
+        v_settlement_duration := v_report.claimed_duration;
+        v_time_source := 'claimed';
+        v_evidence_level := 'red';
+        v_divergence_pct := null;
+      else
+        raise exception 'Report requires system, screenshot, or claimed duration'
+          using errcode = '22023';
+      end if;
+    end if;
   end if;
 
   if v_job.ai_invocation_id is null
@@ -462,7 +563,8 @@ begin
       needs_confirmation = false,
       manual_result = p_manual_result,
       reviewed_by = p_reviewed_by,
-      reviewed_at = p_reviewed_at
+      reviewed_at = p_reviewed_at,
+      updated_at = p_reviewed_at
   where id = v_ocr.id;
 
   update public.background_jobs
@@ -512,6 +614,22 @@ begin
     v_written := v_written + 1;
   end loop;
 
+  update public.live_reports
+  set status = case
+        when v_report.status = 'ocr_ing'
+          then 'pending_review'::public.report_status
+        else v_report.status
+      end,
+      screenshot_duration = v_confirmed_duration,
+      viewers = v_confirmed_viewers,
+      settlement_duration = v_settlement_duration,
+      time_source = v_time_source,
+      evidence_level = v_evidence_level,
+      divergence_pct = v_divergence_pct,
+      risk_flags = v_risk_flags,
+      updated_at = p_reviewed_at
+  where id = v_report.id;
+
   return jsonb_build_object(
     'confirmed', true,
     'metricsWritten', v_written
@@ -520,9 +638,9 @@ end;
 $$;
 
 revoke all on function public.confirm_ocr_job_metrics(
-  uuid, uuid, timestamptz, jsonb, jsonb
+  uuid, uuid, timestamptz, jsonb, jsonb, integer, integer
 ) from public, anon, authenticated, service_role;
 
 grant execute on function public.confirm_ocr_job_metrics(
-  uuid, uuid, timestamptz, jsonb, jsonb
+  uuid, uuid, timestamptz, jsonb, jsonb, integer, integer
 ) to service_role;

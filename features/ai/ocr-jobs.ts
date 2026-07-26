@@ -637,7 +637,6 @@ async function runLockedOcrJob({
     metricCandidates: parsed.metricCandidates,
     sourceInvocationId: job.aiInvocationId,
     writeMetrics: status === "succeeded",
-    humanConfirmed: false,
     needsConfirmation: status === "needs_confirmation",
     reasons,
   });
@@ -689,19 +688,23 @@ export async function confirmOcrJob({
   const job = await requireOcrJob(client, jobId);
   await assertOcrJobAccessible({ client, actor, job });
   const reviewedAt = now().toISOString();
-  const liveReport = await loadLiveReportForOcrAdvance({
-    client,
-    liveReportId: job.payload.liveReportId,
-  });
   const result = {
     ...(job.result ?? {}),
     manualResult,
   };
-  if (job.status !== "needs_confirmation") {
+  if (job.status !== "needs_confirmation" && job.status !== "needs_review") {
     throw new Error("OCR job is not awaiting confirmation");
   }
   const metricCandidates = pickConfirmedMetricCandidates(manualResult);
   const metrics = normalizeOcrMetricCandidates(metricCandidates);
+  const confirmedDuration = pickPositiveIntegerField(
+    manualResult.extractedDuration,
+    manualResult.duration,
+  );
+  const confirmedViewers = pickPositiveIntegerField(
+    manualResult.extractedViewers,
+    manualResult.viewers,
+  );
   const { data: confirmation, error: confirmationError } =
     await confirmationClient.rpc("confirm_ocr_job_metrics", {
       p_job_id: jobId,
@@ -709,6 +712,8 @@ export async function confirmOcrJob({
       p_reviewed_at: reviewedAt,
       p_manual_result: manualResult,
       p_metrics: metrics,
+      p_confirmed_duration: confirmedDuration,
+      p_confirmed_viewers: confirmedViewers,
     });
   if (confirmationError) {
     throw confirmationError;
@@ -717,44 +722,27 @@ export async function confirmOcrJob({
     throw new Error("OCR job can no longer be confirmed");
   }
 
-  // A human confirmed the OCR result, so advance the live report into the
-  // review pool with the (optionally corrected) values and clear the
-  // needs-review flag. No-op if a prior run already advanced the report.
-  await advanceLiveReportAfterOcr({
-    client,
-    metricClient: null,
-    liveReportId: job.payload.liveReportId,
-    report: liveReport,
-    extractedDuration: pickPositiveNumericField(
-      manualResult.extractedDuration,
-      manualResult.duration,
-      job.result?.extractedDuration,
-    ),
-    extractedViewers: pickPositiveNumericField(
-      manualResult.extractedViewers,
-      manualResult.viewers,
-      job.result?.extractedViewers,
-    ),
-    metricCandidates,
-    sourceInvocationId: job.aiInvocationId,
-    writeMetrics: false,
-    humanConfirmed: true,
-    needsConfirmation: false,
-    reasons: [],
-  });
-
-  await writeAuditLog(client as Parameters<typeof writeAuditLog>[0], {
-    organizationId: actor.organizationId,
-    actorUserId: actor.userId,
-    actorName: actor.name,
-    actorRole: actor.role,
-    action: "update",
-    module: "ai",
-    objectType: "background_job",
-    objectId: jobId,
-    after: { status: "succeeded", reviewedAt },
-    changedFields: ["status", "reviewed_by", "reviewed_at", "review_payload"],
-  });
+  try {
+    await writeAuditLog(client as Parameters<typeof writeAuditLog>[0], {
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      actorRole: actor.role,
+      action: "update",
+      module: "ai",
+      objectType: "background_job",
+      objectId: jobId,
+      after: { status: "succeeded", reviewedAt },
+      changedFields: ["status", "reviewed_by", "reviewed_at", "review_payload"],
+    });
+  } catch (error) {
+    // The privileged RPC has already committed every confirmation write.
+    // Audit transport failure must not make the caller retry a completed job.
+    console.error(
+      `[ocr] audit log failed after atomic confirmation for job ${jobId}`,
+      error,
+    );
+  }
 
   return {
     ...job,
@@ -953,7 +941,6 @@ async function advanceLiveReportAfterOcr({
   metricCandidates,
   sourceInvocationId,
   writeMetrics,
-  humanConfirmed,
   needsConfirmation,
   reasons,
 }: {
@@ -966,7 +953,6 @@ async function advanceLiveReportAfterOcr({
   metricCandidates: readonly unknown[];
   sourceInvocationId?: string;
   writeMetrics: boolean;
-  humanConfirmed: boolean;
   needsConfirmation: boolean;
   reasons: string[];
 }): Promise<void> {
@@ -978,10 +964,7 @@ async function advanceLiveReportAfterOcr({
   if (!currentStatus) {
     return;
   }
-  const canAdvance = humanConfirmed
-    ? currentStatus === "ocr_ing" || currentStatus === "pending_review"
-    : currentStatus === "ocr_ing";
-  if (!canAdvance) {
+  if (currentStatus !== "ocr_ing") {
     return;
   }
 
@@ -1052,7 +1035,7 @@ async function advanceLiveReportAfterOcr({
       riskFlags.add(`ocr_${reason}`);
     }
   } else {
-    // A trusted (or human-confirmed) result clears prior OCR review markers.
+    // A trusted automatic result clears prior OCR review markers.
     for (const flag of [...riskFlags]) {
       if (flag === "ocr_needs_review" || flag.startsWith("ocr_")) {
         riskFlags.delete(flag);
@@ -1062,19 +1045,13 @@ async function advanceLiveReportAfterOcr({
 
   patch.risk_flags = [...riskFlags];
 
-  const { error: updateError, count: updatedCount } = await client
+  const { error: updateError } = await client
     .from("live_reports")
-    .update(patch, { count: "exact" })
+    .update(patch)
     .eq("id", liveReportId)
     .eq("status", currentStatus);
   if (updateError) {
     throw updateError;
-  }
-  if (humanConfirmed && updatedCount === 0) {
-    // The atomic confirmation already serialized against settlement. A zero
-    // CAS count here means another valid transition won after that transaction;
-    // do not overwrite its evidence/status with a stale report snapshot.
-    return;
   }
 }
 
@@ -1084,13 +1061,13 @@ async function advanceLiveReportAfterOcr({
 // real override let a blank confirmation wipe the extracted duration to 0,
 // which then diverged 100% from the system duration and forced every report to
 // yellow evidence (blocking automatic CPT settlement).
-function pickPositiveNumericField(...values: unknown[]): number | null {
+function pickPositiveIntegerField(...values: unknown[]): number | null {
   for (const value of values) {
     if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-      return value;
+      return Math.floor(value);
     }
     if (typeof value === "string" && value.trim() && Number(value) > 0) {
-      return Number(value);
+      return Math.floor(Number(value));
     }
   }
   return null;
@@ -1116,6 +1093,8 @@ type OcrConfirmationClient = {
       p_reviewed_at: string;
       p_manual_result: Record<string, unknown>;
       p_metrics: Array<{ key: string; value: number }>;
+      p_confirmed_duration: number | null;
+      p_confirmed_viewers: number | null;
     },
   ): PromiseLike<{
     data: Record<string, unknown> | null;

@@ -3908,6 +3908,12 @@ describe("OpsReferenceApp OCR operations smoke", () => {
                   extractedViewers: 320,
                   metricCandidates: [
                     {
+                      key: "viewers",
+                      label: "场观",
+                      value: 320,
+                      confidence: 92,
+                    },
+                    {
                       key: "gmv",
                       label: "GMV",
                       value: 100,
@@ -3956,6 +3962,12 @@ describe("OpsReferenceApp OCR operations smoke", () => {
                 extractedDuration: 80,
                 extractedViewers: 320,
                 metricCandidates: [
+                  {
+                    key: "viewers",
+                    label: "场观",
+                    value: 320,
+                    confidence: 92,
+                  },
                   { key: "gmv", label: "GMV", value: 100, confidence: 90 },
                   {
                     key: "follows",
@@ -3987,6 +3999,12 @@ describe("OpsReferenceApp OCR operations smoke", () => {
                   extractedDuration: 80,
                   extractedViewers: 320,
                   metricCandidates: [
+                    {
+                      key: "viewers",
+                      label: "场观",
+                      value: 320,
+                      confidence: 92,
+                    },
                     { key: "gmv", label: "GMV", value: 100, confidence: 90 },
                     {
                       key: "follows",
@@ -4142,8 +4160,12 @@ describe("OpsReferenceApp OCR operations smoke", () => {
     fireEvent.change(screen.getByLabelText("修正时长 ocr-job-1"), {
       target: { value: "80" },
     });
+    expect(
+      screen.queryByLabelText("修正 场观 viewers ocr-job-1"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("与人数同步")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("修正观看人数 ocr-job-1"), {
-      target: { value: "320" },
+      target: { value: "444" },
     });
     fireEvent.change(screen.getByLabelText("修正 GMV（整数元） gmv ocr-job-1"), {
       target: { value: "250" },
@@ -4160,8 +4182,14 @@ describe("OpsReferenceApp OCR operations smoke", () => {
             action: "confirm",
             manualResult: {
               duration: 80,
-              viewers: 320,
+              viewers: 444,
               metricCandidates: [
+                {
+                  key: "viewers",
+                  label: "场观",
+                  value: 444,
+                  confidence: 100,
+                },
                 {
                   key: "gmv",
                   label: "GMV",
