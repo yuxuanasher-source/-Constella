@@ -89,7 +89,11 @@ async function loadLiveReferenceData(
 ) {
   if (module === "m2") {
     const streamers = await listStreamerPool(supabase, auth.organizationId);
-    return { streamerCards: toStreamerCardDtos(streamers) };
+    return {
+      streamerCards: toStreamerCardDtos(streamers, {
+        organizationId: auth.organizationId,
+      }),
+    };
   }
 
   if (module === "m3") {

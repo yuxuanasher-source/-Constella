@@ -4,6 +4,7 @@ import {
   deriveAuthoritativeReportEconomics,
   selectAuthoritativeApprovedReports,
 } from "./streamer-report-economics";
+import { aggregateStreamerAdmissionStats } from "./streamer-admission-stats";
 
 const sourceLabels: Record<string, string> = {
   signed: "签约",
@@ -26,6 +27,7 @@ export type StreamerCardDto = {
   style: string;
   cooperation: string;
   risk: string;
+  rating: string;
   defaultRule: string;
   settlement: {
     method: string;
@@ -36,7 +38,9 @@ export type StreamerCardDto = {
   };
   hasPerformanceData: boolean;
   createdAtLabel: string;
+  capability: StreamerCapabilityDto | null;
   matchScore: number | null;
+  matchScoreCoverageBps: number;
   matchTrend: Array<number | null>;
   metrics: {
     screenPass: number | null;
@@ -54,6 +58,33 @@ export type StreamerCardDto = {
   };
   projects: StreamerProjectContributionDto[];
   aiInsights: StreamerAiInsightDto[];
+};
+
+export type StreamerCapabilityDto = {
+  id: string;
+  assetId: string;
+  dimensions: StreamerCapabilityDimensionDto[];
+  overallScore: number;
+  grade: "S" | "A" | "B" | "C";
+  growthAdvice: string[];
+  historyStats: {
+    uploadCount: number;
+    goLiveRateBps: number;
+    liveTestPassRateBps: number;
+  };
+  calibrationVersion: number;
+  createdAt: string;
+};
+
+export type StreamerCapabilityDimensionDto = {
+  key:
+    | "game_proficiency"
+    | "script_fluency"
+    | "interaction_activity"
+    | "conversion_guidance";
+  label: string;
+  score: number;
+  finding: string;
 };
 
 export type StreamerProjectContributionDto = {
@@ -125,7 +156,7 @@ export type StreamerDesktopProfileDto = {
 
 export function toStreamerCardDto(
   row: StreamerListRow,
-  options: { now?: string } = {},
+  options: { now?: string; organizationId?: string } = {},
 ): StreamerCardDto {
   const liveMetrics = deriveLivePerformance(row, options);
   const settlement = settlementSummary(row);
@@ -146,11 +177,14 @@ export function toStreamerCardDto(
     style: row.styles[0] ?? "未填写",
     cooperation: row.cooperation_status,
     risk: row.risk_level,
+    rating: row.rating ?? "unrated",
     defaultRule: settlement.label,
     settlement,
     hasPerformanceData: liveMetrics.hasPerformanceData || hasAdmissionData,
     createdAtLabel: row.created_at.slice(0, 10),
+    capability: latestCapabilityReport(row, options.organizationId),
     matchScore: liveMetrics.matchScore,
+    matchScoreCoverageBps: liveMetrics.matchScoreCoverageBps,
     matchTrend: liveMetrics.matchTrend,
     metrics: {
       ...liveMetrics.metrics,
@@ -165,8 +199,11 @@ export function toStreamerCardDto(
   };
 }
 
-export function toStreamerCardDtos(rows: StreamerListRow[]) {
-  return rows.map((row) => toStreamerCardDto(row));
+export function toStreamerCardDtos(
+  rows: StreamerListRow[],
+  options: { now?: string; organizationId?: string } = {},
+) {
+  return rows.map((row) => toStreamerCardDto(row, options));
 }
 
 export function toStreamerDesktopProfileDto(
@@ -331,6 +368,179 @@ function extractStringValues(value: unknown): string[] {
   return [];
 }
 
+function latestCapabilityReport(
+  row: StreamerListRow,
+  organizationId?: string,
+): StreamerCapabilityDto | null {
+  if (!organizationId) return null;
+
+  const report = [...(row.streamer_capability_reports ?? [])]
+    .filter(
+      (candidate) =>
+        candidate.streamer_id === row.id &&
+        candidate.organization_id === organizationId,
+    )
+    .sort((left, right) => {
+      const createdDifference =
+        safeTimestamp(right.created_at) - safeTimestamp(left.created_at);
+      if (createdDifference !== 0) return createdDifference;
+      return right.id.localeCompare(left.id);
+    })[0];
+  if (!report) return null;
+
+  return parseCapabilityReport(report);
+}
+
+const capabilityDimensionKeys = new Set<
+  StreamerCapabilityDimensionDto["key"]
+>([
+  "game_proficiency",
+  "script_fluency",
+  "interaction_activity",
+  "conversion_guidance",
+]);
+
+function parseCapabilityReport(
+  report: NonNullable<StreamerListRow["streamer_capability_reports"]>[number],
+): StreamerCapabilityDto | null {
+  if (
+    !isNonEmptyString(report.id) ||
+    !isNonEmptyString(report.asset_id) ||
+    !isNonEmptyString(report.created_at) ||
+    !Number.isFinite(Date.parse(report.created_at)) ||
+    !isScore(report.overall_score) ||
+    !isCapabilityGrade(report.grade) ||
+    !Number.isInteger(report.calibration_version) ||
+    report.calibration_version < 0
+  ) {
+    return null;
+  }
+
+  const dimensions = parseCapabilityDimensions(report.dimensions);
+  const growthAdvice = parseGrowthAdvice(report.growth_advice);
+  const historyStats = parseCapabilityHistoryStats(report.history_stats);
+  if (!dimensions || !growthAdvice || !historyStats) return null;
+
+  return {
+    id: report.id.trim(),
+    assetId: report.asset_id.trim(),
+    dimensions,
+    overallScore: report.overall_score,
+    grade: report.grade,
+    growthAdvice,
+    historyStats,
+    calibrationVersion: report.calibration_version,
+    createdAt: report.created_at,
+  };
+}
+
+function parseCapabilityDimensions(
+  value: unknown,
+): StreamerCapabilityDimensionDto[] | null {
+  if (
+    !Array.isArray(value) ||
+    value.length !== capabilityDimensionKeys.size
+  ) {
+    return null;
+  }
+
+  const keys = new Set<StreamerCapabilityDimensionDto["key"]>();
+  const dimensions: StreamerCapabilityDimensionDto[] = [];
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return null;
+    }
+    const dimension = candidate as Record<string, unknown>;
+    const key = dimension.key;
+    if (
+      typeof key !== "string" ||
+      !capabilityDimensionKeys.has(
+        key as StreamerCapabilityDimensionDto["key"],
+      ) ||
+      keys.has(key as StreamerCapabilityDimensionDto["key"]) ||
+      !isNonEmptyString(dimension.label) ||
+      !isScore(dimension.score) ||
+      !isNonEmptyString(dimension.finding)
+    ) {
+      return null;
+    }
+    const typedKey = key as StreamerCapabilityDimensionDto["key"];
+    keys.add(typedKey);
+    dimensions.push({
+      key: typedKey,
+      label: dimension.label.trim(),
+      score: dimension.score,
+      finding: dimension.finding.trim(),
+    });
+  }
+  return dimensions;
+}
+
+function parseGrowthAdvice(value: unknown): string[] | null {
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => !isNonEmptyString(item))
+  ) {
+    return null;
+  }
+  return value.map((item) => (item as string).trim());
+}
+
+function parseCapabilityHistoryStats(
+  value: unknown,
+): StreamerCapabilityDto["historyStats"] | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const stats = value as Record<string, unknown>;
+  if (
+    !isNonNegativeInteger(stats.uploadCount) ||
+    !isBps(stats.goLiveRateBps) ||
+    !isBps(stats.liveTestPassRateBps)
+  ) {
+    return null;
+  }
+  return {
+    uploadCount: stats.uploadCount,
+    goLiveRateBps: stats.goLiveRateBps,
+    liveTestPassRateBps: stats.liveTestPassRateBps,
+  };
+}
+
+function isCapabilityGrade(
+  value: unknown,
+): value is StreamerCapabilityDto["grade"] {
+  return value === "S" || value === "A" || value === "B" || value === "C";
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isScore(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 100
+  );
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
+}
+
+function isBps(value: unknown): value is number {
+  return (
+    Number.isInteger(value) &&
+    (value as number) >= 0 &&
+    (value as number) <= 10_000
+  );
+}
+
+function safeTimestamp(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function settlementSummary(row: StreamerListRow) {
   const method = row.default_settlement_method || "manual";
   const cptHourlyRate = Number(row.default_price ?? 0);
@@ -381,7 +591,7 @@ function formatPercentBps(value: number) {
 
 function deriveLivePerformance(
   row: StreamerListRow,
-  options: { now?: string },
+  options: { now?: string; organizationId?: string },
 ) {
   const now = options.now ? new Date(options.now) : new Date();
   const recentRecordings = recentRows(row.recording_submissions, now, (item) =>
@@ -401,15 +611,23 @@ function deriveLivePerformance(
     item.planned_start_at ? new Date(item.planned_start_at) : null,
   ).filter((item) => item.status !== "cancelled");
   const projectRows = row.project_streamers ?? [];
+  const vendorPassRateBps =
+    row.admission_stats?.vendorPassRateBps ?? null;
+  const mcnFirstPassRateBps =
+    row.admission_stats?.mcnFirstPassRateBps ?? null;
+  const hasAdmissionScore =
+    vendorPassRateBps !== null || mcnFirstPassRateBps !== null;
 
   const hasPerformanceData =
     recentRecordings.length > 0 ||
     recentReportRows.length > 0 ||
-    recentTasks.length > 0;
+    recentTasks.length > 0 ||
+    hasAdmissionScore;
   if (!hasPerformanceData) {
     return {
       hasPerformanceData: false,
       matchScore: null,
+      matchScoreCoverageBps: 0,
       matchTrend: [],
       metrics: {
         screenPass: null,
@@ -443,18 +661,19 @@ function deriveLivePerformance(
   const grossContrib = aggregateReportContribution(recentReports);
   const roi = reportEconomics.roi;
 
-  const matchScore = performanceMatchScore({
+  const match = performanceMatchScore({
     screenPass,
+    vendorPassRateBps,
+    mcnFirstPassRateBps,
     projectFinish,
     roi,
-    reportCount: recentReports.length,
-    risk: row.risk_level,
   });
 
   return {
     hasPerformanceData: true,
-    matchScore,
-    matchTrend: weeklyMatchTrend(row, now),
+    matchScore: match.score,
+    matchScoreCoverageBps: match.coverageBps,
+    matchTrend: weeklyMatchTrend(row, now, options.organizationId),
     metrics: {
       screenPass,
       projectFinish,
@@ -468,7 +687,11 @@ function deriveLivePerformance(
   };
 }
 
-function weeklyMatchTrend(row: StreamerListRow, now: Date) {
+function weeklyMatchTrend(
+  row: StreamerListRow,
+  now: Date,
+  organizationId?: string,
+) {
   const weekMs = 7 * 24 * 60 * 60 * 1000;
   const trend: Array<number | null> = [];
 
@@ -490,15 +713,21 @@ function weeklyMatchTrend(row: StreamerListRow, now: Date) {
         undefined,
         row.id,
       );
-    const reports = reportEconomics.authoritativeReports;
     const tasks = rowsBetween(row.live_tasks, start, end, (item) =>
       item.planned_start_at ? new Date(item.planned_start_at) : null,
     ).filter((item) => item.status !== "cancelled");
+    const admissionStats = weeklyAdmissionStats(
+      row,
+      start,
+      end,
+      organizationId,
+    );
 
     if (
       recordings.length === 0 &&
       reportRows.length === 0 &&
-      tasks.length === 0
+      tasks.length === 0 &&
+      admissionStats === null
     ) {
       trend.push(null);
       continue;
@@ -522,15 +751,53 @@ function weeklyMatchTrend(row: StreamerListRow, now: Date) {
     trend.push(
       performanceMatchScore({
         screenPass,
+        vendorPassRateBps: admissionStats?.vendorPassRateBps ?? null,
+        mcnFirstPassRateBps: admissionStats?.mcnFirstPassRateBps ?? null,
         projectFinish,
         roi,
-        reportCount: reports.length,
-        risk: row.risk_level,
-      }),
+      }).score,
     );
   }
 
   return trend;
+}
+
+function weeklyAdmissionStats(
+  row: StreamerListRow,
+  start: Date,
+  end: Date,
+  organizationId?: string,
+) {
+  if (!organizationId) return null;
+
+  const applications = (row.project_applications ?? []).map((application) => ({
+    ...application,
+    project_recording_vendor_reviews: rowsBetween(
+      application.project_recording_vendor_reviews ?? undefined,
+      start,
+      end,
+      (review) =>
+        review.submitted_at ? new Date(review.submitted_at) : null,
+    ),
+    admission_review_evaluations: rowsBetween(
+      application.admission_review_evaluations ?? undefined,
+      start,
+      end,
+      (evaluation) =>
+        evaluation.created_at ? new Date(evaluation.created_at) : null,
+    ),
+  }));
+  const stats = aggregateStreamerAdmissionStats({
+    applications,
+    organizationId,
+  });
+  if (
+    stats.vendorPassRateBps === null &&
+    stats.mcnFirstPassRateBps === null
+  ) {
+    return null;
+  }
+  return stats;
 }
 
 function recentRows<T>(
@@ -555,7 +822,7 @@ function rowsBetween<T>(
   return (rows ?? []).filter((row) => {
     const date = getDate(row);
     if (!date || Number.isNaN(date.getTime())) return false;
-    return date.getTime() >= start.getTime() && date.getTime() <= end.getTime();
+    return date.getTime() >= start.getTime() && date.getTime() < end.getTime();
   });
 }
 
@@ -665,25 +932,42 @@ function streamerProjectContributions(
   );
 }
 
-function performanceMatchScore({
+export function performanceMatchScore({
   screenPass,
+  vendorPassRateBps,
+  mcnFirstPassRateBps,
   projectFinish,
   roi,
-  reportCount,
-  risk,
 }: {
   screenPass: number | null;
+  vendorPassRateBps: number | null;
+  mcnFirstPassRateBps: number | null;
   projectFinish: number | null;
   roi: number | null;
-  reportCount: number;
-  risk: string;
-}): number | null {
+}): { score: number | null; coverageBps: number } {
   const dimensions = [
-    { value: screenPass, weight: 0.25 },
-    { value: projectFinish, weight: 0.45 },
+    { value: normalizedPercent(screenPass), weight: 0.15 },
     {
-      value: roi === null ? null : Math.min(100, (roi / 1.5) * 100),
-      weight: 0.2,
+      value: normalizedPercent(
+        vendorPassRateBps === null ? null : vendorPassRateBps / 100,
+      ),
+      weight: 0.15,
+    },
+    {
+      value: normalizedPercent(
+        mcnFirstPassRateBps === null
+          ? null
+          : mcnFirstPassRateBps / 100,
+      ),
+      weight: 0.15,
+    },
+    { value: normalizedPercent(projectFinish), weight: 0.3 },
+    {
+      value:
+        roi === null
+          ? null
+          : normalizedPercent((Math.max(roi, 0) / 1.5) * 100),
+      weight: 0.25,
     },
   ].filter(
     (
@@ -693,20 +977,29 @@ function performanceMatchScore({
       weight: number;
     } => dimension.value !== null,
   );
-  if (dimensions.length === 0) return null;
+  if (dimensions.length === 0) return { score: null, coverageBps: 0 };
 
+  const observedWeight = dimensions.reduce(
+    (sum, dimension) => sum + dimension.weight,
+    0,
+  );
   const observedScore = dimensions.reduce(
     (sum, dimension) => sum + dimension.value * dimension.weight,
     0,
-  );
-  const riskPenalty = risk === "high" ? 12 : risk === "medium" ? 6 : 0;
-  return Math.max(
-    0,
-    Math.min(
-      99,
-      Math.round(observedScore + Math.min(10, reportCount * 3) - riskPenalty),
+  ) / observedWeight;
+  const confidenceCeiling = 50 + observedWeight * 50;
+  return {
+    score: Math.max(
+      0,
+      Math.min(100, Math.round(Math.min(observedScore, confidenceCeiling))),
     ),
-  );
+    coverageBps: Math.round(observedWeight * 10_000),
+  };
+}
+
+function normalizedPercent(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, value));
 }
 
 function minutesToHours(minutes: number) {

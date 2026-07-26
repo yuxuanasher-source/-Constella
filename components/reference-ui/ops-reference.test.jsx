@@ -63,6 +63,7 @@ const taskStreamerCards = [
       grossContrib: 1000,
     },
     matchScore: 90,
+    matchScoreCoverageBps: 1500,
     defaultRule: "CPT",
     completedProjects: 3,
     projects: [
@@ -2284,6 +2285,36 @@ describe("OpsReferenceApp project smoke", () => {
         "\u534f\u4f5c\u7533\u8bf7\u5df2\u63d0\u4ea4\uff0c\u7b49\u5f85\u9879\u76ee\u65b9\u5ba1\u6838",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("shows recorded and unknown match coverage in the project roster", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="project"
+        projectCards={taskProjectCards}
+        streamerCards={taskStreamerCards}
+        applicationQueue={[
+          {
+            id: "application-with-coverage",
+            status: "joined",
+            project: { id: "project-live" },
+            streamer: { id: "streamer-one" },
+          },
+          {
+            id: "application-without-coverage",
+            status: "joined",
+            project: { id: "project-live" },
+            streamer: { id: "streamer-two" },
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Fixture Project"));
+    fireEvent.click(screen.getByRole("button", { name: "执行" }));
+
+    expect(screen.getByText("数据覆盖 15%")).toBeInTheDocument();
+    expect(screen.getByText("覆盖未记录")).toBeInTheDocument();
   });
 
   it("invites a streamer from the project roster tab", async () => {
@@ -4963,8 +4994,16 @@ describe("OpsReferenceApp streamer smoke", () => {
             style: "Traffic Push",
             cooperation: "active",
             risk: "low",
+            rating: "a",
             defaultRule: "CPT",
             matchScore: 76,
+            matchScoreCoverageBps: 7500,
+            capability: {
+              id: "cap-live",
+              overallScore: 88,
+              grade: "A",
+              calibrationVersion: 3,
+            },
             metrics: {
               screenPass: 50,
               projectFinish: 100,
@@ -5001,6 +5040,13 @@ describe("OpsReferenceApp streamer smoke", () => {
     expect(screen.getAllByText("100%").length).toBeGreaterThan(0);
     expect(screen.getAllByText("1.80").length).toBeGreaterThan(0);
     expect(screen.getAllByText("真实 ROI").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("能力分").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("匹配分").length).toBeGreaterThan(0);
+    expect(screen.getByText("录屏能力模型 · 组织校准 v3")).toBeInTheDocument();
+    expect(
+      screen.getByText("项目匹配信号 · 数据覆盖 75%"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("人工评级 · A")).toBeInTheDocument();
     expect(screen.getByText("场均直播时长")).toBeInTheDocument();
     expect(screen.getByText("实际时薪")).toBeInTheDocument();
     expect(screen.getByText("每小时观看")).toBeInTheDocument();
@@ -5012,6 +5058,38 @@ describe("OpsReferenceApp streamer smoke", () => {
     expect(screen.getByText("3.0 h · ¥150.0")).toBeInTheDocument();
     expect(screen.getByText("Missing Metrics Project")).toBeInTheDocument();
     expect(screen.getByText("暂无 · 暂无")).toBeInTheDocument();
+  });
+
+  it("labels an unavailable match score as insufficient data", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            id: "streamer-no-match-data",
+            alias: "No Match Data",
+            real: "No Match Data",
+            gender: "未填写",
+            source: "外部",
+            supplier: "未绑定",
+            games: [],
+            platforms: [],
+            style: "未填写",
+            cooperation: "active",
+            risk: "low",
+            rating: "unrated",
+            defaultRule: "CPT",
+            matchScore: null,
+            matchScoreCoverageBps: 0,
+            capability: null,
+            metrics: {},
+            projects: [],
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("项目匹配信号 · 数据不足")).toBeInTheDocument();
   });
 
   it("updates streamer risk and refreshes the pool", async () => {

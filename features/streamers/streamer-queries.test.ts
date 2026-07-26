@@ -76,6 +76,34 @@ describe("streamer queries", () => {
     );
   });
 
+  it("loads organization-scoped capability reports with deterministic recency ordering", async () => {
+    const pool = queryBuilder([]);
+    const client = { from: vi.fn(() => pool) };
+
+    await listStreamerPool(client as never, "org-1");
+
+    expect(pool.select).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "streamer_capability_reports(id, organization_id, streamer_id, asset_id, dimensions, overall_score, grade, growth_advice, history_stats, calibration_version, created_at)",
+      ),
+    );
+    expect(pool.eq).toHaveBeenCalledWith(
+      "streamer_capability_reports.organization_id",
+      "org-1",
+    );
+    expect(pool.order).toHaveBeenCalledWith("created_at", {
+      referencedTable: "streamer_capability_reports",
+      ascending: false,
+    });
+    expect(pool.order).toHaveBeenCalledWith("id", {
+      referencedTable: "streamer_capability_reports",
+      ascending: false,
+    });
+    expect(pool.limit).toHaveBeenCalledWith(1, {
+      referencedTable: "streamer_capability_reports",
+    });
+  });
+
   it("selects and aggregates vendor admission reviews for the streamer pool", async () => {
     const pool = queryBuilder([
       {
@@ -145,7 +173,7 @@ describe("streamer queries", () => {
     );
     expect(pool.select).toHaveBeenCalledWith(
       expect.stringContaining(
-        "project_recording_vendor_reviews(id, organization_id, decision)",
+        "project_recording_vendor_reviews(id, organization_id, decision, submitted_at)",
       ),
     );
     expect(pool.eq).toHaveBeenCalledWith(

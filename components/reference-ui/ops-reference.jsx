@@ -12248,15 +12248,24 @@ function ProjectRoster({ p, go }) {
             title: "匹配分",
             render: (r) =>
               hasStreamerMetricValue(r.matchScore) ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span className="num" style={{ fontWeight: 600 }}>
-                    {r.matchScore}
-                  </span>
-                  <MiniBar
-                    value={r.matchScore}
-                    tone={r.matchScore >= 85 ? "green" : "blue"}
-                    width={60}
-                  />
+                <div style={{ display: "grid", gap: 2 }}>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
+                    <span className="num" style={{ fontWeight: 600 }}>
+                      {r.matchScore}
+                    </span>
+                    <MiniBar
+                      value={r.matchScore}
+                      tone={r.matchScore >= 85 ? "green" : "blue"}
+                      width={60}
+                    />
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--ink-400)" }}>
+                    {Number.isFinite(r.matchScoreCoverageBps)
+                      ? `数据覆盖 ${r.matchScoreCoverageBps / 100}%`
+                      : "覆盖未记录"}
+                  </div>
                 </div>
               ) : (
                 <span style={{ color: "var(--ink-300)" }}>暂无</span>
@@ -12371,6 +12380,7 @@ function applicationToRosterRow(application, streamers, rosterSource) {
     matchScore: hasStreamerMetricValue(card?.matchScore)
       ? card.matchScore
       : null,
+    matchScoreCoverageBps: card?.matchScoreCoverageBps,
     risk: card?.risk || streamer.riskLevel || "low",
     projectStatus: projectStatus.label,
     projectStatusTone: projectStatus.tone,
@@ -13428,6 +13438,46 @@ function ScreenStreamers({ go, initialActiveId }) {
                 },
               },
               {
+                title: "能力分",
+                align: "right",
+                render: (r) =>
+                  hasStreamerMetricValue(r.capability?.overallScore) ? (
+                    <div>
+                      <span className="num" style={{ fontWeight: 600 }}>
+                        {r.capability.overallScore}
+                      </span>
+                      <span
+                        style={{
+                          marginLeft: 4,
+                          fontSize: 11,
+                          color: "var(--ink-400)",
+                        }}
+                      >
+                        {r.capability.grade}
+                      </span>
+                    </div>
+                  ) : (
+                    <span style={{ color: "var(--ink-300)" }}>暂无</span>
+                  ),
+              },
+              {
+                title: "匹配分",
+                align: "right",
+                render: (r) =>
+                  hasStreamerMetricValue(r.matchScore) ? (
+                    <div>
+                      <div className="num" style={{ fontWeight: 600 }}>
+                        {r.matchScore}
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--ink-400)" }}>
+                        数据覆盖 {(r.matchScoreCoverageBps ?? 0) / 100}%
+                      </div>
+                    </div>
+                  ) : (
+                    <span style={{ color: "var(--ink-300)" }}>数据不足</span>
+                  ),
+              },
+              {
                 title: "真实 ROI",
                 align: "right",
                 render: (r) =>
@@ -13865,6 +13915,45 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
               </KV>
             </>
           ) : null}
+        </div>
+      </Card>
+
+      <Card title="评分职责" padded={true}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <KV label="能力分">
+            <div>
+              <div className="num" style={{ fontWeight: 700 }}>
+                {hasStreamerMetricValue(s.capability?.overallScore)
+                  ? `${s.capability.overallScore} · ${s.capability.grade}`
+                  : "暂无"}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                {s.capability
+                  ? `录屏能力模型 · 组织校准 v${s.capability.calibrationVersion}`
+                  : "录屏能力模型 · 暂无有效报告"}
+              </div>
+            </div>
+          </KV>
+          <KV label="匹配分">
+            <div>
+              <div className="num" style={{ fontWeight: 700 }}>
+                {hasStreamerMetricValue(s.matchScore) ? s.matchScore : "暂无"}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                {hasStreamerMetricValue(s.matchScore)
+                  ? `项目匹配信号 · 数据覆盖 ${(s.matchScoreCoverageBps ?? 0) / 100}%`
+                  : "项目匹配信号 · 数据不足"}
+              </div>
+            </div>
+          </KV>
+          <KV label="评级">
+            <div>
+              人工评级 ·{" "}
+              {s.rating && s.rating !== "unrated"
+                ? String(s.rating).toUpperCase()
+                : "未评级"}
+            </div>
+          </KV>
         </div>
       </Card>
 

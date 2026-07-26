@@ -25,7 +25,11 @@ export async function GET() {
     }
 
     const streamers = await listStreamerPool(supabase, auth.organizationId);
-    return NextResponse.json({ streamers: toStreamerCardDtos(streamers) });
+    return NextResponse.json({
+      streamers: toStreamerCardDtos(streamers, {
+        organizationId: auth.organizationId,
+      }),
+    });
   } catch (error) {
     return jsonServiceError(error);
   }

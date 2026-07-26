@@ -21,6 +21,7 @@ export type StreamerVendorReviewRow = {
   id: string;
   organization_id: string;
   decision: string;
+  submitted_at?: string | null;
 };
 
 export type StreamerAdmissionApplicationRow = {
