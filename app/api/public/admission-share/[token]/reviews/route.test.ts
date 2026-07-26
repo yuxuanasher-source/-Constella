@@ -22,11 +22,16 @@ vi.mock("@/lib/db/supabase-server", () => ({
 }));
 
 const params = Promise.resolve({ token: "plain-token" });
-const supabase = { client: "supabase" };
+const rpc = vi.fn();
+const supabase = { client: "supabase", rpc };
 
 describe("public admission share review route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    rpc.mockResolvedValue({
+      data: [{ allowed: true, retry_after_seconds: 0, remaining: 9 }],
+      error: null,
+    });
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
     vi.mocked(submitVendorAdmissionReviews).mockResolvedValue({
       submittedCount: 2,
@@ -124,5 +129,31 @@ describe("public admission share review route", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Recording version is stale",
     });
+  });
+
+  it("strictly enforces the 10-per-10-minute token and IP limits before review work", async () => {
+    rpc.mockResolvedValue({
+      data: [{ allowed: false, retry_after_seconds: 311, remaining: 0 }],
+      error: null,
+    });
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token/reviews",
+        {
+          method: "POST",
+          body: JSON.stringify({ items: [] }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("311");
+    expect(rpc).toHaveBeenCalledWith(
+      "consume_admission_share_rate_limit",
+      expect.objectContaining({ p_limit: 10, p_window_seconds: 600 }),
+    );
+    expect(submitVendorAdmissionReviews).not.toHaveBeenCalled();
   });
 });

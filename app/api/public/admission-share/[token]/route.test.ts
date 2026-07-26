@@ -22,11 +22,16 @@ vi.mock("@/lib/db/supabase-server", () => ({
 }));
 
 const params = Promise.resolve({ token: "plain-token" });
-const supabase = { client: "supabase" };
+const rpc = vi.fn();
+const supabase = { client: "supabase", rpc };
 
 describe("public admission share route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    rpc.mockResolvedValue({
+      data: [{ allowed: true, retry_after_seconds: 0, remaining: 59 }],
+      error: null,
+    });
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
     vi.mocked(getPublicAdmissionShareBoard).mockResolvedValue({
       id: "share-1",
@@ -90,5 +95,33 @@ describe("public admission share route", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Share link is expired or revoked",
     });
+  });
+
+  it("enforces the 60-per-minute token and IP limits before loading the board", async () => {
+    rpc
+      .mockResolvedValueOnce({
+        data: [{ allowed: true, retry_after_seconds: 0, remaining: 0 }],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ allowed: false, retry_after_seconds: 42, remaining: 0 }],
+        error: null,
+      });
+
+    const response = await GET(
+      new Request("http://localhost/api/public/admission-share/plain-token", {
+        headers: { "x-forwarded-for": "203.0.113.10" },
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("42");
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(rpc).toHaveBeenCalledWith(
+      "consume_admission_share_rate_limit",
+      expect.objectContaining({ p_limit: 60, p_window_seconds: 60 }),
+    );
+    expect(getPublicAdmissionShareBoard).not.toHaveBeenCalled();
   });
 });
