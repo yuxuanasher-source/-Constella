@@ -141,9 +141,7 @@ function createRepo(): LiveOperationsRepository {
       ...baseReport,
       ...patch,
     })),
-    createReportScreenshot: vi.fn(async () => ({
-      id: "screenshot-db-1",
-    })),
+    createReportScreenshot: vi.fn(async () => "screenshot-db-1"),
     createReportChangeLog: vi.fn(async () => undefined),
   };
 }
@@ -766,7 +764,9 @@ describe("live operations service", () => {
         input: ocrInput,
         createOcrJob,
       }),
-    ).rejects.toThrow("OCR 入队失败");
+    ).rejects.toMatchObject({
+      message: "OCR 入队失败，请稍后重试",
+    });
 
     // The report is created but then voided, and the task is never advanced
     // into review (so the streamer can simply re-upload).
@@ -778,6 +778,87 @@ describe("live operations service", () => {
       status: "report_pending_review",
     });
   });
+
+  it.each([
+    ["screenshot insert fails", new Error("insert denied")],
+    ["screenshot RETURNING fails", new Error("returning failed")],
+  ])(
+    "voids the report and skips OCR queueing when %s",
+    async (_case, screenshotError) => {
+      vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+        ...task,
+        status: "pending_report",
+        systemDuration: 80,
+      });
+      vi.mocked(repo.createReportScreenshot).mockRejectedValueOnce(
+        screenshotError,
+      );
+      const createOcrJob = createQueuedOcrJob();
+
+      await expect(
+        submitLiveReportScreenshotForOcr({
+          repo,
+          audit,
+          notify,
+          actor: streamerActor,
+          taskId: "task-1",
+          input: ocrInput,
+          createOcrJob,
+        }),
+      ).rejects.toMatchObject({
+        message: "OCR 入队失败，请稍后重试",
+      });
+
+      expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
+        status: "voided",
+      });
+      expect(createOcrJob).not.toHaveBeenCalled();
+      expect(repo.updateLiveTask).not.toHaveBeenCalledWith("task-1", {
+        status: "report_pending_review",
+      });
+    },
+  );
+
+  it.each([
+    ["empty", ""],
+    ["blank", "   "],
+    ["non-string", 42],
+  ])(
+    "voids the report and skips OCR queueing for a %s screenshot id",
+    async (_case, screenshotId) => {
+      vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+        ...task,
+        status: "pending_report",
+        systemDuration: 80,
+      });
+      vi.mocked(repo.createReportScreenshot).mockResolvedValueOnce(
+        screenshotId as never,
+      );
+      const createOcrJob = createQueuedOcrJob();
+
+      await expect(
+        submitLiveReportScreenshotForOcr({
+          repo,
+          audit,
+          notify,
+          actor: streamerActor,
+          taskId: "task-1",
+          input: ocrInput,
+          createOcrJob,
+        }),
+      ).rejects.toMatchObject({
+        message: "OCR 入队失败，请稍后重试",
+      });
+
+      expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
+        status: "voided",
+      });
+      expect(createOcrJob).not.toHaveBeenCalled();
+      expect(repo.updateLiveTask).not.toHaveBeenCalledWith("task-1", {
+        status: "report_pending_review",
+      });
+    },
+  );
 
   it("supersedes prior open reports for the task on resubmit", async () => {
     vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({

@@ -55,7 +55,7 @@ describe("SupabaseLiveOperationsRepository", () => {
         uploadedBy: "user-streamer",
         metadata: { imageBucket: "evidence-private" },
       }),
-    ).resolves.toEqual({ id: "screenshot-db-1" });
+    ).resolves.toBe("screenshot-db-1");
 
     expect(from).toHaveBeenCalledWith("report_screenshots");
     expect(insert).toHaveBeenCalledWith({
@@ -70,5 +70,34 @@ describe("SupabaseLiveOperationsRepository", () => {
     });
     expect(select).toHaveBeenCalledWith("id");
     expect(single).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["missing row", null],
+    ["missing id", {}],
+    ["non-string id", { id: 42 }],
+    ["empty id", { id: "" }],
+    ["blank id", { id: "   " }],
+  ])("rejects a %s from screenshot RETURNING", async (_case, data) => {
+    const single = vi.fn(async () => ({
+      data,
+      error: null,
+    }));
+    const select = vi.fn(() => ({ single }));
+    const insert = vi.fn(() => ({ select }));
+    const from = vi.fn(() => ({ insert }));
+    const repo = new SupabaseLiveOperationsRepository({ from } as never);
+
+    await expect(
+      repo.createReportScreenshot({
+        organizationId: "org-1",
+        liveReportId: "report-1",
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        storagePath: "org/report-screenshots/task-1/end.png",
+        fileHash: "sha256:abc123",
+        uploadedBy: "user-streamer",
+      }),
+    ).rejects.toThrow("Report screenshot insert did not return a valid id");
   });
 });

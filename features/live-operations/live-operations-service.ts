@@ -165,7 +165,7 @@ export type LiveOperationsRepository = {
     fileHash: string;
     uploadedBy: string;
     metadata?: Record<string, unknown>;
-  }): Promise<{ id: string }>;
+  }): Promise<string>;
   createReportChangeLog(input: {
     organizationId: string;
     liveReportId: string;
@@ -728,17 +728,6 @@ export async function submitLiveReportScreenshotForOcr({
       collaborationAttribution?.contributorOrganizationId,
   });
 
-  const screenshot = await repo.createReportScreenshot({
-    organizationId: actor.organizationId,
-    liveReportId: report.id,
-    projectId: report.projectId,
-    streamerId: report.streamerId,
-    storagePath: input.screenshotStoragePath,
-    fileHash: input.screenshotFileHash,
-    uploadedBy: actor.userId,
-    metadata: { imageBucket: input.imageBucket },
-  });
-
   let job: {
     id?: string | null;
     status: string;
@@ -746,23 +735,33 @@ export async function submitLiveReportScreenshotForOcr({
     errorMessage?: string;
   };
   try {
+    const screenshotId = await repo.createReportScreenshot({
+      organizationId: actor.organizationId,
+      liveReportId: report.id,
+      projectId: report.projectId,
+      streamerId: report.streamerId,
+      storagePath: input.screenshotStoragePath,
+      fileHash: input.screenshotFileHash,
+      uploadedBy: actor.userId,
+      metadata: { imageBucket: input.imageBucket },
+    });
+    if (typeof screenshotId !== "string" || !screenshotId.trim()) {
+      throw new Error("Report screenshot insert did not return a valid id");
+    }
+
     job = await createOcrJob({
       liveReportId: report.id,
-      screenshotId: screenshot.id,
+      screenshotId: screenshotId.trim(),
       imageBucket: input.imageBucket,
       imagePath: input.screenshotStoragePath,
       expectedDuration: task.systemDuration,
     });
-  } catch (error) {
+  } catch {
     // Never advance the task into review with no worker behind the report:
     // void the just-created report and surface the failure so the streamer can
     // retry (the task stays in its current, re-uploadable status).
     await repo.updateLiveReport(report.id, { status: "voided" });
-    throw new Error(
-      error instanceof Error
-        ? `OCR 入队失败，请稍后重试：${error.message}`
-        : "OCR 入队失败，请稍后重试",
-    );
+    throw new Error("OCR 入队失败，请稍后重试");
   }
 
   assertLiveTaskTransition(task.status, "report_pending_review");
