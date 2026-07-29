@@ -7,6 +7,8 @@ export type CustomRuleSystemTemplateKind =
   | "cpt"
   | "cps"
   | "base_plus_performance"
+  | "base_plus_tiered_cpt"
+  | "base_plus_cps"
   | "evidence_discount"
   | "floor_cap"
   | "group_bonus";
@@ -207,6 +209,129 @@ const RAW_TEMPLATE_DEFINITIONS: CustomRuleSystemTemplate[] = [
             period_settlement_minutes: integerValue(0),
             period_orders_count: integerValue(0),
           },
+          moneyValue(100_000),
+        ),
+      ],
+    }),
+  },
+  {
+    id: "system:base-plus-tiered-cpt:v1",
+    kind: "base_plus_tiered_cpt",
+    name: "底薪 + 阶梯时薪",
+    description:
+      "适合稳定合作主播：先计周期底薪，再按周期结算时长分段计算阶梯时薪。",
+    contract: contract({
+      executionGrain: "project_streamer_period",
+      compositionMode: "replace",
+      title: "主播周期底薪加阶梯时薪",
+      summary:
+        "每个主播周期先计固定底薪，再按结算分钟数分段套用阶梯小时单价。",
+      calculationComponents: [
+        component("base_salary", "计入周期固定底薪", "读取已确认的周期底薪"),
+        component("tiered_cpt", "计算阶梯时薪", "按周期结算分钟数分段计费"),
+        component("final", "合并底薪和阶梯时薪", "固定底薪加阶梯时薪"),
+      ],
+      requiredInputs: [
+        requiredInput(
+          "period_settlement_minutes",
+          "周期结算时长",
+          "项目主播周期汇总",
+          INTEGER_TYPE,
+          "分钟",
+        ),
+      ],
+      parameters: [
+        moneyParameter("base_salary", "周期固定底薪", "元/周期", 100_000),
+        integerParameter("tier1_minutes", "第一阶梯分钟上限", "分钟", 3_600),
+        moneyParameter("tier1_hourly_rate", "第一阶梯小时单价", "元/小时", 8_000),
+        moneyParameter("tier2_hourly_rate", "超出阶梯小时单价", "元/小时", 12_000),
+      ],
+      compositionDescription:
+        "替换项目主播周期的基础应付规则，适合底薪与阶梯时薪并行的合作。",
+      examples: [
+        example(
+          "未超过第一阶梯",
+          "normal",
+          "周期直播三十小时，计入底薪并按第一阶梯单价计时薪。",
+          { period_settlement_minutes: integerValue(1_800) },
+          moneyValue(340_000),
+        ),
+        example(
+          "超过第一阶梯",
+          "normal",
+          "周期直播八十小时，前六十小时按第一阶梯，超出部分按第二阶梯。",
+          { period_settlement_minutes: integerValue(4_800) },
+          moneyValue(820_000),
+        ),
+        example(
+          "第一阶梯边界",
+          "boundary",
+          "周期结算时长刚好达到第一阶梯上限时，全部按第一阶梯单价计费。",
+          { period_settlement_minutes: integerValue(3_600) },
+          moneyValue(580_000),
+        ),
+        example(
+          "零时长",
+          "boundary",
+          "周期没有结算时长时只计入已确认底薪。",
+          { period_settlement_minutes: integerValue(0) },
+          moneyValue(100_000),
+        ),
+      ],
+    }),
+  },
+  {
+    id: "system:base-plus-cps:v1",
+    kind: "base_plus_cps",
+    name: "底薪 + CPS 抽成",
+    description:
+      "适合带货或充值类项目：先计周期底薪，再按周期销售额计算 CPS 抽成。",
+    contract: contract({
+      executionGrain: "project_streamer_period",
+      compositionMode: "replace",
+      title: "主播周期底薪加销售抽成",
+      summary:
+        "每个主播周期先计固定底薪，再按周期销售金额和确认抽成比例计算应付金额。",
+      calculationComponents: [
+        component("base_salary", "计入周期固定底薪", "读取已确认的周期底薪"),
+        component("cps_commission", "计算销售抽成", "周期销售额乘以 CPS 抽成比例"),
+        component("final", "合并底薪和销售抽成", "固定底薪加 CPS 抽成"),
+      ],
+      requiredInputs: [
+        requiredInput(
+          "period_sales_amount",
+          "周期销售金额",
+          "已归一化周期销售额导入",
+          MONEY_TYPE,
+          "元",
+        ),
+      ],
+      parameters: [
+        moneyParameter("base_salary", "周期固定底薪", "元/周期", 100_000),
+        rateParameter("cps_rate", "CPS 抽成比例", "%", 1_500),
+      ],
+      compositionDescription:
+        "替换项目主播周期的基础应付规则，适合固定保障加销售抽成的合作。",
+      examples: [
+        example(
+          "标准销售额",
+          "normal",
+          "周期销售一万元时，在固定底薪上加百分之十五抽成。",
+          { period_sales_amount: moneyValue(1_000_000) },
+          moneyValue(250_000),
+        ),
+        example(
+          "零销售额",
+          "boundary",
+          "周期没有销售额时只计入已确认底薪。",
+          { period_sales_amount: moneyValue(0) },
+          moneyValue(100_000),
+        ),
+        example(
+          "最小销售金额",
+          "boundary",
+          "最小货币单位仍按确认比例计算，结果按分取整。",
+          { period_sales_amount: moneyValue(1) },
           moneyValue(100_000),
         ),
       ],
@@ -491,6 +616,21 @@ function rateParameter(
     valueType: RATE_TYPE,
     userFacingUnit,
     defaultValue: { type: "rate_bps" as const, rateBps },
+  };
+}
+
+function integerParameter(
+  name: string,
+  description: string,
+  userFacingUnit: string,
+  value: number,
+) {
+  return {
+    name,
+    description,
+    valueType: INTEGER_TYPE,
+    userFacingUnit,
+    defaultValue: integerValue(value),
   };
 }
 

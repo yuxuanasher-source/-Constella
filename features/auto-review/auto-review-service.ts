@@ -123,8 +123,14 @@ export async function evaluateAutoReviewActive({
       decision: "approve",
       includeInTaskResult: true,
       enterSettlementPool: true,
-      reviewNotes: `Auto review passed by rule ${rule.id}`,
-      reason: `auto_review:${rule.id}`,
+      reviewNotes: JSON.stringify({
+        source: "auto_review_active",
+        ruleId: rule.id,
+        decision: result.decision,
+        reasons: result.reasons,
+        failedGates: result.failedGates,
+      }),
+      reason: `自动审核通过：绿证据且全门通过（规则 ${rule.id}）`,
     },
   });
 

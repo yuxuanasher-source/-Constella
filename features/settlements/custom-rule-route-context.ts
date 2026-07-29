@@ -38,7 +38,10 @@ import {
   type CustomRuleInputRequirement,
 } from "./custom-rule-data-readiness";
 import { buildCustomRuleTemplateExplanation } from "./custom-rule-explanation";
-import { isCustomSettlementRulesEnabled } from "./custom-rule-feature-flag";
+import {
+  isCustomSettlementRuleExecutionEnabled,
+  isCustomSettlementRulesEnabled,
+} from "./custom-rule-feature-flag";
 import {
   determineSettlementPopulationCoverage,
   type SettlementGroupScopedRule,
@@ -573,7 +576,7 @@ export async function getCustomRuleRouteContext(): Promise<
       repository: governanceRepository,
       audit: (input) => writeAuditLog(supabase, input),
       executionCapability: {
-        enabled: process.env.CUSTOM_SETTLEMENT_RULE_EXECUTION_ENABLED === "true",
+        enabled: isCustomSettlementRuleExecutionEnabled(),
       },
     });
     return lifecycle;

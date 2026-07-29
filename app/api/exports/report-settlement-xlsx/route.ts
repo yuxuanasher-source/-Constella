@@ -4,8 +4,8 @@ import {
   buildReportSettlementXlsx,
   screenshotExtensionFromPath,
   type ReportScreenshot,
-  type ReportSettlementXlsxRow,
 } from "@/features/exports/report-settlement-xlsx";
+import { buildReportSettlementExportRows } from "@/features/exports/settlement-export-data";
 import { writeAuditLog } from "@/lib/audit/audit";
 import { getAuthContext } from "@/lib/auth/context";
 import { getServerEnv } from "@/lib/config/env";
@@ -38,11 +38,18 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const rows: ReportSettlementXlsxRow[] = Array.isArray(body?.rows)
-      ? body.rows
-      : [];
+    const requestedReportIds = reportIdsFromBody(body);
+    const rows = await buildReportSettlementExportRows({
+      client: supabase,
+      organizationId: auth.organizationId,
+      organizationName: auth.organizationName,
+      reportIds: requestedReportIds,
+      projectId: optionalString(body?.projectId),
+      periodStart: optionalString(body?.periodStart),
+      periodEnd: optionalString(body?.periodEnd),
+    });
 
-    const reportIds = Array.from(
+    const exportedReportIds = Array.from(
       new Set(
         rows
           .map((row) => row?.reportId)
@@ -55,11 +62,11 @@ export async function POST(request: Request) {
 
     const screenshotByReportId = new Map<string, ReportScreenshot>();
 
-    if (reportIds.length > 0) {
+    if (exportedReportIds.length > 0) {
       const { data: shots } = await supabase
         .from("report_screenshots")
         .select("live_report_id, storage_path, uploaded_at")
-        .in("live_report_id", reportIds)
+        .in("live_report_id", exportedReportIds)
         .order("uploaded_at", { ascending: false });
 
       const pathByReport = new Map<string, string>();
@@ -114,8 +121,14 @@ export async function POST(request: Request) {
         kind: "report_settlement_details_xlsx",
         rowCount: rows.length,
         screenshotCount: screenshotByReportId.size,
+        parameters: {
+          reportIds: requestedReportIds,
+          projectId: optionalString(body?.projectId),
+          periodStart: optionalString(body?.periodStart),
+          periodEnd: optionalString(body?.periodEnd),
+        },
       },
-      changedFields: ["export_kind", "row_count"],
+      changedFields: ["export_kind", "row_count", "export_parameters"],
     });
 
     return NextResponse.json({
@@ -127,4 +140,39 @@ export async function POST(request: Request) {
     }
     return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
   }
+}
+
+function reportIdsFromBody(body: unknown): string[] {
+  const record =
+    body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const explicit = stringArray(record.reportIds);
+  if (explicit.length > 0) {
+    return explicit;
+  }
+  if (!Array.isArray(record.rows)) {
+    return [];
+  }
+  return stringArray(
+    record.rows.map((row) =>
+      row && typeof row === "object"
+        ? (row as Record<string, unknown>).reportId
+        : null,
+    ),
+  );
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? Array.from(
+        new Set(
+          value
+            .map((item) => (typeof item === "string" ? item.trim() : ""))
+            .filter(Boolean),
+        ),
+      )
+    : [];
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

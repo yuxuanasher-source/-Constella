@@ -25,6 +25,8 @@ export type AuditCenterFilters = {
   module?: string;
   action?: string;
   projectId?: string;
+  objectType?: string;
+  objectId?: string;
   highRiskOnly?: boolean;
   limit?: number;
 };
@@ -107,6 +109,12 @@ export async function listAuditCenterEntries(
   }
   if (filters.action) {
     query = query.eq("action", filters.action);
+  }
+  if (filters.objectType) {
+    query = query.eq("object_type", filters.objectType);
+  }
+  if (filters.objectId) {
+    query = query.eq("object_id", filters.objectId);
   }
   if (filters.highRiskOnly) {
     query = query.eq("is_high_risk", true);

@@ -140,8 +140,14 @@ describe("evaluateAutoReviewActive", () => {
         decision: "approve",
         includeInTaskResult: true,
         enterSettlementPool: true,
-        reviewNotes: "Auto review passed by rule rule-1",
-        reason: "auto_review:rule-1",
+        reviewNotes: JSON.stringify({
+          source: "auto_review_active",
+          ruleId: "rule-1",
+          decision: "auto_pass_candidate",
+          reasons: ["green_system_evidence"],
+          failedGates: [],
+        }),
+        reason: "自动审核通过：绿证据且全门通过（规则 rule-1）",
       },
     });
     expect(JSON.stringify(approveReport.mock.calls[0][0])).not.toContain(

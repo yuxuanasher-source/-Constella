@@ -145,6 +145,8 @@ describe("live UI adapters", () => {
       evidenceLevel: "green",
       viewers: 952,
       riskFlags: ["duration_divergence"],
+      screenshotUploadedAt: "2026-06-02T13:06:00.000Z",
+      screenshotFileHash: "sha256:abc",
       submittedAt: "2026-06-02T13:05:00.000Z",
     });
 
@@ -164,6 +166,8 @@ describe("live UI adapters", () => {
       screens: 1,
       source: "OCR",
       riskFlags: ["duration_divergence"],
+      screenshotUploadedAt: "2026-06-02T13:06:00.000Z",
+      screenshotFileHash: "sha256:abc",
       note: "system · green",
     });
     expect(JSON.stringify(report)).not.toContain("amount");
@@ -188,6 +192,8 @@ describe("live UI adapters", () => {
       viewers: 952,
       riskFlags: [],
       submittedAt: "2026-06-02T13:05:00.000Z",
+      screenshotUploadedAt: null,
+      screenshotFileHash: null,
     });
 
     expect(report.status).toBe("pending_review");

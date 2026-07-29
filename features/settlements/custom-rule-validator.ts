@@ -147,13 +147,6 @@ const PAYABLE_ONLY = ["payable"] as const;
 const RECEIVABLE_ONLY = ["receivable"] as const;
 const EXTERNAL_COST_ONLY = ["external_cost"] as const;
 const RECONCILIATION_ONLY = ["reconciliation"] as const;
-const ALL_SCOPES = [
-  "payable",
-  "receivable",
-  "external_cost",
-  "reconciliation",
-] as const;
-
 const VARIABLE_DEFINITIONS: Readonly<Record<string, VariableDefinition>> = {
   system_minutes: variable(INTEGER_TYPE, PAYABLE_AND_RECEIVABLE, REPORT_GRAIN),
   screenshot_minutes: variable(

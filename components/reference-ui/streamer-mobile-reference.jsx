@@ -7104,7 +7104,6 @@ function StreamerMobileReferenceInner({
             }),
           },
         );
-        const screenshotFileHash = `manual-${id}-${Date.now()}-${fileName}-${screenshotFile.size ?? 0}`;
         const uploadResponse = await fetch(signed.signedUrl, {
           method: "PUT",
           headers: {
@@ -7124,7 +7123,6 @@ function StreamerMobileReferenceInner({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               screenshotStoragePath: signed.path,
-              screenshotFileHash,
               imageBucket: signed.bucket,
             }),
           },

@@ -785,6 +785,32 @@ function safeBusinessQuestion(value) {
   return /[?？]$/u.test(question) ? question : `${question}？`;
 }
 
+function systemTemplatePrompt(template) {
+  const contract = template?.contract ?? {};
+  const parameterText = (contract.parameters ?? [])
+    .map((parameter) => {
+      const value = formatTypedValue(parameter.defaultValue);
+      return `${parameter.description || parameter.name}：${value}`;
+    })
+    .join("；");
+  const inputText = (contract.requiredInputs ?? [])
+    .map((input) => input.description || input.name)
+    .join("、");
+
+  return [
+    `请基于「${template?.name ?? "系统模板"}」起草结算规则。`,
+    contract.summary ? `业务口径：${contract.summary}` : null,
+    parameterText ? `默认参数：${parameterText}` : null,
+    inputText ? `需要数据：${inputText}` : null,
+    contract.executionGrain
+      ? `执行口径：${executionGrainLabel(contract.executionGrain)}`
+      : null,
+    "请先保留为业务草稿，后续由人工确认、试算并提交审核。",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function safeBusinessUnit(value) {
   const units = new Set([
     "%",
@@ -2605,17 +2631,58 @@ export default function CustomSettlementRuleWorkspace({
   };
 
   const cloneVersionAsDraft = async (ruleOrTemplate) => {
+    if (ruleOrTemplate?.kind === "system") {
+      const contract = ruleOrTemplate.contract ?? {};
+      const nextScope = contract.scope ?? selectedScope;
+      const nextTarget = normalizeTarget(contract.target);
+      const nextContextKey = JSON.stringify([
+        projectId,
+        periodStart,
+        periodEnd,
+        nextScope,
+        nextTarget.targetType,
+        nextTarget.targetId,
+      ]);
+      setSelectedScope(nextScope);
+      setSelectedTarget(nextTarget);
+      setDraftInputState({
+        contextKey: nextContextKey,
+        value: systemTemplatePrompt(ruleOrTemplate),
+      });
+      setRequestState((current) => ({
+        ...(current.contextKey === nextContextKey ? current : freshRequestState()),
+        contextKey: nextContextKey,
+        status: "ready",
+        catalogStatus:
+          current.contextKey === nextContextKey
+            ? current.catalogStatus
+            : validContext
+              ? "loading"
+              : "idle",
+        operation: null,
+        lastOperation: null,
+        error: null,
+        recovery: null,
+        announcement: "已按系统模板填入规则说明",
+        focusTarget: "status",
+      }));
+      setActivePane("build");
+      return {
+        templateId: ruleOrTemplate.id,
+        missingTargetVariables: [],
+      };
+    }
     if (typeof apiClient.cloneRule !== "function") return null;
     const ruleVersionId =
       typeof ruleOrTemplate === "string"
         ? governanceView.templates.find((template) => template.id === ruleOrTemplate)
             ?.sourceRuleVersionId
-        : ruleOrTemplate?.id;
+        : ruleOrTemplate?.sourceRuleVersionId ?? ruleOrTemplate?.id;
     const templateName =
       typeof ruleOrTemplate === "string"
         ? governanceView.templates.find((template) => template.id === ruleOrTemplate)
             ?.name
-        : null;
+        : ruleOrTemplate?.name ?? null;
     if (!ruleVersionId) return null;
     const result = await apiClient.cloneRule({
       projectId,

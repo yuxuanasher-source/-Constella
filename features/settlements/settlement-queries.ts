@@ -1,6 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { calculateSettlementItem } from "./settlement-engine";
+import {
+  calculateSettlementItem,
+  type SettlementMethod,
+} from "./settlement-engine";
 import { extractStructuredSettlementRule } from "./structured-settlement-rule";
 import type {
   SettlementBatchStatus,
@@ -49,6 +52,7 @@ export type OpsSettlementBatchDetailItem = {
   settlementDuration: number;
   timeSource: string;
   evidenceLevel: "green" | "yellow" | "red" | null;
+  riskFlags: string[];
   systemAmount: number;
   manualAmount: number;
   adjustmentAmount: number;
@@ -494,6 +498,7 @@ export function toOpsSettlementBatchDetailItem(
   const openExceptions = toOpenSettlementRuleExceptions(
     row.settlement_rule_exceptions,
   );
+  const ruleBreakdown = toOpsSettlementRuleBreakdown(row.evidence_snapshot);
 
   const item: OpsSettlementBatchDetailItem = {
     id: row.id,
@@ -508,13 +513,16 @@ export function toOpsSettlementBatchDetailItem(
       stringFromSnapshot(row.evidence_snapshot, "source") ||
       "manual",
     evidenceLevel: row.evidence_level,
+    riskFlags: stringArrayValue(row.evidence_snapshot.riskFlags),
     systemAmount,
     manualAmount,
     adjustmentAmount,
     totalAmount: systemAmount + manualAmount + adjustmentAmount,
     sourceKind: "settlement",
-    ruleBreakdown: toOpsSettlementRuleBreakdown(row.evidence_snapshot),
   };
+  if (ruleBreakdown) {
+    item.ruleBreakdown = ruleBreakdown;
+  }
   if (openExceptions.length > 0) {
     item.openExceptions = openExceptions;
   }
@@ -533,6 +541,7 @@ export function toOpsSettlementBatchCostDetailItem(
     settlementDuration: 0,
     timeSource: row.source,
     evidenceLevel: row.evidence_level,
+    riskFlags: [],
     systemAmount: 0,
     manualAmount: amount,
     adjustmentAmount: 0,
@@ -722,7 +731,7 @@ function toOpsSettlementRuleBreakdown(
 ): OpsSettlementRuleBreakdown | undefined {
   const ruleEngine = recordValue(snapshot.ruleEngine);
   if (!ruleEngine) {
-    return undefined;
+    return toLegacyRuleBreakdown(snapshot);
   }
 
   const sourceReportIds = stringArrayValue(ruleEngine.sourceReportIds);
@@ -743,6 +752,144 @@ function toOpsSettlementRuleBreakdown(
       ),
     explanationZh: stringValue(ruleEngine.explanationZh),
   };
+}
+
+function toLegacyRuleBreakdown(
+  snapshot: Record<string, unknown>,
+): OpsSettlementRuleBreakdown | undefined {
+  const legacyEngine = recordValue(snapshot.legacyEngine);
+  const rule = recordValue(legacyEngine?.rule);
+  const breakdown = recordValue(legacyEngine?.breakdown);
+  if (!legacyEngine || !rule || !breakdown) {
+    return undefined;
+  }
+
+  const baseAmount = numberValue(breakdown.baseAmount) ?? 0;
+  const penaltyAmount = numberValue(breakdown.penaltyAmount) ?? 0;
+  const computedAmount = numberValue(breakdown.computedAmount);
+  if (computedAmount == null) {
+    return undefined;
+  }
+
+  const settlementMethod = stringValue(rule.settlementMethod);
+  return {
+    mode: "legacy",
+    executionGrain: "单条报数",
+    appliedVersionLabels: [
+      `固定规则 · ${settlementMethodLabel(settlementMethod)}`,
+    ],
+    components: [
+      {
+        key: "legacy:baseAmount",
+        label: "基础金额",
+        amountCents: yuanToCents(baseAmount),
+      },
+      {
+        key: "legacy:penaltyAmount",
+        label: "扣罚合计",
+        amountCents: -yuanToCents(penaltyAmount),
+      },
+      {
+        key: "legacy:computedAmount",
+        label: "最终金额",
+        amountCents: yuanToCents(computedAmount),
+      },
+    ],
+    sourceReportCount: 1,
+    missingDataDecisions: [],
+    explanationZh: buildLegacyRuleExplanation({
+      snapshot,
+      legacyEngine,
+      rule,
+      breakdown,
+    }),
+  };
+}
+
+function buildLegacyRuleExplanation({
+  snapshot,
+  legacyEngine,
+  rule,
+  breakdown,
+}: {
+  snapshot: Record<string, unknown>;
+  legacyEngine: Record<string, unknown>;
+  rule: Record<string, unknown>;
+  breakdown: Record<string, unknown>;
+}): string {
+  const parts: string[] = [];
+  const method = stringValue(rule.settlementMethod);
+  const evidenceLevel = stringValue(snapshot.evidenceLevel);
+  const timeSource = stringValue(snapshot.timeSource);
+  const duration = numberValue(snapshot.settlementDuration) ?? 0;
+
+  if (method === "cpt" || method === "base_salary_cpt") {
+    if (evidenceLevel === "green" && timeSource === "system") {
+      const tiers = arrayValue(rule.hourlyTiers);
+      if (tiers.length > 0) {
+        parts.push(
+          `系统计时 ${duration} 分钟（约 ${formatHours(duration)} 小时），按 ${tiers.length} 档阶梯时薪计费`,
+        );
+      } else {
+        parts.push(
+          `系统计时 ${duration} 分钟（约 ${formatHours(duration)} 小时）× 时薪 ¥${formatYuan(
+            numberValue(rule.hourlyRate) ?? 0,
+          )}/小时`,
+        );
+      }
+    } else {
+      parts.push(
+        `时长证据为${evidenceLevelLabel(evidenceLevel)}、来源为${timeSourceLabel(
+          timeSource,
+        )}，时长计费部分按规则记 ¥0（仅绿色证据 + 系统计时可计费）`,
+      );
+    }
+  }
+
+  if (method === "base_salary" || method === "base_salary_cpt") {
+    const baseSalary = numberValue(rule.baseSalary) ?? 0;
+    if (booleanValue(legacyEngine.includeBaseSalary) === false) {
+      parts.push("底薪已在本批次其他条目计入，本条不重复计");
+    } else if (baseSalary > 0) {
+      parts.push(`计入底薪 ¥${formatYuan(baseSalary)}（每批次仅计一次）`);
+    }
+  }
+
+  if (
+    method === "cpa" ||
+    method === "cps" ||
+    method === "gift" ||
+    method === "manual"
+  ) {
+    parts.push("该结算方式的金额由人工录入承载，系统计算部分为 ¥0");
+  }
+
+  for (const penalty of arrayValue(breakdown.penalties)) {
+    const record = recordValue(penalty);
+    const amount = numberValue(record?.amount) ?? 0;
+    if (!record || amount <= 0) {
+      continue;
+    }
+    parts.push(
+      `触发「${stringValue(record.label) ?? penaltyTriggerLabel(stringValue(record.trigger))}」，扣 ¥${formatYuan(
+        amount,
+      )}`,
+    );
+  }
+
+  if (booleanValue(breakdown.floorApplied)) {
+    parts.push(
+      `命中保底 ¥${formatYuan(numberValue(rule.floorAmount) ?? 0)}`,
+    );
+  }
+  if (booleanValue(breakdown.capApplied)) {
+    parts.push(`命中封顶 ¥${formatYuan(numberValue(rule.capAmount) ?? 0)}`);
+  }
+
+  parts.push(
+    `最终系统金额 ¥${formatYuan(numberValue(breakdown.computedAmount) ?? 0)}`,
+  );
+  return parts.join("；");
 }
 
 function toRuleComponents(
@@ -882,10 +1029,77 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function booleanValue(value: unknown): boolean {
+  return value === true;
+}
+
 function recordValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function yuanToCents(value: number): number {
+  return Math.round(value * 100);
+}
+
+function formatHours(minutes: number): string {
+  return formatYuan(Math.round((minutes / 60) * 10) / 10);
+}
+
+function formatYuan(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  if (Number.isInteger(rounded)) {
+    return String(rounded);
+  }
+  return rounded.toFixed(2).replace(/0+$/u, "").replace(/\.$/u, "");
+}
+
+function settlementMethodLabel(method: string | null): string {
+  const labels: Record<SettlementMethod, string> = {
+    cpt: "时长计费",
+    base_salary: "底薪",
+    base_salary_cpt: "底薪 + 时长计费",
+    cps: "CPS 抽成",
+    cpa: "CPA",
+    gift: "礼物流水",
+    manual: "人工结算",
+  };
+  return method && method in labels
+    ? labels[method as SettlementMethod]
+    : "人工结算";
+}
+
+function evidenceLevelLabel(level: string | null): string {
+  const labels: Record<string, string> = {
+    green: "绿色",
+    yellow: "黄色",
+    red: "红色",
+  };
+  return level ? (labels[level] ?? level) : "未知";
+}
+
+function timeSourceLabel(source: string | null): string {
+  const labels: Record<string, string> = {
+    system: "系统计时",
+    screenshot: "截图计时",
+    claimed: "人工填报",
+    manual: "人工录入",
+  };
+  return source ? (labels[source] ?? source) : "未知";
+}
+
+function penaltyTriggerLabel(trigger: string | null): string {
+  const labels: Record<string, string> = {
+    red_evidence: "红证据扣罚",
+    yellow_evidence: "黄证据扣罚",
+    non_system_time: "非系统计时扣罚",
+  };
+  return trigger ? (labels[trigger] ?? trigger) : "扣罚";
 }
 
 function camelizeRecord(

@@ -13,7 +13,13 @@ const permissionErrorPatterns = [
   /^Complex cost rules are not enabled for this project$/,
 ];
 
+const conflictErrorPatterns = [/^Duplicate report screenshot content$/];
+
 export function statusForServiceError(error: Error): number {
+  if (conflictErrorPatterns.some((pattern) => pattern.test(error.message))) {
+    return 409;
+  }
+
   return permissionErrorPatterns.some((pattern) => pattern.test(error.message))
     ? 403
     : 400;

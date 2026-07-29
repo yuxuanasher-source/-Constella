@@ -95,6 +95,24 @@ export const exportDefinitions: Record<ExportKind, ExportField[]> = {
   ],
   settlement_batch: [
     { key: "batchName", label: "批次", sensitivity: "internal" },
+    { key: "ruleLabel", label: "规则版本/结算方式", sensitivity: "internal" },
+    { key: "evidenceLevel", label: "证据等级", sensitivity: "internal" },
+    { key: "varianceFlag", label: "差异标记", sensitivity: "internal" },
+    {
+      key: "systemAmountCents",
+      label: "系统金额",
+      sensitivity: "finance_sensitive",
+    },
+    {
+      key: "manualAmountCents",
+      label: "人工金额",
+      sensitivity: "finance_sensitive",
+    },
+    {
+      key: "adjustmentAmountCents",
+      label: "调整金额",
+      sensitivity: "finance_sensitive",
+    },
     {
       key: "payableAmountCents",
       label: "应付金额",

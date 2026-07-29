@@ -185,7 +185,9 @@ function createRepo(): SettlementRepository {
 
 describe("settlement service", () => {
   let repo: SettlementRepository;
-  const audit = vi.fn(async (_input: unknown) => undefined);
+  const audit = vi.fn(async (input: unknown) => {
+    void input;
+  });
   const notify = vi.fn(async () => undefined);
 
   beforeEach(() => {
@@ -318,6 +320,28 @@ describe("settlement service", () => {
             computedAmount: 160,
             evidenceSnapshot: expect.not.objectContaining({
               ruleEngine: expect.anything(),
+            }),
+          }),
+        ],
+      }),
+    );
+    expect(repo.createSettlementBatchAtomic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            evidenceSnapshot: expect.objectContaining({
+              legacyEngine: expect.objectContaining({
+                rule: expect.objectContaining({
+                  settlementMethod: "cpt",
+                  hourlyRate: 80,
+                  baseSalary: 0,
+                }),
+                breakdown: expect.objectContaining({
+                  baseAmount: 160,
+                  penaltyAmount: 0,
+                  computedAmount: 160,
+                }),
+              }),
             }),
           }),
         ],

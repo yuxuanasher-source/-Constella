@@ -54,6 +54,16 @@ describe("live operations DTO mappers", () => {
       live_tasks: { title: "Project A · Streamer 1" },
       projects: { name: "Project A" },
       streamers: { display_name: "Streamer 1" },
+      report_screenshots: [
+        {
+          file_hash: "sha256:old",
+          uploaded_at: "2026-06-02T12:01:00.000Z",
+        },
+        {
+          file_hash: "sha256:new",
+          uploaded_at: "2026-06-02T12:06:00.000Z",
+        },
+      ],
     });
 
     expect(item).toEqual({
@@ -75,6 +85,8 @@ describe("live operations DTO mappers", () => {
       viewersSource: "ocr",
       riskFlags: ["duration_divergence"],
       submittedAt: "2026-06-02T12:05:00.000Z",
+      screenshotUploadedAt: "2026-06-02T12:06:00.000Z",
+      screenshotFileHash: "sha256:new",
     });
     expect(JSON.stringify(item)).not.toContain("amount");
   });

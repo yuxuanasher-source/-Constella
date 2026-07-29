@@ -42,6 +42,7 @@
     "supabase:seed": "supabase db reset"
   },
   "dependencies": {
+    "@arco-design/web-react": "^2.66.16",
     "@heroui/react": "^3.2.1",
     "@jsep-plugin/object": "1.2.2",
     "@pdf-lib/fontkit": "^1.1.1",

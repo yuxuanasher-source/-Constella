@@ -407,8 +407,6 @@ describe("StreamerMobileReferenceApp live fulfillment smoke", () => {
         body: JSON.stringify({
           screenshotStoragePath:
             "org-1/report-screenshots/live-task-ui-smoke-1/manual-submit.png",
-          screenshotFileHash:
-            "manual-live-task-ui-smoke-1-1780000000000-end.png-21",
           imageBucket: "evidence-private",
         }),
       }),

@@ -31,6 +31,7 @@ import type { CustomRuleMissingDataPolicy } from "./custom-rule-types";
 
 const mocks = vi.hoisted(() => ({
   isEnabled: vi.fn(),
+  isExecutionEnabled: vi.fn(),
   createServerClient: vi.fn(),
   createAdminClient: vi.fn(),
   getAuthContext: vi.fn(),
@@ -48,6 +49,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./custom-rule-feature-flag", () => ({
   isCustomSettlementRulesEnabled: mocks.isEnabled,
+  isCustomSettlementRuleExecutionEnabled: mocks.isExecutionEnabled,
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
@@ -147,6 +149,7 @@ describe("custom rule route context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isEnabled.mockReturnValue(true);
+    mocks.isExecutionEnabled.mockReturnValue(false);
 
     const query = projectQuery();
     const supabase = { from: vi.fn().mockReturnValue(query) };
@@ -325,6 +328,20 @@ describe("custom rule route context", () => {
     expect(context.simulation).toBeDefined();
     expect(mocks.createAdminClient).not.toHaveBeenCalled();
     expect(mocks.createProviders).not.toHaveBeenCalled();
+  });
+
+  it("reads lifecycle execution capability from the shared server flag helper", async () => {
+    mocks.isExecutionEnabled.mockReturnValue(true);
+    const { getCustomRuleRouteContext } =
+      await import("./custom-rule-route-context");
+
+    const context = await getCustomRuleRouteContext();
+    expect(context).not.toBeInstanceOf(Response);
+    if (context instanceof Response) throw new Error("Expected route context");
+
+    expect(mocks.isExecutionEnabled).not.toHaveBeenCalled();
+    expect(context.lifecycle).toBeDefined();
+    expect(mocks.isExecutionEnabled).toHaveBeenCalledTimes(1);
   });
 
   it("memoizes specialized services per request without a mutable singleton", async () => {
@@ -5687,6 +5704,19 @@ async function realPeriodTemplateFixture(templateId: string) {
       'money_result({ final: parameter("group_bonus") * period_report_count })',
     "system:base-plus-performance:v1": `money_result({
       final: parameter("base_salary") + parameter("order_bonus") * period_orders_count
+    })`,
+    "system:base-plus-tiered-cpt:v1": `money_result({
+      base_salary: parameter("base_salary"),
+      tiered_cpt: tiered(period_settlement_minutes, [
+        { upto: parameter("tier1_minutes"), rate_per_hour: parameter("tier1_hourly_rate") },
+        { upto: null, rate_per_hour: parameter("tier2_hourly_rate") }
+      ]),
+      final: base_salary + tiered_cpt
+    })`,
+    "system:base-plus-cps:v1": `money_result({
+      base_salary: parameter("base_salary"),
+      cps_commission: percent(period_sales_amount, parameter("cps_rate")),
+      final: base_salary + cps_commission
     })`,
   };
   const formula = formulas[templateId];

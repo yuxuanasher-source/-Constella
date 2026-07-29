@@ -16,7 +16,7 @@ function reviewRule(overrides = {}) {
     versionNumber: 3,
     status: "pending_review",
     createdBy: CREATOR_ID,
-    effectiveFrom: "2026-07-20T00:00:00.000Z",
+    effectiveFrom: "2099-07-20T00:00:00.000Z",
     effectiveUntil: null,
     reason: "提交审核",
     primaryAction: { state: "pending_review", action: "approve" },
@@ -199,7 +199,7 @@ describe("CustomSettlementRuleReviewDialog", () => {
 
     expect(approve).toHaveBeenCalledWith({
       ruleVersionId: RULE_ID,
-      effectiveFrom: "2026-07-20T00:00:00.000Z",
+      effectiveFrom: "2099-07-20T00:00:00.000Z",
       reason: "单负责人承担风险",
       force: true,
       acknowledgment: FORCE_ACK,

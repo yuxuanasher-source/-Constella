@@ -41,6 +41,7 @@ describe("api DTO contracts", () => {
       live_tasks: { title: "Launch Week 路 Streamer One" },
       projects: { name: "Launch Week" },
       streamers: { display_name: "Streamer One" },
+      report_screenshots: null,
     });
 
     expectPublicDtoShape(item);

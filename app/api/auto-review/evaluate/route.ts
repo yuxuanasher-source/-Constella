@@ -1,15 +1,28 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { evaluateAutoReviewShadow } from "@/features/auto-review/auto-review-service";
+import {
+  evaluateAutoReviewActive,
+  evaluateAutoReviewShadow,
+} from "@/features/auto-review/auto-review-service";
+import { evaluateAutoReviewRolloutGate } from "@/features/auto-review/auto-review-rollout-gates";
+import {
+  listAutoReviewRolloutMetricRows,
+  type AutoReviewRolloutMetricQueryClient,
+} from "@/features/auto-review/auto-review-rollout-metrics-repository";
+import { reviewLiveReport } from "@/features/live-operations/live-operations-service";
+import { SupabaseLiveOperationsRepository } from "@/features/live-operations/live-operations-repository";
+import { writeAuditLog } from "@/lib/audit/audit";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { toHttpError } from "@/lib/http/http-error";
 import { parseJsonBody } from "@/lib/http/parse-json-body";
+import { sendNotification } from "@/lib/notify/notify";
 
 const allowedRoles = new Set(["owner", "ops_manager", "operator_business"]);
 
 const autoReviewEvaluateBodySchema = z.object({
+  targetMode: z.enum(["shadow", "active"]).optional(),
   report: z.object({
     id: z.string(),
     status: z.string(),
@@ -32,6 +45,16 @@ const autoReviewEvaluateBodySchema = z.object({
     maxDurationDeviationMinutes: z.number(),
     dailyHardLimitMinutes: z.number(),
   }),
+  rolloutConfig: z
+    .object({
+      killSwitchEnabled: z.boolean().optional(),
+      minimumShadowSampleCount: z.number().int().nonnegative().optional(),
+      maximumFalseAcceptRateBps: z.number().int().nonnegative().optional(),
+      minimumAuditSampleCount: z.number().int().nonnegative().optional(),
+      maximumAuditErrorRateBps: z.number().int().nonnegative().optional(),
+      limit: z.number().int().positive().optional(),
+    })
+    .optional(),
 });
 
 export async function POST(request: Request) {
@@ -55,11 +78,75 @@ export async function POST(request: Request) {
 
     const body = await parseJsonBody(request, autoReviewEvaluateBodySchema);
 
+    const targetMode = body.targetMode ?? body.rule.mode;
+    if (targetMode === "active") {
+      const metricClient =
+        supabase as unknown as AutoReviewRolloutMetricQueryClient;
+      const config = {
+        targetMode: "active" as const,
+        killSwitchEnabled: body.rolloutConfig?.killSwitchEnabled ?? false,
+        minimumShadowSampleCount:
+          body.rolloutConfig?.minimumShadowSampleCount ?? 50,
+        maximumFalseAcceptRateBps:
+          body.rolloutConfig?.maximumFalseAcceptRateBps ?? 100,
+        minimumAuditSampleCount:
+          body.rolloutConfig?.minimumAuditSampleCount ?? 20,
+        maximumAuditErrorRateBps:
+          body.rolloutConfig?.maximumAuditErrorRateBps ?? 250,
+        explicitActiveRequest: true,
+      };
+      const metrics = await listAutoReviewRolloutMetricRows(metricClient, {
+        organizationId: auth.organizationId,
+        config,
+        limit: body.rolloutConfig?.limit,
+      });
+      const rolloutGate = evaluateAutoReviewRolloutGate(metrics.gateInput);
+
+      if (!rolloutGate.allowed || rolloutGate.effectiveMode !== "active") {
+        const result = await evaluateAutoReviewShadow({
+          client: supabase,
+          actor: auth,
+          report: body.report,
+          rule: { ...body.rule, mode: "shadow" },
+        });
+        return NextResponse.json({
+          result: { ...result, applied: false },
+          rolloutGate,
+        });
+      }
+
+      const systemActor = {
+        userId: auth.userId,
+        name: "系统自动审核",
+        role: auth.role,
+        organizationId: auth.organizationId,
+      };
+      const repo = new SupabaseLiveOperationsRepository(supabase);
+      const result = await evaluateAutoReviewActive({
+        client: supabase,
+        actor: systemActor,
+        report: body.report,
+        rule: { ...body.rule, mode: "active" },
+        rolloutGate,
+        approveReport: ({ actor, reportId, input }) =>
+          reviewLiveReport({
+            repo,
+            audit: (auditInput) => writeAuditLog(supabase, auditInput),
+            notify: (notifyInput) => sendNotification(supabase, notifyInput),
+            actor,
+            reportId,
+            input,
+          }),
+      });
+
+      return NextResponse.json({ result, rolloutGate });
+    }
+
     const result = await evaluateAutoReviewShadow({
       client: supabase,
       actor: auth,
       report: body.report,
-      rule: body.rule,
+      rule: { ...body.rule, mode: "shadow" },
     });
 
     return NextResponse.json({ result });

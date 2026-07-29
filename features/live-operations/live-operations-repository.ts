@@ -7,6 +7,7 @@ import type {
   LiveTaskRecord,
   LiveTaskType,
   ProjectStreamerForTask,
+  ReportScreenshotRecord,
   ReportStatus,
   ViewerSource,
 } from "./live-operations-service";
@@ -65,6 +66,14 @@ type LiveReportRow = {
   risk_flags: string[];
   collaboration_id: string | null;
   contributor_organization_id: string | null;
+};
+
+type ReportScreenshotRow = {
+  id: string;
+  live_report_id: string;
+  storage_path: string;
+  file_hash: string;
+  uploaded_at: string;
 };
 
 type CollaborationAgreementRow = {
@@ -379,6 +388,34 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     }
 
     return screenshotId;
+  }
+
+  async findReportScreenshotByFileHash(input: {
+    organizationId: string;
+    fileHash: string;
+  }): Promise<ReportScreenshotRecord | null> {
+    const { data, error } = await this.client
+      .from("report_screenshots")
+      .select("id, live_report_id, storage_path, file_hash, uploaded_at")
+      .eq("organization_id", input.organizationId)
+      .eq("file_hash", input.fileHash)
+      .order("uploaded_at", { ascending: false })
+      .limit(1)
+      .maybeSingle<ReportScreenshotRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? {
+          id: data.id,
+          liveReportId: data.live_report_id,
+          storagePath: data.storage_path,
+          fileHash: data.file_hash,
+          uploadedAt: data.uploaded_at,
+        }
+      : null;
   }
 
   async createReportChangeLog(input: {

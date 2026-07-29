@@ -66,6 +66,21 @@ export type SettlementBreakdown = {
   capApplied: boolean;
 };
 
+export type SettlementLegacyEngineSnapshot = {
+  rule: {
+    settlementMethod: SettlementMethod;
+    hourlyRate: number | null;
+    baseSalary: number | null;
+    hourlyTiers: SettlementHourlyTier[] | null;
+    floorAmount: number | null;
+    capAmount: number | null;
+  };
+  includeBaseSalary: boolean;
+  breakdown: SettlementBreakdown & {
+    computedAmount: number;
+  };
+};
+
 export type SettlementCalculatedItem = {
   computedAmount: number;
   manualAmount: number;
@@ -115,6 +130,18 @@ export function calculateSettlementItem({
       settlementDuration: report.settlementDuration,
       timeSource: report.timeSource,
       evidenceLevel: report.evidenceLevel,
+      legacyEngine: buildLegacyEngineSnapshot({
+        rule,
+        includeBaseSalary,
+        breakdown: {
+          baseAmount,
+          penaltyAmount,
+          penalties,
+          floorApplied,
+          capApplied,
+        },
+        computedAmount,
+      }),
     },
     breakdown: {
       baseAmount,
@@ -122,6 +149,34 @@ export function calculateSettlementItem({
       penalties,
       floorApplied,
       capApplied,
+    },
+  };
+}
+
+function buildLegacyEngineSnapshot({
+  rule,
+  includeBaseSalary,
+  breakdown,
+  computedAmount,
+}: {
+  rule: SettlementRule;
+  includeBaseSalary: boolean;
+  breakdown: SettlementBreakdown;
+  computedAmount: number;
+}): SettlementLegacyEngineSnapshot {
+  return {
+    rule: {
+      settlementMethod: rule.settlementMethod,
+      hourlyRate: rule.hourlyRate ?? null,
+      baseSalary: rule.baseSalary ?? null,
+      hourlyTiers: normalizeHourlyTiers(rule.hourlyTiers),
+      floorAmount: rule.floorAmount ?? null,
+      capAmount: rule.capAmount ?? null,
+    },
+    includeBaseSalary,
+    breakdown: {
+      ...breakdown,
+      computedAmount,
     },
   };
 }

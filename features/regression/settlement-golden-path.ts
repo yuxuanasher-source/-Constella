@@ -313,6 +313,10 @@ class GoldenPathRepository
     return "00000000-0000-4000-8000-000000000101";
   }
 
+  async findReportScreenshotByFileHash(): Promise<null> {
+    return null;
+  }
+
   async createReportChangeLog(): Promise<void> {}
 
   async listSettlementPoolReports(input: {

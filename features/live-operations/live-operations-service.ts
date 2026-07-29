@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { AuditLogInput } from "@/lib/audit/audit";
 import type { NotificationInput } from "@/lib/notify/notify";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
@@ -104,6 +106,14 @@ export type ActiveLiveCollaborationAgreementRecord = {
   status: "active";
 };
 
+export type ReportScreenshotRecord = {
+  id: string;
+  liveReportId: string;
+  storagePath: string;
+  fileHash: string;
+  uploadedAt: string;
+};
+
 export type LiveOperationsRepository = {
   getProjectStreamer(input: {
     projectId: string;
@@ -174,6 +184,10 @@ export type LiveOperationsRepository = {
     uploadedBy: string;
     metadata?: Record<string, unknown>;
   }): Promise<string>;
+  findReportScreenshotByFileHash(input: {
+    organizationId: string;
+    fileHash: string;
+  }): Promise<ReportScreenshotRecord | null>;
   createReportChangeLog(input: {
     organizationId: string;
     liveReportId: string;
@@ -639,6 +653,15 @@ export async function submitLiveReport({
   return report;
 }
 
+// Open report states that a fresh screenshot submission supersedes. Approved and
+// already-voided reports are intentionally excluded.
+const SUPERSEDABLE_REPORT_STATUSES = new Set<ReportStatus>([
+  "ocr_ing",
+  "pending_confirm",
+  "pending_review",
+  "pending_adjudication",
+]);
+
 export async function submitLiveReportScreenshotForOcr({
   repo,
   audit,
@@ -646,6 +669,7 @@ export async function submitLiveReportScreenshotForOcr({
   actor,
   taskId,
   input,
+  resolveScreenshotContent,
   createOcrJob,
   deleteReportScreenshot,
 }: {
@@ -656,10 +680,13 @@ export async function submitLiveReportScreenshotForOcr({
   taskId: string;
   input: {
     screenshotStoragePath: string;
-    screenshotFileHash: string;
     imageBucket?: string;
     collaborationId?: string;
   };
+  resolveScreenshotContent: (input: {
+    imageBucket?: string;
+    imagePath: string;
+  }) => Promise<ArrayBuffer | Uint8Array>;
   createOcrJob: (input: {
     liveReportId: string;
     screenshotId?: string;
@@ -692,6 +719,21 @@ export async function submitLiveReportScreenshotForOcr({
   if (!task.systemDuration || task.systemDuration <= 0) {
     throw new Error("OCR report requires a recorded system duration");
   }
+
+  const screenshotFileHash = await resolveScreenshotSha256({
+    imageBucket: input.imageBucket,
+    imagePath: input.screenshotStoragePath,
+    resolveScreenshotContent,
+  });
+  const duplicate = await repo.findReportScreenshotByFileHash({
+    organizationId: actor.organizationId,
+    fileHash: screenshotFileHash,
+  });
+  if (duplicate) {
+    throw new Error("Duplicate report screenshot content");
+  }
+
+  const priorReports = await repo.listLiveReportsByTask(task.id);
 
   const evidence = resolveReportEvidence({
     systemDuration: task.systemDuration,
@@ -742,7 +784,7 @@ export async function submitLiveReportScreenshotForOcr({
       projectId: report.projectId,
       streamerId: report.streamerId,
       storagePath: input.screenshotStoragePath,
-      fileHash: input.screenshotFileHash,
+      fileHash: screenshotFileHash,
       uploadedBy: actor.userId,
       metadata: { imageBucket: input.imageBucket },
     });
@@ -771,19 +813,27 @@ export async function submitLiveReportScreenshotForOcr({
           id: screenshotId ?? undefined,
           organizationId: actor.organizationId,
           liveReportId: report.id,
-          screenshotFileHash: input.screenshotFileHash,
+          screenshotFileHash,
         });
       } catch {
         console.error("[live-operations] failed to clean up OCR screenshot", {
           organizationId: actor.organizationId,
           liveReportId: report.id,
           screenshotId,
-          screenshotFileHash: input.screenshotFileHash,
+          screenshotFileHash,
         });
       }
     }
     await repo.updateLiveReport(report.id, { status: "voided" });
     throw new Error("OCR 入队失败，请稍后重试");
+  }
+
+  // Supersede still-open reports only after the replacement OCR job is queued.
+  // Rejected/need_more reports are archived by the enqueue transaction.
+  for (const prior of priorReports) {
+    if (SUPERSEDABLE_REPORT_STATUSES.has(prior.status)) {
+      await repo.updateLiveReport(prior.id, { status: "voided" });
+    }
   }
 
   assertLiveTaskTransition(task.status, "report_pending_review");
@@ -836,6 +886,24 @@ export async function submitLiveReportScreenshotForOcr({
   });
 
   return { report, job };
+}
+
+async function resolveScreenshotSha256({
+  imageBucket,
+  imagePath,
+  resolveScreenshotContent,
+}: {
+  imageBucket?: string;
+  imagePath: string;
+  resolveScreenshotContent: (input: {
+    imageBucket?: string;
+    imagePath: string;
+  }) => Promise<ArrayBuffer | Uint8Array>;
+}): Promise<string> {
+  const content = await resolveScreenshotContent({ imageBucket, imagePath });
+  const bytes =
+    content instanceof ArrayBuffer ? new Uint8Array(content) : content;
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 export async function confirmLiveReportOcrResult({
@@ -1062,7 +1130,9 @@ export async function reviewLiveReport({
     content:
       input.decision === "approve"
         ? "Your report has entered the settlement pool."
-        : "Your report was rejected or needs more information.",
+        : `Your report was rejected or needs more information. Reason: ${
+            input.reason ?? input.reviewNotes ?? "Not specified"
+          }`,
     objectType: "live_report",
     objectId: report.id,
     source: "live_report.review",

@@ -3073,6 +3073,64 @@ describe("CustomSettlementRuleWorkspace", () => {
     expect(screen.getByText("缺少目标数据：系统直播时长")).toBeInTheDocument();
   });
 
+  it("uses a system template as a prefilled AI drafting prompt", async () => {
+    const apiClient = api({
+      listRuleVersions: vi.fn().mockResolvedValue({ rules: [] }),
+      listRuleReviewEvents: vi.fn().mockResolvedValue({ events: [] }),
+      listSettlementRuleGroups: vi.fn().mockResolvedValue({ groups: [] }),
+      listRuleTemplates: vi.fn().mockResolvedValue({
+        templates: [
+          {
+            kind: "system",
+            id: "system:base-plus-cps:v1",
+            name: "底薪 + CPS 抽成",
+            description: "先计底薪，再按销售额抽成",
+            contract: {
+              scope: "payable",
+              target: { targetType: "project", targetId: null },
+              executionGrain: "project_streamer_period",
+              summary: "周期底薪加销售抽成",
+              requiredInputs: [
+                { name: "period_sales_amount", description: "周期销售金额" },
+              ],
+              parameters: [
+                {
+                  name: "base_salary",
+                  description: "周期固定底薪",
+                  defaultValue: { type: "money_cents", amountCents: 100000 },
+                },
+                {
+                  name: "cps_rate",
+                  description: "CPS 抽成比例",
+                  defaultValue: { type: "rate_bps", rateBps: 1500 },
+                },
+              ],
+            },
+            readOnly: true,
+          },
+        ],
+      }),
+      getLatestProjectRuleSession: vi.fn().mockResolvedValue({ session: null }),
+      cloneRule: vi.fn(),
+    });
+    renderWorkspace(apiClient);
+
+    fireEvent.click(screen.getByRole("tab", { name: "版本与审核" }));
+    const systemTemplate = await screen.findByRole("group", {
+      name: "底薪 + CPS 抽成",
+    });
+    fireEvent.click(
+      within(systemTemplate).getByRole("button", { name: "用模板起草" }),
+    );
+
+    const input = await screen.findByRole("textbox");
+    expect(input.value).toContain("底薪 + CPS 抽成");
+    expect(input.value).toContain("默认参数");
+    expect(input.value).toContain("周期固定底薪");
+    expect(input.value).toContain("CPS 抽成比例");
+    expect(apiClient.cloneRule).not.toHaveBeenCalled();
+  });
+
   it("submits a cloned saved draft with its saved draft source and current simulation", async () => {
     const template = organizationTemplate();
     const clonedRule = governanceRule({

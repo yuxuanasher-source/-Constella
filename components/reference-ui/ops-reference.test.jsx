@@ -210,7 +210,10 @@ describe("OpsReferenceApp responsive navigation shell", () => {
         if (type === "change") listeners.delete(listener);
       }),
     };
-    vi.stubGlobal("matchMedia", vi.fn(() => mediaQueryList));
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mediaQueryList),
+    );
     return {
       setMatches(matches) {
         mediaQueryList.matches = matches;
@@ -483,9 +486,7 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     renderShell();
     fireEvent.click(screen.getByRole("button", { name: /未配置组织/ }));
 
-    expect(
-      screen.getByRole("dialog", { name: "组织功能设置" }),
-    ).toHaveStyle({
+    expect(screen.getByRole("dialog", { name: "组织功能设置" })).toHaveStyle({
       width: "460px",
       maxWidth: "100vw",
       boxSizing: "border-box",
@@ -881,12 +882,42 @@ describe("OpsReferenceApp role dashboard contract", () => {
           kpis: [],
           queue: [],
           risks: [
-            { key: "project:1", title: "项目卡点", tone: "red", target: { route: "project", id: "project-1" } },
-            { key: "task:1", title: "任务卡点", tone: "amber", target: { route: "tasks", id: "task-1" } },
-            { key: "report:1", title: "报数卡点", tone: "amber", target: { route: "reports", id: "report-1" } },
-            { key: "settle:1", title: "结算卡点", tone: "neutral", target: { route: "settle", id: "batch-1" } },
-            { key: "audit:1", title: "审计卡点", tone: "red", target: { route: "audit", id: "audit-1" } },
-            { key: "notification:1", title: "通知卡点", tone: "neutral", target: { route: "notifications", id: "notice-1" } },
+            {
+              key: "project:1",
+              title: "项目卡点",
+              tone: "red",
+              target: { route: "project", id: "project-1" },
+            },
+            {
+              key: "task:1",
+              title: "任务卡点",
+              tone: "amber",
+              target: { route: "tasks", id: "task-1" },
+            },
+            {
+              key: "report:1",
+              title: "报数卡点",
+              tone: "amber",
+              target: { route: "reports", id: "report-1" },
+            },
+            {
+              key: "settle:1",
+              title: "结算卡点",
+              tone: "neutral",
+              target: { route: "settle", id: "batch-1" },
+            },
+            {
+              key: "audit:1",
+              title: "审计卡点",
+              tone: "red",
+              target: { route: "audit", id: "audit-1" },
+            },
+            {
+              key: "notification:1",
+              title: "通知卡点",
+              tone: "neutral",
+              target: { route: "notifications", id: "notice-1" },
+            },
           ],
           drilldowns: [],
           generatedAt: "2026-06-16T09:30:00.000Z",
@@ -992,7 +1023,9 @@ describe("OpsReferenceApp role dashboard contract", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "今日待办" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "今日待办" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("角色看板暂不可用")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "重新加载" }),
@@ -1237,6 +1270,12 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByLabelText("厂家门户"));
     fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
 
+    const orgSwitcher = (await screen.findByText("未来经营组")).closest(
+      "button",
+    );
+    expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
+    expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
+
     // 品牌设置持久化到组织设置接口。
     let settingsCall;
     await waitFor(() => {
@@ -1274,9 +1313,10 @@ describe("OpsReferenceApp project smoke", () => {
 
     const logo = screen.getByLabelText("组织 LOGO");
     expect(logo).not.toHaveTextContent("JY");
-    expect(
-      screen.getByRole("img", { name: "经营舱品牌标识" }),
-    ).toHaveAttribute("src", "/brand/ops-mascot-logo.png");
+    expect(screen.getByRole("img", { name: "经营舱品牌标识" })).toHaveAttribute(
+      "src",
+      "/brand/ops-mascot-logo.png",
+    );
   });
 
   it("updates the sidebar brand logo from organization settings", async () => {
@@ -1385,8 +1425,7 @@ describe("OpsReferenceApp project smoke", () => {
   });
 
   it("renders a saved avatar image in the sidebar and greeting card", async () => {
-    const AVATAR_IMG =
-      "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD";
+    const AVATAR_IMG = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD";
     render(
       <OpsReferenceApp
         initialRoute="warroom"
@@ -3097,9 +3136,7 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.change(screen.getByLabelText("CPS/礼物分成(%)"), {
       target: { value: "12" },
     });
-    fireEvent.click(
-      screen.getByRole("button", { name: "确认加入并应用规则" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "确认加入并应用规则" }));
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -3109,8 +3146,8 @@ describe("OpsReferenceApp project smoke", () => {
     );
     const confirmCall = fetchMock.mock.calls.find(
       ([url, init]) =>
-        String(url) ===
-          "/api/applications/application-invited/confirm-join" && init?.body,
+        String(url) === "/api/applications/application-invited/confirm-join" &&
+        init?.body,
     );
     expect(confirmCall).toBeDefined();
     expect(JSON.parse(confirmCall[1].body)).toEqual({
@@ -3762,7 +3799,9 @@ describe("OpsReferenceApp project smoke", () => {
 
     fireEvent.click(screen.getByText("Alpha Launch"));
     // \u5916\u90e8 MCN \u534f\u4f5c is now tucked into \u9879\u76ee\u8bbe\u7f6e \u2014 open it first.
-    fireEvent.click(screen.getByRole("button", { name: "\u9879\u76ee\u8bbe\u7f6e" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "\u9879\u76ee\u8bbe\u7f6e" }),
+    );
     expect(
       screen.getByText("\u5916\u90e8 MCN \u534f\u4f5c"),
     ).toBeInTheDocument();
@@ -6411,7 +6450,11 @@ describe("OpsReferenceApp admission smoke", () => {
         status: "recording_reviewing",
         source: "signup",
         submittedAt: "2026-06-07T01:00:00.000Z",
-        project: { id: "project-ai", code: "AI-001", name: "AI Guided Project" },
+        project: {
+          id: "project-ai",
+          code: "AI-001",
+          name: "AI Guided Project",
+        },
         streamer: {
           id: "streamer-ai",
           displayName: "AI Streamer",
@@ -6570,7 +6613,9 @@ describe("OpsReferenceApp admission smoke", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "展开明细" }));
-    expect(await screen.findByText("建议补充互动亮点后再通过。")).toBeInTheDocument();
+    expect(
+      await screen.findByText("建议补充互动亮点后再通过。"),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "查看 AI 详情" }));
     expect(
@@ -6578,7 +6623,9 @@ describe("OpsReferenceApp admission smoke", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("节奏 82")).toBeInTheDocument();
     expect(screen.getByText("互动证明不足")).toBeInTheDocument();
-    expect(screen.getByText("补录 30 秒评论区回应，再进入厂家复核。")).toBeInTheDocument();
+    expect(
+      screen.getByText("补录 30 秒评论区回应，再进入厂家复核。"),
+    ).toBeInTheDocument();
     expect(screen.getByText("00:30-01:15")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "确认沉淀到主播画像" }));
@@ -6588,7 +6635,9 @@ describe("OpsReferenceApp admission smoke", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
-    expect(await screen.findByText("AI 观察已沉淀到主播画像")).toBeInTheDocument();
+    expect(
+      await screen.findByText("AI 观察已沉淀到主播画像"),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     fireEvent.click(screen.getByRole("button", { name: "需补充" }));
@@ -6606,7 +6655,9 @@ describe("OpsReferenceApp admission smoke", () => {
     const reviewBody = JSON.parse(reviewCall[1].body);
     expect(reviewBody.decision).toBe("needs_changes");
     expect(reviewBody.note).toContain("AI辅助摘要：建议补充互动亮点后再通过。");
-    expect(reviewBody.note).toContain("AI建议：补录互动片段 - 补录 30 秒评论区回应，再进入厂家复核。");
+    expect(reviewBody.note).toContain(
+      "AI建议：补录互动片段 - 补录 30 秒评论区回应，再进入厂家复核。",
+    );
   });
 
   it("sends advisory structured feedback on negative human recording review", async () => {
@@ -7235,7 +7286,10 @@ describe("OpsReferenceApp admission smoke", () => {
     vi.stubGlobal("prompt", promptMock);
 
     render(
-      <OpsReferenceApp initialRoute="admission" applicationQueue={rejectQueue} />,
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={rejectQueue}
+      />,
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "展开明细" }));
@@ -7931,7 +7985,9 @@ describe("OpsReferenceApp live task smoke", () => {
   it("portals nested live review and preserves the outer modal isolation stack", () => {
     const { reviewDialog, reviewTrigger, taskDrawer } = openNestedLiveReview();
     const outerLayer = taskDrawer.closest(".ops-drawer-layer");
-    const appContainer = document.querySelector(".ops-reference-shell")?.parentElement;
+    const appContainer = document.querySelector(
+      ".ops-reference-shell",
+    )?.parentElement;
 
     expect(reviewDialog.parentElement).toBe(document.body);
     expect(reviewDialog).not.toHaveAttribute("inert");
@@ -7986,9 +8042,7 @@ describe("OpsReferenceApp live task smoke", () => {
     const { reviewDialog } = openNestedLiveReview();
 
     expect(reviewDialog).toHaveClass("ops-live-review-overlay");
-    expect(
-      reviewDialog.querySelector(".ops-live-review-panel"),
-    ).not.toBeNull();
+    expect(reviewDialog.querySelector(".ops-live-review-panel")).not.toBeNull();
     expect(
       reviewDialog.querySelector(".ops-live-review-header"),
     ).not.toBeNull();
@@ -8910,7 +8964,10 @@ describe("OpsReferenceApp live task smoke", () => {
         };
       }
       if (requested.endsWith("/resolve-anomaly")) {
-        return { ok: true, json: async () => ({ task: { id: "task-anomaly-one" } }) };
+        return {
+          ok: true,
+          json: async () => ({ task: { id: "task-anomaly-one" } }),
+        };
       }
       if (requested === "/api/live-tasks") {
         return { ok: true, json: async () => ({ tasks: [] }) };
@@ -9218,7 +9275,10 @@ describe("OpsReferenceApp live task smoke", () => {
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
     });
     vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("confirm", vi.fn(() => false));
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => false),
+    );
 
     render(
       <OpsReferenceApp
@@ -9259,7 +9319,11 @@ describe("OpsReferenceApp live task smoke", () => {
     render(
       <OpsReferenceApp
         initialRoute="tasks"
-        currentUser={{ id: "user-streamer", name: "主播一号", role: "streamer" }}
+        currentUser={{
+          id: "user-streamer",
+          name: "主播一号",
+          role: "streamer",
+        }}
         liveTasks={[
           {
             id: "task-proxy-gated",
@@ -9562,6 +9626,82 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.getByText("salesAmountCents")).toBeInTheDocument();
     expect(screen.getByText("异常队列")).toBeInTheDocument();
     expect(screen.getByText("exception-open")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /这是什么意思/u })[0]);
+    const note = screen.getByRole("note");
+    expect(note).toHaveTextContent("命中的规则版本");
+    expect(note).toHaveTextContent("金额由");
+    expect(note).toHaveTextContent("本项引用 2 条来源报数");
+    expect(note).toHaveTextContent("缺失数据决策");
+  });
+
+  it("surfaces settlement evidence discrepancies only when batch detail rows need review", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        liveBatches={[
+          {
+            id: "batch-discrepancy",
+            projectId: "project-alpha",
+            type: "streamer_payable",
+            name: "Discrepancy batch",
+            project: "Alpha Launch",
+            vendor: "-",
+            period: "2026-07-01 -> 2026-07-31",
+            periodStart: "2026-07-01",
+            periodEnd: "2026-07-31",
+            items: 2,
+            amount: 360,
+            status: "generated",
+            updated: "2026-07-31 12:00",
+            creator: "Finance Owner",
+          },
+        ]}
+        liveBatchDetails={{
+          "batch-discrepancy": [
+            {
+              id: "item-clean",
+              streamer: "Clean Streamer",
+              rule: "CPT",
+              hours: 2,
+              qty: "green · system",
+              base: 0,
+              variable: 160,
+              adjust: 0,
+              total: 160,
+              evidenceLevel: "green",
+              riskFlags: [],
+            },
+            {
+              id: "item-risk",
+              streamer: "Risk Streamer",
+              rule: "CPT",
+              hours: 2.5,
+              qty: "red · screenshot",
+              base: 0,
+              variable: 200,
+              adjust: 0,
+              total: 200,
+              evidenceLevel: "red",
+              riskFlags: ["duration_divergence"],
+            },
+          ],
+        }}
+        liveSettlementPool={[]}
+      />,
+    );
+
+    expect(screen.getByText("Clean Streamer")).toBeInTheDocument();
+    expect(screen.getByText("Risk Streamer")).toBeInTheDocument();
+    expect(screen.getByText("2 项中 1 项证据存在差异")).toBeInTheDocument();
+    expect(screen.getByText("时长偏差超阈值")).toBeInTheDocument();
+    expect(screen.getByText("锁定原因（红证据确认）")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "只看差异" }));
+
+    expect(screen.queryByText("Clean Streamer")).not.toBeInTheDocument();
+    expect(screen.getByText("Risk Streamer")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "显示全部" })).toBeInTheDocument();
   });
 
   it("publishes a 720px settlement breakpoint without page-level scrolling", () => {
@@ -9666,10 +9806,15 @@ describe("OpsReferenceApp settlement smoke", () => {
 
     const workspace = await screen.findByTestId("custom-rule-workspace");
     expect(within(workspace).getByText("Alpha Launch")).toBeInTheDocument();
-    expect(within(workspace).getByText("2026-07-01 至 2026-07-31")).toBeInTheDocument();
+    expect(
+      within(workspace).getByText("2026-07-01 至 2026-07-31"),
+    ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/projects/project-alpha/settlement-rules/variable-catalog?scope=receivable&executionGrain=project_period",
-      expect.objectContaining({ method: "GET", signal: expect.any(AbortSignal) }),
+      expect.objectContaining({
+        method: "GET",
+        signal: expect.any(AbortSignal),
+      }),
     );
   });
 
@@ -9692,11 +9837,21 @@ describe("OpsReferenceApp settlement smoke", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: "AI 自定义规则" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "结算详情" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "项目财务设置" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "主播应付规则" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "项目开支" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "AI 自定义规则" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "结算详情" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "项目财务设置" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "主播应付规则" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "项目开支" }),
+    ).toBeInTheDocument();
   });
 
   it("renders report badges for newer backend report statuses", () => {
@@ -9884,6 +10039,28 @@ describe("OpsReferenceApp settlement smoke", () => {
                 manualAmount: 0,
                 adjustmentAmount: 0,
                 totalAmount: 320,
+                ruleBreakdown: {
+                  mode: "legacy",
+                  executionGrain: "单条报数",
+                  appliedVersionLabels: ["固定规则 · 时长计费"],
+                  sourceReportCount: 1,
+                  components: [
+                    {
+                      key: "legacy:baseAmount",
+                      label: "基础金额",
+                      amountCents: 32000,
+                    },
+                    {
+                      key: "legacy:computedAmount",
+                      label: "最终金额",
+                      amountCents: 32000,
+                    },
+                  ],
+                  missingDataDecisions: [],
+                  explanationZh:
+                    "系统计时 120 分钟（约 2 小时）× 时薪 ¥160/小时；最终系统金额 ¥320",
+                },
+                openExceptions: [],
               },
             ],
           }),
@@ -9922,7 +10099,16 @@ describe("OpsReferenceApp settlement smoke", () => {
         undefined,
       ),
     );
-    expect(await screen.findByText("懒加载主播")).toBeInTheDocument();
+    expect((await screen.findAllByText("懒加载主播")).length).toBeGreaterThan(
+      0,
+    );
+    expect(await screen.findByText("规则拆解")).toBeInTheDocument();
+    expect(screen.getByText("固定规则 · 时长计费")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "系统计时 120 分钟（约 2 小时）× 时薪 ¥160/小时；最终系统金额 ¥320",
+      ),
+    ).toBeInTheDocument();
     // 明细已缓存后不应重复拉取同一批次。
     const detailCalls = fetchMock.mock.calls.filter(
       ([url]) => String(url) === "/api/settlement-batches/batch-lazy-1",
@@ -10046,7 +10232,9 @@ describe("OpsReferenceApp settlement smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "运行校验" }));
     await screen.findByRole("region", { name: "单项目结算校验结果" });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "财务确认" })).not.toBeDisabled(),
+      expect(
+        screen.getByRole("button", { name: "财务确认" }),
+      ).not.toBeDisabled(),
     );
     fireEvent.click(screen.getByRole("button", { name: "财务确认" }));
 
@@ -10061,9 +10249,7 @@ describe("OpsReferenceApp settlement smoke", () => {
         }),
       ),
     );
-    expect(
-      await screen.findByText("结算批次已财务确认"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("结算批次已财务确认")).toBeInTheDocument();
     expect((await screen.findAllByText("已确认")).length).toBeGreaterThan(0);
     // confirmed 批次仍可直接锁定，锁定入口保持可见。
     expect(
@@ -10327,7 +10513,9 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(reconciliation).toHaveTextContent("通过");
     expect(reconciliation).toHaveTextContent("缺少数据");
     expect(reconciliation).toHaveTextContent("未解决异常");
-    expect(reconciliation).toHaveTextContent("投流成本完整性 v3 · 合同 abcdef12");
+    expect(reconciliation).toHaveTextContent(
+      "投流成本完整性 v3 · 合同 abcdef12",
+    );
     expect(
       within(reconciliation).getByRole("link", {
         name: "投流成本完整性 v3 · 合同 abcdef12",
@@ -10356,7 +10544,9 @@ describe("OpsReferenceApp settlement smoke", () => {
       "title",
       "结算校验未通过，无法锁定：缺少数据：缺少投流成本确认值",
     );
-    expect(screen.getByText("缺少数据：缺少投流成本确认值")).toBeInTheDocument();
+    expect(
+      screen.getByText("缺少数据：缺少投流成本确认值"),
+    ).toBeInTheDocument();
   });
 
   it("keeps streamer-facing reference screens free of reconciliation rule surfaces", () => {
@@ -10378,7 +10568,9 @@ describe("OpsReferenceApp settlement smoke", () => {
     files.forEach((file) => {
       const source = readFileSync(new URL(file, import.meta.url), "utf8");
       forbidden.forEach((token) => {
-        expect(source, `${file} should not expose ${token}`).not.toContain(token);
+        expect(source, `${file} should not expose ${token}`).not.toContain(
+          token,
+        );
       });
     });
   });
@@ -10476,21 +10668,7 @@ describe("OpsReferenceApp settlement smoke", () => {
       );
       expect(exportCall).toBeTruthy();
       expect(JSON.parse(exportCall[1].body)).toEqual({
-        rows: [
-          {
-            reportId: "report-export-one",
-            guildOrIndividual: "星辰公会",
-            gameProduct: "Game X",
-            streamerName: "Streamer Export",
-            liveDate: "2026-06-02",
-            liveTime: "—",
-            duration: "2 小时",
-            // 小时单价 = 厂家单价（项目默认小时单价）；达人费用 = 厂家单价 × 时长。
-            hourlyRate: "¥80",
-            talentFee: "¥160.00",
-            screenshot: "1 张",
-          },
-        ],
+        reportIds: ["report-export-one"],
       });
     });
     expect(await screen.findByText("已导出 1 条报数明细")).toBeInTheDocument();
@@ -10547,6 +10725,140 @@ describe("OpsReferenceApp settlement smoke", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("loads pre-review summary gates into the report risk prompt", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (
+        String(url) ===
+        "/api/live-reports/pre-review-summary?reportIds=report-summary-one&limit=1"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            summaries: [
+              {
+                id: "pre-review-summary-one",
+                reportId: "report-summary-one",
+                decision: "manual_review",
+                confidence: "medium",
+                suggestedAction: "review",
+                failedGates: ["duration_divergence"],
+                reviewNoteDraft: "AI pre-review suggests manual review",
+                createdAt: "2026-06-02T12:00:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-summary-one",
+            date: "2026-06-02",
+            streamer: "Summary Streamer",
+            project: "Summary Project",
+            taskId: "task-summary-one",
+            duration: 2,
+            audience: 900,
+            status: "pending_review",
+            evidenceLevel: "yellow",
+            riskFlags: [],
+            screens: 1,
+            source: "OCR",
+          },
+        ]}
+      />,
+    );
+
+    expect(await screen.findByText("时长偏差过大")).toBeInTheDocument();
+  });
+
+  it("explains report status and gate meanings from evidence side data", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).startsWith("/api/live-reports/pre-review-summary")) {
+        return { ok: true, json: async () => ({ summaries: [] }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-meaning-one",
+            date: "2026-06-02",
+            streamer: "Meaning Streamer",
+            project: "Meaning Project",
+            taskId: "task-meaning-one",
+            duration: 2,
+            audience: 900,
+            status: "pending_review",
+            evidenceLevel: "yellow",
+            riskFlags: ["duration_divergence"],
+            divergencePct: 0.12,
+            preReview: { failedGates: ["duration_divergence"] },
+            screens: 1,
+            source: "OCR",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "这是什么意思" }));
+
+    const note = screen.getByRole("note");
+    expect(note).toHaveTextContent("证据等级是 yellow");
+    expect(note).toHaveTextContent("AI 预审卡点：时长偏差过大");
+    expect(note).toHaveTextContent("风控标记：时长偏差超阈值");
+    expect(note).toHaveTextContent("截图和系统时长偏差 12.0%");
+  });
+
+  it("shows report screenshot upload time and content fingerprint", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).startsWith("/api/live-reports/pre-review-summary")) {
+        return { ok: true, json: async () => ({ summaries: [] }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-screenshot-fingerprint",
+            date: "2026-06-02",
+            streamer: "Hash Streamer",
+            project: "Hash Project",
+            taskId: "task-hash-one",
+            duration: 2,
+            audience: 900,
+            status: "pending_review",
+            evidenceLevel: "green",
+            riskFlags: [],
+            screens: 1,
+            source: "OCR",
+            screenshotUploadedAt: "2026-06-02T12:06:00.000Z",
+            screenshotFileHash:
+              "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      await screen.findByText(/SHA-256 abcdef123456/),
+    ).toBeInTheDocument();
   });
 
   it("batch approves visible pending reports through the review API", async () => {
@@ -10611,6 +10923,9 @@ describe("OpsReferenceApp settlement smoke", () => {
             duration: 2,
             audience: 900,
             status: "pending_review",
+            evidenceLevel: "green",
+            riskFlags: [],
+            preReview: { failedGates: [] },
             screens: 1,
             source: "OCR",
           },
@@ -10623,6 +10938,9 @@ describe("OpsReferenceApp settlement smoke", () => {
             duration: 1.5,
             audience: 700,
             status: "pending_review",
+            evidenceLevel: "green",
+            riskFlags: [],
+            preReview: { failedGates: [] },
             screens: 1,
             source: "manual",
           },
@@ -10643,13 +10961,96 @@ describe("OpsReferenceApp settlement smoke", () => {
       expect.objectContaining({ method: "PATCH" }),
     );
     const reviewBodies = fetchMock.mock.calls
-      .filter(([url]) => String(url).includes("/api/live-reports/"))
+      .filter(([url]) => String(url).includes("/review"))
       .map(([, init]) => JSON.parse(init.body));
     expect(reviewBodies).toEqual([
-      expect.objectContaining({ decision: "approve" }),
-      expect.objectContaining({ decision: "approve" }),
+      expect.objectContaining({
+        decision: "approve",
+        reason: "绿证据且预审全门通过",
+      }),
+      expect.objectContaining({
+        decision: "approve",
+        reason: "绿证据且预审全门通过",
+      }),
     ]);
     expect(await screen.findByText(/批量审核已通过 2 条/)).toBeInTheDocument();
+  });
+
+  it("blocks batch approval for reports with pre-review gates", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes("/api/live-reports/report-batch-safe/review")) {
+        return {
+          ok: true,
+          json: async () => ({ report: { status: "approved" } }),
+        };
+      }
+      if (String(url) === "/api/live-reports") {
+        return { ok: true, json: async () => ({ reports: [] }) };
+      }
+      if (String(url) === "/api/live-tasks") {
+        return { ok: true, json: async () => ({ tasks: [] }) };
+      }
+      if (String(url) === "/api/projects") {
+        return { ok: true, json: async () => ({ projects: [] }) };
+      }
+      return { ok: true, json: async () => ({ summaries: [] }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-batch-safe",
+            date: "2026-06-02",
+            streamer: "Safe Streamer",
+            project: "Batch Project",
+            taskId: "task-batch-safe",
+            duration: 2,
+            audience: 900,
+            status: "pending_review",
+            evidenceLevel: "green",
+            riskFlags: [],
+            preReview: { failedGates: [] },
+            screens: 1,
+            source: "OCR",
+          },
+          {
+            id: "report-batch-gated",
+            date: "2026-06-02",
+            streamer: "Gated Streamer",
+            project: "Batch Project",
+            taskId: "task-batch-gated",
+            duration: 1.5,
+            audience: 700,
+            status: "pending_review",
+            evidenceLevel: "green",
+            riskFlags: [],
+            preReview: { failedGates: ["duration_divergence"] },
+            screens: 1,
+            source: "OCR",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "批量审核通过" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/live-reports/report-batch-safe/review",
+        expect.objectContaining({ method: "PATCH" }),
+      ),
+    );
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).includes("/api/live-reports/report-batch-gated/review"),
+      ),
+    ).toBe(false);
+    expect(
+      await screen.findByText(/批量审核已通过 1 条，拦截 1 条需逐条处理/),
+    ).toBeInTheDocument();
   });
 
   it("runs auto review evaluation and reads rollout readiness from M5", async () => {
@@ -10726,7 +11127,10 @@ describe("OpsReferenceApp settlement smoke", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+    const autoReviewCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/auto-review/evaluate",
+    );
+    expect(JSON.parse(autoReviewCall[1].body)).toMatchObject({
       report: {
         id: "report-auto-review-one",
         status: "pending_review",
@@ -10747,6 +11151,190 @@ describe("OpsReferenceApp settlement smoke", () => {
       ),
     );
     expect(await screen.findByText(/gray/)).toBeInTheDocument();
+  });
+
+  it("applies active auto review for an eligible report and refreshes the queue", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/auto-review/evaluate") {
+        return {
+          ok: true,
+          json: async () => ({
+            result: {
+              decision: "auto_pass_candidate",
+              mode: "active",
+              applied: true,
+              reasons: ["green_system_evidence"],
+              failedGates: [],
+            },
+            rolloutGate: {
+              allowed: true,
+              effectiveMode: "active",
+              failedGates: [],
+            },
+          }),
+        };
+      }
+      if (String(url) === "/api/live-reports") {
+        return {
+          ok: true,
+          json: async () => ({
+            reports: [
+              {
+                id: "report-active-auto",
+                taskId: "task-active-auto",
+                projectId: "project-1",
+                streamerId: "streamer-1",
+                status: "approved",
+                taskTitle: "Auto Review Task",
+                projectName: "Auto Project",
+                streamerName: "Auto Streamer",
+                settlementDuration: 120,
+                systemDuration: 120,
+                screenshotDuration: 120,
+                timeSource: "system",
+                evidenceLevel: "green",
+                viewers: 900,
+                riskFlags: [],
+                submittedAt: "2026-06-02T12:00:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      if (
+        String(url) ===
+        "/api/live-reports/pre-review-summary?reportIds=report-active-auto&limit=1"
+      ) {
+        return { ok: true, json: async () => ({ summaries: [] }) };
+      }
+      if (String(url) === "/api/live-tasks") {
+        return { ok: true, json: async () => ({ tasks: [] }) };
+      }
+      if (String(url) === "/api/projects") {
+        return { ok: true, json: async () => ({ projects: [] }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-active-auto",
+            date: "2026-06-02",
+            streamer: "Auto Streamer",
+            project: "Auto Project",
+            taskId: "task-active-auto",
+            duration: 2,
+            systemDuration: 120,
+            screenshotDuration: 120,
+            plannedDuration: 120,
+            audience: 900,
+            status: "pending_review",
+            evidenceLevel: "green",
+            timeSource: "system",
+            riskFlags: [],
+            preReview: { failedGates: [] },
+            screens: 1,
+            source: "OCR",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "自动通过候选" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/auto-review/evaluate",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const autoReviewCall = fetchMock.mock.calls.find(
+      ([url]) => String(url) === "/api/auto-review/evaluate",
+    );
+    expect(JSON.parse(autoReviewCall[1].body)).toMatchObject({
+      targetMode: "active",
+      report: {
+        id: "report-active-auto",
+        status: "pending_review",
+        evidenceLevel: "green",
+        timeSource: "system",
+        settlementDuration: 120,
+        systemDuration: 120,
+        screenshotDuration: 120,
+        riskFlags: [],
+      },
+      rule: {
+        id: "ops-reference-default",
+        mode: "active",
+      },
+    });
+    expect(
+      await screen.findByText("自动审核已通过 1 条，报数已进入结算池。"),
+    ).toBeInTheDocument();
+  });
+
+  it("collapses green auto-review candidates from the default pending review queue", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ summaries: [] }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-auto-candidate",
+            date: "2026-06-02",
+            streamer: "Auto Candidate",
+            project: "Queue Project",
+            taskId: "task-auto-candidate",
+            duration: 2,
+            systemDuration: 120,
+            plannedDuration: 120,
+            audience: 900,
+            status: "pending_review",
+            evidenceLevel: "green",
+            timeSource: "system",
+            riskFlags: [],
+            preReview: { failedGates: [] },
+            screens: 1,
+            source: "OCR",
+          },
+          {
+            id: "report-manual-needed",
+            date: "2026-06-02",
+            streamer: "Manual Needed",
+            project: "Queue Project",
+            taskId: "task-manual-needed",
+            duration: 1.5,
+            systemDuration: 90,
+            plannedDuration: 120,
+            audience: 700,
+            status: "pending_review",
+            evidenceLevel: "yellow",
+            timeSource: "screenshot",
+            riskFlags: [],
+            preReview: { failedGates: ["duration_divergence"] },
+            screens: 1,
+            source: "OCR",
+          },
+        ]}
+      />,
+    );
+
+    expect(await screen.findByText("report-manual-needed")).toBeInTheDocument();
+    expect(screen.queryByText("report-auto-candidate")).not.toBeInTheDocument();
+    expect(screen.getByText(/自动通过候选 1/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "展开候选" }));
+
+    expect(await screen.findByText("report-auto-candidate")).toBeInTheDocument();
   });
 
   it("approves a pending report then refreshes project, M4, M5, and M6 data from the API", async () => {
@@ -10865,7 +11453,12 @@ describe("OpsReferenceApp settlement smoke", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "审核通过" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/live-reports/report-ui-smoke-approve/review",
+        expect.objectContaining({ method: "PATCH" }),
+      ),
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/live-reports/report-ui-smoke-approve/review",
       expect.objectContaining({
@@ -10875,7 +11468,14 @@ describe("OpsReferenceApp settlement smoke", () => {
           decision: "approve",
           includeInTaskResult: true,
           enterSettlementPool: true,
-          reviewNotes: "经营端页面审核",
+          reviewNotes: JSON.stringify({
+            source: "ops_reference_report_review",
+            decision: "approve",
+            failedGates: [],
+            reasonLabels: [],
+            note: "绿证据且预审全门通过",
+          }),
+          reason: "绿证据且预审全门通过",
         }),
       }),
     );
@@ -10893,6 +11493,87 @@ describe("OpsReferenceApp settlement smoke", () => {
       await screen.findByText("report-ui-smoke-approve"),
     ).toBeInTheDocument();
     expect(await screen.findByText("1 条待入批次")).toBeInTheDocument();
+  });
+
+  it("submits structured pre-review reasons when rejecting a report", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url).includes("/api/live-reports/report-ui-reject/review")) {
+        return {
+          ok: true,
+          json: async () => ({ report: { status: "rejected" } }),
+        };
+      }
+      if (String(url) === "/api/live-reports") {
+        return { ok: true, json: async () => ({ reports: [] }) };
+      }
+      if (String(url) === "/api/live-tasks") {
+        return { ok: true, json: async () => ({ tasks: [] }) };
+      }
+      if (String(url) === "/api/projects") {
+        return { ok: true, json: async () => ({ projects: [] }) };
+      }
+      return { ok: true, json: async () => ({ summaries: [] }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-ui-reject",
+            date: "2026-06-02",
+            streamer: "Reason Streamer",
+            streamerId: "streamer-reason",
+            project: "Reason Project",
+            taskId: "task-reason",
+            duration: 2,
+            audience: 900,
+            status: "pending_review",
+            evidenceLevel: "yellow",
+            riskFlags: [],
+            preReview: {
+              failedGates: ["duration_divergence", "screenshot_missing"],
+              reviewNoteDraft: "AI pre-review suggests manual review",
+            },
+            screens: 1,
+            source: "OCR",
+            note: "system · yellow",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("时长偏差过大")).toBeInTheDocument();
+    expect(screen.getByText("截图缺失")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("审核补充说明"), {
+      target: { value: "主播需重传清晰截图" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "驳回" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/live-reports/report-ui-reject/review",
+        expect.objectContaining({ method: "PATCH" }),
+      ),
+    );
+    const reviewCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/api/live-reports/report-ui-reject/review"),
+    );
+    const body = JSON.parse(reviewCall[1].body);
+    expect(body).toMatchObject({
+      decision: "reject",
+      includeInTaskResult: false,
+      enterSettlementPool: false,
+      reason: "预审卡点：时长偏差过大、截图缺失；补充：主播需重传清晰截图",
+    });
+    expect(JSON.parse(body.reviewNotes)).toMatchObject({
+      source: "ops_reference_report_review",
+      decision: "reject",
+      failedGates: ["duration_divergence", "screenshot_missing"],
+      reasonLabels: ["时长偏差过大", "截图缺失"],
+      supplementalNote: "主播需重传清晰截图",
+    });
   });
 
   it("creates a payable settlement batch then refreshes project, M6 list, detail, and pool data", async () => {
@@ -11435,6 +12116,108 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(await screen.findByText("item-ui-manual-1")).toBeInTheDocument();
     expect(reloadMock).not.toHaveBeenCalled();
   });
+
+  it("refreshes settlement batch audit by exact object id", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (
+        String(url) ===
+        "/api/audit-logs?limit=100&objectType=settlement_batch&objectId=batch-audit-1"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            entries: [
+              {
+                id: "audit-exact-1",
+                module: "settlement",
+                action: "lock",
+                objectType: "settlement_batch",
+                objectId: "batch-audit-1",
+                objectName: "同名批次",
+                actorName: "Finance A",
+                actorRole: "finance",
+                changedFields: ["status"],
+                reason: "精确批次锁定",
+                isHighRisk: true,
+                result: "success",
+                createdAt: "2026-06-02T12:40:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="settle"
+        liveBatches={[
+          {
+            id: "batch-audit-1",
+            projectId: "project-1",
+            type: "streamer_payable",
+            name: "同名批次",
+            project: "Golden Project",
+            vendor: "—",
+            period: "2026-06-01 → 2026-06-30",
+            items: 1,
+            amount: 160,
+            status: "locked",
+            updated: "2026-06-02 20:20",
+            creator: "Finance",
+          },
+        ]}
+        liveBatchDetails={{
+          "batch-audit-1": [
+            {
+              id: "item-audit-1",
+              streamer: "主播甲",
+              rule: "系统核验 CPT/底薪",
+              hours: 2,
+              qty: "green · system",
+              base: 0,
+              variable: 160,
+              adjust: 0,
+              total: 160,
+            },
+          ],
+        }}
+        liveSettlementPool={[]}
+        auditEntries={[
+          {
+            id: "audit-fuzzy-wrong",
+            module: "settlement",
+            action: "lock",
+            objectType: "settlement_batch",
+            objectId: "other-batch",
+            objectName: "同名批次",
+            actorName: "Finance B",
+            actorRole: "finance",
+            changedFields: ["status"],
+            reason: "不应显示的同名批次",
+            isHighRisk: true,
+            result: "success",
+            createdAt: "2026-06-02T12:30:00.000Z",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByText("不应显示的同名批次")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看审计" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/audit-logs?limit=100&objectType=settlement_batch&objectId=batch-audit-1",
+        undefined,
+      ),
+    );
+    expect(
+      await screen.findByText((content) => content.includes("精确批次锁定")),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("OpsReferenceApp audit center smoke", () => {
@@ -11710,18 +12493,7 @@ describe("OpsReferenceApp export center smoke", () => {
     );
     expect(JSON.parse(exportCall[1].body)).toEqual({
       kind: "settlement_batch",
-      rows: [
-        {
-          batchName: "Real Project · 主播应付",
-          payableAmountCents: 520000,
-          vendorReceivableCents: 0,
-        },
-        {
-          batchName: "Real Project · 厂家应收",
-          payableAmountCents: 0,
-          vendorReceivableCents: 900000,
-        },
-      ],
+      batchIds: ["batch-payable", "batch-receivable"],
     });
     expect(
       await screen.findByText("settlement_batch-2026-06-02.csv"),
@@ -12113,7 +12885,9 @@ describe("OpsReferenceApp complex cost smoke", () => {
       screen.getByText(/Custom external-cost rule emitted traffic/),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("导入行异常待审核")).toBeInTheDocument();
-    expect(screen.getByText("exception-cost-1 · batch batch-1")).toBeInTheDocument();
+    expect(
+      screen.getByText("exception-cost-1 · batch batch-1"),
+    ).toBeInTheDocument();
     expect(screen.getByText(/supplier_fee/)).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("复核值 exception-cost-1"), {
@@ -12166,7 +12940,9 @@ describe("OpsReferenceApp complex cost smoke", () => {
           }),
         };
       }
-      if (/\/cost-imports\/batch-newer-\d+\/rule-exceptions$/u.test(String(url))) {
+      if (
+        /\/cost-imports\/batch-newer-\d+\/rule-exceptions$/u.test(String(url))
+      ) {
         return {
           ok: true,
           json: async () => ({ exceptions: [] }),
@@ -12223,7 +12999,9 @@ describe("OpsReferenceApp complex cost smoke", () => {
         undefined,
       ),
     );
-    expect(await screen.findByLabelText("导入行异常待审核")).toBeInTheDocument();
+    expect(
+      await screen.findByLabelText("导入行异常待审核"),
+    ).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/projects/project-live/cost-imports/batch-exception-only/rule-exceptions",
       undefined,
@@ -12232,9 +13010,10 @@ describe("OpsReferenceApp complex cost smoke", () => {
       screen.getByText("exception-only-1 · batch batch-exception-only"),
     ).toBeInTheDocument();
     expect(screen.getByText(/supplier_fee/)).toBeInTheDocument();
-    expect(screen.queryByText("本项目暂无外部成本记录")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("本项目暂无外部成本记录"),
+    ).not.toBeInTheDocument();
   });
-
 });
 
 describe("OpsReferenceApp war room smoke", () => {
@@ -12891,7 +13670,10 @@ describe("OpsReferenceApp billing smoke", () => {
               amountCents: 99900,
               currency: "CNY",
             },
-            pay: { provider: "mock", params: { type: "qrcode", value: "mock://pay/order-paywall-1" } },
+            pay: {
+              provider: "mock",
+              params: { type: "qrcode", value: "mock://pay/order-paywall-1" },
+            },
             reused: false,
           }),
         };
@@ -12914,7 +13696,9 @@ describe("OpsReferenceApp billing smoke", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
-    expect(await screen.findByText(/mock:\/\/pay\/order-paywall-1/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/mock:\/\/pay\/order-paywall-1/),
+    ).toBeInTheDocument();
     expect(screen.getByText(/订单号 order-paywall-1/)).toBeInTheDocument();
   });
 });
@@ -13042,7 +13826,12 @@ describe("OpsReferenceApp recording transcript panel", () => {
           category: "绝对化用语",
           count: 1,
         },
-        { keyword: "库存告急", tone: "warning", category: "饥饿营销", count: 1 },
+        {
+          keyword: "库存告急",
+          tone: "warning",
+          category: "饥饿营销",
+          count: 1,
+        },
       ],
     },
   };
@@ -13148,7 +13937,8 @@ describe("OpsReferenceApp recording transcript panel", () => {
   const findTranscriptDocs = (store) => {
     if (!store?.nodes) return [];
     const folder = Object.values(store.nodes).find(
-      (n) => n.type === "folder" && n.name === "逐字稿" && n.parentId === "kb-root",
+      (n) =>
+        n.type === "folder" && n.name === "逐字稿" && n.parentId === "kb-root",
     );
     if (!folder) return [];
     const assetFolderIds = Object.values(store.nodes)
@@ -13348,9 +14138,7 @@ describe("OpsReferenceApp recording transcript panel", () => {
     );
 
     // 关闭「带时间戳」后导出 Word：payload 跟随开关，文件名取 Content-Disposition。
-    fireEvent.click(
-      within(dialog).getByRole("checkbox", { name: "带时间戳" }),
-    );
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "带时间戳" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "导出 Word" }));
     expect(
       await within(dialog).findByText("导出 Word 成功，已开始下载"),
@@ -13378,7 +14166,10 @@ describe("OpsReferenceApp recording transcript panel", () => {
     const fetchMock = buildTranscriptFetchMock({
       knowledgeBase,
       // /transcript/export 的 RAG 索引同步在此返回 !ok，验证不影响主保存成功。
-      onExport: () => ({ ok: false, json: async () => ({ error: "no index" }) }),
+      onExport: () => ({
+        ok: false,
+        json: async () => ({ error: "no index" }),
+      }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -13449,7 +14240,10 @@ describe("OpsReferenceApp recording transcript panel", () => {
     const knowledgeBase = makeKnowledgeBaseControl({ remoteWritable: false });
     const fetchMock = buildTranscriptFetchMock({
       knowledgeBase,
-      onExport: () => ({ ok: false, json: async () => ({ error: "no index" }) }),
+      onExport: () => ({
+        ok: false,
+        json: async () => ({ error: "no index" }),
+      }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -13498,9 +14292,7 @@ describe("OpsReferenceApp recording transcript panel", () => {
       await within(dialog).findByText("完成 AI 分析后自动生成逐字稿"),
     ).toBeInTheDocument();
     expect(
-      within(dialog).getByText(
-        /请先在录屏明细的「发起 AI 分析」入口发起分析/,
-      ),
+      within(dialog).getByText(/请先在录屏明细的「发起 AI 分析」入口发起分析/),
     ).toBeInTheDocument();
     expect(
       within(dialog).queryByRole("button", { name: "保存到企业库" }),
@@ -13512,14 +14304,17 @@ describe("OpsReferenceApp recording transcript panel", () => {
 
   it("retries the transcript fetch after a failure", async () => {
     let transcriptCalls = 0;
-    const fetchMock = vi.fn(async (url, init) => {
+    const fetchMock = vi.fn(async (url) => {
       const target = String(url);
       if (target === "/api/recording-assets/asset-priv-1/transcript") {
         transcriptCalls += 1;
         if (transcriptCalls === 1) {
           return { ok: false, json: async () => ({ error: "boom" }) };
         }
-        return { ok: true, json: async () => ({ transcript: transcriptFixture }) };
+        return {
+          ok: true,
+          json: async () => ({ transcript: transcriptFixture }),
+        };
       }
       throw new Error(`unexpected request: ${target}`);
     });
@@ -13618,7 +14413,11 @@ describe("OpsReferenceApp recording transcript panel", () => {
           ok: true,
           json: async () => ({
             checkpoints: [
-              { key: "content_quality", label: "内容质量达标", stage: "mcn_first" },
+              {
+                key: "content_quality",
+                label: "内容质量达标",
+                stage: "mcn_first",
+              },
               { key: "duration_ok", label: "时长达标", stage: "mcn_first" },
               {
                 key: "file_size_ok",
@@ -13635,10 +14434,16 @@ describe("OpsReferenceApp recording transcript panel", () => {
         };
       }
       if (target.startsWith("/api/admission-review/pre-review?submissionId=")) {
-        return { ok: true, json: async () => ({ preReview: null, fastLane: null }) };
+        return {
+          ok: true,
+          json: async () => ({ preReview: null, fastLane: null }),
+        };
       }
       if (target === "/api/recording-assets/asset-ws-transcript/transcript") {
-        return { ok: true, json: async () => ({ transcript: transcriptFixture }) };
+        return {
+          ok: true,
+          json: async () => ({ transcript: transcriptFixture }),
+        };
       }
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
     });
@@ -13855,9 +14660,7 @@ describe("OpsReferenceApp recording transcript panel", () => {
     expect(
       within(dialog).getByRole("button", { name: "然后 ×4" }),
     ).toHaveAttribute("aria-pressed", "false");
-    expect(
-      within(dialog).queryByText("清除筛选"),
-    ).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("清除筛选")).not.toBeInTheDocument();
   });
 
   it("keeps the transcript panel intact when wordInsights is missing from the response", async () => {

@@ -96,6 +96,19 @@ describe("audit center queries", () => {
     expect(calls).toContainEqual(["eq", ["is_high_risk", true]]);
   });
 
+  it("filters entries by exact object type and object id", async () => {
+    const { client, calls } = createClient([]);
+
+    await listAuditCenterEntries(client, owner, {
+      objectType: "settlement_batch",
+      objectId: "batch-1",
+      limit: 100,
+    });
+
+    expect(calls).toContainEqual(["eq", ["object_type", "settlement_batch"]]);
+    expect(calls).toContainEqual(["eq", ["object_id", "batch-1"]]);
+  });
+
   it("finance only sees finance settlement audit modules", async () => {
     const { client, calls } = createClient([]);
 

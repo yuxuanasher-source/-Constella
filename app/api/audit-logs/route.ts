@@ -33,6 +33,8 @@ export async function GET(request: Request) {
         module: optionalParam(params, "module"),
         action: optionalParam(params, "action"),
         projectId: optionalParam(params, "projectId"),
+        objectType: optionalParam(params, "objectType"),
+        objectId: optionalParam(params, "objectId"),
         highRiskOnly: isTruthy(params.get("highRiskOnly")),
         limit: numberParam(params, "limit"),
       },

@@ -1392,6 +1392,158 @@ function riskFlagLabel(flag) {
   return RISK_FLAG_LABELS[flag] ?? flag;
 }
 
+const REPORT_PRE_REVIEW_GATE_LABELS = {
+  status_not_pending_review: "状态不是待审核",
+  screenshot_missing: "截图缺失",
+  ocr_not_succeeded: "OCR 未通过",
+  evidence_red: "红色证据",
+  evidence_missing: "证据缺失",
+  evidence_not_green_system: "非绿证据或非系统计时",
+  duration_missing: "结算时长缺失",
+  risk_flags_present: "存在风控标记",
+  task_has_anomaly: "任务存在异常",
+  duration_overridden: "时长被人工覆盖",
+  project_high_sensitive: "高敏项目",
+  streamer_restricted: "主播受限",
+  streamer_not_trusted: "主播未进信任名单",
+  daily_hard_limit_exceeded: "单日时长超限",
+  severe_duration_divergence: "时长严重偏差",
+  duration_divergence: "时长偏差过大",
+};
+
+function reportPreReviewGateLabel(gate) {
+  return REPORT_PRE_REVIEW_GATE_LABELS[gate] ?? gate;
+}
+
+function normalizeReportPreReview(preReview) {
+  if (!preReview || typeof preReview !== "object") return null;
+  const failedGates = Array.isArray(preReview.failedGates)
+    ? preReview.failedGates
+    : Array.isArray(preReview.failed_gates)
+      ? preReview.failed_gates
+      : [];
+  return {
+    ...preReview,
+    failedGates: failedGates.filter(Boolean),
+    suggestedAction: preReview.suggestedAction || preReview.suggested_action,
+    reviewNoteDraft: preReview.reviewNoteDraft || preReview.review_note_draft,
+  };
+}
+
+function reportPreReviewGateLabels(report) {
+  return (normalizeReportPreReview(report?.preReview)?.failedGates ?? []).map(
+    reportPreReviewGateLabel,
+  );
+}
+
+function buildReportReviewReason(report, decision) {
+  const gateLabels = reportPreReviewGateLabels(report);
+  if (gateLabels.length > 0) {
+    return `预审卡点：${gateLabels.join("、")}`;
+  }
+  if (decision === "approve") return "绿证据且预审全门通过";
+  if (decision === "need_more") return "需补充截图或佐证材料";
+  return "人工审核驳回";
+}
+
+function buildReportReviewNotes(report, decision, supplementalNote = "") {
+  const preReview = normalizeReportPreReview(report?.preReview);
+  const failedGates = preReview?.failedGates ?? [];
+  return JSON.stringify({
+    source: "ops_reference_report_review",
+    decision,
+    failedGates,
+    reasonLabels: failedGates.map(reportPreReviewGateLabel),
+    supplementalNote: supplementalNote || undefined,
+    note:
+      preReview?.reviewNoteDraft || buildReportReviewReason(report, decision),
+  });
+}
+
+function buildReportMeaningText({
+  report,
+  preReviewGateLabels = [],
+  riskFlags = [],
+  divergencePct = null,
+  diffCount = 0,
+}) {
+  const status = reportStatusMeta(report?.status);
+  const evidenceLevel =
+    report?.evidenceLevel ?? report?.evidence_level ?? "unknown";
+  const parts = [
+    `当前状态是“${status.label}”，证据等级是 ${evidenceLevel}。`,
+  ];
+  if (preReviewGateLabels.length > 0) {
+    parts.push(`AI 预审卡点：${preReviewGateLabels.join("、")}。`);
+  }
+  if (riskFlags.length > 0) {
+    parts.push(`风控标记：${riskFlags.map(riskFlagLabel).join("、")}。`);
+  }
+  if (divergencePct != null && divergencePct > 0) {
+    parts.push(`截图和系统时长偏差 ${(divergencePct * 100).toFixed(1)}%。`);
+  } else if (diffCount > 0) {
+    parts.push(`截图识别和系统记录有 ${diffCount} 项不一致。`);
+  }
+  if (parts.length === 1) {
+    parts.push("没有预审卡点或风控标记时，通常可进入快速审核。");
+  } else {
+    parts.push("这些卡点需要人工确认后，才应进入审核通过或结算池。");
+  }
+  return parts.join(" ");
+}
+
+function canBatchApproveReport(report) {
+  return (
+    report?.status === "pending_review" &&
+    report?.evidenceLevel === "green" &&
+    (report?.riskFlags ?? []).length === 0 &&
+    reportPreReviewGateLabels(report).length === 0
+  );
+}
+
+function isAutoReviewCandidateReport(report) {
+  const snapshot = buildAutoReviewReportSnapshot(report ?? {});
+  const rule = buildAutoReviewRuleSnapshot();
+  if (
+    snapshot.status !== "pending_review" ||
+    snapshot.evidenceLevel !== "green" ||
+    snapshot.timeSource !== "system" ||
+    snapshot.riskFlags.length > 0 ||
+    reportPreReviewGateLabels(report).length > 0 ||
+    snapshot.taskHasAnomaly ||
+    snapshot.durationOverridden ||
+    snapshot.streamerTrust !== "trusted" ||
+    snapshot.projectSensitivity === "high"
+  ) {
+    return false;
+  }
+
+  if (
+    snapshot.settlementDuration !== null &&
+    snapshot.settlementDuration > rule.dailyHardLimitMinutes
+  ) {
+    return false;
+  }
+
+  if (
+    snapshot.plannedDuration !== null &&
+    snapshot.plannedDuration > 0 &&
+    snapshot.settlementDuration !== null
+  ) {
+    const deviation = Math.abs(
+      snapshot.settlementDuration - snapshot.plannedDuration,
+    );
+    const pctLimit = Math.round(
+      snapshot.plannedDuration * (rule.maxDurationDeviationPct / 100),
+    );
+    if (deviation > Math.max(pctLimit, rule.maxDurationDeviationMinutes)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function batchStatusMeta(status) {
   return labelOf(BATCH_STATUS, status);
 }
@@ -2338,8 +2490,8 @@ function isRestorableFocusTarget(element) {
 
   return Boolean(
     element?.isConnected &&
-      body?.contains(element) &&
-      isVisiblyTabbableWithin(element, body),
+    body?.contains(element) &&
+    isVisiblyTabbableWithin(element, body),
   );
 }
 
@@ -2403,6 +2555,7 @@ export function Sidebar({
   organizationSettings,
   onOpenOrganizationSettings,
   onUpdateAvatar,
+  organizationSettingsOpen = false,
   mobileNavigationOpen = false,
   onCloseMobileNavigation,
   onPrepareOverlay,
@@ -2412,6 +2565,11 @@ export function Sidebar({
 }) {
   const displayUser = normalizeCurrentUser(currentUser);
   const orgSettings = normalizeOrganizationSettings(organizationSettings);
+  const enabledFeatureCount = countEnabledOrganizationFeatures(orgSettings);
+  const switcherMemberText =
+    orgSettings.memberLimit != null
+      ? `当前组织 · 配额 ${orgSettings.memberLimit}`
+      : "当前组织 · 设置与权限";
   const [accountPanel, setAccountPanel] = React.useState(null);
   const accountSummaryRef = React.useRef(null);
   const accountPanelWasOpenRef = React.useRef(false);
@@ -2698,7 +2856,7 @@ export function Sidebar({
         })}
       </nav>
 
-      {route !== "warroom" ? (
+      {route !== "warroom" || organizationSettingsOpen ? (
         <div
           style={{
             padding: "10px 12px",
@@ -2707,44 +2865,107 @@ export function Sidebar({
         >
           <button
             type="button"
-            aria-label="打开当前组织设置与权限"
+            aria-label="当前组织设置摘要"
             onClick={onOpenOrganizationSettings}
             style={{
               width: "100%",
-              minHeight: 54,
+              minHeight: 72,
               border: "1px solid var(--line)",
               borderRadius: 8,
               background: "var(--bg-soft)",
               cursor: "pointer",
               display: "flex",
-              flexDirection: "column",
-              alignItems: "flex-start",
-              justifyContent: "center",
-              gap: 3,
-              padding: "8px 10px",
+              alignItems: "center",
+              justifyContent: "flex-start",
+              gap: 10,
+              padding: "10px 12px",
               textAlign: "left",
             }}
           >
             <span
+              data-org-switcher-mark="true"
               style={{
-                fontSize: 13,
-                fontWeight: 600,
-                color: "var(--ink-900)",
-                maxWidth: "100%",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
+                width: 28,
+                height: 28,
+                flexShrink: 0,
+                borderRadius: 7,
+                background: "var(--blue-50)",
+                color: "var(--blue-700)",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontWeight: 700,
+                fontSize: 12,
               }}
             >
-              {orgSettings.name}
+              星
             </span>
-            <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
-              当前组织 · 设置与权限
+            <span
+              style={{
+                flex: "1 1 auto",
+                minWidth: 0,
+                display: "flex",
+                flexDirection: "column",
+                rowGap: 2,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--ink-900)",
+                  lineHeight: 1.2,
+                  maxWidth: "100%",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {orgSettings.name}
+              </span>
+              <span
+                style={{
+                  fontSize: 10.5,
+                  color: "var(--ink-400)",
+                  lineHeight: 1.25,
+                  maxWidth: "100%",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {switcherMemberText}
+              </span>
+              <span
+                style={{
+                  fontSize: 10.5,
+                  color: "var(--blue-600)",
+                  lineHeight: 1.25,
+                  maxWidth: "100%",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                已启用 {enabledFeatureCount} 项功能
+              </span>
+            </span>
+            <span
+              data-org-switcher-chevron="true"
+              style={{
+                width: 18,
+                height: 18,
+                flexShrink: 0,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Icon.ChevDown size={14} stroke="var(--ink-400)" />
             </span>
           </button>
         </div>
       ) : null}
-
       {/* User */}
       <div
         style={{
@@ -3074,7 +3295,9 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Avatar
               name={currentUser.name}
-              text={mode === "profile" ? avatarDraft.trim() : currentUser.avatarText}
+              text={
+                mode === "profile" ? avatarDraft.trim() : currentUser.avatarText
+              }
               imageUrl={
                 mode === "profile" ? avatarUrlDraft : currentUser.avatarUrl
               }
@@ -3206,7 +3429,9 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
                       borderRadius: 6,
                       fontSize: 13,
                       background: avatarUrlDraft ? "var(--bg-soft)" : "#fff",
-                      color: avatarUrlDraft ? "var(--ink-300)" : "var(--ink-900)",
+                      color: avatarUrlDraft
+                        ? "var(--ink-300)"
+                        : "var(--ink-900)",
                     }}
                   />
                   <span style={{ fontSize: 11.5, color: "var(--ink-400)" }}>
@@ -3465,7 +3690,25 @@ function normalizeReferenceReports(reports) {
       note:
         report.note ||
         `${timeSource ?? "unknown"} · ${report.evidenceLevel ?? report.evidence_level ?? "unknown"}`,
+      preReview: normalizeReportPreReview(
+        report.preReview || report.pre_review || report.preReviewSummary,
+      ),
     };
+  });
+}
+
+function mergeReportPreReviewSummaries(reports, summaries) {
+  if (!Array.isArray(reports) || !Array.isArray(summaries)) return reports;
+  const byReportId = new Map(
+    summaries
+      .map((summary) => [summary?.reportId || summary?.live_report_id, summary])
+      .filter(([reportId]) => reportId),
+  );
+  return reports.map((report) => {
+    const summary = byReportId.get(report.id);
+    return summary
+      ? { ...report, preReview: normalizeReportPreReview(summary) }
+      : report;
   });
 }
 
@@ -3813,9 +4056,7 @@ function ScreenRoleHome({ dashboard, go }) {
     <>
       <PageHeader
         title={dashboard.profile?.title || "经营舱看板"}
-        subtitle={
-          dashboard.profile?.subtitle || "经营闭环 · 全链路实时盘"
-        }
+        subtitle={dashboard.profile?.subtitle || "经营闭环 · 全链路实时盘"}
         status={
           <>
             <span
@@ -6141,7 +6382,16 @@ const AICP_ICONS = {
   script: "🎬",
 };
 
-function AiActionPanel({ actionKey, title, hint, buttonLabel, loading, disabled, done, onClick }) {
+function AiActionPanel({
+  actionKey,
+  title,
+  hint,
+  buttonLabel,
+  loading,
+  disabled,
+  done,
+  onClick,
+}) {
   return (
     <div
       style={{
@@ -6857,22 +7107,56 @@ function buildWarRoomReviewInput(projects = PROJECTS, streamers = STREAMERS) {
 }
 
 function buildAutoReviewReportSnapshot(report) {
-  const settlementDuration =
+  const durationMinutes = Math.round((report.duration ?? 0) * 60);
+  const systemDuration =
     report.systemDuration ??
-    report.plannedDuration ??
+    (typeof report.systemDurationHours === "number"
+      ? Math.round(report.systemDurationHours * 60)
+      : durationMinutes);
+  const screenshotDuration =
+    report.screenshotDuration ??
+    (typeof report.ocrDurationHours === "number"
+      ? Math.round(report.ocrDurationHours * 60)
+      : null);
+  const settlementDuration =
     report.settlementDuration ??
-    Math.round((report.duration ?? 0) * 60);
+    report.settlement_duration ??
+    systemDuration ??
+    durationMinutes;
 
   return {
     id: report.id,
-    taskId: report.taskId,
     status: report.status,
-    evidenceLevel: report.evidenceLevel || evidenceLevelFromReport(report),
-    timeSource: report.timeSource || "manual",
+    evidenceLevel: normalizeAutoReviewEvidenceLevel(
+      report.evidenceLevel || evidenceLevelFromReport(report),
+    ),
+    timeSource: normalizeAutoReviewTimeSource(report.timeSource),
     settlementDuration,
-    screenshotCount: report.screens ?? report.screenshotCount ?? 0,
-    viewers: report.audience ?? report.viewers ?? 0,
+    systemDuration,
+    screenshotDuration,
+    riskFlags: Array.isArray(report.riskFlags) ? report.riskFlags : [],
+    taskHasAnomaly: Boolean(report.taskHasAnomaly || report.anomaly),
+    durationOverridden: Boolean(report.durationOverridden),
+    projectSensitivity:
+      report.projectSensitivity === "high" ? "high" : "normal",
+    streamerTrust:
+      report.streamerTrust === "restricted" ||
+      report.streamerTrust === "probation"
+        ? report.streamerTrust
+        : "trusted",
+    plannedDuration:
+      typeof report.plannedDuration === "number"
+        ? report.plannedDuration
+        : null,
   };
+}
+
+function normalizeAutoReviewEvidenceLevel(value) {
+  return ["green", "yellow", "red"].includes(value) ? value : null;
+}
+
+function normalizeAutoReviewTimeSource(value) {
+  return ["system", "screenshot", "claimed"].includes(value) ? value : null;
 }
 
 function evidenceLevelFromReport(report) {
@@ -6885,10 +7169,11 @@ function evidenceLevelFromReport(report) {
 
 function buildAutoReviewRuleSnapshot() {
   return {
+    id: "ops-reference-default",
     mode: "shadow",
-    requireSystemTiming: true,
-    minimumEvidenceLevel: "green",
-    maximumDurationDeltaRateBps: 1000,
+    maxDurationDeviationPct: 10,
+    maxDurationDeviationMinutes: 15,
+    dailyHardLimitMinutes: 480,
   };
 }
 
@@ -7564,165 +7849,167 @@ function ProjectList({ go }) {
 
           {viewMode === "table" ? (
             <DataTable
-            columns={[
-              {
-                title: "项目",
-                render: (r) => (
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 12 }}
-                  >
-                    <span
+              columns={[
+                {
+                  title: "项目",
+                  render: (r) => (
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 12 }}
+                    >
+                      <span
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 7,
+                          background: "var(--blue-50)",
+                          color: "var(--blue-700)",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <Icon.Game size={18} stroke="var(--blue-700)" />
+                      </span>
+                      <div>
+                        <div
+                          style={{ fontWeight: 600, color: "var(--ink-900)" }}
+                        >
+                          {r.name}
+                          {r.collaborationRole === "partner" ? (
+                            <Badge
+                              tone="teal"
+                              dot
+                              style={{ marginLeft: 8, verticalAlign: "middle" }}
+                            >
+                              外部合作
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <div
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--ink-400)" }}
+                        >
+                          {r.code || "未设置编号"}
+                        </div>
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "厂商 / 产品",
+                  render: (r) => (
+                    <div>
+                      <div>{r.vendor}</div>
+                      <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                        {r.product}
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  title: "状态",
+                  render: (r) => (
+                    <Badge tone={PROJECT_STATUS[r.status].tone} dot>
+                      {PROJECT_STATUS[r.status].label}
+                    </Badge>
+                  ),
+                },
+                {
+                  title: "结算方式",
+                  render: (r) => <Badge tone="neutral">{r.pricing}</Badge>,
+                },
+                {
+                  title: "负责人",
+                  render: (r) => (
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 6 }}
+                    >
+                      <Avatar name={r.leadOps} size={22} />
+                      <span style={{ fontSize: 12, color: "var(--ink-700)" }}>
+                        {r.leadOps}
+                      </span>
+                    </div>
+                  ),
+                },
+                {
+                  title: "主播",
+                  align: "right",
+                  render: (r) => (
+                    <span className="num">
+                      <b style={{ color: "var(--ink-900)" }}>
+                        {r.streamers.active}
+                      </b>
+                      <span style={{ color: "var(--ink-400)" }}>
+                        {" "}
+                        / {r.streamers.active + r.streamers.candidate}
+                      </span>
+                    </span>
+                  ),
+                },
+                {
+                  title: "直播时长",
+                  align: "right",
+                  render: (r) => (
+                    <div
+                      className="num"
                       style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: 7,
-                        background: "var(--blue-50)",
-                        color: "var(--blue-700)",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "flex-end",
                       }}
                     >
-                      <Icon.Game size={18} stroke="var(--blue-700)" />
-                    </span>
-                    <div>
-                      <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
-                        {r.name}
-                        {r.collaborationRole === "partner" ? (
-                          <Badge
-                            tone="teal"
-                            dot
-                            style={{ marginLeft: 8, verticalAlign: "middle" }}
-                          >
-                            外部合作
-                          </Badge>
-                        ) : null}
-                      </div>
-                      <div
-                        className="mono"
-                        style={{ fontSize: 11, color: "var(--ink-400)" }}
-                      >
-                        {r.code || "未设置编号"}
-                      </div>
+                      <span style={{ color: "var(--ink-900)" }}>
+                        {r.metrics.doneHours.toLocaleString()} h
+                      </span>
+                      <span style={{ color: "var(--ink-400)", fontSize: 11 }}>
+                        / 计划 {r.metrics.plannedHours.toLocaleString()}
+                      </span>
                     </div>
-                  </div>
-                ),
-              },
-              {
-                title: "厂商 / 产品",
-                render: (r) => (
-                  <div>
-                    <div>{r.vendor}</div>
-                    <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                      {r.product}
+                  ),
+                },
+                {
+                  title: "预估毛利",
+                  align: "right",
+                  render: (r) => (
+                    <div
+                      className="num"
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "flex-end",
+                      }}
+                    >
+                      <span style={{ color: "var(--ink-900)" }}>
+                        ¥{r.metrics.gross.toLocaleString()}
+                      </span>
+                      <span style={{ color: "var(--ink-400)", fontSize: 11 }}>
+                        {r.metrics.margin.toFixed(1)}%
+                      </span>
                     </div>
-                  </div>
-                ),
-              },
-              {
-                title: "状态",
-                render: (r) => (
-                  <Badge tone={PROJECT_STATUS[r.status].tone} dot>
-                    {PROJECT_STATUS[r.status].label}
-                  </Badge>
-                ),
-              },
-              {
-                title: "结算方式",
-                render: (r) => <Badge tone="neutral">{r.pricing}</Badge>,
-              },
-              {
-                title: "负责人",
-                render: (r) => (
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 6 }}
-                  >
-                    <Avatar name={r.leadOps} size={22} />
-                    <span style={{ fontSize: 12, color: "var(--ink-700)" }}>
-                      {r.leadOps}
-                    </span>
-                  </div>
-                ),
-              },
-              {
-                title: "主播",
-                align: "right",
-                render: (r) => (
-                  <span className="num">
-                    <b style={{ color: "var(--ink-900)" }}>
-                      {r.streamers.active}
-                    </b>
-                    <span style={{ color: "var(--ink-400)" }}>
-                      {" "}
-                      / {r.streamers.active + r.streamers.candidate}
-                    </span>
-                  </span>
-                ),
-              },
-              {
-                title: "直播时长",
-                align: "right",
-                render: (r) => (
-                  <div
-                    className="num"
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "flex-end",
-                    }}
-                  >
-                    <span style={{ color: "var(--ink-900)" }}>
-                      {r.metrics.doneHours.toLocaleString()} h
-                    </span>
-                    <span style={{ color: "var(--ink-400)", fontSize: 11 }}>
-                      / 计划 {r.metrics.plannedHours.toLocaleString()}
-                    </span>
-                  </div>
-                ),
-              },
-              {
-                title: "预估毛利",
-                align: "right",
-                render: (r) => (
-                  <div
-                    className="num"
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      alignItems: "flex-end",
-                    }}
-                  >
-                    <span style={{ color: "var(--ink-900)" }}>
-                      ¥{r.metrics.gross.toLocaleString()}
-                    </span>
-                    <span style={{ color: "var(--ink-400)", fontSize: 11 }}>
-                      {r.metrics.margin.toFixed(1)}%
-                    </span>
-                  </div>
-                ),
-              },
-              { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
-              {
-                title: "",
-                render: () => (
-                  <button
-                    style={{
-                      width: 24,
-                      height: 24,
-                      border: "none",
-                      background: "transparent",
-                      borderRadius: 4,
-                      cursor: "pointer",
-                      color: "var(--ink-400)",
-                    }}
-                  >
-                    <Icon.More size={16} />
-                  </button>
-                ),
-              },
-            ]}
-            rows={filtered}
-            onRowClick={(r) => go("project", r.id)}
+                  ),
+                },
+                { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
+                {
+                  title: "",
+                  render: () => (
+                    <button
+                      style={{
+                        width: 24,
+                        height: 24,
+                        border: "none",
+                        background: "transparent",
+                        borderRadius: 4,
+                        cursor: "pointer",
+                        color: "var(--ink-400)",
+                      }}
+                    >
+                      <Icon.More size={16} />
+                    </button>
+                  ),
+                },
+              ]}
+              rows={filtered}
+              onRowClick={(r) => go("project", r.id)}
             />
           ) : viewMode === "cards" ? (
             <ProjectCardsGrid rows={filtered} go={go} />
@@ -7895,8 +8182,7 @@ function ProjectCardTile({ p, go, compact = false }) {
           }}
         >
           <div>
-            厂商 ·{" "}
-            <span style={{ color: "var(--ink-700)" }}>{p.vendor}</span>
+            厂商 · <span style={{ color: "var(--ink-700)" }}>{p.vendor}</span>
           </div>
           <div>
             在播主播 ·{" "}
@@ -8009,9 +8295,7 @@ function ProjectBoard({ rows, go }) {
               {col.items.length}
             </span>
           </div>
-          <div
-            style={{ display: "flex", flexDirection: "column", gap: 10 }}
-          >
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {col.items.map((p) => (
               <ProjectCardTile key={p.id} p={p} go={go} compact />
             ))}
@@ -8761,7 +9045,9 @@ function ProjectDetail({ id, go }) {
               minWidth: 160,
             }}
           >
-            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>预估毛利</div>
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              预估毛利
+            </div>
             <div
               className="num"
               style={{
@@ -8804,7 +9090,9 @@ function ProjectDetail({ id, go }) {
               value={detailMetrics.doneHours.toFixed(1)}
               unit="h"
               hint={`${donePct}% 达成`}
-              hintTone={donePct >= 90 ? "green" : donePct >= 50 ? "muted" : "red"}
+              hintTone={
+                donePct >= 90 ? "green" : donePct >= 50 ? "muted" : "red"
+              }
             />
             <MiniStat
               label="累计场观"
@@ -9272,7 +9560,9 @@ function ProjectDetail({ id, go }) {
                   <DetailKV label="结算方式" value={p.pricing} last />
                 </div>
                 <div>
-                  <DetailSubHeading>收益拆解（项目周期内 · 估算）</DetailSubHeading>
+                  <DetailSubHeading>
+                    收益拆解（项目周期内 · 估算）
+                  </DetailSubHeading>
                   <DetailKV
                     label="应收(含税)"
                     value={`¥${detailMetrics.receivable.toLocaleString()}`}
@@ -9764,7 +10054,9 @@ function ProjectSettingsSectionTitle({ title, desc }) {
 }
 
 function ProjectSettingsDivider() {
-  return <div aria-hidden="true" style={{ height: 1, background: "#edf0f6" }} />;
+  return (
+    <div aria-hidden="true" style={{ height: 1, background: "#edf0f6" }} />
+  );
 }
 
 function ProjectSettingsSwitch({ label, checked, onChange, disabled = false }) {
@@ -9883,7 +10175,11 @@ function ProjectSettingsToggleCard({
           {desc}
         </div>
       </div>
-      <ProjectSettingsSwitch label={title} checked={checked} onChange={onChange} />
+      <ProjectSettingsSwitch
+        label={title}
+        checked={checked}
+        onChange={onChange}
+      />
     </div>
   );
 }
@@ -10448,8 +10744,7 @@ function ProjectCollaborationPanel({
               );
               const canSubmitCounter = canReview && counterShareBps !== null;
               const canReject =
-                canReview &&
-                applicationDraft.rejectionReason.trim().length > 0;
+                canReview && applicationDraft.rejectionReason.trim().length > 0;
               const isReviewing = submitting === `review:${application.id}`;
               return (
                 <div
@@ -11473,7 +11768,11 @@ function ProjectBusinessOverview({ p, reports = [], computed }) {
             <>
               <div
                 className="num"
-                style={{ fontSize: 18, fontWeight: 700, color: "var(--ink-900)" }}
+                style={{
+                  fontSize: 18,
+                  fontWeight: 700,
+                  color: "var(--ink-900)",
+                }}
               >
                 ¥{Math.round(revenueTrend[0][1]).toLocaleString()}
               </div>
@@ -11520,9 +11819,7 @@ function ProjectBusinessOverview({ p, reports = [], computed }) {
                 value={computed.anomalies}
                 max={computed.taskCount}
                 suffix=" 项"
-                color={
-                  computed.anomalies > 0 ? "var(--danger-600)" : undefined
-                }
+                color={computed.anomalies > 0 ? "var(--danger-600)" : undefined}
               />
               <div style={captionStyle}>
                 共 {computed.taskCount} 项任务 · 依运营异常判定
@@ -11539,9 +11836,7 @@ function ProjectBusinessOverview({ p, reports = [], computed }) {
           <div style={cellLabelStyle}>主播贡献</div>
           {topStreamers.length ? (
             <>
-              <div
-                style={{ display: "flex", flexDirection: "column", gap: 8 }}
-              >
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {topStreamers.map((s) => (
                   <div
                     key={s.key}
@@ -11833,7 +12128,9 @@ function ProjectRoster({ p, go }) {
     }
   };
   const openJoinForm = (row) => {
-    const method = String(row.defaultRule || "").trim().toLowerCase();
+    const method = String(row.defaultRule || "")
+      .trim()
+      .toLowerCase();
     setJoinRuleDraft({
       settlementMethod: JOIN_SETTLEMENT_METHODS.some(
         (option) => option.value === method,
@@ -12018,7 +12315,9 @@ function ProjectRoster({ p, go }) {
             background: "var(--blue-50)",
           }}
         >
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}>
+          <div
+            style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}
+          >
             为 {joinFormRow.alias} 设置本项目结算规则
             <span
               style={{
@@ -12034,8 +12333,7 @@ function ProjectRoster({ p, go }) {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns:
-                "minmax(150px, 1fr) 130px 130px 130px",
+              gridTemplateColumns: "minmax(150px, 1fr) 130px 130px 130px",
               alignItems: "end",
               gap: 10,
             }}
@@ -12955,514 +13253,484 @@ function ScreenStreamers({ go, initialActiveId }) {
                 <div className="streamer-pool-filter-spacer" />
                 <Badge tone="blue">{visibleStreamers.length} 位主播</Badge>
               </div>
-          {exportMessage ? (
-            <div
-              aria-live="polite"
-              style={{
-                padding: "8px 16px",
-                borderBottom: "1px solid var(--line)",
-                background: "var(--blue-50)",
-                color: "var(--blue-700)",
-                fontSize: 12,
-                fontWeight: 600,
-              }}
-            >
-              {exportMessage}
-            </div>
-          ) : null}
-          {importMessage ? (
-            <div
-              aria-live="polite"
-              style={{
-                padding: "8px 16px",
-                borderBottom: "1px solid var(--line)",
-                background: "var(--warn-50)",
-                color: "var(--warn-600)",
-                fontSize: 12,
-                fontWeight: 600,
-              }}
-            >
-              {importMessage}
-            </div>
-          ) : null}
-
-          {draftOpen ? (
-            <form
-              onSubmit={submitStreamerDraft}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-                alignItems: "end",
-                gap: 12,
-                padding: "12px 16px",
-                borderBottom: "1px solid var(--line)",
-                background: "var(--bg-soft)",
-              }}
-            >
-              <label style={draftLabelStyle}>
-                主播昵称
-                <input
-                  value={draft.displayName}
-                  onChange={updateDraft("displayName")}
-                  placeholder="例如：小鹿"
-                  style={draftFieldStyle}
-                />
-              </label>
-              <label style={draftLabelStyle}>
-                真实姓名
-                <input
-                  value={draft.realName}
-                  onChange={updateDraft("realName")}
-                  placeholder="可选"
-                  style={draftFieldStyle}
-                />
-              </label>
-              <label style={draftLabelStyle}>
-                性别
-                <select
-                  value={draft.gender}
-                  onChange={updateDraft("gender")}
-                  style={draftFieldStyle}
-                >
-                  <option value="">未填写</option>
-                  <option value="女">女</option>
-                  <option value="男">男</option>
-                  <option value="其他">其他</option>
-                </select>
-              </label>
-              <label style={draftLabelStyle}>
-                来源
-                <select
-                  value={draft.sourceType}
-                  onChange={updateDraft("sourceType")}
-                  style={draftFieldStyle}
-                >
-                  <option value="external">外部</option>
-                  <option value="signed">签约</option>
-                  <option value="self_incubated">自孵化</option>
-                  <option value="supplier_recommended">供应商</option>
-                  <option value="account_managed">代运营</option>
-                </select>
-              </label>
-              <label style={draftLabelStyle}>
-                擅长品类
-                <input
-                  value={draft.categories}
-                  onChange={updateDraft("categories")}
-                  placeholder="二游, 卡牌"
-                  style={draftFieldStyle}
-                />
-              </label>
-              <label style={draftLabelStyle}>
-                平台
-                <input
-                  value={draft.platforms}
-                  onChange={updateDraft("platforms")}
-                  placeholder="抖音, 快手"
-                  style={draftFieldStyle}
-                />
-              </label>
-              <label style={draftLabelStyle}>
-                直播风格
-                <input
-                  value={draft.styles}
-                  onChange={updateDraft("styles")}
-                  placeholder="高能整活, 陪伴"
-                  style={draftFieldStyle}
-                />
-              </label>
-              <label style={draftLabelStyle}>
-                默认结算
-                <select
-                  value={draft.defaultSettlementMethod}
-                  onChange={updateDraft("defaultSettlementMethod")}
-                  style={draftFieldStyle}
-                >
-                  <option value="cpt">CPT</option>
-                  <option value="cpa">CPA</option>
-                  <option value="cps">CPS</option>
-                  <option value="gift">礼物流水</option>
-                  <option value="base_salary">保底</option>
-                  <option value="base_salary_cpt">保底 + CPT</option>
-                  <option value="manual">手动结算</option>
-                </select>
-              </label>
-              {["cpt", "base_salary_cpt"].includes(
-                draft.defaultSettlementMethod,
-              ) ? (
-                <label style={draftLabelStyle}>
-                  CPT 小时单价
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={draft.defaultHourlyRate}
-                    onChange={updateDraft("defaultHourlyRate")}
-                    placeholder="80"
-                    style={draftFieldStyle}
-                  />
-                </label>
-              ) : null}
-              {draft.defaultSettlementMethod === "cps" ? (
-                <label style={draftLabelStyle}>
-                  CPS 分成比例
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.01"
-                    value={draft.defaultCpsRatePercent}
-                    onChange={updateDraft("defaultCpsRatePercent")}
-                    placeholder="15"
-                    style={draftFieldStyle}
-                  />
-                </label>
-              ) : null}
-              {["base_salary", "base_salary_cpt"].includes(
-                draft.defaultSettlementMethod,
-              ) ? (
-                <label style={draftLabelStyle}>
-                  底薪
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={draft.defaultBaseSalary}
-                    onChange={updateDraft("defaultBaseSalary")}
-                    placeholder="6000"
-                    style={draftFieldStyle}
-                  />
-                </label>
-              ) : null}
-              <div style={{ position: "relative", minWidth: 0 }}>
-                <label style={draftLabelStyle}>
-                  绑定主播子账号
-                  <input
-                    value={userSearch}
-                    onChange={updateUserSearch}
-                    onFocus={refreshStreamerSubaccounts}
-                    placeholder={
-                      memberLoading
-                        ? "正在加载主播子账号"
-                        : "搜索姓名 / 邮箱 / 默认账号"
-                    }
-                    aria-autocomplete="list"
-                    aria-expanded={
-                      Boolean(userSearch.trim()) && !selectedSubaccount
-                    }
-                    style={draftFieldStyle}
-                  />
-                </label>
-                {userSearch.trim() && !selectedSubaccount ? (
-                  <div
-                    role="listbox"
-                    aria-label="主播子账号候选"
-                    style={{
-                      position: "absolute",
-                      zIndex: 20,
-                      top: 56,
-                      left: 0,
-                      right: 0,
-                      overflow: "hidden",
-                      border: "1px solid var(--line-strong)",
-                      borderRadius: 8,
-                      background: "#fff",
-                      boxShadow: "var(--shadow-pop)",
-                    }}
-                  >
-                    {filteredSubaccountCandidates.length > 0 ? (
-                      filteredSubaccountCandidates.map((candidate) => (
-                        <button
-                          key={candidate.userId}
-                          type="button"
-                          role="option"
-                          onClick={() => selectStreamerSubaccount(candidate)}
-                          style={{
-                            width: "100%",
-                            border: 0,
-                            borderBottom: "1px solid var(--line)",
-                            background: "#fff",
-                            padding: "8px 10px",
-                            textAlign: "left",
-                            cursor: "pointer",
-                          }}
-                        >
-                          <span
-                            style={{
-                              display: "block",
-                              color: "var(--ink-900)",
-                              fontSize: 13,
-                              fontWeight: 700,
-                            }}
-                          >
-                            {candidate.name}
-                          </span>
-                          <span
-                            style={{
-                              display: "block",
-                              marginTop: 2,
-                              color: "var(--ink-400)",
-                              fontSize: 11,
-                              fontWeight: 600,
-                            }}
-                          >
-                            {candidate.account
-                              ? `默认账号 ${candidate.account}`
-                              : candidate.email || candidate.userId}
-                          </span>
-                        </button>
-                      ))
-                    ) : (
-                      <div
-                        style={{
-                          padding: "9px 10px",
-                          color: "var(--ink-400)",
-                          fontSize: 12,
-                          fontWeight: 600,
-                        }}
-                      >
-                        暂无匹配主播子账号
-                      </div>
-                    )}
-                  </div>
-                ) : null}
-                {memberLoadError || selectedSubaccount ? (
-                  <div
-                    aria-live="polite"
-                    style={{
-                      marginTop: 4,
-                      color: memberLoadError
-                        ? "var(--danger-600)"
-                        : "var(--ink-300)",
-                      fontSize: 11,
-                      fontWeight: 600,
-                      lineHeight: 1.3,
-                    }}
-                  >
-                    {memberLoadError ||
-                      `已绑定 ${streamerSubaccountLabel(selectedSubaccount)}`}
-                  </div>
-                ) : null}
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "flex-end",
-                  gap: 8,
-                  minWidth: 160,
-                }}
-              >
-                <Button
-                  kind="default"
-                  type="button"
-                  onClick={closeDraftForm}
-                  disabled={draftSubmitting}
-                >
-                  取消
-                </Button>
-                <Button
-                  kind="primary"
-                  type="submit"
-                  disabled={draftSubmitting}
-                  icon={<Icon.Plus size={14} stroke="#fff" />}
-                >
-                  {draftSubmitting ? "创建中" : "创建档案"}
-                </Button>
-              </div>
-              {draftError ? (
+              {exportMessage ? (
                 <div
                   aria-live="polite"
                   style={{
-                    gridColumn: "1 / -1",
-                    color: "var(--danger-600)",
+                    padding: "8px 16px",
+                    borderBottom: "1px solid var(--line)",
+                    background: "var(--blue-50)",
+                    color: "var(--blue-700)",
                     fontSize: 12,
-                    lineHeight: 1.4,
+                    fontWeight: 600,
                   }}
                 >
-                  {draftError}
+                  {exportMessage}
                 </div>
               ) : null}
-            </form>
-          ) : null}
+              {importMessage ? (
+                <div
+                  aria-live="polite"
+                  style={{
+                    padding: "8px 16px",
+                    borderBottom: "1px solid var(--line)",
+                    background: "var(--warn-50)",
+                    color: "var(--warn-600)",
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                >
+                  {importMessage}
+                </div>
+              ) : null}
 
-          <DataTable
-            activeRowId={active}
-            onRowClick={(r) => setActive(r.id)}
-            columns={[
-              {
-                title: "主播",
-                render: (r) => (
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 10 }}
-                  >
-                    <Avatar name={r.alias} size={32} />
-                    <div>
+              {draftOpen ? (
+                <form
+                  onSubmit={submitStreamerDraft}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                    alignItems: "end",
+                    gap: 12,
+                    padding: "12px 16px",
+                    borderBottom: "1px solid var(--line)",
+                    background: "var(--bg-soft)",
+                  }}
+                >
+                  <label style={draftLabelStyle}>
+                    主播昵称
+                    <input
+                      value={draft.displayName}
+                      onChange={updateDraft("displayName")}
+                      placeholder="例如：小鹿"
+                      style={draftFieldStyle}
+                    />
+                  </label>
+                  <label style={draftLabelStyle}>
+                    真实姓名
+                    <input
+                      value={draft.realName}
+                      onChange={updateDraft("realName")}
+                      placeholder="可选"
+                      style={draftFieldStyle}
+                    />
+                  </label>
+                  <label style={draftLabelStyle}>
+                    性别
+                    <select
+                      value={draft.gender}
+                      onChange={updateDraft("gender")}
+                      style={draftFieldStyle}
+                    >
+                      <option value="">未填写</option>
+                      <option value="女">女</option>
+                      <option value="男">男</option>
+                      <option value="其他">其他</option>
+                    </select>
+                  </label>
+                  <label style={draftLabelStyle}>
+                    来源
+                    <select
+                      value={draft.sourceType}
+                      onChange={updateDraft("sourceType")}
+                      style={draftFieldStyle}
+                    >
+                      <option value="external">外部</option>
+                      <option value="signed">签约</option>
+                      <option value="self_incubated">自孵化</option>
+                      <option value="supplier_recommended">供应商</option>
+                      <option value="account_managed">代运营</option>
+                    </select>
+                  </label>
+                  <label style={draftLabelStyle}>
+                    擅长品类
+                    <input
+                      value={draft.categories}
+                      onChange={updateDraft("categories")}
+                      placeholder="二游, 卡牌"
+                      style={draftFieldStyle}
+                    />
+                  </label>
+                  <label style={draftLabelStyle}>
+                    平台
+                    <input
+                      value={draft.platforms}
+                      onChange={updateDraft("platforms")}
+                      placeholder="抖音, 快手"
+                      style={draftFieldStyle}
+                    />
+                  </label>
+                  <label style={draftLabelStyle}>
+                    直播风格
+                    <input
+                      value={draft.styles}
+                      onChange={updateDraft("styles")}
+                      placeholder="高能整活, 陪伴"
+                      style={draftFieldStyle}
+                    />
+                  </label>
+                  <label style={draftLabelStyle}>
+                    默认结算
+                    <select
+                      value={draft.defaultSettlementMethod}
+                      onChange={updateDraft("defaultSettlementMethod")}
+                      style={draftFieldStyle}
+                    >
+                      <option value="cpt">CPT</option>
+                      <option value="cpa">CPA</option>
+                      <option value="cps">CPS</option>
+                      <option value="gift">礼物流水</option>
+                      <option value="base_salary">保底</option>
+                      <option value="base_salary_cpt">保底 + CPT</option>
+                      <option value="manual">手动结算</option>
+                    </select>
+                  </label>
+                  {["cpt", "base_salary_cpt"].includes(
+                    draft.defaultSettlementMethod,
+                  ) ? (
+                    <label style={draftLabelStyle}>
+                      CPT 小时单价
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={draft.defaultHourlyRate}
+                        onChange={updateDraft("defaultHourlyRate")}
+                        placeholder="80"
+                        style={draftFieldStyle}
+                      />
+                    </label>
+                  ) : null}
+                  {draft.defaultSettlementMethod === "cps" ? (
+                    <label style={draftLabelStyle}>
+                      CPS 分成比例
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.01"
+                        value={draft.defaultCpsRatePercent}
+                        onChange={updateDraft("defaultCpsRatePercent")}
+                        placeholder="15"
+                        style={draftFieldStyle}
+                      />
+                    </label>
+                  ) : null}
+                  {["base_salary", "base_salary_cpt"].includes(
+                    draft.defaultSettlementMethod,
+                  ) ? (
+                    <label style={draftLabelStyle}>
+                      底薪
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={draft.defaultBaseSalary}
+                        onChange={updateDraft("defaultBaseSalary")}
+                        placeholder="6000"
+                        style={draftFieldStyle}
+                      />
+                    </label>
+                  ) : null}
+                  <div style={{ position: "relative", minWidth: 0 }}>
+                    <label style={draftLabelStyle}>
+                      绑定主播子账号
+                      <input
+                        value={userSearch}
+                        onChange={updateUserSearch}
+                        onFocus={refreshStreamerSubaccounts}
+                        placeholder={
+                          memberLoading
+                            ? "正在加载主播子账号"
+                            : "搜索姓名 / 邮箱 / 默认账号"
+                        }
+                        aria-autocomplete="list"
+                        aria-expanded={
+                          Boolean(userSearch.trim()) && !selectedSubaccount
+                        }
+                        style={draftFieldStyle}
+                      />
+                    </label>
+                    {userSearch.trim() && !selectedSubaccount ? (
                       <div
+                        role="listbox"
+                        aria-label="主播子账号候选"
                         style={{
-                          fontWeight: 600,
-                          color: "var(--ink-900)",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
+                          position: "absolute",
+                          zIndex: 20,
+                          top: 56,
+                          left: 0,
+                          right: 0,
+                          overflow: "hidden",
+                          border: "1px solid var(--line-strong)",
+                          borderRadius: 8,
+                          background: "#fff",
+                          boxShadow: "var(--shadow-pop)",
                         }}
                       >
-                        {r.alias}
-                        {r.cooperation === "paused" && (
-                          <Badge tone="amber">暂停</Badge>
+                        {filteredSubaccountCandidates.length > 0 ? (
+                          filteredSubaccountCandidates.map((candidate) => (
+                            <button
+                              key={candidate.userId}
+                              type="button"
+                              role="option"
+                              onClick={() =>
+                                selectStreamerSubaccount(candidate)
+                              }
+                              style={{
+                                width: "100%",
+                                border: 0,
+                                borderBottom: "1px solid var(--line)",
+                                background: "#fff",
+                                padding: "8px 10px",
+                                textAlign: "left",
+                                cursor: "pointer",
+                              }}
+                            >
+                              <span
+                                style={{
+                                  display: "block",
+                                  color: "var(--ink-900)",
+                                  fontSize: 13,
+                                  fontWeight: 700,
+                                }}
+                              >
+                                {candidate.name}
+                              </span>
+                              <span
+                                style={{
+                                  display: "block",
+                                  marginTop: 2,
+                                  color: "var(--ink-400)",
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {candidate.account
+                                  ? `默认账号 ${candidate.account}`
+                                  : candidate.email || candidate.userId}
+                              </span>
+                            </button>
+                          ))
+                        ) : (
+                          <div
+                            style={{
+                              padding: "9px 10px",
+                              color: "var(--ink-400)",
+                              fontSize: 12,
+                              fontWeight: 600,
+                            }}
+                          >
+                            暂无匹配主播子账号
+                          </div>
                         )}
                       </div>
+                    ) : null}
+                    {memberLoadError || selectedSubaccount ? (
                       <div
-                        className="mono"
-                        style={{ fontSize: 11, color: "var(--ink-400)" }}
-                      >
-                        {displayRecordId(r.id, "主播")} · {r.real}
-                      </div>
-                    </div>
-                  </div>
-                ),
-              },
-              {
-                title: "来源 / 供应商",
-                render: (r) => (
-                  <div>
-                    <Badge
-                      tone={
-                        r.source === "签约"
-                          ? "blue"
-                          : r.source === "自孵化"
-                            ? "teal"
-                            : "neutral"
-                      }
-                    >
-                      {r.source}
-                    </Badge>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: "var(--ink-400)",
-                        marginTop: 4,
-                      }}
-                    >
-                      {r.supplier}
-                    </div>
-                  </div>
-                ),
-              },
-              {
-                title: "擅长品类",
-                wrap: true,
-                render: (r) => (
-                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                    {r.games.map((g) => (
-                      <Badge key={g} tone="neutral">
-                        {g}
-                      </Badge>
-                    ))}
-                  </div>
-                ),
-              },
-              {
-                title: "完成率",
-                align: "right",
-                render: (r) => {
-                  if (!hasStreamerMetricValue(r.metrics?.projectFinish)) {
-                    return (
-                      <span style={{ color: "var(--ink-300)" }}>暂无</span>
-                    );
-                  }
-                  return (
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        justifyContent: "flex-end",
-                      }}
-                    >
-                      <MiniBar
-                        value={r.metrics.projectFinish}
-                        tone={r.metrics.projectFinish >= 90 ? "green" : "blue"}
-                        width={56}
-                      />
-                      <span className="num" style={{ minWidth: 32 }}>
-                        {r.metrics.projectFinish}%
-                      </span>
-                    </div>
-                  );
-                },
-              },
-              {
-                title: "能力分",
-                align: "right",
-                render: (r) =>
-                  hasStreamerMetricValue(r.capability?.overallScore) ? (
-                    <div>
-                      <span className="num" style={{ fontWeight: 600 }}>
-                        {r.capability.overallScore}
-                      </span>
-                      <span
+                        aria-live="polite"
                         style={{
-                          marginLeft: 4,
+                          marginTop: 4,
+                          color: memberLoadError
+                            ? "var(--danger-600)"
+                            : "var(--ink-300)",
                           fontSize: 11,
-                          color: "var(--ink-400)",
+                          fontWeight: 600,
+                          lineHeight: 1.3,
                         }}
                       >
-                        {r.capability.grade}
-                      </span>
-                    </div>
-                  ) : (
-                    <span style={{ color: "var(--ink-300)" }}>暂无</span>
-                  ),
-              },
-              {
-                title: "匹配分",
-                align: "right",
-                render: (r) =>
-                  hasStreamerMetricValue(r.matchScore) ? (
-                    <div>
-                      <div className="num" style={{ fontWeight: 600 }}>
-                        {r.matchScore}
+                        {memberLoadError ||
+                          `已绑定 ${streamerSubaccountLabel(selectedSubaccount)}`}
                       </div>
-                      <div style={{ fontSize: 10, color: "var(--ink-400)" }}>
-                        数据覆盖 {(r.matchScoreCoverageBps ?? 0) / 100}%
-                      </div>
-                    </div>
-                  ) : (
-                    <span style={{ color: "var(--ink-300)" }}>数据不足</span>
-                  ),
-              },
-              {
-                title: "真实 ROI",
-                align: "right",
-                render: (r) =>
-                  hasStreamerMetricValue(r.metrics?.roi) ? (
-                    <span
-                      className="num"
+                    ) : null}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "flex-end",
+                      gap: 8,
+                      minWidth: 160,
+                    }}
+                  >
+                    <Button
+                      kind="default"
+                      type="button"
+                      onClick={closeDraftForm}
+                      disabled={draftSubmitting}
+                    >
+                      取消
+                    </Button>
+                    <Button
+                      kind="primary"
+                      type="submit"
+                      disabled={draftSubmitting}
+                      icon={<Icon.Plus size={14} stroke="#fff" />}
+                    >
+                      {draftSubmitting ? "创建中" : "创建档案"}
+                    </Button>
+                  </div>
+                  {draftError ? (
+                    <div
+                      aria-live="polite"
                       style={{
-                        color:
-                          r.metrics.roi >= 1.3
-                            ? "var(--ok-600)"
-                            : r.metrics.roi >= 1
-                              ? "var(--ink-900)"
-                              : "var(--danger-600)",
-                        fontWeight: 600,
+                        gridColumn: "1 / -1",
+                        color: "var(--danger-600)",
+                        fontSize: 12,
+                        lineHeight: 1.4,
                       }}
                     >
-                      {r.metrics.roi.toFixed(2)}
-                    </span>
-                  ) : (
-                    <span style={{ color: "var(--ink-300)" }}>暂无</span>
-                  ),
-              },
-              {
-                title: "默认结算",
-                render: (r) => <Badge tone="ink">{r.defaultRule}</Badge>,
-              },
-              { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
-            ]}
-            rows={visibleStreamers}
-            emptyText="暂无匹配主播"
+                      {draftError}
+                    </div>
+                  ) : null}
+                </form>
+              ) : null}
+
+              <DataTable
+                activeRowId={active}
+                onRowClick={(r) => setActive(r.id)}
+                columns={[
+                  {
+                    title: "主播",
+                    render: (r) => (
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                        }}
+                      >
+                        <Avatar name={r.alias} size={32} />
+                        <div>
+                          <div
+                            style={{
+                              fontWeight: 600,
+                              color: "var(--ink-900)",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                            }}
+                          >
+                            {r.alias}
+                            {r.cooperation === "paused" && (
+                              <Badge tone="amber">暂停</Badge>
+                            )}
+                          </div>
+                          <div
+                            className="mono"
+                            style={{ fontSize: 11, color: "var(--ink-400)" }}
+                          >
+                            {displayRecordId(r.id, "主播")} · {r.real}
+                          </div>
+                        </div>
+                      </div>
+                    ),
+                  },
+                  {
+                    title: "来源 / 供应商",
+                    render: (r) => (
+                      <div>
+                        <Badge
+                          tone={
+                            r.source === "签约"
+                              ? "blue"
+                              : r.source === "自孵化"
+                                ? "teal"
+                                : "neutral"
+                          }
+                        >
+                          {r.source}
+                        </Badge>
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: "var(--ink-400)",
+                            marginTop: 4,
+                          }}
+                        >
+                          {r.supplier}
+                        </div>
+                      </div>
+                    ),
+                  },
+                  {
+                    title: "擅长品类",
+                    wrap: true,
+                    render: (r) => (
+                      <div
+                        style={{ display: "flex", gap: 4, flexWrap: "wrap" }}
+                      >
+                        {r.games.map((g) => (
+                          <Badge key={g} tone="neutral">
+                            {g}
+                          </Badge>
+                        ))}
+                      </div>
+                    ),
+                  },
+                  {
+                    title: "完成率",
+                    align: "right",
+                    render: (r) => {
+                      if (!hasStreamerMetricValue(r.metrics?.projectFinish)) {
+                        return (
+                          <span style={{ color: "var(--ink-300)" }}>暂无</span>
+                        );
+                      }
+                      return (
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            justifyContent: "flex-end",
+                          }}
+                        >
+                          <MiniBar
+                            value={r.metrics.projectFinish}
+                            tone={
+                              r.metrics.projectFinish >= 90 ? "green" : "blue"
+                            }
+                            width={56}
+                          />
+                          <span className="num" style={{ minWidth: 32 }}>
+                            {r.metrics.projectFinish}%
+                          </span>
+                        </div>
+                      );
+                    },
+                  },
+                  {
+                    title: "ROI",
+                    align: "right",
+                    render: (r) =>
+                      hasStreamerMetricValue(r.metrics?.roi) ? (
+                        <span
+                          className="num"
+                          style={{
+                            color:
+                              r.metrics.roi >= 1.3
+                                ? "var(--ok-600)"
+                                : r.metrics.roi >= 1
+                                  ? "var(--ink-900)"
+                                  : "var(--danger-600)",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {r.metrics.roi.toFixed(2)}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--ink-300)" }}>暂无</span>
+                      ),
+                  },
+                  {
+                    title: "默认结算",
+                    render: (r) => <Badge tone="ink">{r.defaultRule}</Badge>,
+                  },
+                  { title: "风险", render: (r) => <RiskDot level={r.risk} /> },
+                ]}
+                rows={visibleStreamers}
+                emptyText="暂无匹配主播"
               />
             </Card>
           </div>
@@ -14741,6 +15009,10 @@ function hasStreamerMetricValue(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function hasStreamerPerformanceData(streamer) {
+  return streamer?.hasPerformanceData !== false;
+}
+
 function streamerBpsPercent(value) {
   return hasStreamerMetricValue(value) ? value / 100 : null;
 }
@@ -15108,11 +15380,7 @@ function ExportChecklist({
             cursor: "pointer",
           }}
         >
-          <input
-            type="checkbox"
-            checked={allSelected}
-            onChange={onToggleAll}
-          />
+          <input type="checkbox" checked={allSelected} onChange={onToggleAll} />
           全选
         </label>
       </div>
@@ -15130,7 +15398,11 @@ function ExportChecklist({
       >
         {options.length === 0 ? (
           <span
-            style={{ fontSize: 12, color: "var(--ink-400)", padding: "4px 2px" }}
+            style={{
+              fontSize: 12,
+              color: "var(--ink-400)",
+              padding: "4px 2px",
+            }}
           >
             暂无可选项
           </span>
@@ -15209,8 +15481,11 @@ function ScreenReports({ go }) {
   const [exportSubmitting, setExportSubmitting] = React.useState(false);
   const [batchSubmitting, setBatchSubmitting] = React.useState(false);
   const [autoReviewSubmitting, setAutoReviewSubmitting] = React.useState("");
+  const preReviewSummaryRequestRef = React.useRef("");
   // L3 智能排序：可疑置顶 / 绿灯快速通道。默认开启（确定性规则，非 AI 改状态）。
   const [aiSort, setAiSort] = React.useState(true);
+  const [autoReviewCandidatesExpanded, setAutoReviewCandidatesExpanded] =
+    React.useState(false);
 
   // 报数明细导出需要项目（产品/小时单价）与任务（直播时间）；公会列取当前组织名。
   const projects = useOpsProjects();
@@ -15282,7 +15557,7 @@ function ScreenReports({ go }) {
 
   // 智能排序：把列表喂给确定性规则引擎 rankReportQueue（可疑置顶/绿快车道），
   // 再按返回顺序重排，并把 lane / 优先级 / 理由挂回行对象供「复核优先级」列展示。
-  const displayRows = React.useMemo(() => {
+  const rankedRows = React.useMemo(() => {
     if (!aiSort) return filtered;
     const ranked = rankReportQueue(
       filtered.map((r) => ({
@@ -15299,31 +15574,82 @@ function ScreenReports({ go }) {
       .map((rk) => {
         const row = byId.get(rk.id);
         if (!row) return null;
-        return { ...row, _lane: rk.lane, _priority: rk.priority, _reason: rk.reason };
+        return {
+          ...row,
+          _lane: rk.lane,
+          _priority: rk.priority,
+          _reason: rk.reason,
+        };
       })
       .filter(Boolean);
   }, [aiSort, filtered]);
 
+  const collapsedAutoReviewCandidates = React.useMemo(() => {
+    if (filter !== "pending_review") return [];
+    return rankedRows.filter(isAutoReviewCandidateReport);
+  }, [filter, rankedRows]);
+
+  const displayRows = React.useMemo(() => {
+    if (
+      filter !== "pending_review" ||
+      autoReviewCandidatesExpanded ||
+      collapsedAutoReviewCandidates.length === 0 ||
+      collapsedAutoReviewCandidates.length === rankedRows.length
+    ) {
+      return rankedRows;
+    }
+    const candidateIds = new Set(
+      collapsedAutoReviewCandidates.map((report) => report.id),
+    );
+    return rankedRows.filter((report) => !candidateIds.has(report.id));
+  }, [
+    autoReviewCandidatesExpanded,
+    collapsedAutoReviewCandidates,
+    filter,
+    rankedRows,
+  ]);
+
   React.useEffect(() => {
-    if (filtered.length === 0) {
+    if (!actions.refreshReportPreReviewSummaries || reports.length === 0) {
+      return;
+    }
+    const reportIds = reports.map((report) => report.id).filter(Boolean);
+    const requestKey = reportIds.join(",");
+    if (!requestKey || preReviewSummaryRequestRef.current === requestKey) {
+      return;
+    }
+    preReviewSummaryRequestRef.current = requestKey;
+    actions.refreshReportPreReviewSummaries(reportIds).catch(() => {
+      preReviewSummaryRequestRef.current = "";
+    });
+  }, [actions, reports]);
+
+  React.useEffect(() => {
+    if (displayRows.length === 0) {
       if (activeId !== null) {
         setActiveId(null);
       }
       return;
     }
 
-    if (!filtered.some((report) => report.id === activeId)) {
-      setActiveId(filtered[0].id);
+    if (!displayRows.some((report) => report.id === activeId)) {
+      setActiveId(displayRows[0].id);
     }
-  }, [activeId, filtered]);
+  }, [activeId, displayRows]);
 
   const activeReport =
-    filtered.find((report) => report.id === activeId) || filtered[0] || null;
+    displayRows.find((report) => report.id === activeId) ||
+    displayRows[0] ||
+    null;
+  const autoReviewTargetReport =
+    (activeReport && isAutoReviewCandidateReport(activeReport)
+      ? activeReport
+      : collapsedAutoReviewCandidates[0]) || null;
+  const autoReviewCandidateGroupVisible =
+    filter === "pending_review" &&
+    collapsedAutoReviewCandidates.length > 0 &&
+    collapsedAutoReviewCandidates.length < rankedRows.length;
   const openExportPanel = () => {
-    // 仅在打开导出面板时按需补齐项目/主播/任务数据（供导出列拼装），
-    // 避免在报数审核页常驻拉取。
-    if (projectData == null) actions.refreshProjects?.().catch(() => {});
-    if (taskData == null) actions.refreshOpsTasks?.().catch(() => {});
     setExportProjectSel(new Set(reportProjectOptions));
     setExportStreamerSel(new Set(reportStreamerOptions.map((s) => s.value)));
     setExportFrom("");
@@ -15347,11 +15673,6 @@ function ScreenReports({ go }) {
     setExportSubmitting(true);
     setExportMessage("");
     try {
-      const projectByName = new Map(projects.map((p) => [p.name, p]));
-      const projectById = new Map(projects.map((p) => [p.id, p]));
-      const taskById = new Map(tasks.map((t) => [t.id, t]));
-      // 公会列默认取当前组织名（工会 = 组织）。
-      const guildName = (currentUser?.org || "").trim();
       const selected = reports.filter((r) => {
         const inProject = exportProjectSel.has(r.project);
         const inStreamer = exportStreamerSel.has(r.streamerId);
@@ -15366,39 +15687,13 @@ function ScreenReports({ go }) {
         setExportSubmitting(false);
         return;
       }
-      const rows = selected.map((r) => {
-        const proj =
-          (r.projectId && projectById.get(r.projectId)) ||
-          projectByName.get(r.project);
-        const task = taskById.get(r.taskId);
-        const hours = Number(r.systemDurationHours ?? r.duration ?? 0);
-        // 小时单价取项目默认小时单价（即厂家给的单价）；达人费用 = 厂家单价 × 时长。
-        const rate = Number(proj?.defaultHourlyRate ?? 0);
-        return {
-          reportId: r.id,
-          guildOrIndividual: guildName || "—",
-          gameProduct: proj?.product || r.project || "—",
-          streamerName: r.streamer,
-          liveDate: r.date || "—",
-          liveTime:
-            task &&
-            Number.isFinite(task.startHour) &&
-            Number.isFinite(task.endHour)
-              ? `${task.startHour}:00-${task.endHour}:00`
-              : "—",
-          duration: `${hours} 小时`,
-          hourlyRate: rate ? `¥${rate}` : "—",
-          talentFee: rate ? `¥${(hours * rate).toFixed(2)}` : "—",
-          // 截图列由服务端真实嵌入图片；此处仅作无图回退文案。
-          screenshot: `${r.screens ?? 0} 张`,
-        };
-      });
-      const result = await actions.exportReportSettlementXlsx?.({ rows });
+      const reportIds = selected.map((report) => report.id).filter(Boolean);
+      const result = await actions.exportReportSettlementXlsx?.({ reportIds });
       if (result) {
         downloadBase64Xlsx(result);
       }
       setExportPanelOpen(false);
-      setExportMessage(`已导出 ${rows.length} 条报数明细`);
+      setExportMessage(`已导出 ${reportIds.length} 条报数明细`);
     } catch (error) {
       setExportMessage(error?.message || "报数明细导出失败，请稍后重试");
     } finally {
@@ -15407,21 +15702,49 @@ function ScreenReports({ go }) {
   };
   const batchApproveReports = async () => {
     if (batchSubmitting) return;
-    const targetReports = filtered.filter(
+    const targetReports = displayRows.filter(
       (report) => report.status === "pending_review",
     );
     if (targetReports.length === 0) {
       setExportMessage("当前筛选下没有可批量通过的待审核报数。");
       return;
     }
+    const approvableReports = targetReports.filter(canBatchApproveReport);
+    const blockedReports = targetReports.filter(
+      (report) => !canBatchApproveReport(report),
+    );
+    if (approvableReports.length === 0) {
+      const labels = blockedReports
+        .slice(0, 3)
+        .map((report) => {
+          const reasons = [
+            ...(report.evidenceLevel !== "green" ? ["非绿证据"] : []),
+            ...((report.riskFlags ?? []).length ? ["存在风控标记"] : []),
+            ...reportPreReviewGateLabels(report),
+          ];
+          return `${report.id}：${reasons.join("、") || "需人工复核"}`;
+        })
+        .join("；");
+      setExportMessage(
+        `批量审核已拦截，${blockedReports.length} 条需逐条处理：${labels}`,
+      );
+      return;
+    }
 
     setBatchSubmitting(true);
     setExportMessage("");
     try {
-      for (const report of targetReports) {
-        await actions.reviewReport?.(report.id, "approve");
+      for (const report of approvableReports) {
+        await actions.reviewReport?.(report.id, "approve", {
+          reason: buildReportReviewReason(report, "approve"),
+          reviewNotes: buildReportReviewNotes(report, "approve"),
+        });
       }
-      setExportMessage(`批量审核已通过 ${targetReports.length} 条`);
+      setExportMessage(
+        blockedReports.length
+          ? `批量审核已通过 ${approvableReports.length} 条，拦截 ${blockedReports.length} 条需逐条处理`
+          : `批量审核已通过 ${approvableReports.length} 条`,
+      );
     } catch (error) {
       setExportMessage(error?.message || "批量审核失败，请稍后重试");
     } finally {
@@ -15447,6 +15770,49 @@ function ScreenReports({ go }) {
       );
     } catch (error) {
       setExportMessage(error?.message || "自动审核评估失败，请稍后重试");
+    } finally {
+      setAutoReviewSubmitting("");
+    }
+  };
+  const applyActiveAutoReview = async () => {
+    if (!autoReviewTargetReport || autoReviewSubmitting) return;
+    setAutoReviewSubmitting("active");
+    setExportMessage("");
+    try {
+      const body = await postWarRoomJson(
+        "/api/auto-review/evaluate",
+        {
+          targetMode: "active",
+          report: buildAutoReviewReportSnapshot(autoReviewTargetReport),
+          rule: { ...buildAutoReviewRuleSnapshot(), mode: "active" },
+          rolloutConfig: {
+            limit: 200,
+          },
+        },
+        "auto review active failed",
+      );
+      const result = body.result ?? {};
+      const gate = body.rolloutGate ?? {};
+      if (result.applied) {
+        await Promise.all([
+          actions.refreshProjects?.(),
+          actions.refreshReports?.(),
+          actions.refreshOpsTasks?.(),
+          actions.refreshSettlementPool?.(),
+        ]);
+        setExportMessage("自动审核已通过 1 条，报数已进入结算池。");
+      } else {
+        const gates = Array.isArray(gate.failedGates)
+          ? gate.failedGates.join("、")
+          : "";
+        setExportMessage(
+          gates
+            ? `自动审核未启用：${gates}`
+            : `自动审核评估完成：${result.decision || "需人工复核"}`,
+        );
+      }
+    } catch (error) {
+      setExportMessage(error?.message || "自动审核执行失败，请稍后重试");
     } finally {
       setAutoReviewSubmitting("");
     }
@@ -15562,6 +15928,14 @@ function ScreenReports({ go }) {
             </Button>
             <Button
               kind="default"
+              icon={<Icon.Check size={14} />}
+              onClick={applyActiveAutoReview}
+              disabled={!autoReviewTargetReport || Boolean(autoReviewSubmitting)}
+            >
+              {autoReviewSubmitting === "active" ? "执行中" : "自动通过候选"}
+            </Button>
+            <Button
+              kind="default"
               icon={<Icon.Audit size={14} />}
               onClick={readAutoReviewGate}
               disabled={Boolean(autoReviewSubmitting)}
@@ -15672,7 +16046,9 @@ function ScreenReports({ go }) {
             </select>
             <Button
               kind={aiSort ? "primary" : "default"}
-              icon={<Icon.Sparkles size={14} stroke={aiSort ? "#fff" : undefined} />}
+              icon={
+                <Icon.Sparkles size={14} stroke={aiSort ? "#fff" : undefined} />
+              }
               onClick={() => setAiSort((v) => !v)}
             >
               {aiSort ? "AI 智能排序：开" : "AI 智能排序：关"}
@@ -15682,6 +16058,39 @@ function ScreenReports({ go }) {
               {aiSort ? "可疑置顶 · 绿灯快速通道" : "OCR 与手动偏差自动标红"}
             </span>
           </div>
+
+          {autoReviewCandidateGroupVisible ? (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "10px 16px",
+                borderBottom: "1px solid var(--line)",
+                background: "var(--bg-soft)",
+              }}
+            >
+              <Badge tone="green" dot>
+                自动通过候选 {collapsedAutoReviewCandidates.length}
+              </Badge>
+              <span
+                style={{
+                  flex: 1,
+                  color: "var(--ink-500)",
+                  fontSize: 12,
+                }}
+              >
+                绿证据且预审全门通过，默认收起以保留人工队列焦点
+              </span>
+              <Button
+                kind="default"
+                icon={<Icon.ChevDown size={14} />}
+                onClick={() => setAutoReviewCandidatesExpanded((value) => !value)}
+              >
+                {autoReviewCandidatesExpanded ? "收起候选" : "展开候选"}
+              </Button>
+            </div>
+          ) : null}
 
           <DataTable
             activeRowId={activeId}
@@ -15839,6 +16248,8 @@ function ReportScreenshot({ reportId, streamer, fallback }) {
 function ReportDetail({ id, reports }) {
   const actions = useOpsLiveActions();
   const [busyDecision, setBusyDecision] = React.useState(null);
+  const [reviewRemark, setReviewRemark] = React.useState("");
+  const [meaningOpen, setMeaningOpen] = React.useState(false);
   const r = reports.find((x) => x.id === id) || reports[0] || null;
   if (!r) {
     return (
@@ -15865,12 +16276,21 @@ function ReportDetail({ id, reports }) {
   const p = PROJECTS.find((p) => p.id === r.project);
   const projectName = p?.name || r.project;
   const isReviewable = r.status === "pending_review";
+  const preReviewGateLabels = reportPreReviewGateLabels(r);
 
   const review = async (decision) => {
     if (!actions.reviewReport || !isReviewable) return;
+    const supplementalNote = reviewRemark.trim();
+    const reason = buildReportReviewReason(r, decision);
     setBusyDecision(decision);
     try {
-      await actions.reviewReport(r.id, decision);
+      await actions.reviewReport(r.id, decision, {
+        reason: supplementalNote
+          ? `${reason}；补充：${supplementalNote}`
+          : reason,
+        reviewNotes: buildReportReviewNotes(r, decision, supplementalNote),
+      });
+      setReviewRemark("");
     } finally {
       setBusyDecision(null);
     }
@@ -15905,6 +16325,17 @@ function ReportDetail({ id, reports }) {
   const riskFlags = Array.isArray(r.riskFlags) ? r.riskFlags : [];
   const divergencePct =
     typeof r.divergencePct === "number" ? r.divergencePct : null;
+  const screenshotUploadedAt =
+    r.screenshotUploadedAt ?? r.screenshot_uploaded_at ?? null;
+  const screenshotFileHash =
+    r.screenshotFileHash ?? r.screenshot_file_hash ?? null;
+  const reportMeaning = buildReportMeaningText({
+    report: r,
+    preReviewGateLabels,
+    riskFlags,
+    divergencePct,
+    diffCount,
+  });
 
   return (
     // 面板钉在视口内（不随左列表滚动）：自身高度=视口高，播放窗弹性伸缩，
@@ -15956,12 +16387,55 @@ function ReportDetail({ id, reports }) {
           {(() => {
             const status = reportStatusMeta(r.status);
             return (
-              <Badge tone={status.tone} dot>
-                {status.label}
-              </Badge>
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  justifyContent: "flex-end",
+                }}
+              >
+                <Badge tone={status.tone} dot>
+                  {status.label}
+                </Badge>
+                <button
+                  type="button"
+                  aria-expanded={meaningOpen}
+                  onClick={() => setMeaningOpen((open) => !open)}
+                  style={{
+                    border: 0,
+                    background: "transparent",
+                    color: "var(--brand-600)",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: 0,
+                    cursor: "pointer",
+                  }}
+                >
+                  这是什么意思
+                </button>
+              </div>
             );
           })()}
         </div>
+        {meaningOpen ? (
+          <div
+            role="note"
+            style={{
+              margin: "10px 16px 0",
+              padding: "8px 10px",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              fontSize: 12,
+              lineHeight: 1.5,
+              color: "var(--ink-600)",
+            }}
+          >
+            {reportMeaning}
+          </div>
+        ) : null}
 
         {/* Screenshot preview */}
         <div style={{ padding: 16 }}>
@@ -15979,6 +16453,37 @@ function ReportDetail({ id, reports }) {
               />
             }
           />
+          {screenshotUploadedAt || screenshotFileHash ? (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                marginTop: 8,
+                fontSize: 11,
+                color: "var(--ink-400)",
+              }}
+            >
+              <span>
+                上传 {formatEvidenceTimestamp(screenshotUploadedAt)}
+              </span>
+              {screenshotFileHash ? (
+                <span
+                  className="mono"
+                  title={screenshotFileHash}
+                  style={{
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  SHA-256 {shortContentHash(screenshotFileHash)}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         {/* OCR vs Manual */}
@@ -16133,7 +16638,24 @@ function ReportDetail({ id, reports }) {
                   {riskFlagLabel(flag)}
                 </span>
               ))}
-              {divergencePct == null && riskFlags.length === 0 ? (
+              {preReviewGateLabels.map((label) => (
+                <span
+                  key={label}
+                  style={{
+                    fontSize: 12,
+                    color: "var(--warn-600)",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Icon.Warn size={12} stroke="var(--warn-600)" />
+                  {label}
+                </span>
+              ))}
+              {divergencePct == null &&
+              riskFlags.length === 0 &&
+              preReviewGateLabels.length === 0 ? (
                 <span
                   style={{
                     fontSize: 12,
@@ -16159,6 +16681,8 @@ function ReportDetail({ id, reports }) {
               background: "var(--bg-soft)",
               display: "flex",
               gap: 8,
+              alignItems: "center",
+              flexWrap: "wrap",
             }}
           >
             <Button
@@ -16176,6 +16700,23 @@ function ReportDetail({ id, reports }) {
             >
               {busyDecision === "need_more" ? "处理中…" : "需补充截图"}
             </Button>
+            <input
+              aria-label="审核补充说明"
+              value={reviewRemark}
+              onChange={(event) => setReviewRemark(event.target.value)}
+              placeholder="补充说明（可选）"
+              style={{
+                flex: "1 1 180px",
+                minWidth: 0,
+                height: 34,
+                border: "1px solid var(--line)",
+                borderRadius: 8,
+                padding: "0 10px",
+                fontSize: 12,
+                color: "var(--ink-700)",
+                background: "#fff",
+              }}
+            />
             <div style={{ flex: 1 }} />
             <label
               style={{
@@ -16225,6 +16766,26 @@ function ReportDetail({ id, reports }) {
       </Card>
     </div>
   );
+}
+
+function formatEvidenceTimestamp(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function shortContentHash(value) {
+  const hash = String(value || "").trim();
+  if (!hash) return "—";
+  const normalized = hash.startsWith("sha256:") ? hash.slice(7) : hash;
+  return normalized.length > 12 ? `${normalized.slice(0, 12)}…` : normalized;
 }
 
 // Faux screenshot — stylized 抖音/B 站 后台截图样式 (subtle, not real branding)
@@ -16281,9 +16842,7 @@ function ScreenshotPreview({ platform, streamer, date, duration, audience }) {
             {platform} · 直播后台 · 数据概览
           </span>
           <span style={{ flex: 1 }} />
-          <span style={{ fontSize: 10, color: "var(--ink-300)" }}>
-            {date}
-          </span>
+          <span style={{ fontSize: 10, color: "var(--ink-300)" }}>{date}</span>
         </div>
         <div
           style={{
@@ -17054,12 +17613,14 @@ function ScreenAdmission({ focusRequest = null }) {
                   const externalUrl = r.latestRecording?.externalUrl || null;
                   const canPlayPrivate = Boolean(
                     r.latestRecording?.hasPrivateStorage &&
-                      r.latestRecording?.assetId,
+                    r.latestRecording?.assetId,
                   );
                   return (
                     <div>
                       <Badge tone={r.latestRecording ? "violet" : "amber"}>
-                        {r.latestRecording ? r.latestRecording.status : "待上传"}
+                        {r.latestRecording
+                          ? r.latestRecording.status
+                          : "待上传"}
                       </Badge>
                       <div
                         className="mono"
@@ -17289,9 +17850,8 @@ function ScreenAdmission({ focusRequest = null }) {
         {workspaceProjectId ? (
           <AdmissionReviewWorkspace
             board={
-              boards.find(
-                (board) => board.project.id === workspaceProjectId,
-              ) ?? null
+              boards.find((board) => board.project.id === workspaceProjectId) ??
+              null
             }
             rows={applications.filter(
               (application) =>
@@ -17305,194 +17865,192 @@ function ScreenAdmission({ focusRequest = null }) {
             fetchPreReview={actions.fetchAdmissionPreReview}
           />
         ) : (
-          <>
-            <div style={{ marginBottom: 16 }}>
-              <AdmissionCalibrationDashboard
-                metrics={calibrationMetrics}
-                loading={calibrationMetricsLoading}
-                error={calibrationMetricsError}
-                onRetry={loadAdmissionCalibrationMetrics}
-              />
-            </div>
-            <Card title="项目准入板" padded={false}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "12px 16px",
-              borderBottom: "1px solid var(--line)",
-            }}
-          >
-            <SearchInput
-              placeholder="项目 / 主播 / 报名编号"
-              width={260}
-              value={searchQuery}
-              onChange={setSearchQuery}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <AdmissionCalibrationDashboard
+              metrics={calibrationMetrics}
+              loading={calibrationMetricsLoading}
+              error={calibrationMetricsError}
+              onRetry={loadAdmissionCalibrationMetrics}
             />
-            <Badge tone="blue">
-              {normalizedQuery
-                ? `${visibleBoards.length}/${boards.length} 个项目`
-                : `${boards.length} 个项目`}
-            </Badge>
-            <Badge tone="violet">{applications.length} 条准入记录</Badge>
-          </div>
-          {admissionMessage ? (
-            <div
-              aria-live="polite"
-              style={{
-                padding: "10px 16px",
-                fontSize: 12,
-                borderBottom: "1px solid var(--line)",
-                background: admissionMessage.includes("失败")
-                  ? "#FDECEC"
-                  : "var(--bg-soft)",
-                color: admissionMessage.includes("失败")
-                  ? "var(--danger-600)"
-                  : "var(--ink-600)",
-              }}
-            >
-              {admissionMessage}
-            </div>
-          ) : null}
-          <DataTable
-            rows={visibleBoards}
-            rowId={(board) => board.project.id}
-            emptyText={normalizedQuery ? "没有匹配的项目" : "暂无准入项目"}
-            onRowClick={toggleProject}
-            expandedRowId={expandedProjectId}
-            renderExpanded={renderBoardDrawer}
-            columns={[
-              {
-                title: "项目",
-                render: (board) => (
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 8 }}
-                  >
-                    <span
-                      aria-hidden="true"
-                      style={{
-                        fontSize: 10,
-                        color: "var(--ink-400)",
-                        display: "inline-block",
-                        transition: "transform 120ms ease",
-                        transform:
-                          expandedProjectId === board.project.id
-                            ? "rotate(90deg)"
-                            : "none",
-                      }}
+            <Card title="项目准入板" padded={false}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "12px 16px",
+                  borderBottom: "1px solid var(--line)",
+                }}
+              >
+                <SearchInput
+                  placeholder="项目 / 主播 / 报名编号"
+                  width={260}
+                  value={searchQuery}
+                  onChange={setSearchQuery}
+                />
+                <Badge tone="blue">
+                  {normalizedQuery
+                    ? `${visibleBoards.length}/${boards.length} 个项目`
+                    : `${boards.length} 个项目`}
+                </Badge>
+                <Badge tone="violet">{applications.length} 条准入记录</Badge>
+              </div>
+              {admissionMessage ? (
+                <div
+                  aria-live="polite"
+                  style={{
+                    padding: "10px 16px",
+                    fontSize: 12,
+                    borderBottom: "1px solid var(--line)",
+                    background: admissionMessage.includes("失败")
+                      ? "#FDECEC"
+                      : "var(--bg-soft)",
+                    color: admissionMessage.includes("失败")
+                      ? "var(--danger-600)"
+                      : "var(--ink-600)",
+                  }}
+                >
+                  {admissionMessage}
+                </div>
+              ) : null}
+              <DataTable
+                rows={visibleBoards}
+                rowId={(board) => board.project.id}
+                emptyText={normalizedQuery ? "没有匹配的项目" : "暂无准入项目"}
+                onRowClick={toggleProject}
+                expandedRowId={expandedProjectId}
+                renderExpanded={renderBoardDrawer}
+                columns={[
+                {
+                  title: "项目",
+                  render: (board) => (
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
                     >
-                      ▶
-                    </span>
-                    <div>
-                      <div style={{ fontWeight: 600 }}>
-                        {board.project.name}
-                      </div>
-                      <div
-                        className="mono"
-                        style={{ fontSize: 11, color: "var(--ink-400)" }}
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          fontSize: 10,
+                          color: "var(--ink-400)",
+                          display: "inline-block",
+                          transition: "transform 120ms ease",
+                          transform:
+                            expandedProjectId === board.project.id
+                              ? "rotate(90deg)"
+                              : "none",
+                        }}
                       >
-                        {board.project.code ||
-                          displayRecordId(board.project.id)}
+                        ▶
+                      </span>
+                      <div>
+                        <div style={{ fontWeight: 600 }}>
+                          {board.project.name}
+                        </div>
+                        <div
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--ink-400)" }}
+                        >
+                          {board.project.code ||
+                            displayRecordId(board.project.id)}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ),
-              },
-              {
-                title: "MCN 进度",
-                render: (board) => (
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    <Badge tone="blue">
-                      录屏 {board.counts.recordingCount}/
-                      {board.counts.totalApplications}
-                    </Badge>
-                    <Badge tone="amber">
-                      待审 {board.counts.mcnPendingReview}
-                    </Badge>
-                    <Badge tone="teal">
-                      待确认 {board.counts.pendingFinalConfirm}
-                    </Badge>
-                  </div>
-                ),
-              },
-              {
-                title: "厂家反馈",
-                render: (board) => (
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    <Badge tone="teal">
-                      厂家已选 {board.counts.vendorSelected}
-                    </Badge>
-                    <Badge tone="amber">备选 {board.counts.vendorBackup}</Badge>
-                    <Badge tone="red">拒绝 {board.counts.vendorRejected}</Badge>
-                  </div>
-                ),
-              },
-              {
-                title: "分享状态",
-                render: (board) => (
-                  <Badge
-                    tone={board.share.status === "active" ? "green" : "neutral"}
-                  >
-                    {admissionShareStatusLabel(board.share.status)}
-                  </Badge>
-                ),
-              },
-              {
-                title: "操作",
-                render: (board) => (
-                  <div
-                    style={{ display: "flex", gap: 6 }}
-                    onClick={(event) => event.stopPropagation()}
-                  >
-                    <Button
-                      size="sm"
-                      kind="primary"
-                      onClick={() => setWorkspaceProjectId(board.project.id)}
-                    >
-                      进入录屏审核
-                    </Button>
-                    <Button
-                      size="sm"
-                      kind="default"
-                      onClick={() => toggleProject(board)}
-                    >
-                      {expandedProjectId === board.project.id
-                        ? "收起明细"
-                        : "展开明细"}
-                    </Button>
-                    <Button
-                      size="sm"
-                      kind="default"
-                      onClick={() => exportAdmissionRecordings(board)}
-                      disabled={busyAction === `export:${board.project.id}`}
-                    >
-                      导出录屏表
-                    </Button>
-                    <Button
-                      size="sm"
-                      kind="default"
-                      onClick={() => createShareBoard(board)}
-                      disabled={
-                        busyAction === `share:${board.project.id}` ||
-                        board.counts.recordingCount === 0 ||
-                        Boolean(
-                          board.project.status &&
-                            !canShareAdmissionRecordingsForProject(
-                              board.project.status,
-                            ),
-                        )
+                  ),
+                },
+                {
+                  title: "MCN 进度",
+                  render: (board) => (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <Badge tone="blue">
+                        录屏 {board.counts.recordingCount}/
+                        {board.counts.totalApplications}
+                      </Badge>
+                      <Badge tone="amber">
+                        待审 {board.counts.mcnPendingReview}
+                      </Badge>
+                      <Badge tone="teal">
+                        待确认 {board.counts.pendingFinalConfirm}
+                      </Badge>
+                    </div>
+                  ),
+                },
+                {
+                  title: "厂家反馈",
+                  render: (board) => (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <Badge tone="teal">
+                        厂家已选 {board.counts.vendorSelected}
+                      </Badge>
+                      <Badge tone="amber">
+                        备选 {board.counts.vendorBackup}
+                      </Badge>
+                      <Badge tone="red">
+                        拒绝 {board.counts.vendorRejected}
+                      </Badge>
+                    </div>
+                  ),
+                },
+                {
+                  title: "分享状态",
+                  render: (board) => (
+                    <Badge
+                      tone={
+                        board.share.status === "active" ? "green" : "neutral"
                       }
                     >
-                      创建分享链接
-                    </Button>
-                  </div>
-                ),
-              },
-            ]}
-          />
+                      {admissionShareStatusLabel(board.share.status)}
+                    </Badge>
+                  ),
+                },
+                {
+                  title: "操作",
+                  render: (board) => (
+                    <div
+                      style={{ display: "flex", gap: 6 }}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <Button
+                        size="sm"
+                        kind="primary"
+                        onClick={() => setWorkspaceProjectId(board.project.id)}
+                      >
+                        进入录屏审核
+                      </Button>
+                      <Button
+                        size="sm"
+                        kind="default"
+                        onClick={() => toggleProject(board)}
+                      >
+                        {expandedProjectId === board.project.id
+                          ? "收起明细"
+                          : "展开明细"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        kind="default"
+                        onClick={() => exportAdmissionRecordings(board)}
+                        disabled={busyAction === `export:${board.project.id}`}
+                      >
+                        导出录屏表
+                      </Button>
+                      <Button
+                        size="sm"
+                        kind="default"
+                        onClick={() => createShareBoard(board)}
+                        disabled={
+                          busyAction === `share:${board.project.id}` ||
+                          board.counts.recordingCount === 0
+                        }
+                      >
+                        创建分享链接
+                      </Button>
+                    </div>
+                  ),
+                },
+                ]}
+              />
             </Card>
-          </>
+          </div>
         )}
         {shareResult ? (
           <AdmissionShareLinkDialog
@@ -17991,9 +18549,7 @@ function TranscriptWordInsightsSection({ insights, activeWord, onToggleWord }) {
         }}
       >
         {item.word}{" "}
-        <span style={{ fontSize: 11, opacity: 0.72 }}>
-          ×{item.count ?? 0}
-        </span>
+        <span style={{ fontSize: 11, opacity: 0.72 }}>×{item.count ?? 0}</span>
       </button>
     );
   };
@@ -18024,7 +18580,9 @@ function TranscriptWordInsightsSection({ insights, activeWord, onToggleWord }) {
           textAlign: "left",
         }}
       >
-        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-900)" }}>
+        <span
+          style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-900)" }}
+        >
           高频词分析
         </span>
         <span
@@ -18474,10 +19032,7 @@ function RecordingTranscriptPanel({
     );
   } else if (utterances.length === 0) {
     body = (
-      <EmptyHint
-        title="逐字稿为空"
-        hint="本场录屏未识别到有效语音内容。"
-      />
+      <EmptyHint title="逐字稿为空" hint="本场录屏未识别到有效语音内容。" />
     );
   } else {
     body = (
@@ -18700,9 +19255,7 @@ function RecordingTranscriptPanel({
               <input
                 type="checkbox"
                 checked={includeTimestamps}
-                onChange={(event) =>
-                  setIncludeTimestamps(event.target.checked)
-                }
+                onChange={(event) => setIncludeTimestamps(event.target.checked)}
                 style={{ accentColor: "var(--blue-600)" }}
               />
               带时间戳
@@ -18866,7 +19419,9 @@ function RecordingAiAnalysisDetailsPanel({
             <div style={{ fontSize: 18, fontWeight: 700 }}>
               录屏 AI 分析详情
             </div>
-            <div style={{ marginTop: 4, fontSize: 12, color: "var(--ink-500)" }}>
+            <div
+              style={{ marginTop: 4, fontSize: 12, color: "var(--ink-500)" }}
+            >
               {analysis.statusLabel || analysis.status}
               {analysis.providerName ? ` · ${analysis.providerName}` : ""}
             </div>
@@ -19150,7 +19705,7 @@ function admissionRecordingDurationLabel(seconds) {
 function admissionBilibiliEmbedSrc(url) {
   const bvid =
     typeof url === "string"
-      ? url.match(/\/video\/(BV[0-9A-Za-z]+)/)?.[1] ?? null
+      ? (url.match(/\/video\/(BV[0-9A-Za-z]+)/)?.[1] ?? null)
       : null;
   if (!bvid) return null;
   return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&high_quality=1&danmaku=0`;
@@ -19253,7 +19808,9 @@ function AdmissionReviewWorkspace({
     if (!succeeded) return;
     const index = queue.findIndex((row) => row.id === application.id);
     const ordered =
-      index >= 0 ? [...queue.slice(index + 1), ...queue.slice(0, index)] : queue;
+      index >= 0
+        ? [...queue.slice(index + 1), ...queue.slice(0, index)]
+        : queue;
     const next = ordered.find(
       (row) =>
         row.id !== application.id &&
@@ -19353,146 +19910,161 @@ function AdmissionReviewWorkspace({
         </div>
       ) : null}
       <div className="admission-workspace-col">
-      <Card padded={false}>
-        <div
-          style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
-        >
-          <Tabs
-            value={statusFilter}
-            onChange={setStatusFilter}
-            items={[
-              { key: "pending", label: "待审核", count: statusCounts.pending },
+        <Card padded={false}>
+          <div
+            style={{ padding: "0 12px", borderBottom: "1px solid var(--line)" }}
+          >
+            <Tabs
+              value={statusFilter}
+              onChange={setStatusFilter}
+              items={[
+                {
+                  key: "pending",
+                  label: "待审核",
+                  count: statusCounts.pending,
+                },
+                {
+                  key: "needs_changes",
+                  label: "需修改",
+                  count: statusCounts.needs_changes,
+                },
+                {
+                  key: "approved",
+                  label: "已通过",
+                  count: statusCounts.approved,
+                },
+                {
+                  key: "rejected",
+                  label: "已驳回",
+                  count: statusCounts.rejected,
+                },
+                { key: "all", label: "全部", count: scopedRows.length },
+              ]}
+            />
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "12px 16px",
+              borderBottom: "1px solid var(--line)",
+            }}
+          >
+            <SearchInput
+              placeholder="按主播名搜索"
+              width={220}
+              value={queueQuery}
+              onChange={setQueueQuery}
+            />
+            <div style={{ flex: 1 }} />
+            <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              点击行在右侧预览并审核
+            </span>
+          </div>
+          <DataTable
+            activeRowId={activeId}
+            onRowClick={(application) => setActiveId(application.id)}
+            rows={filteredRows}
+            emptyText="当前筛选下暂无录屏条目"
+            columns={[
               {
-                key: "needs_changes",
-                label: "需修改",
-                count: statusCounts.needs_changes,
+                title: "#",
+                render: (r, index) => (
+                  <span
+                    className="num"
+                    style={{ fontSize: 12, color: "var(--ink-400)" }}
+                  >
+                    {index + 1}
+                  </span>
+                ),
               },
-              { key: "approved", label: "已通过", count: statusCounts.approved },
-              { key: "rejected", label: "已驳回", count: statusCounts.rejected },
-              { key: "all", label: "全部", count: scopedRows.length },
-            ]}
-          />
-        </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "12px 16px",
-            borderBottom: "1px solid var(--line)",
-          }}
-        >
-          <SearchInput
-            placeholder="按主播名搜索"
-            width={220}
-            value={queueQuery}
-            onChange={setQueueQuery}
-          />
-          <div style={{ flex: 1 }} />
-          <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
-            点击行在右侧预览并审核
-          </span>
-        </div>
-        <DataTable
-          activeRowId={activeId}
-          onRowClick={(application) => setActiveId(application.id)}
-          rows={filteredRows}
-          emptyText="当前筛选下暂无录屏条目"
-          columns={[
-            {
-              title: "#",
-              render: (r, index) => (
-                <span
-                  className="num"
-                  style={{ fontSize: 12, color: "var(--ink-400)" }}
-                >
-                  {index + 1}
-                </span>
-              ),
-            },
-            {
-              title: "主播",
-              render: (r) => (
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <Avatar name={r.streamer?.displayName} size={24} />
-                  <div>
-                    <div style={{ color: "var(--ink-900)", fontWeight: 500 }}>
-                      {r.streamer?.displayName}
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                      {admissionAccountLabel(r)}
+              {
+                title: "主播",
+                render: (r) => (
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
+                    <Avatar name={r.streamer?.displayName} size={24} />
+                    <div>
+                      <div style={{ color: "var(--ink-900)", fontWeight: 500 }}>
+                        {r.streamer?.displayName}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                        {admissionAccountLabel(r)}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ),
-            },
-            {
-              title: "提交日期",
-              render: (r) => (
-                <span className="num" style={{ fontSize: 12 }}>
-                  {String(r.submittedAt || "").slice(0, 10) || "—"}
-                </span>
-              ),
-            },
-            {
-              title: "版本",
-              render: (r) => (
-                <span className="mono" style={{ fontSize: 12 }}>
-                  {r.latestRecording?.version
-                    ? `v${r.latestRecording.version}`
-                    : "—"}
-                </span>
-              ),
-            },
-            {
-              title: "时长",
-              align: "right",
-              render: (r) => (
-                <span className="num" style={{ fontSize: 12 }}>
-                  {admissionRecordingDurationLabel(
-                    r.latestRecording?.durationSeconds,
-                  )}
-                </span>
-              ),
-            },
-            {
-              title: "来源",
-              render: (r) => {
-                const source = admissionRecordingSourceMeta(r.latestRecording);
-                return <Badge tone={source.tone}>{source.label}</Badge>;
+                ),
               },
-            },
-            {
-              title: "AI",
-              render: (r) => (
-                <span style={{ fontSize: 12, color: "var(--ink-600)" }}>
-                  {r.latestRecording?.aiAnalysis?.statusLabel || "—"}
-                </span>
-              ),
-            },
-            {
-              title: "状态",
-              render: (r) => {
-                const meta = admissionWorkspaceStatusMeta(r);
-                return <StatusPill tone={meta.tone}>{meta.label}</StatusPill>;
+              {
+                title: "提交日期",
+                render: (r) => (
+                  <span className="num" style={{ fontSize: 12 }}>
+                    {String(r.submittedAt || "").slice(0, 10) || "—"}
+                  </span>
+                ),
               },
-            },
-          ]}
-        />
-      </Card>
+              {
+                title: "版本",
+                render: (r) => (
+                  <span className="mono" style={{ fontSize: 12 }}>
+                    {r.latestRecording?.version
+                      ? `v${r.latestRecording.version}`
+                      : "—"}
+                  </span>
+                ),
+              },
+              {
+                title: "时长",
+                align: "right",
+                render: (r) => (
+                  <span className="num" style={{ fontSize: 12 }}>
+                    {admissionRecordingDurationLabel(
+                      r.latestRecording?.durationSeconds,
+                    )}
+                  </span>
+                ),
+              },
+              {
+                title: "来源",
+                render: (r) => {
+                  const source = admissionRecordingSourceMeta(
+                    r.latestRecording,
+                  );
+                  return <Badge tone={source.tone}>{source.label}</Badge>;
+                },
+              },
+              {
+                title: "AI",
+                render: (r) => (
+                  <span style={{ fontSize: 12, color: "var(--ink-600)" }}>
+                    {r.latestRecording?.aiAnalysis?.statusLabel || "—"}
+                  </span>
+                ),
+              },
+              {
+                title: "状态",
+                render: (r) => {
+                  const meta = admissionWorkspaceStatusMeta(r);
+                  return <StatusPill tone={meta.tone}>{meta.label}</StatusPill>;
+                },
+              },
+            ]}
+          />
+        </Card>
       </div>
       <div className="admission-workspace-col">
-      <AdmissionWorkspaceDetail
-        key={active?.latestRecording?.id || active?.id || "empty"}
-        application={active}
-        projectName={projectName}
-        pendingLeft={pendingLeft}
-        hasRows={rows.length > 0}
-        busyAction={busyAction}
-        onReview={reviewAndAdvance}
-        onOpenAiAnalysis={onOpenAiAnalysis}
-        fetchPreReview={fetchPreReview}
-      />
+        <AdmissionWorkspaceDetail
+          application={active}
+          projectName={projectName}
+          pendingLeft={pendingLeft}
+          hasRows={rows.length > 0}
+          busyAction={busyAction}
+          onReview={reviewAndAdvance}
+          onOpenAiAnalysis={onOpenAiAnalysis}
+          fetchPreReview={fetchPreReview}
+        />
       </div>
     </div>
   );
@@ -19536,6 +20108,10 @@ function AdmissionWorkspaceDetail({
   }, [submissionId]);
 
   React.useEffect(() => {
+    setPlaybackSource(canPlayPrivate ? "private" : "external");
+  }, [canPlayPrivate, submissionId]);
+
+  React.useEffect(() => {
     let cancelled = false;
     if (!submissionId || typeof fetchPreReview !== "function") {
       setPreReview({
@@ -19566,7 +20142,12 @@ function AdmissionWorkspaceDetail({
       })
       .catch(() => {
         if (cancelled) return;
-        setPreReview({ status: "error", data: null, fastLane: null, labels: {} });
+        setPreReview({
+          status: "error",
+          data: null,
+          fastLane: null,
+          labels: {},
+        });
       });
     return () => {
       cancelled = true;
@@ -19682,159 +20263,129 @@ function AdmissionWorkspaceDetail({
               minHeight: 0,
             }}
           >
-          <div
-            style={{
-              background: "#0B1220",
-              borderRadius: 10,
-              padding: 12,
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "center",
-              gap: 8,
-              flex: "1.4 1 300px",
-              minWidth: 0,
-              minHeight: 200,
-              overflow: "hidden",
-            }}
-          >
-            {hasBothSources ? (
-              <div
-                aria-label="录屏来源"
-                role="group"
-                style={{
-                  alignSelf: "flex-start",
-                  display: "inline-flex",
-                  padding: 2,
-                  borderRadius: 6,
-                  background: "#17233A",
-                  border: "1px solid #334155",
-                }}
-              >
-                {[
-                  { key: "private", label: "原始录屏" },
-                  {
-                    key: "external",
-                    label: embedSrc ? "平台链接" : "URL 链接",
-                  },
-                ].map((source) => {
-                  const selected =
-                    source.key === "private"
-                      ? showPrivateSource
-                      : !showPrivateSource;
-                  return (
-                    <button
-                      key={source.key}
-                      type="button"
-                      aria-pressed={selected}
-                      onClick={() => setPlaybackSource(source.key)}
+            <div
+              style={{
+                background: "#0B1220",
+                borderRadius: 10,
+                padding: 12,
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "center",
+                gap: 8,
+                flex: "1.4 1 300px",
+                minWidth: 0,
+                minHeight: 200,
+                overflow: "hidden",
+              }}
+            >
+              {hasBothSources ? (
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Button
+                    size="sm"
+                    kind={showPrivateSource ? "primary" : "default"}
+                    onClick={() => setPlaybackSource("private")}
+                  >
+                    原始录屏
+                  </Button>
+                  <Button
+                    size="sm"
+                    kind={!showPrivateSource ? "primary" : "default"}
+                    onClick={() => setPlaybackSource("external")}
+                  >
+                    平台链接
+                  </Button>
+                </div>
+              ) : null}
+              {showPrivateSource ? (
+                <>
+                  <video
+                    ref={videoRef}
+                    controls
+                    key={recording.assetId}
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      width: "100%",
+                      objectFit: "contain",
+                      borderRadius: 8,
+                      background: "#000",
+                    }}
+                    src={`/api/recording-assets/${recording.assetId}/download`}
+                    onError={() => setVideoError(true)}
+                  />
+                  {videoError ? (
+                    <div
                       style={{
-                        height: 28,
-                        padding: "0 10px",
-                        border: "none",
-                        borderRadius: 4,
-                        background: selected ? "#FFFFFF" : "transparent",
-                        color: selected ? "var(--blue-700)" : "#A8B5CC",
                         fontSize: 12,
-                        fontWeight: 600,
-                        cursor: "pointer",
+                        color: "#FCA5A5",
+                        textAlign: "center",
                       }}
                     >
-                      {source.label}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-            {showPrivateSource ? (
-              <>
-                <video
-                  ref={videoRef}
-                  controls
-                  key={recording.assetId}
+                      无法加载视频（签名过期或文件缺失）
+                    </div>
+                  ) : null}
+                </>
+              ) : embedSrc ? (
+                <iframe
+                  title="B 站录屏播放"
+                  src={embedSrc}
+                  allowFullScreen
                   style={{
-                    flex: 1,
-                    minHeight: 0,
                     width: "100%",
-                    objectFit: "contain",
+                    flex: "0 1 auto",
+                    aspectRatio: "16 / 9",
+                    maxHeight: "100%",
+                    border: "none",
                     borderRadius: 8,
                     background: "#000",
                   }}
-                  src={`/api/recording-assets/${recording.assetId}/download`}
-                  onError={() => setVideoError(true)}
                 />
-                {videoError ? (
-                  <div
+              ) : externalUrl ? (
+                <div style={{ textAlign: "center", padding: "44px 0" }}>
+                  <a
+                    href={externalUrl}
+                    target="_blank"
+                    rel="noreferrer"
                     style={{
-                      fontSize: 12,
-                      color: "#FCA5A5",
-                      textAlign: "center",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "8px 16px",
+                      borderRadius: 8,
+                      border: "1px solid #334155",
+                      background: "#111C33",
+                      color: "#C7D5F2",
+                      fontSize: 13,
+                      fontWeight: 500,
+                      textDecoration: "none",
                     }}
                   >
-                    无法加载视频（签名过期或文件缺失）
-                  </div>
-                ) : null}
-              </>
-            ) : embedSrc ? (
-              <iframe
-                title="B 站录屏播放"
-                src={embedSrc}
-                allowFullScreen
-                style={{
-                  width: "100%",
-                  flex: "0 1 auto",
-                  aspectRatio: "16 / 9",
-                  maxHeight: "100%",
-                  border: "none",
-                  borderRadius: 8,
-                  background: "#000",
-                }}
-              />
-            ) : externalUrl ? (
-              <div style={{ textAlign: "center", padding: "44px 0" }}>
-                <a
-                  href={externalUrl}
-                  target="_blank"
-                  rel="noreferrer"
+                    打开外部链接 ↗
+                  </a>
+                </div>
+              ) : (
+                <div
                   style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "8px 16px",
-                    borderRadius: 8,
-                    border: "1px solid #334155",
-                    background: "#111C33",
-                    color: "#C7D5F2",
+                    textAlign: "center",
+                    padding: "44px 0",
                     fontSize: 13,
-                    fontWeight: 500,
-                    textDecoration: "none",
+                    color: "#64748B",
                   }}
                 >
-                  打开外部链接 ↗
-                </a>
-              </div>
-            ) : (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "44px 0",
-                  fontSize: 13,
-                  color: "#64748B",
-                }}
-              >
-                暂无录屏
-              </div>
-            )}
-          </div>
-          {showPrivateSource ? (
-            <RecordingTranscriptPanel
-              assetId={recording.assetId}
-              assetName={`${application.streamer?.displayName || "主播"}-${projectName}`}
-              videoRef={videoRef}
-              analysisStatus={analysis?.status ?? null}
-              bodyMaxHeight={240}
-              style={{ flex: "1 1 260px", minWidth: 240 }}
-            />
-          ) : null}
+                  暂无录屏
+                </div>
+              )}
+            </div>
+            {showPrivateSource ? (
+              <RecordingTranscriptPanel
+                assetId={recording.assetId}
+                assetName={`${application.streamer?.displayName || "主播"}-${projectName}`}
+                videoRef={videoRef}
+                analysisStatus={analysis?.status ?? null}
+                bodyMaxHeight={240}
+                style={{ flex: "1 1 260px", minWidth: 240 }}
+              />
+            ) : null}
           </div>
           {/* AI 识别与预审：常驻面板底部，内容超高时块内滚动 */}
           <div
@@ -19848,113 +20399,115 @@ function AdmissionWorkspaceDetail({
           >
             <div>
               <SectionKicker>录屏 AI</SectionKicker>
-            {analysis ? (
-              <div style={{ display: "grid", gap: 6 }}>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    minWidth: 0,
-                  }}
-                >
-                  <Badge
-                    tone={
-                      analysis.status === "succeeded"
-                        ? "green"
-                        : analysis.status === "failed"
-                          ? "red"
-                          : "violet"
-                    }
+              {analysis ? (
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      minWidth: 0,
+                    }}
                   >
-                    {analysis.statusLabel || analysis.status}
-                  </Badge>
-                  {analysis.summary ? (
-                    <span
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontSize: 12,
-                        color: "var(--ink-600)",
-                      }}
+                    <Badge
+                      tone={
+                        analysis.status === "succeeded"
+                          ? "green"
+                          : analysis.status === "failed"
+                            ? "red"
+                            : "violet"
+                      }
                     >
-                      {analysis.summary}
-                    </span>
-                  ) : (
-                    <span style={{ flex: 1 }} />
-                  )}
-                  <Button
-                    size="sm"
-                    kind="link"
-                    style={{ height: 22, padding: 0 }}
-                    onClick={() => onOpenAiAnalysis(analysis)}
-                  >
-                    查看全部
-                  </Button>
-                </div>
-                {scorecardEntries.length ? (
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {scorecardEntries.map(([key, score]) => (
-                      <Badge key={key} tone="violet">
-                        {dimensionLabels[key] || key} {score}
-                      </Badge>
-                    ))}
-                  </div>
-                ) : null}
-                {riskFlags.map((flag) => (
-                  <div
-                    key={flag}
-                    style={{ fontSize: 12, color: "var(--danger-600)" }}
-                  >
-                    ⚠ {flag}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
-                AI 分析未运行
-              </div>
-            )}
-          </div>
-          <div>
-            <SectionKicker>AI 预审</SectionKicker>
-            {preReview.status === "loading" ? (
-              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
-                预审结果拉取中…
-              </div>
-            ) : preReview.status === "error" ? (
-              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
-                预审结果不可用
-              </div>
-            ) : !preReview.data ? (
-              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
-                暂无 AI 预审结果
-              </div>
-            ) : (
-              <div style={{ display: "grid", gap: 6 }}>
-                {preReview.fastLane?.eligible ? (
-                  <div>
-                    <Badge tone="green">快速通道候选</Badge>
-                  </div>
-                ) : null}
-                {preReviewCheckpoints.map((checkpoint) => (
-                  <div
-                    key={checkpoint.key}
-                    style={{ display: "flex", alignItems: "center", gap: 8 }}
-                  >
-                    <Badge tone={admissionPreReviewVerdictTone(checkpoint.verdict)}>
-                      {admissionPreReviewVerdictLabel(checkpoint.verdict)}
+                      {analysis.statusLabel || analysis.status}
                     </Badge>
-                    <span style={{ fontSize: 12, color: "var(--ink-600)" }}>
-                      {preReview.labels[checkpoint.key] || checkpoint.key}
-                    </span>
+                    {analysis.summary ? (
+                      <span
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          fontSize: 12,
+                          color: "var(--ink-600)",
+                        }}
+                      >
+                        {analysis.summary}
+                      </span>
+                    ) : (
+                      <span style={{ flex: 1 }} />
+                    )}
+                    <Button
+                      size="sm"
+                      kind="link"
+                      style={{ height: 22, padding: 0 }}
+                      onClick={() => onOpenAiAnalysis(analysis)}
+                    >
+                      查看全部
+                    </Button>
                   </div>
-                ))}
-              </div>
-            )}
+                  {scorecardEntries.length ? (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {scorecardEntries.map(([key, score]) => (
+                        <Badge key={key} tone="violet">
+                          {dimensionLabels[key] || key} {score}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                  {riskFlags.map((flag) => (
+                    <div
+                      key={flag}
+                      style={{ fontSize: 12, color: "var(--danger-600)" }}
+                    >
+                      ⚠ {flag}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                  AI 分析未运行
+                </div>
+              )}
+            </div>
+            <div>
+              <SectionKicker>AI 预审</SectionKicker>
+              {preReview.status === "loading" ? (
+                <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                  预审结果拉取中…
+                </div>
+              ) : preReview.status === "error" ? (
+                <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                  预审结果不可用
+                </div>
+              ) : !preReview.data ? (
+                <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                  暂无 AI 预审结果
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 6 }}>
+                  {preReview.fastLane?.eligible ? (
+                    <div>
+                      <Badge tone="green">快速通道候选</Badge>
+                    </div>
+                  ) : null}
+                  {preReviewCheckpoints.map((checkpoint) => (
+                    <div
+                      key={checkpoint.key}
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
+                    >
+                      <Badge
+                        tone={admissionPreReviewVerdictTone(checkpoint.verdict)}
+                      >
+                        {admissionPreReviewVerdictLabel(checkpoint.verdict)}
+                      </Badge>
+                      <span style={{ fontSize: 12, color: "var(--ink-600)" }}>
+                        {preReview.labels[checkpoint.key] || checkpoint.key}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
           {reviewable ? (
@@ -20221,7 +20774,9 @@ let cachedMcnReviewCheckpoints = null;
 async function loadMcnReviewCheckpoints() {
   if (cachedMcnReviewCheckpoints) return cachedMcnReviewCheckpoints;
   try {
-    const response = await fetch("/api/admission-review/rubric?stage=mcn_first");
+    const response = await fetch(
+      "/api/admission-review/rubric?stage=mcn_first",
+    );
     if (!response.ok) return [];
     const payload = await response.json();
     cachedMcnReviewCheckpoints = Array.isArray(payload?.checkpoints)
@@ -20320,6 +20875,11 @@ function textFromSnapshot(snapshot, key, fallback = "unknown") {
   return typeof value === "string" && value.trim() ? value : fallback;
 }
 
+function arrayFromSnapshot(snapshot, key) {
+  const value = snapshot && typeof snapshot === "object" ? snapshot[key] : null;
+  return Array.isArray(value) ? value.filter(Boolean).map(String) : [];
+}
+
 function toReferenceReportFromApi(report) {
   return {
     id: report.id,
@@ -20346,6 +20906,9 @@ function toReferenceReportFromApi(report) {
     deviationPct: report.divergencePct ?? null,
     riskFlags: Array.isArray(report.riskFlags) ? report.riskFlags : [],
     submittedAt: report.submittedAt ?? null,
+    preReview: normalizeReportPreReview(
+      report.preReview || report.preReviewSummary,
+    ),
   };
 }
 
@@ -20425,6 +20988,14 @@ function toReferenceBatchDetailFromApi(item, pool = [], index = 0) {
     variable: computedAmount + manualAmount,
     adjust: adjustmentAmount,
     total,
+    evidenceLevel: item.evidenceLevel ?? null,
+    riskFlags: Array.isArray(item.riskFlags)
+      ? item.riskFlags
+      : arrayFromSnapshot(snapshot, "riskFlags"),
+    ...(item.ruleBreakdown ? { ruleBreakdown: item.ruleBreakdown } : {}),
+    ...(Array.isArray(item.openExceptions) && item.openExceptions.length
+      ? { openExceptions: item.openExceptions }
+      : {}),
   };
 }
 
@@ -20849,6 +21420,12 @@ function ScreenSettlement({ go }) {
     projectBatches.find((batch) => batch.id === activeId) ||
     projectBatches[0] ||
     null;
+  const activeBatchDetailRows = activeBatch
+    ? (batchDetails[activeBatch.id] ?? [])
+    : [];
+  const activeBatchHasRedEvidence = activeBatchDetailRows.some(
+    (row) => String(row.evidenceLevel).toLowerCase() === "red",
+  );
   // 默认 scope 的 poolCount 兜底只在「默认项目 + 默认周期」下成立。
   const poolCount =
     projectSettlementPool.length > 0
@@ -21129,8 +21706,7 @@ function ScreenSettlement({ go }) {
 
   const reconciliationPeriod = () => ({
     projectId: selectedProjectId || activeBatch?.projectId || "",
-    periodStart:
-      activeBatch?.periodStart || batchDraft.periodStart || "",
+    periodStart: activeBatch?.periodStart || batchDraft.periodStart || "",
     periodEnd: activeBatch?.periodEnd || batchDraft.periodEnd || "",
   });
 
@@ -21147,7 +21723,9 @@ function ScreenSettlement({ go }) {
         periodEnd,
       });
       setReconciliation(result ?? null);
-      setReconciliationKey(reconciliationKeyOf(projectId, periodStart, periodEnd));
+      setReconciliationKey(
+        reconciliationKeyOf(projectId, periodStart, periodEnd),
+      );
       setSettlementMessage("");
       return false;
     });
@@ -21214,9 +21792,7 @@ function ScreenSettlement({ go }) {
         periodEnd,
         batchType,
         ...(title.trim() ? { title: title.trim() } : {}),
-        ...(isSubsetSelection
-          ? { streamerIds: selectedBatchStreamerIds }
-          : {}),
+        ...(isSubsetSelection ? { streamerIds: selectedBatchStreamerIds } : {}),
       });
       setBatchFormOpen(false);
       setBatchStreamerIds(null);
@@ -21254,9 +21830,7 @@ function ScreenSettlement({ go }) {
     runSettlementAction("lock", async () => {
       if (!activeBatch) return false;
       if (!activeGate.evaluated) {
-        setSettlementMessage(
-          "锁定前请先为本批次周期运行「单项目结算校验」",
-        );
+        setSettlementMessage("锁定前请先为本批次周期运行「单项目结算校验」");
         return false;
       }
       if (!activeGate.canLock) {
@@ -21265,7 +21839,11 @@ function ScreenSettlement({ go }) {
       }
       const reason = lockReason.trim();
       if (!reason) {
-        setSettlementMessage("锁定前请填写锁定原因");
+        setSettlementMessage(
+          activeBatchHasRedEvidence
+            ? "锁定前请填写红证据确认原因"
+            : "锁定前请填写锁定原因",
+        );
         return false;
       }
       await actions.lockSettlementBatch?.(activeBatch.id, {
@@ -21287,16 +21865,16 @@ function ScreenSettlement({ go }) {
     runSettlementAction("confirm", async () => {
       if (!activeBatch) return false;
       if (!activeGate.evaluated) {
-        setSettlementMessage(
-          "确认前请先为本批次周期运行「单项目结算校验」",
-        );
+        setSettlementMessage("确认前请先为本批次周期运行「单项目结算校验」");
         return false;
       }
       if (!activeGate.canLock) {
         setSettlementMessage(reconciliationBlockMessage(activeReconciliation));
         return false;
       }
-      const reason = globalThis.prompt?.("财务确认原因");
+      const reason = globalThis.prompt?.(
+        activeBatchHasRedEvidence ? "红证据确认原因" : "财务确认原因",
+      );
       if (!reason || !reason.trim()) {
         setSettlementMessage("操作已取消：财务确认需填写原因");
         return false;
@@ -21317,9 +21895,7 @@ function ScreenSettlement({ go }) {
       setSettlementMessage(
         result
           ? `薪资明细已发送给 ${result.notified} 位主播${
-              result.skipped
-                ? `，${result.skipped} 位未绑定登录账号已跳过`
-                : ""
+              result.skipped ? `，${result.skipped} 位未绑定登录账号已跳过` : ""
             }`
           : "薪资明细已发送",
       );
@@ -21567,8 +22143,13 @@ function ScreenSettlement({ go }) {
           >
             <MiniStat
               label="本月厂家应收 (草稿)"
-              value={formatSettlementCurrency(settlementSummary.vendorReceivable)}
-              hint={settlementBatchHint(settlementSummary.vendorBatchCount, "应收")}
+              value={formatSettlementCurrency(
+                settlementSummary.vendorReceivable,
+              )}
+              hint={settlementBatchHint(
+                settlementSummary.vendorBatchCount,
+                "应收",
+              )}
             />
             <MiniStat
               label="本月主播应付 (锁定)"
@@ -21612,9 +22193,7 @@ function ScreenSettlement({ go }) {
           }
           padded={true}
         >
-          <div
-            style={{ display: "flex", flexDirection: "column", gap: 12 }}
-          >
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div
               className="ops-settlement-reconciliation-header"
               style={{
@@ -21678,9 +22257,7 @@ function ScreenSettlement({ go }) {
                         background: "var(--ink-50, #f6f7f9)",
                       }}
                     >
-                      <span
-                        style={{ fontSize: 12, color: "var(--ink-500)" }}
-                      >
+                      <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
                         {row.label}
                       </span>
                       <span
@@ -21774,17 +22351,22 @@ function ScreenSettlement({ go }) {
                               }}
                             >
                               <Badge
-                                tone={reconciliationSeverityTone(check.severity)}
+                                tone={reconciliationSeverityTone(
+                                  check.severity,
+                                )}
                               >
                                 {check.severityLabel}
                               </Badge>
                               {check.categoryLabel ? (
-                                <Badge tone="neutral">{check.categoryLabel}</Badge>
+                                <Badge tone="neutral">
+                                  {check.categoryLabel}
+                                </Badge>
                               ) : null}
                               <span style={{ color: "var(--ink-700)" }}>
                                 {check.message}
                               </span>
-                              {check.ruleVersionLabel && check.ruleVersion?.id ? (
+                              {check.ruleVersionLabel &&
+                              check.ruleVersion?.id ? (
                                 <a
                                   href={`/ops/internal/settlement-rules/${check.ruleVersion.id}`}
                                   style={{
@@ -21807,7 +22389,9 @@ function ScreenSettlement({ go }) {
                     ))}
                   </div>
                 ) : (
-                  <div style={{ fontSize: 12, color: "var(--green-600, #079455)" }}>
+                  <div
+                    style={{ fontSize: 12, color: "var(--green-600, #079455)" }}
+                  >
                     无阻断或告警项
                   </div>
                 )}
@@ -21961,613 +22545,630 @@ function ScreenSettlement({ go }) {
             />
           </div>
           {detailTab === "summary" && (
-          <div
-            className="ops-settlement-summary-grid"
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0, 0.85fr) minmax(0, 1.35fr)",
-              gap: 16,
-              padding: 16,
-            }}
-          >
-            <div>
-              <KV label="项目名称">{selectedProject?.name || "暂无项目"}</KV>
-              <KV label="项目编号">
-                <span className="mono">
-                  {selectedProject?.code || selectedProjectId || "未设置"}
-                </span>
-              </KV>
-              <KV label="结算方式">
-                <Badge tone="blue">
-                  {SETTLEMENT_METHOD_OPTIONS.find(
-                    (option) =>
-                      option.value === ruleDraft.defaultSettlementMethod,
-                  )?.label || ruleDraft.defaultSettlementMethod}
-                </Badge>
-              </KV>
-              <KV label="项目周期">
-                {selectedProject?.start || selectedProject?.end
-                  ? `${selectedProject?.start || "未设置"} → ${
-                      selectedProject?.end || "未设置"
-                    }`
-                  : "未设置"}
-              </KV>
-              <KV label="待入池">
-                <span className="num">{projectSettlementPool.length}</span> 条
-              </KV>
-              <KV label="批次数">
-                <span className="num">{projectBatches.length}</span> 个
-              </KV>
-            </div>
-            <form
-              onSubmit={saveProjectRule}
+            <div
+              className="ops-settlement-summary-grid"
               style={{
                 display: "grid",
-                // auto-fit：右栏在窄容器（视口 − 侧边栏后约 400px）时字段
-                // 自动换行，而不是固定四列把「保存项目规则」顶出卡片右缘。
-                gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-                gap: 10,
-                alignItems: "end",
-                minWidth: 0,
+                gridTemplateColumns: "minmax(0, 0.85fr) minmax(0, 1.35fr)",
+                gap: 16,
+                padding: 16,
               }}
             >
-              <TaskFormLabel label="默认结算">
-                <select
-                  value={ruleDraft.defaultSettlementMethod}
-                  onChange={updateRuleDraft("defaultSettlementMethod")}
-                  style={taskInputStyle}
-                >
-                  {SETTLEMENT_METHOD_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </TaskFormLabel>
-              <TaskFormLabel label="厂家单价（CPT 小时单价）">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={ruleDraft.defaultHourlyRate}
-                  onChange={updateRuleDraft("defaultHourlyRate")}
-                  style={taskInputStyle}
-                />
-              </TaskFormLabel>
-              <TaskFormLabel label="底薪">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={ruleDraft.defaultBaseSalary}
-                  onChange={updateRuleDraft("defaultBaseSalary")}
-                  style={taskInputStyle}
-                />
-              </TaskFormLabel>
-              <Button
-                kind="primary"
-                type="submit"
-                disabled={!!busyAction || !selectedProjectId}
+              <div>
+                <KV label="项目名称">{selectedProject?.name || "暂无项目"}</KV>
+                <KV label="项目编号">
+                  <span className="mono">
+                    {selectedProject?.code || selectedProjectId || "未设置"}
+                  </span>
+                </KV>
+                <KV label="结算方式">
+                  <Badge tone="blue">
+                    {SETTLEMENT_METHOD_OPTIONS.find(
+                      (option) =>
+                        option.value === ruleDraft.defaultSettlementMethod,
+                    )?.label || ruleDraft.defaultSettlementMethod}
+                  </Badge>
+                </KV>
+                <KV label="项目周期">
+                  {selectedProject?.start || selectedProject?.end
+                    ? `${selectedProject?.start || "未设置"} → ${
+                        selectedProject?.end || "未设置"
+                      }`
+                    : "未设置"}
+                </KV>
+                <KV label="待入池">
+                  <span className="num">{projectSettlementPool.length}</span> 条
+                </KV>
+                <KV label="批次数">
+                  <span className="num">{projectBatches.length}</span> 个
+                </KV>
+              </div>
+              <form
+                onSubmit={saveProjectRule}
+                style={{
+                  display: "grid",
+                  // auto-fit：右栏在窄容器（视口 − 侧边栏后约 400px）时字段
+                  // 自动换行，而不是固定四列把「保存项目规则」顶出卡片右缘。
+                  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                  gap: 10,
+                  alignItems: "end",
+                  minWidth: 0,
+                }}
               >
-                {busyAction === "project-rule" ? "保存中…" : "保存项目规则"}
-              </Button>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <CollapsibleSection
-                  title="进阶结算规则"
-                  hint="阶梯小时单价 / 扣罚 / 保底封顶"
-                >
-                  <SettlementRuleBuilder
-                    value={ruleDraft.defaultSettlementRule}
-                    onChange={(next) =>
-                      setRuleDraft((draft) => ({
-                        ...draft,
-                        defaultSettlementRule: next,
-                      }))
-                    }
-                    flatHourlyRate={
-                      draftNumber(ruleDraft.defaultHourlyRate) || 0
-                    }
-                    method={ruleDraft.defaultSettlementMethod}
+                <TaskFormLabel label="默认结算">
+                  <select
+                    value={ruleDraft.defaultSettlementMethod}
+                    onChange={updateRuleDraft("defaultSettlementMethod")}
+                    style={taskInputStyle}
+                  >
+                    {SETTLEMENT_METHOD_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </TaskFormLabel>
+                <TaskFormLabel label="厂家单价（CPT 小时单价）">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={ruleDraft.defaultHourlyRate}
+                    onChange={updateRuleDraft("defaultHourlyRate")}
+                    style={taskInputStyle}
                   />
+                </TaskFormLabel>
+                <TaskFormLabel label="底薪">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={ruleDraft.defaultBaseSalary}
+                    onChange={updateRuleDraft("defaultBaseSalary")}
+                    style={taskInputStyle}
+                  />
+                </TaskFormLabel>
+                <Button
+                  kind="primary"
+                  type="submit"
+                  disabled={!!busyAction || !selectedProjectId}
+                >
+                  {busyAction === "project-rule" ? "保存中…" : "保存项目规则"}
+                </Button>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <CollapsibleSection
+                    title="进阶结算规则"
+                    hint="阶梯小时单价 / 扣罚 / 保底封顶"
+                  >
+                    <SettlementRuleBuilder
+                      value={ruleDraft.defaultSettlementRule}
+                      onChange={(next) =>
+                        setRuleDraft((draft) => ({
+                          ...draft,
+                          defaultSettlementRule: next,
+                        }))
+                      }
+                      flatHourlyRate={
+                        draftNumber(ruleDraft.defaultHourlyRate) || 0
+                      }
+                      method={ruleDraft.defaultSettlementMethod}
+                    />
+                    <div
+                      style={{
+                        marginTop: 8,
+                        fontSize: 12,
+                        color: "var(--ink-400)",
+                      }}
+                    >
+                      进阶规则随上方「保存项目规则」一并保存。
+                    </div>
+                  </CollapsibleSection>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {detailTab === "finance" && (
+            <div style={{ padding: 16 }}>
+              <form
+                onSubmit={saveProjectFinancials}
+                style={{ display: "flex", flexDirection: "column", gap: 12 }}
+              >
+                <ProjectFinancialSettings
+                  value={financialDraft}
+                  onChange={setFinancialDraft}
+                  expectedReceivableCents={Math.round(
+                    (settlementSummary.vendorReceivable || 0) * 100,
+                  )}
+                />
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <Button
+                    kind="primary"
+                    type="submit"
+                    disabled={!!busyAction || !selectedProjectId}
+                  >
+                    {busyAction === "project-financials"
+                      ? "保存中…"
+                      : "保存财务设置"}
+                  </Button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {detailTab === "payable" && (
+            <div style={{ padding: 16 }}>
+              <form
+                onSubmit={saveStreamerRule}
+                style={{ display: "flex", flexDirection: "column", gap: 12 }}
+              >
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                    gap: 10,
+                    alignItems: "end",
+                    minWidth: 0,
+                  }}
+                >
+                  <TaskFormLabel label="主播">
+                    <select
+                      value={streamerRuleDraft.streamerId}
+                      onChange={updateStreamerRuleDraft("streamerId")}
+                      style={taskInputStyle}
+                    >
+                      <option value="">选择主播</option>
+                      {streamerRuleOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.name}
+                        </option>
+                      ))}
+                    </select>
+                  </TaskFormLabel>
+                  <TaskFormLabel label="结算方式">
+                    <select
+                      value={streamerRuleDraft.settlementMethod}
+                      onChange={updateStreamerRuleDraft("settlementMethod")}
+                      style={taskInputStyle}
+                    >
+                      {SETTLEMENT_METHOD_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </TaskFormLabel>
+                  <TaskFormLabel label="小时单价">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={streamerRuleDraft.hourlyRate}
+                      onChange={updateStreamerRuleDraft("hourlyRate")}
+                      style={taskInputStyle}
+                    />
+                  </TaskFormLabel>
+                  <TaskFormLabel label="底薪">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={streamerRuleDraft.baseSalary}
+                      onChange={updateStreamerRuleDraft("baseSalary")}
+                      style={taskInputStyle}
+                    />
+                  </TaskFormLabel>
+                  <TaskFormLabel label="CPS 比例(%)">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={streamerRuleDraft.cpsRatePercent}
+                      onChange={updateStreamerRuleDraft("cpsRatePercent")}
+                      style={taskInputStyle}
+                    />
+                  </TaskFormLabel>
+                  <TaskFormLabel label="原因">
+                    <input
+                      type="text"
+                      value={streamerRuleDraft.reason}
+                      onChange={updateStreamerRuleDraft("reason")}
+                      style={taskInputStyle}
+                      placeholder="可选，默认记为规则调整"
+                    />
+                  </TaskFormLabel>
+                </div>
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <Button
+                    kind="primary"
+                    type="submit"
+                    disabled={
+                      !!busyAction ||
+                      !selectedProjectId ||
+                      !streamerRuleDraft.streamerId
+                    }
+                  >
+                    {busyAction === "streamer-rule"
+                      ? "保存中…"
+                      : "保存主播应付规则"}
+                  </Button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {detailTab === "cost" && (
+            <div style={{ padding: 16 }}>
+              <form
+                onSubmit={submitCostItem}
+                style={{ display: "flex", flexDirection: "column", gap: 12 }}
+              >
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                    gap: 10,
+                    alignItems: "end",
+                    minWidth: 0,
+                  }}
+                >
+                  <TaskFormLabel label="成本类型">
+                    <select
+                      value={costDraft.itemType}
+                      onChange={updateCostDraft("itemType")}
+                      style={taskInputStyle}
+                    >
+                      {COST_ITEM_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </TaskFormLabel>
+                  <TaskFormLabel label="金额(元)">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={costDraft.amountYuan}
+                      onChange={updateCostDraft("amountYuan")}
+                      style={taskInputStyle}
+                    />
+                  </TaskFormLabel>
+                  <TaskFormLabel label="方向">
+                    <select
+                      value={costDraft.direction}
+                      onChange={updateCostDraft("direction")}
+                      style={taskInputStyle}
+                    >
+                      {COST_DIRECTION_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </TaskFormLabel>
+                  <TaskFormLabel label="证据等级">
+                    <select
+                      value={costDraft.evidenceLevel}
+                      onChange={updateCostDraft("evidenceLevel")}
+                      style={taskInputStyle}
+                    >
+                      {COST_EVIDENCE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </TaskFormLabel>
+                  <TaskFormLabel label="原因">
+                    <input
+                      type="text"
+                      value={costDraft.reason}
+                      onChange={updateCostDraft("reason")}
+                      style={taskInputStyle}
+                      placeholder="必填，记入审计"
+                    />
+                  </TaskFormLabel>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "flex-end",
+                    gap: 8,
+                  }}
+                >
+                  <Button
+                    kind="default"
+                    onClick={loadCostItems}
+                    disabled={
+                      !!busyAction ||
+                      !(selectedProjectId || selectedProject?.id)
+                    }
+                  >
+                    {busyAction === "cost-load" ? "加载中…" : "加载/刷新"}
+                  </Button>
+                  <Button
+                    kind="primary"
+                    type="submit"
+                    disabled={!!busyAction || !selectedProjectId}
+                  >
+                    {busyAction === "cost-create" ? "录入中…" : "录入外部成本"}
+                  </Button>
+                </div>
+              </form>
+
+              {costItemsLoadedFor === selectedProjectId ? (
+                costItems.length ? (
                   <div
                     style={{
-                      marginTop: 8,
+                      marginTop: 12,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                    }}
+                  >
+                    {costItems.map((item) => (
+                      <div
+                        key={item.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 10,
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          border: "1px solid var(--line)",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            fontSize: 12,
+                          }}
+                        >
+                          <Badge tone={costStatusTone(item.status)}>
+                            {costStatusLabel(item.status)}
+                          </Badge>
+                          <span style={{ color: "var(--ink-700)" }}>
+                            {item.itemType} · {item.direction} ·{" "}
+                            {formatYuanFromCents(item.amountCents)}
+                          </span>
+                          <span style={{ color: "var(--ink-400)" }}>
+                            {item.reason}
+                          </span>
+                          {item.sourceRuleVersionId ? (
+                            <span style={{ color: "var(--ink-500)" }}>
+                              规则版本 {item.sourceRuleVersionId}
+                            </span>
+                          ) : null}
+                          {item.sourceExecutionKey ? (
+                            <span
+                              className="mono"
+                              style={{ color: "var(--ink-400)" }}
+                            >
+                              {item.sourceExecutionKey}
+                            </span>
+                          ) : null}
+                          {item.sourceExplanation ? (
+                            <span style={{ color: "var(--ink-500)" }}>
+                              {item.sourceExplanation}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          {canConfirmCostItem(item.status) ? (
+                            <Button
+                              kind="default"
+                              onClick={() =>
+                                reviewCostItem(item.id, "confirmed")
+                              }
+                              disabled={!!busyAction}
+                            >
+                              确认
+                            </Button>
+                          ) : null}
+                          {canVoidCostItem(item.status) ? (
+                            <Button
+                              kind="ghost"
+                              onClick={() => reviewCostItem(item.id, "voided")}
+                              disabled={!!busyAction}
+                            >
+                              作废
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : costRuleExceptions.length > 0 ? (
+                  <div
+                    style={{
+                      marginTop: 12,
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                    }}
+                  >
+                    尚未生成项目成本项，请先处理下方导入行异常
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      marginTop: 12,
                       fontSize: 12,
                       color: "var(--ink-400)",
                     }}
                   >
-                    进阶规则随上方「保存项目规则」一并保存。
+                    本项目暂无外部成本记录
                   </div>
-                </CollapsibleSection>
-              </div>
-            </form>
-          </div>
-          )}
-
-          {detailTab === "finance" && (
-          <div style={{ padding: 16 }}>
-          <form
-            onSubmit={saveProjectFinancials}
-            style={{ display: "flex", flexDirection: "column", gap: 12 }}
-          >
-            <ProjectFinancialSettings
-              value={financialDraft}
-              onChange={setFinancialDraft}
-              expectedReceivableCents={Math.round(
-                (settlementSummary.vendorReceivable || 0) * 100,
+                )
+              ) : (
+                <div
+                  style={{
+                    marginTop: 12,
+                    fontSize: 12,
+                    color: "var(--ink-400)",
+                  }}
+                >
+                  点击「加载/刷新」查看本项目已录入的外部成本
+                </div>
               )}
-            />
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <Button
-                kind="primary"
-                type="submit"
-                disabled={!!busyAction || !selectedProjectId}
-              >
-                {busyAction === "project-financials"
-                  ? "保存中…"
-                  : "保存财务设置"}
-              </Button>
-            </div>
-          </form>
-          </div>
-          )}
 
-          {detailTab === "payable" && (
-          <div style={{ padding: 16 }}>
-          <form
-            onSubmit={saveStreamerRule}
-            style={{ display: "flex", flexDirection: "column", gap: 12 }}
-          >
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                gap: 10,
-                alignItems: "end",
-                minWidth: 0,
-              }}
-            >
-              <TaskFormLabel label="主播">
-                <select
-                  value={streamerRuleDraft.streamerId}
-                  onChange={updateStreamerRuleDraft("streamerId")}
-                  style={taskInputStyle}
+              {costItemsLoadedFor === selectedProjectId &&
+              costRuleExceptions.length > 0 ? (
+                <div
+                  aria-label="导入行异常待审核"
+                  style={{
+                    marginTop: 12,
+                    padding: 12,
+                    borderRadius: 8,
+                    border: "1px solid var(--line)",
+                    background: "var(--bg-soft)",
+                  }}
                 >
-                  <option value="">选择主播</option>
-                  {streamerRuleOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.name}
-                    </option>
-                  ))}
-                </select>
-              </TaskFormLabel>
-              <TaskFormLabel label="结算方式">
-                <select
-                  value={streamerRuleDraft.settlementMethod}
-                  onChange={updateStreamerRuleDraft("settlementMethod")}
-                  style={taskInputStyle}
-                >
-                  {SETTLEMENT_METHOD_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </TaskFormLabel>
-              <TaskFormLabel label="小时单价">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={streamerRuleDraft.hourlyRate}
-                  onChange={updateStreamerRuleDraft("hourlyRate")}
-                  style={taskInputStyle}
-                />
-              </TaskFormLabel>
-              <TaskFormLabel label="底薪">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={streamerRuleDraft.baseSalary}
-                  onChange={updateStreamerRuleDraft("baseSalary")}
-                  style={taskInputStyle}
-                />
-              </TaskFormLabel>
-              <TaskFormLabel label="CPS 比例(%)">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={streamerRuleDraft.cpsRatePercent}
-                  onChange={updateStreamerRuleDraft("cpsRatePercent")}
-                  style={taskInputStyle}
-                />
-              </TaskFormLabel>
-              <TaskFormLabel label="原因">
-                <input
-                  type="text"
-                  value={streamerRuleDraft.reason}
-                  onChange={updateStreamerRuleDraft("reason")}
-                  style={taskInputStyle}
-                  placeholder="可选，默认记为规则调整"
-                />
-              </TaskFormLabel>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
-              <Button
-                kind="primary"
-                type="submit"
-                disabled={
-                  !!busyAction ||
-                  !selectedProjectId ||
-                  !streamerRuleDraft.streamerId
-                }
-              >
-                {busyAction === "streamer-rule"
-                  ? "保存中…"
-                  : "保存主播应付规则"}
-              </Button>
-            </div>
-          </form>
-          </div>
-          )}
-
-          {detailTab === "cost" && (
-          <div style={{ padding: 16 }}>
-          <form
-            onSubmit={submitCostItem}
-            style={{ display: "flex", flexDirection: "column", gap: 12 }}
-          >
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-                gap: 10,
-                alignItems: "end",
-                minWidth: 0,
-              }}
-            >
-              <TaskFormLabel label="成本类型">
-                <select
-                  value={costDraft.itemType}
-                  onChange={updateCostDraft("itemType")}
-                  style={taskInputStyle}
-                >
-                  {COST_ITEM_TYPE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </TaskFormLabel>
-              <TaskFormLabel label="金额(元)">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={costDraft.amountYuan}
-                  onChange={updateCostDraft("amountYuan")}
-                  style={taskInputStyle}
-                />
-              </TaskFormLabel>
-              <TaskFormLabel label="方向">
-                <select
-                  value={costDraft.direction}
-                  onChange={updateCostDraft("direction")}
-                  style={taskInputStyle}
-                >
-                  {COST_DIRECTION_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </TaskFormLabel>
-              <TaskFormLabel label="证据等级">
-                <select
-                  value={costDraft.evidenceLevel}
-                  onChange={updateCostDraft("evidenceLevel")}
-                  style={taskInputStyle}
-                >
-                  {COST_EVIDENCE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </TaskFormLabel>
-              <TaskFormLabel label="原因">
-                <input
-                  type="text"
-                  value={costDraft.reason}
-                  onChange={updateCostDraft("reason")}
-                  style={taskInputStyle}
-                  placeholder="必填，记入审计"
-                />
-              </TaskFormLabel>
-            </div>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 8,
-              }}
-            >
-              <Button
-                kind="default"
-                onClick={loadCostItems}
-                disabled={!!busyAction || !(selectedProjectId || selectedProject?.id)}
-              >
-                {busyAction === "cost-load" ? "加载中…" : "加载/刷新"}
-              </Button>
-              <Button
-                kind="primary"
-                type="submit"
-                disabled={!!busyAction || !selectedProjectId}
-              >
-                {busyAction === "cost-create" ? "录入中…" : "录入外部成本"}
-              </Button>
-            </div>
-          </form>
-
-          {costItemsLoadedFor === selectedProjectId ? (
-            costItems.length ? (
-              <div
-                style={{
-                  marginTop: 12,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                }}
-              >
-                {costItems.map((item) => (
                   <div
-                    key={item.id}
                     style={{
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
                       gap: 10,
-                      padding: "6px 10px",
-                      borderRadius: 8,
-                      border: "1px solid var(--line)",
+                      marginBottom: 10,
                     }}
                   >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        fontSize: 12,
-                      }}
-                    >
-                      <Badge tone={costStatusTone(item.status)}>
-                        {costStatusLabel(item.status)}
-                      </Badge>
-                      <span style={{ color: "var(--ink-700)" }}>
-                        {item.itemType} · {item.direction} ·{" "}
-                        {formatYuanFromCents(item.amountCents)}
-                      </span>
-                      <span style={{ color: "var(--ink-400)" }}>
-                        {item.reason}
-                      </span>
-                      {item.sourceRuleVersionId ? (
-                        <span style={{ color: "var(--ink-500)" }}>
-                          规则版本 {item.sourceRuleVersionId}
-                        </span>
-                      ) : null}
-                      {item.sourceExecutionKey ? (
-                        <span className="mono" style={{ color: "var(--ink-400)" }}>
-                          {item.sourceExecutionKey}
-                        </span>
-                      ) : null}
-                      {item.sourceExplanation ? (
-                        <span style={{ color: "var(--ink-500)" }}>
-                          {item.sourceExplanation}
-                        </span>
-                      ) : null}
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>
+                      导入行异常复核
                     </div>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      {canConfirmCostItem(item.status) ? (
-                        <Button
-                          kind="default"
-                          onClick={() => reviewCostItem(item.id, "confirmed")}
-                          disabled={!!busyAction}
-                        >
-                          确认
-                        </Button>
-                      ) : null}
-                      {canVoidCostItem(item.status) ? (
-                        <Button
-                          kind="ghost"
-                          onClick={() => reviewCostItem(item.id, "voided")}
-                          disabled={!!busyAction}
-                        >
-                          作废
-                        </Button>
-                      ) : null}
-                    </div>
+                    <Badge tone="amber">
+                      {costRuleExceptions.length} 个待审核
+                    </Badge>
                   </div>
-                ))}
-              </div>
-            ) : costRuleExceptions.length > 0 ? (
-              <div
-                style={{
-                  marginTop: 12,
-                  fontSize: 12,
-                  color: "var(--ink-500)",
-                }}
-              >
-                尚未生成项目成本项，请先处理下方导入行异常
-              </div>
-            ) : (
-              <div
-                style={{
-                  marginTop: 12,
-                  fontSize: 12,
-                  color: "var(--ink-400)",
-                }}
-              >
-                本项目暂无外部成本记录
-              </div>
-            )
-          ) : (
-            <div
-              style={{ marginTop: 12, fontSize: 12, color: "var(--ink-400)" }}
-            >
-              点击「加载/刷新」查看本项目已录入的外部成本
-            </div>
-          )}
-
-          {costItemsLoadedFor === selectedProjectId &&
-          costRuleExceptions.length > 0 ? (
-            <div
-              aria-label="导入行异常待审核"
-              style={{
-                marginTop: 12,
-                padding: 12,
-                borderRadius: 8,
-                border: "1px solid var(--line)",
-                background: "var(--bg-soft)",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 10,
-                  marginBottom: 10,
-                }}
-              >
-                <div style={{ fontSize: 13, fontWeight: 700 }}>
-                  导入行异常复核
-                </div>
-                <Badge tone="amber">{costRuleExceptions.length} 个待审核</Badge>
-              </div>
-              <div style={{ display: "grid", gap: 10 }}>
-                {costRuleExceptions.map((exception) => {
-                  const draft = costExceptionDrafts[exception.id] ?? {
-                    valueType: "money_cents",
-                    reviewedValue: "",
-                    reason: "",
-                  };
-                  return (
-                    <div
-                      key={exception.id}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "minmax(0, 1fr) minmax(360px, 1fr)",
-                        gap: 10,
-                        alignItems: "end",
-                      }}
-                    >
-                      <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {costRuleExceptions.map((exception) => {
+                      const draft = costExceptionDrafts[exception.id] ?? {
+                        valueType: "money_cents",
+                        reviewedValue: "",
+                        reason: "",
+                      };
+                      return (
                         <div
-                          className="mono"
+                          key={exception.id}
                           style={{
-                            fontSize: 11,
-                            color: "var(--ink-500)",
-                            wordBreak: "break-all",
+                            display: "grid",
+                            gridTemplateColumns:
+                              "minmax(0, 1fr) minmax(360px, 1fr)",
+                            gap: 10,
+                            alignItems: "end",
                           }}
                         >
-                          {exception.id} · batch {exception.importBatchId}
-                        </div>
-                        <div
-                          style={{
-                            marginTop: 4,
-                            fontSize: 12,
-                            color: "var(--ink-700)",
-                          }}
-                        >
-                          第 {Number(exception.rowIndex) + 1} 行 ·{" "}
-                          {exception.variableName} · {exception.policy}
-                        </div>
-                        {exception.sourceRefs?.ruleVersionId ||
-                        exception.sourceRefs?.sourceContextHash ? (
+                          <div style={{ minWidth: 0 }}>
+                            <div
+                              className="mono"
+                              style={{
+                                fontSize: 11,
+                                color: "var(--ink-500)",
+                                wordBreak: "break-all",
+                              }}
+                            >
+                              {exception.id} · batch {exception.importBatchId}
+                            </div>
+                            <div
+                              style={{
+                                marginTop: 4,
+                                fontSize: 12,
+                                color: "var(--ink-700)",
+                              }}
+                            >
+                              第 {Number(exception.rowIndex) + 1} 行 ·{" "}
+                              {exception.variableName} · {exception.policy}
+                            </div>
+                            {exception.sourceRefs?.ruleVersionId ||
+                            exception.sourceRefs?.sourceContextHash ? (
+                              <div
+                                className="mono"
+                                style={{
+                                  marginTop: 4,
+                                  fontSize: 10.5,
+                                  color: "var(--ink-400)",
+                                  wordBreak: "break-all",
+                                }}
+                              >
+                                {exception.sourceRefs?.ruleVersionId
+                                  ? `rule ${exception.sourceRefs.ruleVersionId}`
+                                  : ""}
+                                {exception.sourceRefs?.sourceContextHash
+                                  ? ` · ${exception.sourceRefs.sourceContextHash}`
+                                  : ""}
+                              </div>
+                            ) : null}
+                          </div>
                           <div
-                            className="mono"
                             style={{
-                              marginTop: 4,
-                              fontSize: 10.5,
-                              color: "var(--ink-400)",
-                              wordBreak: "break-all",
+                              display: "grid",
+                              gridTemplateColumns: "110px 1fr 1fr auto",
+                              gap: 8,
+                              alignItems: "end",
                             }}
                           >
-                            {exception.sourceRefs?.ruleVersionId
-                              ? `rule ${exception.sourceRefs.ruleVersionId}`
-                              : ""}
-                            {exception.sourceRefs?.sourceContextHash
-                              ? ` · ${exception.sourceRefs.sourceContextHash}`
-                              : ""}
+                            <TaskFormLabel label="复核类型">
+                              <select
+                                aria-label={`复核类型 ${exception.id}`}
+                                value={draft.valueType}
+                                onChange={updateCostExceptionDraft(
+                                  exception.id,
+                                  "valueType",
+                                )}
+                                style={taskInputStyle}
+                              >
+                                <option value="money_cents">金额(元)</option>
+                                <option value="rate_bps">比例(%)</option>
+                                <option value="integer">整数</option>
+                                <option value="number">数字</option>
+                                <option value="string">文本</option>
+                                <option value="boolean">布尔</option>
+                                <option value="timestamp">时间</option>
+                              </select>
+                            </TaskFormLabel>
+                            <TaskFormLabel label="复核值">
+                              <input
+                                aria-label={`复核值 ${exception.id}`}
+                                value={draft.reviewedValue}
+                                onChange={updateCostExceptionDraft(
+                                  exception.id,
+                                  "reviewedValue",
+                                )}
+                                style={taskInputStyle}
+                              />
+                            </TaskFormLabel>
+                            <TaskFormLabel label="复核原因">
+                              <input
+                                aria-label={`复核原因 ${exception.id}`}
+                                value={draft.reason}
+                                onChange={updateCostExceptionDraft(
+                                  exception.id,
+                                  "reason",
+                                )}
+                                style={taskInputStyle}
+                              />
+                            </TaskFormLabel>
+                            <Button
+                              kind="default"
+                              onClick={() =>
+                                resolveCostRuleException(exception)
+                              }
+                              disabled={!!busyAction}
+                            >
+                              提交复核
+                            </Button>
                           </div>
-                        ) : null}
-                      </div>
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "110px 1fr 1fr auto",
-                          gap: 8,
-                          alignItems: "end",
-                        }}
-                      >
-                        <TaskFormLabel label="复核类型">
-                          <select
-                            aria-label={`复核类型 ${exception.id}`}
-                            value={draft.valueType}
-                            onChange={updateCostExceptionDraft(
-                              exception.id,
-                              "valueType",
-                            )}
-                            style={taskInputStyle}
-                          >
-                            <option value="money_cents">金额(元)</option>
-                            <option value="rate_bps">比例(%)</option>
-                            <option value="integer">整数</option>
-                            <option value="number">数字</option>
-                            <option value="string">文本</option>
-                            <option value="boolean">布尔</option>
-                            <option value="timestamp">时间</option>
-                          </select>
-                        </TaskFormLabel>
-                        <TaskFormLabel label="复核值">
-                          <input
-                            aria-label={`复核值 ${exception.id}`}
-                            value={draft.reviewedValue}
-                            onChange={updateCostExceptionDraft(
-                              exception.id,
-                              "reviewedValue",
-                            )}
-                            style={taskInputStyle}
-                          />
-                        </TaskFormLabel>
-                        <TaskFormLabel label="复核原因">
-                          <input
-                            aria-label={`复核原因 ${exception.id}`}
-                            value={draft.reason}
-                            onChange={updateCostExceptionDraft(
-                              exception.id,
-                              "reason",
-                            )}
-                            style={taskInputStyle}
-                          />
-                        </TaskFormLabel>
-                        <Button
-                          kind="default"
-                          onClick={() => resolveCostRuleException(exception)}
-                          disabled={!!busyAction}
-                        >
-                          提交复核
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
             </div>
-          ) : null}
-          </div>
           )}
 
           {customRulesEnabled && detailTab === "custom_rules" ? (
@@ -22720,9 +23321,7 @@ function ScreenSettlement({ go }) {
                           borderRadius: 8,
                           background: checked ? "var(--blue-50)" : "#fff",
                           fontSize: 12,
-                          color: checked
-                            ? "var(--blue-700)"
-                            : "var(--ink-700)",
+                          color: checked ? "var(--blue-700)" : "var(--ink-700)",
                           cursor: "pointer",
                           userSelect: "none",
                         }}
@@ -23011,6 +23610,7 @@ function ScreenSettlement({ go }) {
             lockBlockMessage={reconciliationBlockMessage(activeReconciliation)}
             lockReason={lockReason}
             onLockReasonChange={setLockReason}
+            requiresDiscrepancyReason={activeBatchHasRedEvidence}
             busyAction={busyAction}
           />
         </div>
@@ -23032,7 +23632,12 @@ const SETTLEMENT_BATCH_POOLS = [
     tone: "amber",
     statuses: ["draft", "generated", "pending_confirm", "reopened"],
   },
-  { key: "pending_settle", label: "待结算", tone: "blue", statuses: ["confirmed"] },
+  {
+    key: "pending_settle",
+    label: "待结算",
+    tone: "blue",
+    statuses: ["confirmed"],
+  },
   { key: "settled", label: "已结算", tone: "teal", statuses: ["locked"] },
   { key: "voided", label: "已作废", tone: "neutral", statuses: ["voided"] },
 ];
@@ -23188,6 +23793,56 @@ function settlementEvidenceTone(value) {
   return "neutral";
 }
 
+function hasSettlementDiscrepancy(row) {
+  const evidenceLevel = String(row?.evidenceLevel ?? "").toLowerCase();
+  return (
+    evidenceLevel === "yellow" ||
+    evidenceLevel === "red" ||
+    (Array.isArray(row?.riskFlags) && row.riskFlags.length > 0)
+  );
+}
+
+function settlementDiscrepancyLabels(row) {
+  const labels = [];
+  const evidenceLevel = String(row?.evidenceLevel ?? "").toLowerCase();
+  if (evidenceLevel === "yellow") labels.push("黄证据");
+  if (evidenceLevel === "red") labels.push("红证据");
+  if (Array.isArray(row?.riskFlags)) {
+    labels.push(...row.riskFlags.map(riskFlagLabel));
+  }
+  return labels;
+}
+
+function buildSettlementBreakdownMeaning(row) {
+  const breakdown = row?.ruleBreakdown;
+  if (!breakdown) return "";
+  const components = Array.isArray(breakdown.components)
+    ? breakdown.components
+        .map(
+          (component) =>
+            `${component.label} ${formatYuanFromCents(component.amountCents)}`,
+        )
+        .join("、")
+    : "";
+  const appliedVersions = Array.isArray(breakdown.appliedVersionLabels)
+    ? breakdown.appliedVersionLabels.join("、")
+    : "";
+  const missingDataCount = Array.isArray(breakdown.missingDataDecisions)
+    ? breakdown.missingDataDecisions.length
+    : 0;
+  const parts = [];
+  if (appliedVersions) parts.push(`命中的规则版本：${appliedVersions}。`);
+  if (components) parts.push(`金额由 ${components} 组成。`);
+  if (breakdown.sourceReportCount) {
+    parts.push(`本项引用 ${breakdown.sourceReportCount} 条来源报数。`);
+  }
+  if (missingDataCount > 0) {
+    parts.push(`有 ${missingDataCount} 个缺失数据决策，需要在异常队列继续处理。`);
+  }
+  if (breakdown.explanationZh) parts.push(breakdown.explanationZh);
+  return parts.join(" ");
+}
+
 function BatchDetail({
   id,
   batches = BATCHES,
@@ -23201,10 +23856,15 @@ function BatchDetail({
   lockBlockMessage = "",
   lockReason = "",
   onLockReasonChange,
+  requiresDiscrepancyReason = false,
   busyAction,
 }) {
   const [detailMessage, setDetailMessage] = React.useState("");
   const [auditBusy, setAuditBusy] = React.useState(false);
+  const [showDiscrepancyRowsOnly, setShowDiscrepancyRowsOnly] =
+    React.useState(false);
+  const [openBreakdownMeaningId, setOpenBreakdownMeaningId] =
+    React.useState(null);
   const auditEntries = useOpsAuditEntries();
   const currentUser = useOpsCurrentUser();
   const actions = useOpsLiveActions();
@@ -23266,6 +23926,13 @@ function BatchDetail({
   const baseSum = detailRows.reduce((s, x) => s + x.base, 0);
   const varSum = detailRows.reduce((s, x) => s + x.variable, 0);
   const adjSum = detailRows.reduce((s, x) => s + x.adjust, 0);
+  const discrepancyRows = detailRows.filter(hasSettlementDiscrepancy);
+  const redEvidenceRows = detailRows.filter(
+    (row) => String(row.evidenceLevel).toLowerCase() === "red",
+  );
+  const visibleDetailRows = showDiscrepancyRowsOnly
+    ? discrepancyRows
+    : detailRows;
   const ruleBreakdownRows = detailRows.filter((row) => row.ruleBreakdown);
   const openRuleExceptions = detailRows.flatMap((row) =>
     Array.isArray(row.openExceptions)
@@ -23281,8 +23948,7 @@ function BatchDetail({
   };
   const batchAudit = auditEntries.filter(
     (entry) =>
-      entry.objectId === b.id ||
-      (entry.module === "settlement" && entry.objectName === b.name),
+      entry.objectType === "settlement_batch" && entry.objectId === b.id,
   );
   const loadBatchAudit = async () => {
     if (auditBusy) return;
@@ -23293,7 +23959,11 @@ function BatchDetail({
     }
     setAuditBusy(true);
     try {
-      await actions.refreshAuditEntries();
+      await actions.refreshAuditEntries({
+        objectType: "settlement_batch",
+        objectId: b.id,
+        limit: 100,
+      });
       setDetailMessage("批次审计明细已刷新，见下方审计轨迹。");
     } catch (error) {
       setDetailMessage(error?.message || "审计明细刷新失败，请稍后重试。");
@@ -23474,6 +24144,36 @@ function BatchDetail({
           </div>
         </div>
 
+        {discrepancyRows.length > 0 ? (
+          <div
+            style={{
+              margin: "10px 16px 0",
+              padding: "9px 10px",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              background: "var(--bg-soft)",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap",
+            }}
+          >
+            <Badge tone={redEvidenceRows.length > 0 ? "red" : "amber"} dot>
+              {detailRows.length} 项中 {discrepancyRows.length} 项证据存在差异
+            </Badge>
+            <span style={{ flex: 1, minWidth: 180, fontSize: 12, color: "var(--ink-500)" }}>
+              建议先复核黄/红证据与风控标记，再确认或锁定批次
+            </span>
+            <Button
+              kind={showDiscrepancyRowsOnly ? "primary" : "default"}
+              icon={<Icon.Audit size={14} stroke={showDiscrepancyRowsOnly ? "#fff" : undefined} />}
+              onClick={() => setShowDiscrepancyRowsOnly((value) => !value)}
+            >
+              {showDiscrepancyRowsOnly ? "显示全部" : "只看差异"}
+            </Button>
+          </div>
+        ) : null}
+
         <DataTable
           dense
           columns={[
@@ -23517,9 +24217,39 @@ function BatchDetail({
               title: "其他口径",
               align: "right",
               render: (r) => (
-                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
-                  {r.qty}
-                </span>
+                <div
+                  style={{
+                    display: "inline-flex",
+                    flexDirection: "column",
+                    alignItems: "flex-end",
+                    gap: 4,
+                  }}
+                >
+                  <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                    {r.qty}
+                  </span>
+                  {hasSettlementDiscrepancy(r) ? (
+                    <div
+                      style={{
+                        display: "inline-flex",
+                        gap: 4,
+                        flexWrap: "wrap",
+                        justifyContent: "flex-end",
+                      }}
+                    >
+                      {settlementDiscrepancyLabels(r)
+                        .slice(0, 2)
+                        .map((label) => (
+                          <Badge
+                            key={`${r.id}-${label}`}
+                            tone={settlementEvidenceTone(r.evidenceLevel)}
+                          >
+                            {label}
+                          </Badge>
+                        ))}
+                    </div>
+                  ) : null}
+                </div>
               ),
             },
             {
@@ -23570,7 +24300,7 @@ function BatchDetail({
               ),
             },
           ]}
-          rows={detailRows}
+          rows={visibleDetailRows}
         />
 
         {ruleBreakdownRows.length > 0 || openRuleExceptions.length > 0 ? (
@@ -23614,7 +24344,12 @@ function BatchDetail({
                     gap: 12,
                   }}
                 >
-                  {ruleBreakdownRows.map((row) => (
+                  {ruleBreakdownRows.map((row) => {
+                    const breakdownMeaningOpen =
+                      openBreakdownMeaningId === row.id;
+                    const breakdownMeaning =
+                      buildSettlementBreakdownMeaning(row);
+                    return (
                     <div
                       key={row.id}
                       style={{
@@ -23643,11 +24378,35 @@ function BatchDetail({
                         <div
                           style={{
                             display: "flex",
+                            alignItems: "center",
                             gap: 6,
                             flexWrap: "wrap",
                             justifyContent: "flex-end",
                           }}
                         >
+                          {breakdownMeaning ? (
+                            <button
+                              type="button"
+                              aria-label={`这是什么意思：${row.streamer}`}
+                              aria-expanded={breakdownMeaningOpen}
+                              onClick={() =>
+                                setOpenBreakdownMeaningId((current) =>
+                                  current === row.id ? null : row.id,
+                                )
+                              }
+                              style={{
+                                border: 0,
+                                background: "transparent",
+                                color: "var(--brand-600)",
+                                fontSize: 12,
+                                fontWeight: 600,
+                                padding: 0,
+                                cursor: "pointer",
+                              }}
+                            >
+                              这是什么意思
+                            </button>
+                          ) : null}
                           {row.ruleBreakdown.appliedVersionLabels.map(
                             (label) => (
                               <Badge key={`${row.id}-${label}`} tone="blue">
@@ -23699,11 +24458,29 @@ function BatchDetail({
                                 color: "var(--ink-900)",
                               }}
                             >
-                              {formatYuanFromCents(component.amountCents)}
+                          {formatYuanFromCents(component.amountCents)}
                             </div>
                           </div>
                         ))}
                       </div>
+
+                      {breakdownMeaningOpen ? (
+                        <div
+                          role="note"
+                          style={{
+                            marginTop: 8,
+                            padding: "8px 10px",
+                            border: "1px solid var(--line)",
+                            borderRadius: 8,
+                            background: "var(--bg-soft)",
+                            fontSize: 12,
+                            color: "var(--ink-600)",
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          {breakdownMeaning}
+                        </div>
+                      ) : null}
 
                       {row.ruleBreakdown.explanationZh ? (
                         <div
@@ -23762,7 +24539,8 @@ function BatchDetail({
                         </div>
                       ) : null}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             ) : null}
@@ -23948,11 +24726,10 @@ function BatchDetail({
                 }}
               >
                 锁定原因
+                {requiresDiscrepancyReason ? "（红证据确认）" : ""}
                 <input
                   value={lockReason}
-                  onChange={(event) =>
-                    onLockReasonChange?.(event.target.value)
-                  }
+                  onChange={(event) => onLockReasonChange?.(event.target.value)}
                   disabled={!!busyAction}
                   style={{
                     height: 32,
@@ -24442,7 +25219,9 @@ function ScreenTasks({ go, focusRequest }) {
               minWidth: 140,
             }}
           >
-            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>今日任务</div>
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              今日任务
+            </div>
             <div
               style={{
                 display: "flex",
@@ -24464,7 +25243,9 @@ function ScreenTasks({ go, focusRequest }) {
               </span>
               <span style={{ fontSize: 12, color: "var(--ink-400)" }}>个</span>
             </div>
-            <div style={{ fontSize: 12, marginTop: 4, color: "var(--ink-400)" }}>
+            <div
+              style={{ fontSize: 12, marginTop: 4, color: "var(--ink-400)" }}
+            >
               {SCHEDULE_WEEK.days[SCHEDULE_WEEK.todayIdx]?.date ?? "本周"}
             </div>
           </div>
@@ -24516,7 +25297,9 @@ function ScreenTasks({ go, focusRequest }) {
                 >
                   {liveCount}
                 </span>
-                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>个</span>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                  个
+                </span>
               </div>
             </div>
             <MiniStat
@@ -24524,7 +25307,9 @@ function ScreenTasks({ go, focusRequest }) {
               value={`${pendingReportCount} / ${pendingReviewCount}`}
             />
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>异常任务</div>
+              <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                异常任务
+              </div>
               <div
                 style={{
                   display: "flex",
@@ -24539,14 +25324,14 @@ function ScreenTasks({ go, focusRequest }) {
                     fontSize: 18,
                     fontWeight: 600,
                     color:
-                      anomalyCount > 0
-                        ? "var(--danger-600)"
-                        : "var(--ink-900)",
+                      anomalyCount > 0 ? "var(--danger-600)" : "var(--ink-900)",
                   }}
                 >
                   {anomalyCount}
                 </span>
-                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>项</span>
+                <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                  项
+                </span>
               </div>
               <div
                 style={{
@@ -25486,9 +26271,7 @@ function DayTaskBlock({ task, projects = [], onClick }) {
         background: c.bg,
         border: `1px solid ${c.border || "var(--line)"}`,
         borderRadius: 4,
-        boxShadow: task.anomaly
-          ? "inset 0 0 0 1px var(--danger-600)"
-          : "none",
+        boxShadow: task.anomaly ? "inset 0 0 0 1px var(--danger-600)" : "none",
         boxSizing: "border-box",
         padding: "6px 8px",
         cursor: "pointer",
@@ -26741,7 +27524,10 @@ function TaskDrawer({
               <input
                 value={editForm.title}
                 onChange={(event) =>
-                  setEditForm((form) => ({ ...form, title: event.target.value }))
+                  setEditForm((form) => ({
+                    ...form,
+                    title: event.target.value,
+                  }))
                 }
                 style={{
                   height: 32,
@@ -27078,7 +27864,11 @@ function parseMarkdownToBlocks(markdown) {
     }
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
-      blocks.push({ type: "heading", level: heading[1].length, text: heading[2] });
+      blocks.push({
+        type: "heading",
+        level: heading[1].length,
+        text: heading[2],
+      });
       i += 1;
       continue;
     }
@@ -27149,7 +27939,12 @@ function serializeBlocksToMarkdown(blocks) {
     }
     out.push("");
   }
-  return out.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+  return (
+    out
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trimEnd() + "\n"
+  );
 }
 
 const REVIEW_ADD_BTN_STYLE = {
@@ -27279,11 +28074,18 @@ function BlockEditor({ blocks, onChange }) {
   const turnInto = (i, kind) => {
     const text = blockToPlainText(blocks[i]);
     const nb = makeEmptyBlock(kind);
-    if (nb.type === "heading" || nb.type === "quote" || nb.type === "paragraph") {
+    if (
+      nb.type === "heading" ||
+      nb.type === "quote" ||
+      nb.type === "paragraph"
+    ) {
       nb.text = text;
     } else if (nb.type === "list") {
       nb.items = text
-        ? text.split(/[，,]/).map((x) => x.trim()).filter(Boolean)
+        ? text
+            .split(/[，,]/)
+            .map((x) => x.trim())
+            .filter(Boolean)
         : [""];
       if (!nb.items.length) nb.items = [""];
     }
@@ -27301,7 +28103,11 @@ function BlockEditor({ blocks, onChange }) {
     }
     const reader = new globalThis.FileReader();
     reader.onload = () => {
-      const img = { type: "image", alt: file.name || "图片", src: reader.result };
+      const img = {
+        type: "image",
+        alt: file.name || "图片",
+        src: reader.result,
+      };
       const pend = pendingInsertRef.current;
       pendingInsertRef.current = null;
       if (pend && pend.replace != null) {
@@ -27337,14 +28143,21 @@ function BlockEditor({ blocks, onChange }) {
     const b = blocks[bi];
     const cols = b.headers.length || 1;
     const rows = [...b.rows];
-    rows.splice(at, 0, Array.from({ length: cols }).map(() => ""));
+    rows.splice(
+      at,
+      0,
+      Array.from({ length: cols }).map(() => ""),
+    );
     setBlock(bi, { ...b, rows });
   };
   const deleteRow = (bi, ri) => {
     const b = blocks[bi];
     const cols = b.headers.length || 1;
     if (b.rows.length <= 1) {
-      setBlock(bi, { ...b, rows: [Array.from({ length: cols }).map(() => "")] });
+      setBlock(bi, {
+        ...b,
+        rows: [Array.from({ length: cols }).map(() => "")],
+      });
       return;
     }
     setBlock(bi, { ...b, rows: b.rows.filter((_, j) => j !== ri) });
@@ -27359,12 +28172,24 @@ function BlockEditor({ blocks, onChange }) {
   const openInsertMenu = (e, bi, mode) => {
     e.preventDefault();
     e.stopPropagation();
-    setMenu({ kind: "insert", mode, x: e.clientX, y: e.clientY, blockIndex: bi });
+    setMenu({
+      kind: "insert",
+      mode,
+      x: e.clientX,
+      y: e.clientY,
+      blockIndex: bi,
+    });
   };
   const openColumnMenu = (e, bi, ci) => {
     e.preventDefault();
     e.stopPropagation();
-    setMenu({ kind: "column", x: e.clientX, y: e.clientY, blockIndex: bi, colIndex: ci });
+    setMenu({
+      kind: "column",
+      x: e.clientX,
+      y: e.clientY,
+      blockIndex: bi,
+      colIndex: ci,
+    });
   };
   const openCellMenu = (e, bi, ri, ci) => {
     e.preventDefault();
@@ -27411,7 +28236,9 @@ function BlockEditor({ blocks, onChange }) {
   ];
 
   const MenuLabel = ({ children }) => (
-    <div style={{ fontSize: 11, color: "var(--ink-400)", padding: "6px 8px 2px" }}>
+    <div
+      style={{ fontSize: 11, color: "var(--ink-400)", padding: "6px 8px 2px" }}
+    >
       {children}
     </div>
   );
@@ -27423,7 +28250,9 @@ function BlockEditor({ blocks, onChange }) {
         onClick();
         setMenu(null);
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-soft)")}
+      onMouseEnter={(e) =>
+        (e.currentTarget.style.background = "var(--bg-soft)")
+      }
       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
       style={{
         display: "flex",
@@ -27503,7 +28332,7 @@ function BlockEditor({ blocks, onChange }) {
       return (
         <div
           style={{
-            borderLeft: "3px solid var(--blue-600)",
+            borderLeft: "1px solid var(--line)",
             background: "var(--bg-soft)",
             borderRadius: 6,
             padding: "4px 10px",
@@ -27541,7 +28370,11 @@ function BlockEditor({ blocks, onChange }) {
             value={b.alt || ""}
             placeholder="图片说明（alt）"
             onChange={(e) => setBlock(bi, { ...b, alt: e.target.value })}
-            style={{ ...REVIEW_CELL_STYLE, fontSize: 12, color: "var(--ink-400)" }}
+            style={{
+              ...REVIEW_CELL_STYLE,
+              fontSize: 12,
+              color: "var(--ink-400)",
+            }}
           />
         </div>
       ) : (
@@ -27562,7 +28395,10 @@ function BlockEditor({ blocks, onChange }) {
       return (
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           {b.items.map((it, ii) => (
-            <div key={ii} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div
+              key={ii}
+              style={{ display: "flex", alignItems: "center", gap: 8 }}
+            >
               <span
                 style={{
                   color: "var(--ink-400)",
@@ -27580,7 +28416,9 @@ function BlockEditor({ blocks, onChange }) {
                 onChange={(e) =>
                   setBlock(bi, {
                     ...b,
-                    items: b.items.map((x, j) => (j === ii ? e.target.value : x)),
+                    items: b.items.map((x, j) =>
+                      j === ii ? e.target.value : x,
+                    ),
                   })
                 }
                 onKeyDown={(e) => {
@@ -27674,7 +28512,7 @@ function BlockEditor({ blocks, onChange }) {
                             j !== ri
                               ? row
                               : Array.from({ length: cols }).map((__, k) =>
-                                  k === ci ? e.target.value : row[k] ?? "",
+                                  k === ci ? e.target.value : (row[k] ?? ""),
                                 ),
                           );
                           setBlock(bi, { ...b, rows });
@@ -27795,7 +28633,8 @@ function BlockEditor({ blocks, onChange }) {
       `}</style>
 
       <div style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 10 }}>
-        输入 <b>/</b> 选择块类型 · 悬停左侧 <b>+</b> 添加块 · 右键块 / 表格单元格更多操作
+        输入 <b>/</b> 选择块类型 · 悬停左侧 <b>+</b> 添加块 · 右键块 /
+        表格单元格更多操作
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -27873,11 +28712,13 @@ function BlockEditor({ blocks, onChange }) {
               position: "fixed",
               left: Math.min(
                 menu.x,
-                (typeof window !== "undefined" ? window.innerWidth : 1200) - 230,
+                (typeof window !== "undefined" ? window.innerWidth : 1200) -
+                  230,
               ),
               top: Math.min(
                 menu.y,
-                (typeof window !== "undefined" ? window.innerHeight : 800) - 380,
+                (typeof window !== "undefined" ? window.innerHeight : 800) -
+                  380,
               ),
               zIndex: 91,
               background: "#fff",
@@ -27892,9 +28733,15 @@ function BlockEditor({ blocks, onChange }) {
           >
             {menu.kind === "insert" && (
               <>
-                <MenuLabel>{menu.mode === "convert" ? "转为" : "插入块"}</MenuLabel>
+                <MenuLabel>
+                  {menu.mode === "convert" ? "转为" : "插入块"}
+                </MenuLabel>
                 {BLOCK_TYPES.map((t) => (
-                  <MenuItem key={t.kind} hint={t.hint} onClick={() => applyInsert(t.kind)}>
+                  <MenuItem
+                    key={t.kind}
+                    hint={t.hint}
+                    onClick={() => applyInsert(t.kind)}
+                  >
                     {t.label}
                   </MenuItem>
                 ))}
@@ -27903,31 +28750,58 @@ function BlockEditor({ blocks, onChange }) {
             {menu.kind === "actions" && (
               <>
                 <MenuLabel>转为</MenuLabel>
-                <MenuItem hint="Aa" onClick={() => turnInto(menu.blockIndex, "paragraph")}>
+                <MenuItem
+                  hint="Aa"
+                  onClick={() => turnInto(menu.blockIndex, "paragraph")}
+                >
                   正文
                 </MenuItem>
-                <MenuItem hint="H1" onClick={() => turnInto(menu.blockIndex, "h1")}>
+                <MenuItem
+                  hint="H1"
+                  onClick={() => turnInto(menu.blockIndex, "h1")}
+                >
                   标题 1
                 </MenuItem>
-                <MenuItem hint="H2" onClick={() => turnInto(menu.blockIndex, "h2")}>
+                <MenuItem
+                  hint="H2"
+                  onClick={() => turnInto(menu.blockIndex, "h2")}
+                >
                   标题 2
                 </MenuItem>
-                <MenuItem hint="H3" onClick={() => turnInto(menu.blockIndex, "h3")}>
+                <MenuItem
+                  hint="H3"
+                  onClick={() => turnInto(menu.blockIndex, "h3")}
+                >
                   标题 3
                 </MenuItem>
-                <MenuItem hint="•" onClick={() => turnInto(menu.blockIndex, "bullet")}>
+                <MenuItem
+                  hint="•"
+                  onClick={() => turnInto(menu.blockIndex, "bullet")}
+                >
                   无序列表
                 </MenuItem>
-                <MenuItem hint="1." onClick={() => turnInto(menu.blockIndex, "ordered")}>
+                <MenuItem
+                  hint="1."
+                  onClick={() => turnInto(menu.blockIndex, "ordered")}
+                >
                   有序列表
                 </MenuItem>
-                <MenuItem hint="❝" onClick={() => turnInto(menu.blockIndex, "quote")}>
+                <MenuItem
+                  hint="❝"
+                  onClick={() => turnInto(menu.blockIndex, "quote")}
+                >
                   引用
                 </MenuItem>
                 <div style={menuSep} />
-                <MenuItem onClick={() => moveBlock(menu.blockIndex, -1)}>上移</MenuItem>
-                <MenuItem onClick={() => moveBlock(menu.blockIndex, 1)}>下移</MenuItem>
-                <MenuItem onClick={() => duplicateAt(menu.blockIndex)}>复制</MenuItem>
+                <MenuItem onClick={() => moveBlock(menu.blockIndex, -1)}>
+                  上移
+                </MenuItem>
+                <MenuItem onClick={() => moveBlock(menu.blockIndex, 1)}>
+                  下移
+                </MenuItem>
+                <MenuItem onClick={() => duplicateAt(menu.blockIndex)}>
+                  复制
+                </MenuItem>
                 <div style={menuSep} />
                 <MenuItem danger onClick={() => removeAt(menu.blockIndex)}>
                   删除
@@ -27937,13 +28811,22 @@ function BlockEditor({ blocks, onChange }) {
             {menu.kind === "column" && (
               <>
                 <MenuLabel>列操作</MenuLabel>
-                <MenuItem onClick={() => insertColumn(menu.blockIndex, menu.colIndex + 1)}>
+                <MenuItem
+                  onClick={() =>
+                    insertColumn(menu.blockIndex, menu.colIndex + 1)
+                  }
+                >
                   在右侧插入列
                 </MenuItem>
-                <MenuItem onClick={() => insertColumn(menu.blockIndex, menu.colIndex)}>
+                <MenuItem
+                  onClick={() => insertColumn(menu.blockIndex, menu.colIndex)}
+                >
                   在左侧插入列
                 </MenuItem>
-                <MenuItem danger onClick={() => deleteColumn(menu.blockIndex, menu.colIndex)}>
+                <MenuItem
+                  danger
+                  onClick={() => deleteColumn(menu.blockIndex, menu.colIndex)}
+                >
                   删除本列
                 </MenuItem>
               </>
@@ -27951,24 +28834,40 @@ function BlockEditor({ blocks, onChange }) {
             {menu.kind === "cell" && (
               <>
                 <MenuLabel>行操作</MenuLabel>
-                <MenuItem onClick={() => insertRow(menu.blockIndex, menu.rowIndex)}>
+                <MenuItem
+                  onClick={() => insertRow(menu.blockIndex, menu.rowIndex)}
+                >
                   在上方插入行
                 </MenuItem>
-                <MenuItem onClick={() => insertRow(menu.blockIndex, menu.rowIndex + 1)}>
+                <MenuItem
+                  onClick={() => insertRow(menu.blockIndex, menu.rowIndex + 1)}
+                >
                   在下方插入行
                 </MenuItem>
-                <MenuItem danger onClick={() => deleteRow(menu.blockIndex, menu.rowIndex)}>
+                <MenuItem
+                  danger
+                  onClick={() => deleteRow(menu.blockIndex, menu.rowIndex)}
+                >
                   删除本行
                 </MenuItem>
                 <div style={menuSep} />
                 <MenuLabel>列操作</MenuLabel>
-                <MenuItem onClick={() => insertColumn(menu.blockIndex, menu.colIndex + 1)}>
+                <MenuItem
+                  onClick={() =>
+                    insertColumn(menu.blockIndex, menu.colIndex + 1)
+                  }
+                >
                   在右侧插入列
                 </MenuItem>
-                <MenuItem onClick={() => insertColumn(menu.blockIndex, menu.colIndex)}>
+                <MenuItem
+                  onClick={() => insertColumn(menu.blockIndex, menu.colIndex)}
+                >
                   在左侧插入列
                 </MenuItem>
-                <MenuItem danger onClick={() => deleteColumn(menu.blockIndex, menu.colIndex)}>
+                <MenuItem
+                  danger
+                  onClick={() => deleteColumn(menu.blockIndex, menu.colIndex)}
+                >
                   删除本列
                 </MenuItem>
               </>
@@ -28042,7 +28941,11 @@ function kbEnsureSystemNodes(store) {
   }
   const tutorial = kbTutorialNode();
   nodes[KB_TUTORIAL_DOC_ID] = nodes[KB_TUTORIAL_DOC_ID]
-    ? { ...nodes[KB_TUTORIAL_DOC_ID], contentMd: tutorial.contentMd, system: true }
+    ? {
+        ...nodes[KB_TUTORIAL_DOC_ID],
+        contentMd: tutorial.contentMd,
+        system: true,
+      }
     : tutorial;
   return { ...store, nodes };
 }
@@ -28205,7 +29108,11 @@ function kbMoveNode(store, id, newParentId) {
     ...store,
     nodes: {
       ...store.nodes,
-      [id]: { ...n, parentId: newParentId, order: kbNextOrder(store, newParentId) },
+      [id]: {
+        ...n,
+        parentId: newParentId,
+        order: kbNextOrder(store, newParentId),
+      },
     },
   };
 }
@@ -28302,8 +29209,7 @@ async function archiveReviewToKnowledgeBase({
 const TRANSCRIPT_KB_WORD_TOP_N = 5;
 
 function transcriptKbSegmentsToMarkedText(segments) {
-  const list =
-    Array.isArray(segments) && segments.length > 0 ? segments : null;
+  const list = Array.isArray(segments) && segments.length > 0 ? segments : null;
   if (!list) return "";
   return list
     .map((segment) => {
@@ -28676,7 +29582,8 @@ function ScreenKnowledge() {
             cursor: "pointer",
             fontSize: 13,
             color: "var(--ink-800, #1f2733)",
-            background: selectedId === node.id ? "var(--blue-50)" : "transparent",
+            background:
+              selectedId === node.id ? "var(--blue-50)" : "transparent",
           }}
         >
           <span
@@ -28702,7 +29609,9 @@ function ScreenKnowledge() {
               defaultValue={node.name}
               onClick={(e) => e.stopPropagation()}
               onBlur={(e) => {
-                setStore((s) => kbRenameNode(s, node.id, e.target.value.trim() || node.name));
+                setStore((s) =>
+                  kbRenameNode(s, node.id, e.target.value.trim() || node.name),
+                );
                 setRenamingId(null);
               }}
               onKeyDown={(e) => {
@@ -28732,7 +29641,10 @@ function ScreenKnowledge() {
               {node.name}
             </span>
           )}
-          <span className="kb-actions" style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+          <span
+            className="kb-actions"
+            style={{ display: "flex", gap: 2, flexShrink: 0 }}
+          >
             {isFolder && (
               <button
                 type="button"
@@ -28798,7 +29710,11 @@ function ScreenKnowledge() {
           }}
         >
           <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
-            <Button size="sm" kind="default" onClick={() => addChild(KB_ROOT_ID, "doc")}>
+            <Button
+              size="sm"
+              kind="default"
+              onClick={() => addChild(KB_ROOT_ID, "doc")}
+            >
               + 页面
             </Button>
             <Button
@@ -28812,7 +29728,8 @@ function ScreenKnowledge() {
           <div
             style={{
               fontSize: 11,
-              color: syncState === "synced" ? "var(--ok-600)" : "var(--ink-400)",
+              color:
+                syncState === "synced" ? "var(--ok-600)" : "var(--ink-400)",
               marginBottom: 6,
               paddingLeft: 2,
             }}
@@ -28827,7 +29744,14 @@ function ScreenKnowledge() {
         </div>
 
         {/* Content */}
-        <div style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "18px 24px" }}>
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflowY: "auto",
+            padding: "18px 24px",
+          }}
+        >
           {selected ? (
             <>
               <div
@@ -28923,9 +29847,15 @@ function ScreenKnowledge() {
                     color: "var(--ink-700)",
                   }}
                 >
-                  {docMsg ? <div style={{ marginBottom: shareUrl ? 6 : 0 }}>{docMsg}</div> : null}
+                  {docMsg ? (
+                    <div style={{ marginBottom: shareUrl ? 6 : 0 }}>
+                      {docMsg}
+                    </div>
+                  ) : null}
                   {shareUrl ? (
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <div
+                      style={{ display: "flex", gap: 8, alignItems: "center" }}
+                    >
                       <input
                         readOnly
                         value={shareUrl}
@@ -28983,7 +29913,9 @@ function ScreenKnowledge() {
                 <KnowledgeDocEditor
                   key={selected.id}
                   doc={selected}
-                  onChange={(md) => setStore((s) => kbSetContent(s, selected.id, md))}
+                  onChange={(md) =>
+                    setStore((s) => kbSetContent(s, selected.id, md))
+                  }
                 />
               ) : (
                 <KnowledgeFolderView
@@ -28995,7 +29927,10 @@ function ScreenKnowledge() {
               )}
             </>
           ) : (
-            <EmptyHint title="选择左侧文档" hint="或新建页面 / 文件夹组织你的知识库。" />
+            <EmptyHint
+              title="选择左侧文档"
+              hint="或新建页面 / 文件夹组织你的知识库。"
+            />
           )}
         </div>
       </div>
@@ -29014,8 +29949,16 @@ function ScreenKnowledge() {
           <div
             style={{
               position: "fixed",
-              left: Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 1200) - 200),
-              top: Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 800) - 240),
+              left: Math.min(
+                menu.x,
+                (typeof window !== "undefined" ? window.innerWidth : 1200) -
+                  200,
+              ),
+              top: Math.min(
+                menu.y,
+                (typeof window !== "undefined" ? window.innerHeight : 800) -
+                  240,
+              ),
               zIndex: 91,
               background: "#fff",
               border: "1px solid var(--line)",
@@ -29048,7 +29991,10 @@ function ScreenKnowledge() {
               重命名
             </KbMenuItem>
             {!menuNode.system && (
-              <KbMenuItem onClick={() => setMoveId(menuNode.id)} close={() => setMenu(null)}>
+              <KbMenuItem
+                onClick={() => setMoveId(menuNode.id)}
+                close={() => setMenu(null)}
+              >
                 移动到…
               </KbMenuItem>
             )}
@@ -29057,7 +30003,8 @@ function ScreenKnowledge() {
                 danger
                 onClick={() => {
                   setStore((s) => kbDeleteNode(s, menuNode.id));
-                  if (selectedId === menuNode.id) setSelectedId(KB_REVIEW_FOLDER_ID);
+                  if (selectedId === menuNode.id)
+                    setSelectedId(KB_REVIEW_FOLDER_ID);
                 }}
                 close={() => setMenu(null)}
               >
@@ -29122,10 +30069,16 @@ function ScreenKnowledge() {
                     fontSize: 13,
                     color: "var(--ink-700)",
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-soft)")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  onMouseEnter={(e) =>
+                    (e.currentTarget.style.background = "var(--bg-soft)")
+                  }
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.background = "transparent")
+                  }
                 >
-                  {kbPath(store, f.id).map((p) => p.name).join(" / ")}
+                  {kbPath(store, f.id)
+                    .map((p) => p.name)
+                    .join(" / ")}
                 </button>
               ))}
           </div>
@@ -29157,7 +30110,9 @@ function KbMenuItem({ children, onClick, close, danger }) {
         onClick();
         close?.();
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-soft)")}
+      onMouseEnter={(e) =>
+        (e.currentTarget.style.background = "var(--bg-soft)")
+      }
       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
       style={{
         display: "block",
@@ -29190,7 +30145,10 @@ function KnowledgeFolderView({ store, folder, onOpen, onAdd }) {
         </Button>
       </div>
       {kids.length === 0 ? (
-        <EmptyHint title="空文件夹" hint="新建页面或文件夹，或在任务详情完成复盘后自动归档到这里。" />
+        <EmptyHint
+          title="空文件夹"
+          hint="新建页面或文件夹，或在任务详情完成复盘后自动归档到这里。"
+        />
       ) : (
         <div
           style={{
@@ -29228,7 +30186,9 @@ function KnowledgeFolderView({ store, folder, onOpen, onAdd }) {
               >
                 {k.name}
               </div>
-              <div style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 4 }}>
+              <div
+                style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 4 }}
+              >
                 {k.type === "folder"
                   ? `${kbChildren(store, k.id).length} 项`
                   : "复盘文档"}
@@ -29475,7 +30435,7 @@ function LiveReviewDrawer({
         .md-preview h4 { font-size: 13px; margin: 12px 0 6px; color: var(--ink-900); }
         .md-preview ul, .md-preview ol { margin: 6px 0 6px 18px; }
         .md-preview li { margin: 2px 0; }
-        .md-preview blockquote { margin: 10px 0; padding: 8px 12px; background: var(--bg-soft); border-left: 3px solid var(--blue-600); border-radius: 4px; color: var(--ink-700); }
+        .md-preview blockquote { margin: 10px 0; padding: 8px 12px; background: var(--bg-soft); border-left: 1px solid var(--line); border-radius: 4px; color: var(--ink-700); }
         .md-preview table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12.5px; }
         .md-preview th, .md-preview td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
         .md-preview th { background: var(--bg-soft); font-weight: 600; color: var(--ink-900); }
@@ -31636,13 +32596,11 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
     try {
       await onSubmit?.({
         name: nextName,
-        logoText:
-          sliceByCodePoints(logoText.trim(), 4) || normalized.logoText,
+        logoText: sliceByCodePoints(logoText.trim(), 4) || normalized.logoText,
         brandName:
           sliceByCodePoints(brandName.trim(), 12) || normalized.brandName,
         brandTagline:
-          sliceByCodePoints(brandTagline.trim(), 32) ||
-          normalized.brandTagline,
+          sliceByCodePoints(brandTagline.trim(), 32) || normalized.brandTagline,
         memberLimit: nextMemberLimit,
         features,
       });
@@ -32946,7 +33904,9 @@ function ScreenAudit() {
               minWidth: 130,
             }}
           >
-            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>审计日志</div>
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              审计日志
+            </div>
             <div
               style={{
                 display: "flex",
@@ -32967,7 +33927,9 @@ function ScreenAudit() {
               </span>
               <span style={{ fontSize: 11, color: "var(--ink-400)" }}>条</span>
             </div>
-            <div style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}>
+            <div
+              style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}
+            >
               当前角色可见范围
             </div>
           </div>
@@ -33364,7 +34326,9 @@ function ScreenNotifications() {
               minWidth: 130,
             }}
           >
-            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>通知总数</div>
+            <div style={{ fontSize: 12, color: "var(--ink-400)" }}>
+              通知总数
+            </div>
             <div
               style={{
                 display: "flex",
@@ -33385,7 +34349,9 @@ function ScreenNotifications() {
               </span>
               <span style={{ fontSize: 11, color: "var(--ink-400)" }}>条</span>
             </div>
-            <div style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}>
+            <div
+              style={{ fontSize: 11, marginTop: 2, color: "var(--ink-400)" }}
+            >
               当前可见范围
             </div>
           </div>
@@ -33610,7 +34576,7 @@ function ScreenExport() {
 
   // 各导出 kind 的真实取数：优先用已注入的上下文数据（结算批次），
   // 上下文没有的（审计日志 / 报数明细 / 成本明细）在导出前先取对应 /api，
-  // 再按 /api/exports 的「客户端提供 rows」契约传给治理导出。
+  // 结算类导出只传 id，让服务端按库内金额重建官方导出行。
   const buildExportRows = async () => {
     if (kind === "audit_logs") {
       const entries = await actions.refreshAuditEntries?.();
@@ -33621,7 +34587,7 @@ function ScreenExport() {
       return Array.isArray(reports) ? reports : [];
     }
     if (kind === "settlement_batch") {
-      return settlementBatchExportRows(batches);
+      return [];
     }
     if (kind === "project_costs" || kind === "supplier_reconcile") {
       const items = await actions.fetchProjectCostItems?.(projectId);
@@ -33644,15 +34610,24 @@ function ScreenExport() {
       const rows = await buildExportRows();
       const costExport =
         kind === "project_costs" || kind === "supplier_reconcile";
+      const governedInput =
+        kind === "settlement_batch"
+          ? {
+              kind,
+              batchIds: (Array.isArray(batches) ? batches : [])
+                .map((batch) => batch.id)
+                .filter(Boolean),
+            }
+          : {
+              kind,
+              rows,
+            };
       const exportResult = costExport
         ? await actions.createProjectCostExport?.(projectId, {
             kind,
             rows,
           })
-        : await actions.createGovernedExport({
-            kind,
-            rows,
-          });
+        : await actions.createGovernedExport(governedInput);
       setResult(exportResult);
     } catch (error) {
       globalThis.alert?.(
@@ -33806,19 +34781,6 @@ function ScreenExport() {
       </div>
     </>
   );
-}
-
-// 结算批次导出：批次上下文金额为元，导出契约字段为分（*AmountCents）。
-function settlementBatchExportRows(batches) {
-  return (Array.isArray(batches) ? batches : []).map((batch) => {
-    const amountCents = Math.round(Number(batch.amount ?? 0) * 100);
-    const isPayable = batch.type === "streamer_payable";
-    return {
-      batchName: batch.name || displayRecordId(batch.id, "结算批次"),
-      payableAmountCents: isPayable ? amountCents : 0,
-      vendorReceivableCents: isPayable ? 0 : amountCents,
-    };
-  });
 }
 
 // 项目成本明细导出：对齐 features/complex-cost/complex-cost-export-dto 的行结构。
@@ -34084,7 +35046,9 @@ function BillingPaywall({
             color: "var(--ink-500)",
           }}
         >
-          <span>自动续费：{billingStatus.autoRenew === false ? "关闭" : "开启"}</span>
+          <span>
+            自动续费：{billingStatus.autoRenew === false ? "关闭" : "开启"}
+          </span>
           <span>试用到期：{formatBillingDate(billingStatus.trialEndsAt)}</span>
           <span>宽限截止：{formatBillingDate(billingStatus.graceUntil)}</span>
           <span>
@@ -34103,7 +35067,11 @@ function BillingPaywall({
               : currentIndex < 0
                 ? "subscription_new"
                 : "subscription_upgrade";
-            const action = isRenewal ? "续费" : currentIndex < 0 ? "订阅" : "升级";
+            const action = isRenewal
+              ? "续费"
+              : currentIndex < 0
+                ? "订阅"
+                : "升级";
             const key = `plan:${plan.code}`;
             return (
               <Button
@@ -34153,7 +35121,9 @@ function BillingPaywall({
                   }}
                 >
                   <Badge
-                    tone={decision.reason === "usage_hard_block" ? "red" : "amber"}
+                    tone={
+                      decision.reason === "usage_hard_block" ? "red" : "amber"
+                    }
                     dot
                   >
                     {`${BILLING_METRIC_LABELS[row.metric] ?? row.metric}：${paywallReasonLabel(decision.reason)}`}
@@ -34202,7 +35172,9 @@ function BillingPaywall({
         )}
 
         {error && (
-          <div style={{ color: "var(--danger-600)", fontSize: 12 }}>{error}</div>
+          <div style={{ color: "var(--danger-600)", fontSize: 12 }}>
+            {error}
+          </div>
         )}
 
         {pay?.order && (
@@ -34218,7 +35190,8 @@ function BillingPaywall({
             }}
           >
             <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
-              待支付订单：{yuanFromCents(pay.order.amountCents)}（{orderStatus}）
+              待支付订单：{yuanFromCents(pay.order.amountCents)}（{orderStatus}
+              ）
             </div>
             <div className="mono" style={{ color: "var(--ink-400)" }}>
               订单号 {pay.order.id}
@@ -34610,10 +35583,17 @@ function ScreenFunnel({ onLoad }) {
         }
       />
       <div
-        style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}
+        style={{
+          padding: 20,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
       >
         {error && (
-          <div style={{ color: "var(--danger-600)", fontSize: 12 }}>{error}</div>
+          <div style={{ color: "var(--danger-600)", fontSize: 12 }}>
+            {error}
+          </div>
         )}
         {!metrics ? (
           <Card>
@@ -34675,7 +35655,9 @@ function ScreenFunnel({ onLoad }) {
 
             <Card title="付费墙触发原因" padded={false}>
               {reasonRows.length === 0 ? (
-                <div style={{ padding: 16, color: "var(--ink-400)", fontSize: 12 }}>
+                <div
+                  style={{ padding: 16, color: "var(--ink-400)", fontSize: 12 }}
+                >
                   暂无付费墙曝光记录。
                 </div>
               ) : (
@@ -35119,12 +36101,51 @@ function OpsReferenceInner({
         "/api/live-reports",
         "refresh reports failed",
       );
+      const reports = Array.isArray(body.reports)
+        ? body.reports.map(toReferenceReportFromApi)
+        : [];
       if (Array.isArray(body.reports)) {
-        setReportsState(body.reports.map(toReferenceReportFromApi));
+        setReportsState(reports);
+        const reportIds = reports.map((report) => report.id).filter(Boolean);
+        if (reportIds.length > 0) {
+          try {
+            const params = new URLSearchParams();
+            params.set("reportIds", reportIds.join(","));
+            params.set("limit", String(Math.min(reportIds.length, 200)));
+            const summaryBody = await fetchJson(
+              `/api/live-reports/pre-review-summary?${params.toString()}`,
+              "refresh report pre-review summaries failed",
+            );
+            if (Array.isArray(summaryBody.summaries)) {
+              setReportsState((current) =>
+                mergeReportPreReviewSummaries(current, summaryBody.summaries),
+              );
+            }
+          } catch {
+            // 预审摘要是辅助信息，失败时不阻塞报数审核主列表。
+          }
+        }
       }
       // 返回后端原始 DTO（含 streamerName / settlementDuration / evidenceLevel），
       // 供导出中心直接作为治理导出的 rows 使用。
       return Array.isArray(body.reports) ? body.reports : [];
+    };
+
+    const refreshReportPreReviewSummaries = async (reportIds) => {
+      const ids = [...new Set((reportIds ?? []).filter(Boolean))].slice(0, 200);
+      if (ids.length === 0) return [];
+      const params = new URLSearchParams();
+      params.set("reportIds", ids.join(","));
+      params.set("limit", String(ids.length));
+      const body = await fetchJson(
+        `/api/live-reports/pre-review-summary?${params.toString()}`,
+        "refresh report pre-review summaries failed",
+      );
+      const summaries = Array.isArray(body.summaries) ? body.summaries : [];
+      setReportsState((current) =>
+        mergeReportPreReviewSummaries(current, summaries),
+      );
+      return summaries;
     };
 
     const refreshSettlementPool = async (scope = settlementScope) => {
@@ -35171,9 +36192,22 @@ function OpsReferenceInner({
       }));
     };
 
-    const refreshAuditEntries = async () => {
+    const refreshAuditEntries = async (filters = {}) => {
+      const params = new URLSearchParams();
+      params.set("limit", String(filters.limit ?? 50));
+      ["module", "action", "projectId", "objectType", "objectId"].forEach(
+        (key) => {
+          const value = filters[key];
+          if (typeof value === "string" && value.trim()) {
+            params.set(key, value.trim());
+          }
+        },
+      );
+      if (filters.highRiskOnly) {
+        params.set("highRiskOnly", "1");
+      }
       const body = await fetchJson(
-        "/api/audit-logs?limit=50",
+        `/api/audit-logs?${params.toString()}`,
         "refresh audit logs failed",
       );
       if (Array.isArray(body.entries)) {
@@ -35512,6 +36546,7 @@ function OpsReferenceInner({
       fetchAdmissionPreReview,
       refreshOpsTasks,
       refreshReports,
+      refreshReportPreReviewSummaries,
       refreshSettlementPool,
       refreshSettlementBatchDetail,
       exportAdmissionRecordings,
@@ -35693,8 +36728,11 @@ function OpsReferenceInner({
         // status，就地更新即可。application.status 以服务端返回为准，录屏
         // status 与服务端 reviewRecordingSubmission 的写入一致（= decision）。
         const reviewedStatus = body?.application?.status;
-        const reviewedRecordingStatus = ["approved", "rejected", "needs_changes"]
-          .includes(input?.decision)
+        const reviewedRecordingStatus = [
+          "approved",
+          "rejected",
+          "needs_changes",
+        ].includes(input?.decision)
           ? input.decision
           : null;
         setApplicationsState((previous) => {
@@ -35874,8 +36912,17 @@ function OpsReferenceInner({
         await refreshOpsTasks();
         return body;
       },
-      reviewReport: async (id, decision) => {
+      reviewReport: async (id, decision, options = {}) => {
         const approved = decision === "approve";
+        const reviewNotes =
+          options.reviewNotes ||
+          JSON.stringify({
+            source: "ops_reference_report_review",
+            decision,
+            failedGates: [],
+            reasonLabels: [],
+            note: approved ? "绿证据且预审全门通过" : "人工审核处理",
+          });
         const body = await fetchJson(
           `/api/live-reports/${id}/review`,
           "review report failed",
@@ -35886,7 +36933,8 @@ function OpsReferenceInner({
               decision,
               includeInTaskResult: approved,
               enterSettlementPool: approved,
-              reviewNotes: "经营端页面审核",
+              reviewNotes,
+              reason: options.reason || reviewNotes,
             }),
           },
         );
@@ -36146,11 +37194,15 @@ function OpsReferenceInner({
       },
       refreshBillingStatus,
       startCheckout: async (intent) => {
-        return fetchJson("/api/billing/checkout", "create checkout order failed", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(intent),
-        });
+        return fetchJson(
+          "/api/billing/checkout",
+          "create checkout order failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(intent),
+          },
+        );
       },
       refreshBillingOrder: async (orderId) => {
         const body = await fetchJson(
@@ -36410,6 +37462,20 @@ function OpsReferenceInner({
   const saveOrganizationSettings = async (input) => {
     // 品牌四项持久化到 organizations（name 列 + branding jsonb）；
     // memberLimit / features 目前仍是会话内展示态，保持本地合并。
+    const mergeOrganizationSettings = (current, patch) =>
+      normalizeOrganizationSettings({
+        ...normalizeOrganizationSettings(current),
+        ...patch,
+        features: {
+          ...normalizeOrganizationSettings(current).features,
+          ...(patch?.features ?? {}),
+        },
+      });
+
+    setOrganizationSettingsState((current) =>
+      mergeOrganizationSettings(current, input),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const response = await fetch("/api/organization/settings", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -36438,15 +37504,10 @@ function OpsReferenceInner({
         ? { name: body.organization.name }
         : {};
     setOrganizationSettingsState((current) =>
-      normalizeOrganizationSettings({
-        ...normalizeOrganizationSettings(current),
+      mergeOrganizationSettings(current, {
         ...input,
         ...savedName,
         ...savedBranding,
-        features: {
-          ...normalizeOrganizationSettings(current).features,
-          ...(input?.features ?? {}),
-        },
       }),
     );
     setOrganizationSettingsOpen(false);
@@ -36511,7 +37572,9 @@ function OpsReferenceInner({
         className="ops-reference-shell"
         style={{ display: "flex", minHeight: "100vh", background: "var(--bg)" }}
       >
-        <style data-ops-responsive-shell="true">{OPS_SHELL_RESPONSIVE_CSS}</style>
+        <style data-ops-responsive-shell="true">
+          {OPS_SHELL_RESPONSIVE_CSS}
+        </style>
         {mobileNavigationOpen ? (
           <button
             type="button"
@@ -36537,6 +37600,7 @@ function OpsReferenceInner({
           navCounts={navCounts}
           currentUser={currentUserState}
           organizationSettings={organizationSettingsState}
+          organizationSettingsOpen={organizationSettingsOpen}
           onOpenOrganizationSettings={openOrganizationSettingsFromNavigation}
           onUpdateAvatar={updateProfileAvatar}
           mobileNavigationOpen={mobileNavigationOpen}

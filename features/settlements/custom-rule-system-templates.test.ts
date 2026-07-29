@@ -11,13 +11,15 @@ const EXPECTED_IDS = [
   "system:cpt:v1",
   "system:cps:v1",
   "system:base-plus-performance:v1",
+  "system:base-plus-tiered-cpt:v1",
+  "system:base-plus-cps:v1",
   "system:evidence-discount:v1",
   "system:floor-cap:v1",
   "system:group-bonus:v1",
 ];
 
 describe("custom rule system templates", () => {
-  it("lists the six common contracts in stable business order", () => {
+  it("lists common industry contracts in stable business order", () => {
     const templates = listCustomRuleSystemTemplates();
 
     expect(templates.map((template) => template.id)).toEqual(EXPECTED_IDS);
@@ -25,6 +27,8 @@ describe("custom rule system templates", () => {
       "cpt",
       "cps",
       "base_plus_performance",
+      "base_plus_tiered_cpt",
+      "base_plus_cps",
       "evidence_discount",
       "floor_cap",
       "group_bonus",

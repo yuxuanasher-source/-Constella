@@ -2,13 +2,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { POST } from "./route";
 
-import { evaluateAutoReviewShadow } from "@/features/auto-review/auto-review-service";
+import {
+  evaluateAutoReviewActive,
+  evaluateAutoReviewShadow,
+} from "@/features/auto-review/auto-review-service";
+import { listAutoReviewRolloutMetricRows } from "@/features/auto-review/auto-review-rollout-metrics-repository";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/auto-review/auto-review-service", () => ({
+  evaluateAutoReviewActive: vi.fn(),
   evaluateAutoReviewShadow: vi.fn(),
 }));
+
+vi.mock(
+  "@/features/auto-review/auto-review-rollout-metrics-repository",
+  () => ({
+    listAutoReviewRolloutMetricRows: vi.fn(),
+  }),
+);
 
 vi.mock("@/lib/auth/context", () => ({
   getAuthContext: vi.fn(),
@@ -40,6 +52,14 @@ describe("auto review evaluate route", () => {
       confidence: "high",
       reasons: ["green_system_evidence"],
       failedGates: [],
+    });
+    vi.mocked(evaluateAutoReviewActive).mockResolvedValue({
+      decision: "auto_pass_candidate",
+      mode: "active",
+      confidence: "high",
+      reasons: ["green_system_evidence"],
+      failedGates: [],
+      applied: true,
     });
   });
 
@@ -111,6 +131,121 @@ describe("auto review evaluate route", () => {
     expect(evaluateAutoReviewShadow).not.toHaveBeenCalled();
   });
 
+  it("applies active auto review only when rollout metrics allow active", async () => {
+    const body = {
+      targetMode: "active",
+      report: reportSnapshot(),
+      rule: {
+        id: "rule-1",
+        mode: "active",
+        maxDurationDeviationPct: 10,
+        maxDurationDeviationMinutes: 15,
+        dailyHardLimitMinutes: 480,
+      },
+      rolloutConfig: { limit: 200 },
+    };
+    vi.mocked(listAutoReviewRolloutMetricRows).mockResolvedValueOnce({
+      gateInput: {
+        targetMode: "active",
+        killSwitchEnabled: false,
+        shadowSampleCount: 100,
+        minimumShadowSampleCount: 50,
+        shadowFalseAcceptRateBps: 0,
+        maximumFalseAcceptRateBps: 100,
+        auditSampleCount: 40,
+        minimumAuditSampleCount: 20,
+        auditErrorRateBps: 0,
+        maximumAuditErrorRateBps: 250,
+        explicitActiveRequest: true,
+      },
+      summary: {},
+    } as never);
+
+    const response = await POST(
+      new Request("http://localhost/api/auto-review/evaluate", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      result: { mode: "active", applied: true },
+      rolloutGate: { allowed: true, effectiveMode: "active" },
+    });
+    expect(listAutoReviewRolloutMetricRows).toHaveBeenCalledWith(
+      { client: "supabase" },
+      expect.objectContaining({
+        organizationId: "org-1",
+        limit: 200,
+      }),
+    );
+    expect(evaluateAutoReviewActive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: { client: "supabase" },
+        actor: expect.objectContaining({ name: "系统自动审核" }),
+        report: body.report,
+        rule: expect.objectContaining({ id: "rule-1", mode: "active" }),
+        rolloutGate: expect.objectContaining({ allowed: true }),
+      }),
+    );
+  });
+
+  it("falls back to shadow when active rollout gates are not ready", async () => {
+    const body = {
+      targetMode: "active",
+      report: reportSnapshot(),
+      rule: {
+        id: "rule-1",
+        mode: "active",
+        maxDurationDeviationPct: 10,
+        maxDurationDeviationMinutes: 15,
+        dailyHardLimitMinutes: 480,
+      },
+    };
+    vi.mocked(listAutoReviewRolloutMetricRows).mockResolvedValueOnce({
+      gateInput: {
+        targetMode: "active",
+        killSwitchEnabled: false,
+        shadowSampleCount: 0,
+        minimumShadowSampleCount: 50,
+        shadowFalseAcceptRateBps: 0,
+        maximumFalseAcceptRateBps: 100,
+        auditSampleCount: 0,
+        minimumAuditSampleCount: 20,
+        auditErrorRateBps: 0,
+        maximumAuditErrorRateBps: 250,
+        explicitActiveRequest: true,
+      },
+      summary: {},
+    } as never);
+
+    const response = await POST(
+      new Request("http://localhost/api/auto-review/evaluate", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      result: { mode: "shadow", applied: false },
+      rolloutGate: {
+        allowed: false,
+        failedGates: expect.arrayContaining([
+          "insufficient_shadow_samples",
+          "insufficient_audit_samples",
+        ]),
+      },
+    });
+    expect(evaluateAutoReviewActive).not.toHaveBeenCalled();
+    expect(evaluateAutoReviewShadow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rule: expect.objectContaining({ mode: "shadow" }),
+      }),
+    );
+  });
+
   it("rejects invalid report snapshots before evaluation", async () => {
     const response = await POST(
       new Request("http://localhost/api/auto-review/evaluate", {
@@ -149,3 +284,21 @@ describe("auto review evaluate route", () => {
     expect(evaluateAutoReviewShadow).not.toHaveBeenCalled();
   });
 });
+
+function reportSnapshot() {
+  return {
+    id: "report-1",
+    status: "pending_review",
+    evidenceLevel: "green",
+    timeSource: "system",
+    settlementDuration: 120,
+    systemDuration: 120,
+    screenshotDuration: 121,
+    riskFlags: [],
+    taskHasAnomaly: false,
+    durationOverridden: false,
+    projectSensitivity: "normal",
+    streamerTrust: "trusted",
+    plannedDuration: 120,
+  };
+}
