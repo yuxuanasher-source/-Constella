@@ -77,6 +77,8 @@
 | M3-010 | token 受控查看私有录屏   | 为项目创建厂家分享看板               | 复制分享链接；厂家用 token 打开；播放私有录屏并提交选择备注 | 链接仅包含创建时返回的随机 token；私有录屏通过 token 门控播放接口访问；页面不出现裸存储地址或 `Private recording` 占位符 |
 | M3-011 | 分享撤销与过期           | 有一个 active 分享看板               | 分别撤销链接、等待或模拟超过 expires_at 后访问列表/录屏/提交 | 撤销或过期后均拒绝访问和提交；原 token 不可复用；经营端状态同步显示 revoked/expired                                 |
 | M3-012 | 旧交付包 API 明确退役    | 使用 MCN staff 账号                  | 请求 `/api/delivery-packages?projectId=<id>`               | 返回 `410 Gone`，响应 replacement 指向 `/api/projects/<id>/admission-share-boards`；未登录为 401，非 MCN staff 为 403 |
+| M3-013 | 运营代传录屏角色与状态门控 | 准备 submitted / invited / recording_required / recording_rejected / recording_reviewing / recording_approved 六种报名；分别使用 owner、ops_manager、operator_business、finance | 在项目录屏明细中查看并使用“代传录屏”，填写 http(s) 外链 | 前三种员工角色只在前四种可提交状态看到入口并可成功代传；reviewing / approved 不显示入口；finance 不显示入口且直接请求 API 返回 403；成功提示“已由运营代传，待审核”并刷新项目看板 |
+| M3-014 | 自传/代传归属与跨组织防护 | 主播 A、运营 A 属于组织 A；运营 B 属于组织 B；另准备有效协作贡献组织和黑名单主播 | 主播 A 自传；运营 A 代传；运营 B 跨组织代传；有效协作贡献组织代传；尝试为黑名单主播代传；查看 API、数据库、审计和通知 | 自传和合法代传均返回 `uploadedBy` 且 `recording_submissions.uploaded_by` 为实际用户；审计含主体 streamerId、操作者 user/role、uploadedBy、uploadMode=self/proxy；通知区分自传/代传；无授权跨组织及黑名单代传被拒，匹配 contributorOrganizationId 且 agreement active 的协作代传可通过 |
 
 ## M4 排班与直播任务
 

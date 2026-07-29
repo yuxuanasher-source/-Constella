@@ -19,6 +19,8 @@ import type {
 type ProjectAdmissionRow = {
   id: string;
   name: string;
+  organization_id: string;
+  status: string;
   open_signup: boolean;
   allow_direct_invite: boolean;
   force_recording: boolean;
@@ -65,6 +67,7 @@ type RecordingSubmissionRow = {
   application_id: string;
   version: number;
   status: RecordingSubmissionRecord["status"];
+  uploaded_by: string | null;
   collaboration_id: string | null;
   contributor_organization_id: string | null;
   self_score_total: number | null;
@@ -104,6 +107,7 @@ const recordingSubmissionSelect = `
   application_id,
   version,
   status,
+  uploaded_by,
   collaboration_id,
   contributor_organization_id,
   self_score_total,
@@ -119,7 +123,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     const { data, error } = await this.client
       .from("projects")
       .select(
-        "id, name, open_signup, allow_direct_invite, force_recording, default_settlement_method, default_hourly_rate, default_base_salary, default_settlement_rule",
+        "id, name, organization_id, status, open_signup, allow_direct_invite, force_recording, default_settlement_method, default_hourly_rate, default_base_salary, default_settlement_rule",
       )
       .eq("id", projectId)
       .maybeSingle<ProjectAdmissionRow>();
@@ -321,6 +325,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     applicationId: string;
     projectId: string;
     streamerId: string;
+    uploadedBy: string;
     version: number;
     storagePath?: string;
     externalUrl?: string;
@@ -336,6 +341,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         application_id: input.applicationId,
         project_id: input.projectId,
         streamer_id: input.streamerId,
+        uploaded_by: input.uploadedBy,
         version: input.version,
         storage_path: input.storagePath,
         external_url: input.externalUrl,
@@ -492,6 +498,8 @@ function toProjectAdmissionConfig(
   return {
     id: row.id,
     name: row.name,
+    organizationId: row.organization_id,
+    status: row.status,
     openSignup: row.open_signup,
     allowDirectInvite: row.allow_direct_invite,
     forceRecording: row.force_recording,
@@ -541,6 +549,7 @@ function toRecordingSubmissionRecord(
     applicationId: row.application_id,
     version: row.version,
     status: row.status,
+    uploadedBy: row.uploaded_by,
     collaborationId: row.collaboration_id,
     contributorOrganizationId: row.contributor_organization_id,
     selfScoreTotal: row.self_score_total ?? null,

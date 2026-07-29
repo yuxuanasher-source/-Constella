@@ -44,6 +44,11 @@ const blockedProjectStatuses = new Set([
   "closed",
   "archived",
 ]);
+const proxyUploadRoles = new Set([
+  "owner",
+  "ops_manager",
+  "operator_business",
+]);
 
 export async function submitProjectRecording({
   repo,
@@ -65,8 +70,9 @@ export async function submitProjectRecording({
     selfCheck?: unknown;
   };
 }): Promise<ProjectRecordingDeliveryResult> {
-  if (actor.role !== "streamer") {
-    throw new Error("Only streamers can submit project recordings");
+  const isSelfUpload = actor.role === "streamer";
+  if (!isSelfUpload && !proxyUploadRoles.has(actor.role)) {
+    throw new Error("Current role cannot submit project recordings");
   }
 
   const storagePath = normalizeRecordingStoragePath(
@@ -74,14 +80,22 @@ export async function submitProjectRecording({
     actor.organizationId,
   );
   const normalized = normalizeProjectRecordingInput({ ...input, storagePath });
-  const selfCheck = normalizeRecordingSelfCheck(normalized.selfCheck);
-  const project = await repo.getPublicProjectForRecording(normalized.projectId);
-  if (
+  if (isSelfUpload && !normalized.selfCheck) {
+    throw new Error("Recording self-check is required");
+  }
+  const selfCheck = normalized.selfCheck
+    ? normalizeRecordingSelfCheck(normalized.selfCheck)
+    : undefined;
+  const project = isSelfUpload
+    ? await repo.getPublicProjectForRecording(normalized.projectId)
+    : await repo.getProjectAdmissionConfig(normalized.projectId);
+  const projectUnavailable =
     !project ||
     project.organizationId !== actor.organizationId ||
-    !project.isPublicToStreamers ||
-    blockedProjectStatuses.has(project.status)
-  ) {
+    blockedProjectStatuses.has(project.status) ||
+    (isSelfUpload &&
+      (!("isPublicToStreamers" in project) || !project.isPublicToStreamers));
+  if (projectUnavailable) {
     throw new Error("Project is not available for recording delivery");
   }
 
@@ -99,8 +113,9 @@ export async function submitProjectRecording({
       organizationId: actor.organizationId,
       projectId: project.id,
       streamerId: streamer.id,
-      source: "signup",
+      source: isSelfUpload ? "signup" : "direct_invite",
       status: "submitted",
+      ...(!isSelfUpload ? { invitedBy: actor.userId } : {}),
     }));
 
   const recording = await submitRecording({
@@ -136,7 +151,10 @@ function normalizeProjectRecordingInput(input: {
     throw new Error("projectId is required");
   }
 
-  const selfCheck = parseRecordingSelfCheckInput(input.selfCheck);
+  const selfCheck =
+    input.selfCheck === undefined
+      ? undefined
+      : parseRecordingSelfCheckInput(input.selfCheck);
 
   const link =
     typeof input.link === "string" && input.link.trim()

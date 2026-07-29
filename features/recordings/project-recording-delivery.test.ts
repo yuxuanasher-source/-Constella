@@ -28,6 +28,13 @@ const completeSelfCheck = {
   note: "Ready for review.",
 };
 
+const staffActor = {
+  userId: "user-ops",
+  name: "Business Operator",
+  role: "operator_business" as const,
+  organizationId: "org-1",
+};
+
 function baseRepo() {
   return {
     getPublicProjectForRecording: vi.fn().mockResolvedValue({
@@ -63,13 +70,26 @@ function baseRepo() {
       status: "submitted",
       decisionReason: null,
     }),
-    getProjectAdmissionConfig: vi.fn(),
+    getProjectAdmissionConfig: vi.fn().mockResolvedValue({
+      id: "project-1",
+      name: "Private Project",
+      organizationId: "org-1",
+      status: "recruiting",
+      openSignup: false,
+      allowDirectInvite: true,
+      forceRecording: true,
+      defaultSettlementMethod: "manual",
+      defaultHourlyRate: 0,
+      defaultBaseSalary: 0,
+      defaultSettlementRule: {},
+    }),
     getLatestRecordingSubmission: vi.fn().mockResolvedValue(null),
     createRecordingSubmission: vi.fn().mockResolvedValue({
       id: "recording-1",
       applicationId: "application-1",
       version: 1,
       status: "submitted",
+      uploadedBy: "user-streamer",
     }),
     markApplicationRecordingReviewing: vi.fn().mockResolvedValue({
       id: "application-1",
@@ -126,6 +146,7 @@ describe("submitProjectRecording", () => {
         applicationId: "application-1",
         projectId: "project-1",
         streamerId: "streamer-1",
+        uploadedBy: "user-streamer",
         version: 1,
         externalUrl: "https://videos.example.com/public-project",
       }),
@@ -142,6 +163,7 @@ describe("submitProjectRecording", () => {
         applicationId: "application-1",
         version: 1,
         status: "submitted",
+        uploadedBy: "user-streamer",
       },
       reviewStatusLabel: "审核中",
     });
@@ -171,6 +193,160 @@ describe("submitProjectRecording", () => {
         durationSeconds: 900,
       }),
     );
+  });
+
+  it("lets staff proxy-upload to a non-public own-organization project", async () => {
+    const repo = baseRepo();
+    repo.createRecordingSubmission.mockResolvedValue({
+      id: "recording-proxy",
+      applicationId: "application-1",
+      version: 1,
+      status: "submitted",
+      uploadedBy: staffActor.userId,
+    });
+
+    const result = await submitProjectRecording({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: staffActor,
+      input: {
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        link: "https://videos.example.com/operator-proxy",
+      },
+    });
+
+    expect(repo.getProjectAdmissionConfig).toHaveBeenCalledWith("project-1");
+    expect(repo.getPublicProjectForRecording).not.toHaveBeenCalled();
+    expect(repo.createApplication).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      projectId: "project-1",
+      streamerId: "streamer-1",
+      source: "direct_invite",
+      status: "submitted",
+      invitedBy: staffActor.userId,
+    });
+    expect(repo.createRecordingSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        streamerId: "streamer-1",
+        uploadedBy: staffActor.userId,
+      }),
+    );
+    expect(result.recording.uploadedBy).toBe(staffActor.userId);
+  });
+
+  it("rejects staff proxy delivery to a project outside the actor organization", async () => {
+    const repo = baseRepo();
+    repo.getProjectAdmissionConfig.mockResolvedValue({
+      id: "project-2",
+      name: "Other Organization Project",
+      organizationId: "org-2",
+      status: "recruiting",
+      openSignup: false,
+      allowDirectInvite: true,
+      forceRecording: true,
+      defaultSettlementMethod: "manual",
+      defaultHourlyRate: 0,
+      defaultBaseSalary: 0,
+      defaultSettlementRule: {},
+    });
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: staffActor,
+        input: {
+          projectId: "project-2",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/cross-org-proxy",
+        },
+      }),
+    ).rejects.toThrow("Project is not available for recording delivery");
+
+    expect(repo.createApplication).not.toHaveBeenCalled();
+  });
+
+  it("rejects staff proxy delivery to a blocked own-organization project", async () => {
+    const repo = baseRepo();
+    repo.getProjectAdmissionConfig.mockResolvedValue({
+      id: "project-1",
+      name: "Closed Project",
+      organizationId: "org-1",
+      status: "closed",
+      openSignup: false,
+      allowDirectInvite: true,
+      forceRecording: true,
+      defaultSettlementMethod: "manual",
+      defaultHourlyRate: 0,
+      defaultBaseSalary: 0,
+      defaultSettlementRule: {},
+    });
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: staffActor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/closed-project-proxy",
+        },
+      }),
+    ).rejects.toThrow("Project is not available for recording delivery");
+
+    expect(repo.createApplication).not.toHaveBeenCalled();
+  });
+
+  it("rejects finance project recording proxy uploads", async () => {
+    const repo = baseRepo();
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: { ...staffActor, role: "finance" as const },
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/finance-proxy",
+        },
+      }),
+    ).rejects.toThrow("Current role cannot submit project recordings");
+
+    expect(repo.getProjectAdmissionConfig).not.toHaveBeenCalled();
+    expect(repo.createApplication).not.toHaveBeenCalled();
+  });
+
+  it("never lets staff proxy-upload for a blacklisted streamer", async () => {
+    const repo = baseRepo();
+    repo.getStreamerForAdmission.mockResolvedValue({
+      id: "streamer-1",
+      displayName: "Blocked Streamer",
+      riskLevel: "blacklisted",
+    });
+
+    await expect(
+      submitProjectRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: staffActor,
+        input: {
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          link: "https://videos.example.com/blocked-proxy",
+        },
+      }),
+    ).rejects.toThrow("Blacklisted streamers cannot submit project recordings");
+
+    expect(repo.createApplication).not.toHaveBeenCalled();
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
   });
 
   it.each([

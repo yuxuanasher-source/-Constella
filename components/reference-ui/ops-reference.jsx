@@ -16278,6 +16278,11 @@ function ScreenAdmission({ focusRequest = null }) {
   // 与后端 rejectApplicationJoin 的角色门控一致：仅 owner / ops_manager 可最终拒绝入项。
   const canRejectJoin =
     currentUser.role === "owner" || currentUser.role === "ops_manager";
+  const canProxyUploadRecording = [
+    "owner",
+    "ops_manager",
+    "operator_business",
+  ].includes(currentUser.role);
   const [projectBoards, setProjectBoards] = React.useState(null);
   // 行内抽屉展开的项目：默认全部收起，点谁展开谁，明细跟随行出现。
   const [expandedProjectId, setExpandedProjectId] = React.useState("");
@@ -16448,6 +16453,37 @@ function ScreenAdmission({ focusRequest = null }) {
       setAdmissionMessage("已拒绝入项");
     } catch (error) {
       setAdmissionMessage(error?.message || "拒绝入项失败，请稍后重试");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const proxyUploadRecording = async (application) => {
+    if (!actions.proxyUploadApplicationRecording) {
+      setAdmissionMessage("运营代传后台暂未接入。");
+      return;
+    }
+    const externalUrl = askText("录屏外链（仅支持 http(s)）");
+    if (!externalUrl) {
+      setAdmissionMessage("操作已取消：请填写录屏外链");
+      return;
+    }
+    if (!isHttpUrl(externalUrl)) {
+      setAdmissionMessage("录屏外链仅支持 http(s) URL");
+      return;
+    }
+
+    setBusyAction(`proxy-upload:${application.id}`);
+    setAdmissionMessage("");
+    try {
+      await actions.proxyUploadApplicationRecording(
+        application.id,
+        externalUrl,
+      );
+      await syncAdmissionProjectBoards();
+      setAdmissionMessage("已由运营代传，待审核");
+    } catch (error) {
+      setAdmissionMessage(error?.message || "运营代传失败，请稍后重试");
     } finally {
       setBusyAction("");
     }
@@ -16787,7 +16823,10 @@ function ScreenAdmission({ focusRequest = null }) {
                   const confirmable =
                     r.status === "recording_approved" &&
                     r.vendorReview?.decision === "selected";
-                  if (!reviewable && !confirmable) {
+                  const proxyUploadable =
+                    canProxyUploadRecording &&
+                    canProxyUploadAdmissionRecording(r);
+                  if (!reviewable && !confirmable && !proxyUploadable) {
                     return (
                       <span style={{ color: "var(--ink-400)" }}>
                         {admissionNextActionLabel(r)}
@@ -16795,7 +16834,32 @@ function ScreenAdmission({ focusRequest = null }) {
                     );
                   }
                   return (
-                    <div style={{ display: "flex", gap: 6 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      {proxyUploadable && !reviewable && !confirmable ? (
+                        <span style={{ color: "var(--ink-400)" }}>
+                          {admissionNextActionLabel(r)}
+                        </span>
+                      ) : null}
+                      {proxyUploadable ? (
+                        <Button
+                          size="sm"
+                          kind="default"
+                          onClick={() => proxyUploadRecording(r)}
+                          disabled={
+                            busyAction === `proxy-upload:${r.id}`
+                          }
+                        >
+                          {busyAction === `proxy-upload:${r.id}`
+                            ? "代传中..."
+                            : "代传录屏"}
+                        </Button>
+                      ) : null}
                       {reviewable ? (
                         <>
                           {canRequestAdmissionRecordingAiAnalysis(r) ? (
@@ -19663,6 +19727,24 @@ function isAdmissionRecordingReviewable(application) {
     ].includes(status) ||
       ["submitted", "reviewing", "pending_review"].includes(recordingStatus))
   );
+}
+
+function canProxyUploadAdmissionRecording(application) {
+  return [
+    "submitted",
+    "invited",
+    "recording_required",
+    "recording_rejected",
+  ].includes(application.status);
+}
+
+function isHttpUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function canRequestAdmissionRecordingAiAnalysis(application) {
@@ -35262,6 +35344,19 @@ function OpsReferenceInner({
             };
           });
         });
+        return body;
+      },
+      proxyUploadApplicationRecording: async (id, externalUrl) => {
+        const body = await fetchJson(
+          `/api/applications/${id}/videos`,
+          "proxy upload application recording failed",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ externalUrl }),
+          },
+        );
+        await refreshApplications();
         return body;
       },
       confirmApplicationJoin: async (id, input) => {

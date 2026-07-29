@@ -253,7 +253,11 @@ flowchart LR
 | rejected      | 审核拒绝   |
 | needs_changes | 需要修改   |
 
-录屏提交支持私有文件路径和外链双轨，必须至少有 `storagePath` 或 `externalUrl`。录屏版本号按同一 application 的最新版本递增。
+录屏提交支持私有文件路径和外链双轨，必须至少有 `storagePath` 或 http(s) `externalUrl`。录屏版本号按同一 application 的最新版本递增。
+
+每条新录屏都写入 `recording_submissions.uploaded_by`，API 以 `uploadedBy` 返回实际上传用户。历史数据允许该字段为空；新应用写入必须提供上传人。主播只能为自己的 application 自助上传；owner / ops_manager / operator_business 可为本组织 application 代传，finance 禁止。协作贡献组织代传时还必须匹配 `contributor_organization_id` 和有效 collaboration agreement，不能只依赖 RLS；任何角色都不能为黑名单主播代传。
+
+录屏创建审计同时记录主体 `streamerId`、操作者 user/role、`uploadedBy` 和 `uploadMode=self|proxy`。通知文案区分主播自传与运营代传，便于审核队列和追责。
 
 ### 7.4 直播任务状态
 
@@ -464,6 +468,7 @@ flowchart LR
 - 主播自助报名。
 - 员工定向邀约。
 - 主播提交选播录屏。
+- 运营为待提交、待补充或被驳回的主播代传录屏外链。
 - 员工审核录屏。
 - 最终确认加入。
 - 最终拒绝并记录原因。
@@ -478,6 +483,8 @@ flowchart LR
 
 - 报名只允许 streamer 角色。
 - 邀约和录屏审核允许 owner / ops_manager / operator_business。
+- 录屏自传只允许 application 对应主播；代传只允许 owner / ops_manager / operator_business，finance 不可代传。
+- 运营代传必须显式通过 application 组织或有效协作贡献组织校验，且黑名单主播始终禁止代传。
 - 最终入项只允许 owner / ops_manager。
 - 录屏审核通过不等于入项。
 - 拒绝最终入项必须填写原因。
@@ -915,7 +922,7 @@ P6 正式商业化规格已沉淀：
 | `/api/applications`                             | GET   | 经营端读取准入队列     |
 | `/api/projects/:projectId/applications`         | POST  | 主播报名               |
 | `/api/projects/:projectId/invitations`          | POST  | 员工邀约主播           |
-| `/api/applications/:applicationId/videos`       | POST  | 主播提交选播录屏       |
+| `/api/applications/:applicationId/videos`       | POST  | 主播自传或运营代传选播录屏 |
 | `/api/applications/:applicationId/review`       | PATCH | 员工审核录屏           |
 | `/api/applications/:applicationId/confirm-join` | POST  | 最终确认入项           |
 | `/api/applications/:applicationId/reject-join`  | POST  | 最终拒绝入项           |
@@ -1038,7 +1045,7 @@ P6 正式商业化规格已沉淀：
 | `streamer_suppliers`       | 主播与供应商关系               |
 | `project_streamers`        | 主播加入项目后的关系和结算快照 |
 | `project_applications`     | 报名/邀约                      |
-| `recording_submissions`    | 选播录屏提交                   |
+| `recording_submissions`    | 选播录屏提交；`uploaded_by` 记录主播自传或运营代传的实际上传人 |
 | `streamer_recording_links` | 主播录屏链接库                 |
 | `can_access_project`       | 项目访问函数                   |
 | `can_publish_project`      | 项目发布权限函数               |

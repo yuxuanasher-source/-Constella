@@ -57,6 +57,7 @@ describe("POST /api/applications/[applicationId]/videos", () => {
       applicationId: "app-1",
       version: 1,
       status: "recording_reviewing",
+      uploadedBy: "user-streamer",
     } as never);
   });
 
@@ -70,6 +71,12 @@ describe("POST /api/applications/[applicationId]/videos", () => {
     );
 
     expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({
+      recording: expect.objectContaining({
+        id: "recording-1",
+        uploadedBy: "user-streamer",
+      }),
+    });
     expect(getStreamerIdForUser).toHaveBeenCalledWith(
       { client: "supabase" },
       "user-streamer",
@@ -89,6 +96,106 @@ describe("POST /api/applications/[applicationId]/videos", () => {
         },
       }),
     );
+  });
+
+  it.each(["owner", "ops_manager", "operator_business"] as const)(
+    "passes the %s actor through for an operator proxy upload",
+    async (role) => {
+      const staffAuth = {
+        userId: `user-${role}`,
+        name: role,
+        role,
+        organizationId: "org-1",
+      };
+      vi.mocked(getAdmissionRouteContext).mockResolvedValue({
+        supabase: { client: "supabase" },
+        auth: staffAuth,
+        repo: { repo: "applications" },
+        audit: vi.fn(),
+        notify: vi.fn(),
+      } as never);
+
+      const response = await POST(
+        jsonRequest({
+          externalUrl: "https://videos.example.com/operator-proxy",
+        }),
+        { params: Promise.resolve({ applicationId: "app-1" }) },
+      );
+
+      expect(response.status).toBe(201);
+      expect(getStreamerIdForUser).not.toHaveBeenCalled();
+      expect(submitRecording).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actor: expect.objectContaining({
+            ...staffAuth,
+            streamerId: null,
+          }),
+          input: expect.objectContaining({
+            applicationId: "app-1",
+            externalUrl: "https://videos.example.com/operator-proxy",
+          }),
+        }),
+      );
+    },
+  );
+
+  it("returns forbidden when finance attempts a proxy upload", async () => {
+    vi.mocked(getAdmissionRouteContext).mockResolvedValue({
+      supabase: { client: "supabase" },
+      auth: {
+        userId: "user-finance",
+        name: "Finance",
+        role: "finance",
+        organizationId: "org-1",
+      },
+      repo: { repo: "applications" },
+      audit: vi.fn(),
+      notify: vi.fn(),
+    } as never);
+    vi.mocked(submitRecording).mockRejectedValue(
+      new Error("Current role cannot submit screening recordings"),
+    );
+
+    const response = await POST(
+      jsonRequest({
+        externalUrl: "https://videos.example.com/finance-proxy",
+      }),
+      { params: Promise.resolve({ applicationId: "app-1" }) },
+    );
+
+    expect(response.status).toBe(403);
+    expect(getStreamerIdForUser).not.toHaveBeenCalled();
+    expect(submitRecording).toHaveBeenCalled();
+  });
+
+  it("surfaces the service cross-organization rejection", async () => {
+    vi.mocked(getAdmissionRouteContext).mockResolvedValue({
+      supabase: { client: "supabase" },
+      auth: {
+        userId: "user-ops",
+        name: "Operator",
+        role: "operator_business",
+        organizationId: "org-2",
+      },
+      repo: { repo: "applications" },
+      audit: vi.fn(),
+      notify: vi.fn(),
+    } as never);
+    vi.mocked(submitRecording).mockRejectedValue(
+      new Error("Cross-organization access is not allowed"),
+    );
+
+    const response = await POST(
+      jsonRequest({
+        externalUrl: "https://videos.example.com/cross-org-proxy",
+      }),
+      { params: Promise.resolve({ applicationId: "app-1" }) },
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: "Cross-organization access is not allowed",
+    });
   });
 
   it("rejects negative recording durations at the request boundary", async () => {
