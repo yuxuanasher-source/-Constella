@@ -81,6 +81,7 @@ const baseReport = {
   evidenceLevel: "green" as const,
   divergencePct: 0.0333,
   viewers: 800,
+  viewersSource: "claimed" as const,
   includeInTaskResult: true,
   enterSettlementPool: true,
   riskFlags: [],
@@ -130,6 +131,7 @@ function createRepo(): LiveOperationsRepository {
       evidenceLevel: input.evidenceLevel,
       divergencePct: input.divergencePct,
       viewers: input.viewers,
+      viewersSource: input.viewersSource,
       includeInTaskResult: true,
       enterSettlementPool: true,
       riskFlags: input.riskFlags,
@@ -450,6 +452,7 @@ describe("live operations service", () => {
       timeSource: "system",
       evidenceLevel: "green",
       status: "pending_review",
+      viewersSource: "claimed",
     });
     expect(repo.updateLiveTask).toHaveBeenCalledWith(
       "task-1",
@@ -1093,6 +1096,7 @@ describe("live operations service", () => {
         timeSource: "system",
         evidenceLevel: "yellow",
         viewers: 320,
+        viewersSource: "manual",
         riskFlags: expect.arrayContaining(["duration_divergence"]),
       }),
     );
@@ -1284,6 +1288,41 @@ describe("live operations service", () => {
       "report-1",
       expect.objectContaining({
         viewers: 305,
+        viewersSource: "ocr",
+      }),
+    );
+  });
+
+  it("downgrades otherwise green evidence when manual viewers diverge from OCR", async () => {
+    vi.mocked(repo.getLiveReportById).mockResolvedValueOnce({
+      ...baseReport,
+      status: "pending_confirm",
+      systemDuration: 120,
+      viewers: 1_000,
+      viewersSource: "ocr",
+    });
+
+    await confirmLiveReportOcrResult({
+      repo,
+      audit,
+      notify,
+      actor,
+      reportId: "report-1",
+      input: {
+        ocrDuration: 120,
+        ocrViewers: 1_000,
+        confirmedDuration: 120,
+        confirmedViewers: 1_500,
+      },
+    });
+
+    expect(repo.updateLiveReport).toHaveBeenCalledWith(
+      "report-1",
+      expect.objectContaining({
+        evidenceLevel: "yellow",
+        viewers: 1_500,
+        viewersSource: "manual",
+        riskFlags: expect.arrayContaining(["viewers_divergence"]),
       }),
     );
   });
@@ -1408,6 +1447,7 @@ describe("live operations service", () => {
       "report-1",
       expect.objectContaining({
         viewers: 800,
+        viewersSource: "claimed",
       }),
     );
   });

@@ -330,6 +330,12 @@ flowchart LR
 - 绝对分钟阈值：15 分钟
 - 实际允许差异：`max(systemDuration * 10%, 15 minutes)`
 
+场观与 GMV 信任规则：
+
+- `live_reports.viewers_source` 保存最终场观来源：主播/运营直接填报为 `claimed`，自动识别为 `ocr`，人工确认或修正 OCR 为 `manual`；OCR 原值仍保存在 `ocr_results`。
+- 场观和 GMV 在来源切换时按 `max(参考值 * 20%, 100)` 做交叉比对。超阈只会把绿色证据降为黄色并加风险标记，不会因单项一致而自动提升证据等级。
+- GMV 至少有 5 场同主播历史样本后，按中位数和 MAD 检测跨场异常；偏差超过 `max(3 * MAD, 历史中位数 * 50%, 100 元)` 时标记，防止单场极端值静默进入可信链路。
+
 风险标记：
 
 | 风险标记                    | 触发条件                   |
@@ -337,6 +343,9 @@ flowchart LR
 | missing_screenshot_duration | 缺少截图时长               |
 | duration_divergence         | 系统时长与截图时长差异过大 |
 | missing_system_duration     | 缺少系统时长               |
+| viewers_divergence          | OCR、人工或申报场观差异过大 |
+| gmv_divergence              | OCR 与人工确认 GMV 差异过大 |
+| gmv_historical_outlier      | 单场 GMV 显著偏离主播历史分布 |
 
 ### 7.7 结算批次状态
 
@@ -526,6 +535,8 @@ flowchart LR
 - 从 live task 提交 report。
 - 保存系统时长、截图时长、主播填报时长。
 - 冻结结算时长、证据来源、证据等级、差异百分比和风险标记。
+- 保存最终场观来源，并对场观、GMV 做跨来源偏差检测。
+- 对至少 5 场历史 GMV 的主播执行中位数/MAD 跨场异常检测。
 - 可上传报数截图并保存截图 hash。
 - 运营审核报数：通过、拒绝、需要补充。
 - 报数变更写 report_change_logs。
@@ -891,6 +902,7 @@ P6 正式商业化规格已沉淀：
 - `evidence_level`
 - `divergence_pct`
 - `risk_flags`
+- `viewers_source`
 
 数据库触发器阻止这些快照字段被后续静默改写。
 

@@ -24,6 +24,9 @@ function createClient(
       status?: string;
       system_duration?: number | null;
       claimed_duration?: number | null;
+      viewers?: number | null;
+      viewers_source?: "ocr" | "manual" | "claimed" | null;
+      evidence_level?: "green" | "yellow" | "red" | null;
       risk_flags?: string[] | null;
     }>;
     ocrResults?: Array<{
@@ -43,6 +46,8 @@ function createClient(
       streamer_id: "streamer-1",
       created_at: "2026-07-16T08:00:00.000Z",
       status: "ocr_ing",
+      evidence_level: null,
+      risk_flags: null,
       ...report,
     })),
     ...(fixtures.liveReports
@@ -54,6 +59,8 @@ function createClient(
           streamer_id: "streamer-1",
           created_at: "2026-07-16T08:00:00.000Z",
           status: "ocr_ing",
+          evidence_level: null,
+          risk_flags: null,
         }))),
   ];
   type TestUpdateResult = { error: null; count: number };
@@ -209,7 +216,7 @@ function createClient(
     })),
   };
 
-  return { client, inserts, updates, jobs };
+  return { client, inserts, updates, jobs, liveReports };
 }
 
 const actor = {
@@ -552,6 +559,65 @@ describe("OCR jobs", () => {
     ]);
     expect(updates.live_reports.at(-1)?.payload).not.toHaveProperty("pcu");
     expect(updates.live_reports.at(-1)?.payload).not.toHaveProperty("acu");
+    expect(updates.live_reports.at(-1)?.payload).toMatchObject({
+      viewers: 2488,
+      viewers_source: "ocr",
+    });
+  });
+
+  it("flags OCR viewers that materially diverge from a claimed value", async () => {
+    const { client, updates } = createClient({
+      jobs: [
+        {
+          id: "job-viewer-divergence",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          aiInvocationId: "invocation-viewer-divergence",
+          payload: {
+            liveReportId: "report-viewer-divergence",
+            imageBase64: "ZmFrZQ==",
+          },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-viewer-divergence",
+          organization_id: "org-1",
+          project_id: "project-1",
+          status: "ocr_ing",
+          system_duration: 80,
+          viewers: 1_000,
+          viewers_source: "claimed",
+          risk_flags: ["ocr_pending"],
+        },
+      ],
+    });
+
+    await runOcrJobOnce({
+      client,
+      metricClient: client as never,
+      actor,
+      jobId: "job-viewer-divergence",
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "succeeded" as const,
+          textLines: ["直播时长 80分钟", "场观 1,500"],
+          textItems: [],
+          confidence: 96,
+          requestId: "request-viewer-divergence",
+          rawResponse: {},
+        })),
+      },
+    });
+
+    expect(updates.live_reports.at(-1)?.payload).toMatchObject({
+      viewers: 1_500,
+      viewers_source: "ocr",
+      evidence_level: "yellow",
+      risk_flags: expect.arrayContaining(["viewers_divergence"]),
+    });
   });
 
   it("writes GMV and follower growth into streamer metrics using live report attribution", async () => {
@@ -620,6 +686,68 @@ describe("OCR jobs", () => {
     expect(updates.ocr_results?.[0]?.payload).not.toHaveProperty("streamer_id");
     expect(updates.ocr_results?.[0]?.payload).not.toHaveProperty("project_id");
     expect(updates.ocr_results?.[0]?.payload).not.toHaveProperty("report_date");
+  });
+
+  it("preserves a GMV historical outlier raised by the metric sink", async () => {
+    const state = createClient({
+      jobs: [
+        {
+          id: "job-gmv-outlier",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          aiInvocationId: "invocation-gmv-outlier",
+          payload: {
+            liveReportId: "report-gmv-outlier",
+            imageBase64: "ZmFrZQ==",
+          },
+        },
+      ],
+      liveReports: [
+        {
+          id: "report-gmv-outlier",
+          organization_id: "org-1",
+          project_id: "project-1",
+          status: "ocr_ing",
+          system_duration: 80,
+          evidence_level: "yellow",
+          risk_flags: ["ocr_pending"],
+        },
+      ],
+    });
+    const metricClient = {
+      rpc: vi.fn(async () => {
+        state.liveReports[0] = {
+          ...state.liveReports[0],
+          evidence_level: "yellow",
+          risk_flags: ["ocr_pending", "gmv_historical_outlier"],
+        };
+        return { data: 1, error: null };
+      }),
+    };
+
+    await runOcrJobOnce({
+      client: state.client,
+      metricClient,
+      actor,
+      jobId: "job-gmv-outlier",
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "succeeded" as const,
+          textLines: ["直播时长 80分钟", "GMV 99,999"],
+          textItems: [],
+          confidence: 96,
+          requestId: "request-gmv-outlier",
+          rawResponse: {},
+        })),
+      },
+    });
+
+    expect(state.updates.live_reports.at(-1)?.payload).toMatchObject({
+      evidence_level: "yellow",
+      risk_flags: expect.arrayContaining(["gmv_historical_outlier"]),
+    });
   });
 
   it("continues advancing the report when the metric sink fails", async () => {

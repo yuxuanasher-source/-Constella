@@ -3,6 +3,7 @@ import type { NotificationInput } from "@/lib/notify/notify";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 
 import {
+  metricSourcesDiverge,
   resolveReportEvidence,
   type EvidenceLevel,
   type TimeSource,
@@ -26,6 +27,8 @@ export type ReportStatus =
   | "rejected"
   | "need_more"
   | "voided";
+
+export type ViewerSource = "ocr" | "manual" | "claimed";
 
 export type LiveOperationsActor = {
   userId: string;
@@ -86,6 +89,7 @@ export type LiveReportRecord = {
   evidenceLevel?: EvidenceLevel | null;
   divergencePct?: number | null;
   viewers?: number | null;
+  viewersSource?: ViewerSource | null;
   includeInTaskResult: boolean;
   enterSettlementPool: boolean;
   riskFlags: string[];
@@ -144,6 +148,7 @@ export type LiveOperationsRepository = {
     evidenceLevel: EvidenceLevel;
     divergencePct?: number | null;
     viewers?: number | null;
+    viewersSource?: ViewerSource | null;
     riskFlags: string[];
     createdBy: string;
     collaborationId?: string | null;
@@ -194,6 +199,7 @@ const ocrConfirmationChangedFields = [
   "evidence_level",
   "divergence_pct",
   "viewers",
+  "viewers_source",
   "risk_flags",
 ];
 
@@ -562,6 +568,8 @@ export async function submitLiveReport({
     evidenceLevel: evidence.evidenceLevel,
     divergencePct: evidence.divergencePct,
     viewers: input.viewers,
+    viewersSource:
+      input.viewers === null || input.viewers === undefined ? null : "claimed",
     riskFlags: evidence.riskFlags,
     createdBy: actor.userId,
     collaborationId: collaborationAttribution?.collaborationId,
@@ -710,6 +718,7 @@ export async function submitLiveReportScreenshotForOcr({
     evidenceLevel: evidence.evidenceLevel,
     divergencePct: evidence.divergencePct,
     viewers: null,
+    viewersSource: null,
     riskFlags: [...evidence.riskFlags, "ocr_pending"],
     createdBy: actor.userId,
     collaborationId: collaborationAttribution?.collaborationId,
@@ -856,10 +865,11 @@ export async function confirmLiveReportOcrResult({
   if (!["ocr_ing", "pending_confirm", "need_more"].includes(before.status)) {
     throw new Error("Only OCR pending reports can be confirmed");
   }
-  const viewers = resolveConfirmedViewerCount({
+  const viewerResolution = resolveConfirmedViewerCount({
     confirmedViewers: input.confirmedViewers,
     ocrViewers: input.ocrViewers,
     previousViewers: before.viewers,
+    previousViewersSource: before.viewersSource,
   });
   const taskBefore =
     before.status === "need_more"
@@ -876,16 +886,34 @@ export async function confirmLiveReportOcrResult({
     screenshotDuration,
     claimedDuration: input.confirmedDuration,
   });
+  const riskFlags = new Set(evidence.riskFlags);
+  if (
+    metricSourcesDiverge({
+      referenceValue:
+        input.ocrViewers ??
+        (before.viewersSource === "ocr" ? before.viewers : null),
+      observedValue: input.confirmedViewers,
+      thresholdPct: 0.2,
+      thresholdMin: 100,
+    })
+  ) {
+    riskFlags.add("viewers_divergence");
+  }
+  const evidenceLevel =
+    evidence.evidenceLevel === "green" && riskFlags.has("viewers_divergence")
+      ? "yellow"
+      : evidence.evidenceLevel;
   const confirmed = await repo.updateLiveReport(reportId, {
     status: "pending_review",
     screenshotDuration,
     claimedDuration: input.confirmedDuration,
     settlementDuration: evidence.settlementDuration,
     timeSource: evidence.timeSource,
-    evidenceLevel: evidence.evidenceLevel,
+    evidenceLevel,
     divergencePct: evidence.divergencePct,
-    viewers,
-    riskFlags: evidence.riskFlags,
+    viewers: viewerResolution.viewers,
+    viewersSource: viewerResolution.source,
+    riskFlags: [...riskFlags],
   });
   if (taskBefore && taskBefore.status !== "report_pending_review") {
     await repo.updateLiveTask(taskBefore.id, {
@@ -1143,15 +1171,32 @@ function resolveConfirmedViewerCount({
   confirmedViewers,
   ocrViewers,
   previousViewers,
+  previousViewersSource,
 }: {
   confirmedViewers?: number | null;
   ocrViewers?: number | null;
   previousViewers?: number | null;
-}): number | null | undefined {
+  previousViewersSource?: ViewerSource | null;
+}): {
+  viewers: number | null | undefined;
+  source: ViewerSource | null;
+} {
   assertValidViewerCount(confirmedViewers);
   assertValidViewerCount(ocrViewers);
 
-  return confirmedViewers ?? ocrViewers ?? previousViewers;
+  if (confirmedViewers !== null && confirmedViewers !== undefined) {
+    return { viewers: confirmedViewers, source: "manual" };
+  }
+  if (ocrViewers !== null && ocrViewers !== undefined) {
+    return { viewers: ocrViewers, source: "ocr" };
+  }
+  return {
+    viewers: previousViewers,
+    source:
+      previousViewers === null || previousViewers === undefined
+        ? null
+        : (previousViewersSource ?? "claimed"),
+  };
 }
 
 function assertValidViewerCount(viewers?: number | null): void {

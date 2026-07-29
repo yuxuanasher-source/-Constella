@@ -8,6 +8,7 @@ import type {
   LiveTaskType,
   ProjectStreamerForTask,
   ReportStatus,
+  ViewerSource,
 } from "./live-operations-service";
 import type { EvidenceLevel, TimeSource } from "./live-report-evidence";
 import type { LiveTaskStatus } from "./live-task-state";
@@ -58,6 +59,7 @@ type LiveReportRow = {
   evidence_level: EvidenceLevel | null;
   divergence_pct: number | null;
   viewers: number | null;
+  viewers_source: ViewerSource | null;
   include_in_task_result: boolean;
   enter_settlement_pool: boolean;
   risk_flags: string[];
@@ -108,6 +110,7 @@ const liveReportSelect = `
   evidence_level,
   divergence_pct,
   viewers,
+  viewers_source,
   include_in_task_result,
   enter_settlement_pool,
   risk_flags,
@@ -252,6 +255,7 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
     evidenceLevel: EvidenceLevel;
     divergencePct?: number | null;
     viewers?: number | null;
+    viewersSource?: ViewerSource | null;
     riskFlags: string[];
     createdBy: string;
     collaborationId?: string | null;
@@ -273,6 +277,7 @@ export class SupabaseLiveOperationsRepository implements LiveOperationsRepositor
         evidence_level: input.evidenceLevel,
         divergence_pct: input.divergencePct,
         viewers: input.viewers,
+        viewers_source: input.viewersSource,
         risk_flags: input.riskFlags,
         created_by: input.createdBy,
         collaboration_id: input.collaborationId,
@@ -503,6 +508,7 @@ function toLiveReportRecord(row: LiveReportRow): LiveReportRecord {
     evidenceLevel: row.evidence_level,
     divergencePct: row.divergence_pct,
     viewers: row.viewers,
+    viewersSource: row.viewers_source,
     includeInTaskResult: row.include_in_task_result,
     enterSettlementPool: row.enter_settlement_pool,
     riskFlags: row.risk_flags,
@@ -548,6 +554,7 @@ function toLiveReportPatch(
     evidence_level: patch.evidenceLevel,
     divergence_pct: patch.divergencePct,
     viewers: patch.viewers,
+    viewers_source: patch.viewersSource,
     include_in_task_result: patch.includeInTaskResult,
     enter_settlement_pool: patch.enterSettlementPool,
     risk_flags: patch.riskFlags,

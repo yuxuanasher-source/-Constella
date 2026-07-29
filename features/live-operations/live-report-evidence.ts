@@ -20,6 +20,36 @@ export type ReportEvidenceSnapshot = {
 const defaultDivergenceThresholdPct = 0.1;
 const defaultDivergenceThresholdMin = 15;
 
+export function metricSourcesDiverge({
+  referenceValue,
+  observedValue,
+  thresholdPct,
+  thresholdMin,
+}: {
+  referenceValue?: number | null;
+  observedValue?: number | null;
+  thresholdPct: number;
+  thresholdMin: number;
+}): boolean {
+  if (referenceValue === null || referenceValue === undefined) return false;
+  if (observedValue === null || observedValue === undefined) return false;
+  if (
+    !Number.isFinite(referenceValue) ||
+    !Number.isFinite(observedValue) ||
+    referenceValue < 0 ||
+    observedValue < 0 ||
+    !Number.isFinite(thresholdPct) ||
+    !Number.isFinite(thresholdMin) ||
+    thresholdPct < 0 ||
+    thresholdMin < 0
+  ) {
+    throw new Error("Metric trust inputs must be finite non-negative numbers");
+  }
+
+  const allowedDiff = Math.max(referenceValue * thresholdPct, thresholdMin);
+  return Math.abs(referenceValue - observedValue) > allowedDiff;
+}
+
 export function resolveReportEvidence(
   input: ReportEvidenceInput,
 ): ReportEvidenceSnapshot {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveReportEvidence } from "./live-report-evidence";
+import {
+  metricSourcesDiverge,
+  resolveReportEvidence,
+} from "./live-report-evidence";
 
 describe("live report evidence resolver", () => {
   it("uses system timing as green evidence when screenshot duration matches tolerance", () => {
@@ -65,5 +68,32 @@ describe("live report evidence resolver", () => {
       evidenceLevel: "red",
       riskFlags: ["missing_system_duration", "missing_screenshot_duration"],
     });
+  });
+
+  it("flags material viewer and GMV differences while tolerating rounding noise", () => {
+    expect(
+      metricSourcesDiverge({
+        referenceValue: 1_000,
+        observedValue: 1_450,
+        thresholdPct: 0.2,
+        thresholdMin: 100,
+      }),
+    ).toBe(true);
+    expect(
+      metricSourcesDiverge({
+        referenceValue: 1_000,
+        observedValue: 1_080,
+        thresholdPct: 0.2,
+        thresholdMin: 100,
+      }),
+    ).toBe(false);
+    expect(
+      metricSourcesDiverge({
+        referenceValue: null,
+        observedValue: 1_450,
+        thresholdPct: 0.2,
+        thresholdMin: 100,
+      }),
+    ).toBe(false);
   });
 });

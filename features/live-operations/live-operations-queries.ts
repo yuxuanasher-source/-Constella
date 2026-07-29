@@ -2,7 +2,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { EvidenceLevel, TimeSource } from "./live-report-evidence";
 import type { LiveTaskStatus } from "./live-task-state";
-import type { LiveTaskType, ReportStatus } from "./live-operations-service";
+import type {
+  LiveTaskType,
+  ReportStatus,
+  ViewerSource,
+} from "./live-operations-service";
 
 export type StreamerTaskCard = {
   id: string;
@@ -31,6 +35,7 @@ export type OpsLiveReportQueueItem = {
   timeSource: TimeSource | null;
   evidenceLevel: EvidenceLevel | null;
   viewers: number | null;
+  viewersSource?: ViewerSource | null;
   riskFlags: string[];
   submittedAt: string;
 };
@@ -75,6 +80,7 @@ type OpsLiveReportRow = {
   time_source: TimeSource | null;
   evidence_level: EvidenceLevel | null;
   viewers: number | null;
+  viewers_source?: ViewerSource | null;
   risk_flags: string[] | null;
   created_at: string;
   live_tasks: { title: string } | { title: string }[] | null;
@@ -125,7 +131,7 @@ export async function listOpsLiveReportQueue(
   let query = client
     .from("live_reports")
     .select(
-      "id, live_task_id, project_id, streamer_id, status, settlement_duration, system_duration, screenshot_duration, divergence_pct, time_source, evidence_level, viewers, risk_flags, created_at, live_tasks(title), projects(name), streamers(display_name)",
+      "id, live_task_id, project_id, streamer_id, status, settlement_duration, system_duration, screenshot_duration, divergence_pct, time_source, evidence_level, viewers, viewers_source, risk_flags, created_at, live_tasks(title), projects(name), streamers(display_name)",
     )
     .in("status", [
       "pending_review",
@@ -219,6 +225,7 @@ export function toOpsLiveReportQueueItem(
     timeSource: row.time_source,
     evidenceLevel: row.evidence_level,
     viewers: row.viewers,
+    viewersSource: row.viewers_source ?? null,
     riskFlags: row.risk_flags ?? [],
     submittedAt: row.created_at,
   };
