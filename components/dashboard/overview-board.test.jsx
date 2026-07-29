@@ -266,12 +266,15 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.change(input, { target: { value: "展示进度" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
+    // 完成后工具/子任务快照归入思考引用块，待办仍留在实时面板。
+    const quote = await screen.findByTestId("ai-thinking-quote");
+    expect(within(quote).getByText("读取经营数据")).toBeInTheDocument();
+    expect(within(quote).getByText("经营看板")).toBeInTheDocument();
+    expect(within(quote).getByText("成功")).toBeInTheDocument();
+    expect(within(quote).getByText("读取结算明细")).toBeInTheDocument();
+    expect(within(quote).getByText("受限")).toBeInTheDocument();
+    expect(quote).not.toHaveTextContent(/rawArguments|secret stack|\/api\/internal|chain-of-thought/i);
     const activity = await screen.findByTestId("ai-activity-panel");
-    expect(within(activity).getByText("读取经营数据")).toBeInTheDocument();
-    expect(within(activity).getByText("经营看板")).toBeInTheDocument();
-    expect(within(activity).getByText("成功")).toBeInTheDocument();
-    expect(within(activity).getByText("读取结算明细")).toBeInTheDocument();
-    expect(within(activity).getByText("受限")).toBeInTheDocument();
     expect(activity).not.toHaveTextContent(/rawArguments|secret stack|\/api\/internal|chain-of-thought/i);
     expect(screen.getAllByTestId("ai-todo-row")).toHaveLength(1);
     expect(screen.getByTestId("ai-todo-row")).toHaveTextContent("已完成");
@@ -3659,5 +3662,98 @@ describe("OverviewBoard AI conversation switcher", () => {
         "true",
       ),
     );
+  });
+});
+
+describe("OverviewBoard AI thinking process quote", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url) => defaultFetchResponse(url)),
+    );
+  });
+
+  it("renders interim narration and tools as a quote block with the final body below", async () => {
+    mockConversationProtocolEvents({
+      conversationId: "conversation-think",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-think",
+            turnId: "turn-think",
+            userMessageId: "message-user-think",
+            assistantMessageId: "message-assistant-think",
+          },
+        ],
+        [
+          "response.delta",
+          {
+            type: "response.delta",
+            conversationId: "conversation-think",
+            turnId: "turn-think",
+            messageId: "message-assistant-think",
+            delta: "我先检索相关经营数据。",
+          },
+        ],
+        [
+          "tool.completed",
+          {
+            type: "tool.completed",
+            conversationId: "conversation-think",
+            turnId: "turn-think",
+            toolCallId: "tool-think-1",
+            toolName: "xingyao_search_projects",
+            label: "xingyao_search_projects",
+            status: "completed",
+            evidence: ["knowledge:kb_demo"],
+          },
+        ],
+        [
+          "response.delta",
+          {
+            type: "response.delta",
+            conversationId: "conversation-think",
+            turnId: "turn-think",
+            messageId: "message-assistant-think",
+            delta: "结论：本月经营状况稳定。",
+          },
+        ],
+        completedEvent({
+          conversationId: "conversation-think",
+          turnId: "turn-think",
+          messageId: "message-assistant-think",
+          content: "我先检索相关经营数据。结论：本月经营状况稳定。",
+        }),
+      ],
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "分析当前经营状况" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await screen.findByText("结论：本月经营状况稳定。");
+    const quote = screen.getByTestId("ai-thinking-quote");
+    expect(
+      within(quote).getByText("我先检索相关经营数据。"),
+    ).toBeInTheDocument();
+    expect(
+      within(quote).getByText("xingyao_search_projects"),
+    ).toBeInTheDocument();
+    expect(
+      within(quote).queryByText("结论：本月经营状况稳定。"),
+    ).not.toBeInTheDocument();
   });
 });

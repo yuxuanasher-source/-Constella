@@ -3448,6 +3448,25 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       });
     };
 
+    let processParts = [];
+    // runProgress 走 React 状态，同一批事件内 ref 尚未刷新，
+    // 快照活动需在消费器内本地累积。
+    let capturedActivities = [];
+    let capturedSubagents = [];
+    const captureThinkingSegment = () => {
+      if (!streamedText.trim() || !activeAssistantMessageId) return;
+      processParts.push(streamedText);
+      streamedText = "";
+      upsertAiMessage({
+        id: activeAssistantMessageId,
+        role: "ai",
+        text: "",
+        process: processParts.slice(),
+        status: "streaming",
+        turnId: activeTurnId,
+      });
+    };
+
     const handleEvent = (eventName, payload) => {
       if (eventName === "turn.started") {
         activeTurnId =
@@ -3483,20 +3502,24 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         return;
       }
       if (eventName === "activity.updated") {
+        captureThinkingSegment();
         const id = `activity:${payload?.label || "activity"}`;
+        const activityItem = {
+          id,
+          label: String(payload?.label || "处理中").slice(0, 80),
+          status: payload?.status || "running",
+          source: "",
+          kind: "activity",
+        };
+        capturedActivities = upsertById(capturedActivities, id, activityItem);
         setRunProgress((current) => ({
           ...current,
-          activities: upsertById(current.activities, id, {
-            id,
-            label: String(payload?.label || "处理中").slice(0, 80),
-            status: payload?.status || "running",
-            source: "",
-            kind: "activity",
-          }),
+          activities: upsertById(current.activities, id, activityItem),
         }));
         return;
       }
       if (eventName === "tool.started" || eventName === "tool.completed") {
+        captureThinkingSegment();
         const id = payload?.toolCallId || payload?.toolName || payload?.label;
         if (!id) return;
         const source = [
@@ -3505,25 +3528,28 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         ]
           .map((item) => (typeof item === "string" ? item.trim() : ""))
           .filter(Boolean)[0];
+        const toolItem = {
+          id,
+          label: String(payload?.label || payload?.toolName || "读取数据").slice(
+            0,
+            80,
+          ),
+          status:
+            eventName === "tool.started"
+              ? "running"
+              : payload?.status || "completed",
+          source: source ? source.slice(0, 120) : "",
+          kind: "tool",
+        };
+        capturedActivities = upsertById(capturedActivities, id, toolItem);
         setRunProgress((current) => ({
           ...current,
-          activities: upsertById(current.activities, id, {
-            id,
-            label: String(payload?.label || payload?.toolName || "读取数据").slice(
-              0,
-              80,
-            ),
-            status:
-              eventName === "tool.started"
-                ? "running"
-                : payload?.status || "completed",
-            source: source ? source.slice(0, 120) : "",
-            kind: "tool",
-          }),
+          activities: upsertById(current.activities, id, toolItem),
         }));
         return;
       }
       if (eventName === "todo.updated") {
+        captureThinkingSegment();
         setRunProgress((current) => ({
           ...current,
           todos: Array.isArray(payload?.items)
@@ -3540,15 +3566,22 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         return;
       }
       if (eventName === "subagent.updated") {
+        captureThinkingSegment();
         const id = payload?.subagentId;
         if (!id) return;
+        const subagentItem = {
+          id,
+          label: String(payload?.label || "只读子任务").slice(0, 120),
+          status: payload?.status || "running",
+        };
+        capturedSubagents = upsertById(
+          capturedSubagents,
+          id,
+          subagentItem,
+        ).slice(0, 5);
         setRunProgress((current) => ({
           ...current,
-          subagents: upsertById(current.subagents, id, {
-            id,
-            label: String(payload?.label || "只读子任务").slice(0, 120),
-            status: payload?.status || "running",
-          }).slice(0, 5),
+          subagents: upsertById(current.subagents, id, subagentItem).slice(0, 5),
         }));
         return;
       }
@@ -3579,6 +3612,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           id: activeAssistantMessageId,
           role: "ai",
           text: aiPublicContent(streamedText, AI_UI_SAFE_FAILURE_TEXT),
+          process: processParts.slice(),
           status: "streaming",
           turnId: activeTurnId,
         });
@@ -3591,18 +3625,53 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           payload?.messageId || activeAssistantMessageId;
         onAssistantMessageId?.(activeAssistantMessageId);
         const completedMeta = normalizeAiMessageMeta(payload?.meta || payload);
+        const fullStreamed = processParts.join("") + streamedText;
+        const serverContent =
+          typeof payload?.content === "string" ? payload.content : "";
+        let bodyText;
+        if (processParts.length) {
+          // 已出现思考分段（工具/活动切割过）时，terminal 终稿若与流式
+          // 内容不同则以终稿为正文，把残余尾巴并入思考过程；否则最后
+          // 一段 delta 即正文。无分段时保持原契约：终稿替换流式内容。
+          bodyText = streamedText;
+          if (
+            serverContent &&
+            serverContent !== fullStreamed &&
+            serverContent !== streamedText
+          ) {
+            if (streamedText.trim()) processParts.push(streamedText);
+            bodyText = serverContent;
+          } else if (!bodyText) {
+            bodyText = serverContent || processParts.pop();
+          }
+        } else {
+          bodyText = serverContent || streamedText;
+        }
+        const processActivities = capturedActivities
+          .slice(0, 12)
+          .map((item) => ({ ...item }));
+        const processSubagents = capturedSubagents
+          .slice(0, 5)
+          .map((item) => ({ ...item }));
         upsertAiMessage({
           id: activeAssistantMessageId,
           role: "ai",
-          text: aiPublicContent(
-            payload?.content || streamedText,
-            AI_UI_SAFE_FAILURE_TEXT,
-          ),
+          text: aiPublicContent(bodyText, AI_UI_SAFE_FAILURE_TEXT),
+          process: processParts.slice(),
+          processActivities,
+          processSubagents,
           status: "completed",
           turnId: activeTurnId,
           retryable: false,
           ...(completedMeta ? { meta: completedMeta } : {}),
         });
+        if (processActivities.length || processSubagents.length) {
+          setRunProgress((current) => ({
+            ...current,
+            activities: [],
+            subagents: [],
+          }));
+        }
         return;
       }
       if (eventName === "response.cancelled") {
@@ -4601,7 +4670,66 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
               {m.role === "ai" ? (
                 <div style={{ display: "grid", gap: 9 }}>
                   <AiOutcomeNotice outcome={m.meta?.outcome} />
-                  <AiMessageContent text={m.text} />
+                  {m.process?.length ||
+                  m.processActivities?.length ||
+                  m.processSubagents?.length ? (
+                    <div
+                      data-testid="ai-thinking-quote"
+                      style={{
+                        borderLeft: `3px solid ${C.primary}`,
+                        background: C.soft,
+                        borderRadius: "4px 10px 10px 4px",
+                        padding: "8px 10px",
+                        display: "grid",
+                        gap: 7,
+                      }}
+                    >
+                      {(m.process || []).map((segment, segmentIndex) => (
+                        <div
+                          key={segmentIndex}
+                          style={{
+                            fontSize: 12,
+                            color: C.muted,
+                            lineHeight: 1.55,
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {aiPublicText(segment, "")}
+                        </div>
+                      ))}
+                      {(m.processActivities || []).map((item) => (
+                        <AiProgressRow
+                          key={item.id}
+                          item={item}
+                          icon={<Wrench size={13} aria-hidden="true" />}
+                          kind="tool"
+                        />
+                      ))}
+                      {(m.processSubagents || []).map((item) => (
+                        <AiProgressRow
+                          key={item.id}
+                          item={item}
+                          icon={<Bot size={13} aria-hidden="true" />}
+                          testId="ai-subagent-row"
+                        />
+                      ))}
+                      {m.status === "streaming" && m.text ? (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: C.muted,
+                            lineHeight: 1.55,
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {m.text}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {m.status === "streaming" && m.process?.length ? null : (
+                    <AiMessageContent text={m.text} />
+                  )}
                   <AiWebSearchStatusCard webSearch={m.meta?.webSearch} />
                   <AiProjectHealthCard projectHealth={m.meta?.projectHealth} />
                   <AiSuggestedActionCard
