@@ -9449,6 +9449,38 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.getAllByText("待确认").length).toBeGreaterThan(0);
   });
 
+  it("renders operator-friendly labels for viewer and GMV trust flags", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="reports"
+        liveReports={[
+          {
+            id: "report-metric-trust-flags",
+            date: "2026-06-02",
+            streamer: "Streamer Trust",
+            project: "Project Trust",
+            taskId: "task-metric-trust-flags",
+            duration: 2,
+            audience: 1500,
+            status: "pending_review",
+            evidenceLevel: "yellow",
+            riskFlags: [
+              "viewers_divergence",
+              "gmv_divergence",
+              "gmv_historical_outlier",
+            ],
+            screens: 1,
+            source: "OCR",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("场观跨来源偏差超阈值")).toBeInTheDocument();
+    expect(screen.getByText("GMV 人工确认与 OCR 偏差超阈值")).toBeInTheDocument();
+    expect(screen.getByText("单场 GMV 显著偏离历史")).toBeInTheDocument();
+  });
+
   it("filters the report queue by project, date range, and keyword", () => {
     const todayKey = new Date().toISOString().slice(0, 10);
     render(

@@ -48,6 +48,7 @@ describe("live operations DTO mappers", () => {
       time_source: "system",
       evidence_level: "green",
       viewers: 960,
+      viewers_source: "ocr",
       risk_flags: ["duration_divergence"],
       created_at: "2026-06-02T12:05:00.000Z",
       live_tasks: { title: "Project A · Streamer 1" },
@@ -71,6 +72,7 @@ describe("live operations DTO mappers", () => {
       timeSource: "system",
       evidenceLevel: "green",
       viewers: 960,
+      viewersSource: "ocr",
       riskFlags: ["duration_divergence"],
       submittedAt: "2026-06-02T12:05:00.000Z",
     });

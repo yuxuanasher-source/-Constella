@@ -1381,6 +1381,9 @@ const RISK_FLAG_LABELS = {
   ocr_low_provider_confidence: "识别服务置信度偏低",
   ocr_no_live_report_fields: "未识别到有效报数字段",
   ocr_pending: "OCR 处理中",
+  viewers_divergence: "场观跨来源偏差超阈值",
+  gmv_divergence: "GMV 人工确认与 OCR 偏差超阈值",
+  gmv_historical_outlier: "单场 GMV 显著偏离历史",
 };
 
 function riskFlagLabel(flag) {

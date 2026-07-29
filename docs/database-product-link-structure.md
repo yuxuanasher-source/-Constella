@@ -144,7 +144,8 @@ erDiagram
 - `organizations` 是多租户根节点，绝大多数业务表都带 `organization_id`，配合 RLS 做租户隔离。
 - `projects + streamers` 是业务主轴：先通过 `project_applications` 和 `recording_submissions` 完成准入，再落到 `project_streamers`，之后才能排班、报数、结算。
 - `recording_submissions.uploaded_by` 记录实际上传用户：新写入必须提供，历史行可为空；审计另以 `uploadMode=self|proxy` 区分主播自传和运营代传。
-- `live_reports` 是证据与结算的连接点：截图、OCR、审核日志、抽检样本、结算明细都从报数记录向外展开。
+- `live_reports` 是证据与结算的连接点：截图、OCR、审核日志、抽检样本、结算明细都从报数记录向外展开；`viewers_source` 区分最终场观来自 OCR、人工确认还是直接申报，`risk_flags` 承载场观/GMV 跨来源偏差和历史 GMV 异常。
+- `streamer_metrics.source_report_id` 把 OCR/人工确认的 GMV 等场次指标回连到报数；GMV 写入触发器以同主播至少 5 场历史中位数/MAD 做异常检测，并把结果回写到对应 `live_reports`。
 - `project_recording_share_*` 是项目级录屏外部审核链路，链接到报名和录屏，不新建独立厂商门户数据源。
 - `streamer_payable_items_safe` 与 `streamer_public_project_announcements` 是对主播侧暴露的安全读模型，用视图/RPC 控制字段和状态转换。
 - `ai_invocations` 是 AI/OCR/诊断/复盘相关能力的调用账本，和项目、主播、供应商等业务对象通过结果表或来源字段建立关联。

@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import { writeAuditLog } from "@/lib/audit/audit";
 import { recordUsageEvent } from "@/features/billing/usage-metering";
-import { resolveReportEvidence } from "@/features/live-operations/live-report-evidence";
+import {
+  metricSourcesDiverge,
+  resolveReportEvidence,
+} from "@/features/live-operations/live-report-evidence";
 
 import type { AiActor } from "./contracts";
 import { parseLiveReportOcrText } from "./ocr-template-parser";
@@ -849,6 +852,9 @@ type LiveReportAdvanceRow = {
   systemDuration?: number | null;
   claimed_duration?: number | null;
   claimedDuration?: number | null;
+  viewers?: number | null;
+  viewers_source?: "ocr" | "manual" | "claimed" | null;
+  viewersSource?: "ocr" | "manual" | "claimed" | null;
   risk_flags?: string[] | null;
   riskFlags?: string[] | null;
 };
@@ -862,7 +868,9 @@ async function loadLiveReportForOcrAdvance({
 }): Promise<LiveReportAdvanceRow | null> {
   const { data, error } = await client
     .from("live_reports")
-    .select("id, status, system_duration, claimed_duration, risk_flags")
+    .select(
+      "id, status, system_duration, claimed_duration, viewers, viewers_source, risk_flags",
+    )
     .eq("id", liveReportId)
     .maybeSingle();
   if (error) {
@@ -899,6 +907,7 @@ async function advanceLiveReportAfterOcr({
   if (!report) {
     return;
   }
+  let currentReport = report;
 
   const currentStatus = report.status ?? undefined;
   if (!currentStatus) {
@@ -915,12 +924,19 @@ async function advanceLiveReportAfterOcr({
       );
     } else {
       try {
-        await writeStreamerMetricsFromOcr({
+        const metricWrite = await writeStreamerMetricsFromOcr({
           client: metricClient,
           sourceReportId: report.id,
           sourceInvocationId,
           metricCandidates,
         });
+        if (metricWrite.written > 0) {
+          currentReport =
+            (await loadLiveReportForOcrAdvance({
+              client,
+              liveReportId,
+            })) ?? report;
+        }
       } catch (error) {
         console.error(
           `[ocr] streamer metric sink failed for report ${liveReportId}`,
@@ -931,23 +947,39 @@ async function advanceLiveReportAfterOcr({
   }
 
   const systemDuration =
-    report.system_duration ?? report.systemDuration ?? null;
+    currentReport.system_duration ?? currentReport.systemDuration ?? null;
   const claimedDuration =
-    report.claimed_duration ?? report.claimedDuration ?? null;
-  const existingFlags = (report.risk_flags ?? report.riskFlags ?? []).filter(
-    (flag) => flag !== "ocr_pending",
-  );
+    currentReport.claimed_duration ?? currentReport.claimedDuration ?? null;
+  const existingFlags = (
+    currentReport.risk_flags ??
+    currentReport.riskFlags ??
+    []
+  ).filter((flag) => flag !== "ocr_pending");
 
   const patch: Record<string, unknown> = {
     status: "pending_review",
     screenshot_duration: extractedDuration,
     updated_at: new Date().toISOString(),
   };
+  const riskFlags = new Set(existingFlags);
   if (extractedViewers !== null) {
     patch.viewers = extractedViewers;
+    patch.viewers_source = "ocr";
+    const previousViewersSource =
+      currentReport.viewers_source ?? currentReport.viewersSource ?? null;
+    if (
+      previousViewersSource !== null &&
+      previousViewersSource !== "ocr" &&
+      metricSourcesDiverge({
+        referenceValue: currentReport.viewers,
+        observedValue: extractedViewers,
+        thresholdPct: 0.2,
+        thresholdMin: 100,
+      })
+    ) {
+      riskFlags.add("viewers_divergence");
+    }
   }
-
-  const riskFlags = new Set(existingFlags);
 
   // Recompute settlement evidence when we have at least one duration source.
   if (
@@ -967,6 +999,18 @@ async function advanceLiveReportAfterOcr({
     for (const flag of evidence.riskFlags) {
       riskFlags.add(flag);
     }
+  }
+  if (
+    patch.evidence_level === "green" &&
+    [...riskFlags].some((flag) =>
+      [
+        "viewers_divergence",
+        "gmv_divergence",
+        "gmv_historical_outlier",
+      ].includes(flag),
+    )
+  ) {
+    patch.evidence_level = "yellow";
   }
 
   if (needsConfirmation) {
