@@ -50,7 +50,19 @@ const baseRow = {
   recording_submissions: [
     { status: "approved", submitted_at: "2026-06-30T00:00:00.000Z" },
   ],
-  streamer_profile_insights: [],
+  streamer_profile_insights: [
+    {
+      id: "insight-1",
+      title: "高互动型主播",
+      summary: "擅长高频互动，复杂脚本需要预演。",
+      strengths: ["互动响应快"],
+      risks: ["复杂脚本稳定性待验证"],
+      recommendations: ["开播前完成脚本预演"],
+      tags: ["高互动"],
+      source_ref: "streamer_profile_insights:insight-1",
+      confirmed_at: "2026-06-30T12:00:00.000Z",
+    },
+  ],
   live_tasks: [
     {
       status: "completed",
@@ -162,6 +174,7 @@ describe("loadCastingCandidates", () => {
       referenceProjects: [
         { id: "p1", name: "Campaign Alpha", result: "completed" },
       ],
+      profileInsights: card.aiInsights,
     });
 
     expect(dataGaps).not.toContain("candidate_roi_proxy");

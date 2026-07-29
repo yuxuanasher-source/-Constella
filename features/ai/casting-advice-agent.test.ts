@@ -45,6 +45,11 @@ describe("runCastingAdviceAgent", () => {
           sourceTool: "casting_advice",
           sourceId: "casting_advice:project:requiredMinutes",
         }),
+        expect.objectContaining({
+          statement: expect.stringContaining("高互动型主播"),
+          sourceTool: "streamer_profile_insights",
+          sourceId: "streamer_profile_insights:insight-1",
+        }),
       ]),
     );
     expect(result.agentOutput.findings).toEqual(
@@ -154,6 +159,19 @@ function createInput(): CastingAdviceInput {
         grossMarginContributionCents: 180000,
         riskTags: [],
         availableMinutes: 1200,
+        profileInsights: [
+          {
+            id: "insight-1",
+            title: "高互动型主播",
+            summary: "擅长高频互动，复杂脚本需要预演。",
+            strengths: ["互动响应快"],
+            risks: ["复杂脚本稳定性待验证"],
+            recommendations: ["开播前完成脚本预演"],
+            tags: ["高互动"],
+            sourceRef: "streamer_profile_insights:insight-1",
+            confirmedAtLabel: "2026-06-30",
+          },
+        ],
         referenceProjects: [
           {
             id: "project-a",

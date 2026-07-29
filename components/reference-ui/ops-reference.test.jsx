@@ -12072,7 +12072,7 @@ describe("OpsReferenceApp war room smoke", () => {
     expect(await screen.findByText("margin_below_target")).toBeInTheDocument();
   });
 
-  it("posts explicit streamer metric gaps to matching and project review", async () => {
+  it("posts only streamer IDs to matching while keeping review metric gaps explicit", async () => {
     const fetchMock = vi.fn(async (url) => {
       if (String(url) === "/api/war-room/project-review") {
         return {
@@ -12148,14 +12148,12 @@ describe("OpsReferenceApp war room smoke", () => {
       roiBps: null,
       grossMarginContributionCents: null,
     });
-    expect(JSON.parse(matchingCall[1].body).candidates[0]).toMatchObject({
-      completionRateBps: null,
-      screeningPassRateBps: null,
-      roiBps: null,
-      grossMarginContributionCents: null,
-      referenceProjects: [
-        expect.objectContaining({ result: "完成率 暂无数据" }),
-      ],
+    const matchingBody = JSON.parse(matchingCall[1].body);
+    expect(matchingBody.candidateIds).toEqual([streamerWithoutMetrics.id]);
+    expect(matchingBody).not.toHaveProperty("candidates");
+    expect(matchingBody.suppliers[0]).toMatchObject({
+      screeningPassRateBps: 0,
+      completionRateBps: 0,
     });
   });
 

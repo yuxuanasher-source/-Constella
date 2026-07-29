@@ -129,6 +129,7 @@ export async function loadCastingCandidates(
       // 无结构化排期数据;用近三十天任务时长作为已证明的可排期容量,
       // 查不到时置 requiredMinutes(中性值,不误触 availability_shortage)。
       availableMinutes: demonstrated ?? params.requiredMinutes,
+      profileInsights: card.aiInsights,
       referenceProjects: referenceProjectsFrom(row),
     };
   });
