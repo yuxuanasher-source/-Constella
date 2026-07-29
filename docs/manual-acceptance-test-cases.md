@@ -60,6 +60,7 @@
 | M2-003 | 黑名单/风险状态拦截报名和邀约    | 主播 C 为黑名单或 restricted        | 主播 C 报名项目；运营定向邀约主播 C；尝试给主播 C 排班             | 报名和邀约被拦截；排班不可选择或接口拒绝；风险变更写高风险审计                                 |
 | M2-004 | 主播档案权限与敏感字段           | 主播 A 有默认价格/风险备注          | 财务、次级运营、主播 A 分别查看主播档案                            | 角色可见字段符合权限；主播不看到内部成本、毛利、供应商内部备注；次级运营只看到授权项目相关主播 |
 | M2-005 | 经营画像指标展示                 | 主播 A 有录屏、项目、报数、结算历史 | 查看主播画像指标                                                   | 展示录屏通过次数、项目完成率、ROI/毛利贡献等第一版指标；缺数据时显示为空态而非错误值           |
+| M2-006 | 厂家驳回原因与项目级 AI 复盘     | 主播 A 有厂家驳回记录且参与项目 P；项目有直播并发数据 | 打开主播 A 详情；核对厂家驳回标签和次数；在项目 P 行点击“生成 AI 项目复盘” | 原因按检查点业务标签展示并按次数排序；点击前不请求 AI；点击后仅请求当前主播和项目，展示平均 PCU、平均 ACU、摘要和建议；缺失值显示“暂无” |
 
 ## M3 报名、邀约与录屏审核
 
@@ -79,6 +80,7 @@
 | M3-012 | 旧交付包 API 明确退役    | 使用 MCN staff 账号                  | 请求 `/api/delivery-packages?projectId=<id>`               | 返回 `410 Gone`，响应 replacement 指向 `/api/projects/<id>/admission-share-boards`；未登录为 401，非 MCN staff 为 403 |
 | M3-013 | 运营代传录屏角色与状态门控 | 准备 submitted / invited / recording_required / recording_rejected / recording_reviewing / recording_approved 六种报名；分别使用 owner、ops_manager、operator_business、finance | 在项目录屏明细中查看并使用“代传录屏”，填写 http(s) 外链 | 前三种员工角色只在前四种可提交状态看到入口并可成功代传；reviewing / approved 不显示入口；finance 不显示入口且直接请求 API 返回 403；成功提示“已由运营代传，待审核”并刷新项目看板 |
 | M3-014 | 自传/代传归属与跨组织防护 | 主播 A、运营 A 属于组织 A；运营 B 属于组织 B；另准备有效协作贡献组织和黑名单主播 | 主播 A 自传；运营 A 代传；运营 B 跨组织代传；有效协作贡献组织代传；尝试为黑名单主播代传；查看 API、数据库、审计和通知 | 自传和合法代传均返回 `uploadedBy` 且 `recording_submissions.uploaded_by` 为实际用户；审计含主体 streamerId、操作者 user/role、uploadedBy、uploadMode=self/proxy；通知区分自传/代传；无授权跨组织及黑名单代传被拒，匹配 contributorOrganizationId 且 agreement active 的协作代传可通过 |
+| M3-015 | 组织审核校准看板           | 当前组织已有多个统计窗口的准入审核指标 | 打开选播准入页；核对最新窗口；切换到无指标组织；模拟指标接口失败后重试 | 只展示当前组织最近窗口的 AI/MCN 一致率、一审漏判率、最高 AI 漏放检查点、厂家拒绝原因和样本分子/分母；无数据为空态；失败可重试且不影响项目准入板 |
 
 ## M4 排班与直播任务
 

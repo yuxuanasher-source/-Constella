@@ -24,6 +24,7 @@ import {
   toSupplierQualityDtos,
 } from "@/features/war-room/war-room-ui-dto";
 import { buildLiveReviewTemplate } from "@/features/live-review/live-review-template";
+import { DEFAULT_ADMISSION_CHECKPOINTS } from "@/features/admission-review/contracts";
 import {
   aggregateReviewKnowledge,
   buildReviewAssist,
@@ -1191,6 +1192,17 @@ const REPORT_STATUS = {
   rejected: { tone: "red", label: "审核驳回" },
   voided: { tone: "neutral", label: "已作废" },
 };
+
+const ADMISSION_CHECKPOINT_LABELS = Object.fromEntries(
+  DEFAULT_ADMISSION_CHECKPOINTS.map((checkpoint) => [
+    checkpoint.key,
+    checkpoint.label,
+  ]),
+);
+
+function admissionCheckpointLabel(key) {
+  return ADMISSION_CHECKPOINT_LABELS[key] || key || "整体";
+}
 
 const OpsLiveDataContext = React.createContext({
   projects: null,
@@ -13563,6 +13575,9 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
   const [inviteMessage, setInviteMessage] = React.useState("");
   const [inviteError, setInviteError] = React.useState("");
   const [inviteSubmitting, setInviteSubmitting] = React.useState(false);
+  const [projectReview, setProjectReview] = React.useState(null);
+  const [projectReviewError, setProjectReviewError] = React.useState("");
+  const [projectReviewBusyId, setProjectReviewBusyId] = React.useState("");
   React.useEffect(() => {
     if (!s) return;
     setRiskLevel(s.risk || "low");
@@ -13575,6 +13590,9 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
     setInviteOpen(false);
     setInviteError("");
     setInviteMessage("");
+    setProjectReview(null);
+    setProjectReviewError("");
+    setProjectReviewBusyId("");
   }, [s?.id, s?.risk]);
   React.useEffect(() => {
     if (!inviteProjectId && projects[0]?.id) {
@@ -13614,6 +13632,18 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
   };
   const streamerProjects = Array.isArray(s.projects) ? s.projects : [];
   const aiInsights = Array.isArray(s.aiInsights) ? s.aiInsights : [];
+  const rejectionReasonEntries = Object.entries(
+    s.metrics?.rejectionReasonHistogram || {},
+  ).sort(
+    ([leftKey, leftCount], [rightKey, rightCount]) =>
+      Number(rightCount) - Number(leftCount) ||
+      leftKey.localeCompare(rightKey),
+  );
+  const projectReviewProfile =
+    projectReview?.result?.output?.profile &&
+    typeof projectReview.result.output.profile === "object"
+      ? projectReview.result.output.profile
+      : null;
   const updateProfileDraft = (field) => (event) => {
     setProfileDraft((value) => ({
       ...(value || streamerProfileDraftFromCard(s)),
@@ -13731,6 +13761,24 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
       setInviteError(error?.message || "邀约失败，请稍后重试");
     } finally {
       setInviteSubmitting(false);
+    }
+  };
+  const runProjectReview = async (project) => {
+    if (!actions.runStreamerProjectReview) {
+      setProjectReviewError("主播项目复盘后台暂未接入。");
+      return;
+    }
+    setProjectReviewBusyId(project.id);
+    setProjectReviewError("");
+    try {
+      const body = await actions.runStreamerProjectReview(s.id, project.id);
+      setProjectReview({ ...body, projectName: project.name });
+    } catch (error) {
+      setProjectReviewError(
+        error?.message || "主播项目复盘生成失败，请稍后重试",
+      );
+    } finally {
+      setProjectReviewBusyId("");
     }
   };
 
@@ -14211,6 +14259,39 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
                 </span>
               )}
             </div>
+
+            <div
+              style={{
+                marginTop: 14,
+                paddingTop: 12,
+                borderTop: "1px dashed var(--line)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: "var(--ink-700)",
+                  marginBottom: 8,
+                }}
+              >
+                厂家驳回原因明细
+              </div>
+              {rejectionReasonEntries.length > 0 ? (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {rejectionReasonEntries.map(([reason, count]) => (
+                    <Badge key={reason} tone="red">
+                      <span>{admissionCheckpointLabel(reason)}</span>
+                      <span> · {count}</span>
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
+                <span style={{ color: "var(--ink-300)", fontSize: 12 }}>
+                  暂无厂家驳回原因
+                </span>
+              )}
+            </div>
         </>
       </Card>
 
@@ -14333,6 +14414,72 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
         )}
       </Card>
 
+      {projectReview || projectReviewError ? (
+        <Card
+          title="AI 项目复盘"
+          extra={
+            projectReview?.projectName ? (
+              <Badge tone="violet">{projectReview.projectName}</Badge>
+            ) : null
+          }
+          padded={true}
+        >
+          {projectReviewError ? (
+            <div
+              aria-live="polite"
+              style={{ color: "var(--danger-600)", fontSize: 12 }}
+            >
+              {projectReviewError}
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <Badge tone="blue">
+                  平均 PCU{" "}
+                  {hasStreamerMetricValue(
+                    projectReviewProfile?.liveMetrics?.averagePcu,
+                  )
+                    ? projectReviewProfile.liveMetrics.averagePcu
+                    : "暂无"}
+                </Badge>
+                <Badge tone="teal">
+                  平均 ACU{" "}
+                  {hasStreamerMetricValue(
+                    projectReviewProfile?.liveMetrics?.averageAcu,
+                  )
+                    ? projectReviewProfile.liveMetrics.averageAcu
+                    : "暂无"}
+                </Badge>
+              </div>
+              {projectReviewProfile?.reviewDraft?.summary ? (
+                <div
+                  style={{
+                    fontSize: 12.5,
+                    color: "var(--ink-700)",
+                    lineHeight: 1.65,
+                  }}
+                >
+                  {projectReviewProfile.reviewDraft.summary}
+                </div>
+              ) : null}
+              {projectReview?.result?.answer ? (
+                <div
+                  style={{
+                    paddingTop: 8,
+                    borderTop: "1px dashed var(--line)",
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {projectReview.result.answer}
+                </div>
+              ) : null}
+            </div>
+          )}
+        </Card>
+      ) : null}
+
       <Card
         title="参与项目"
         extra={
@@ -14401,6 +14548,16 @@ function StreamerPanel({ id, streamers = STREAMERS, go }) {
                 <Badge tone={project.status === "joined" ? "green" : "blue"}>
                   {project.status === "joined" ? "已加入" : project.status}
                 </Badge>
+                <Button
+                  size="sm"
+                  kind="link"
+                  onClick={() => runProjectReview(project)}
+                  disabled={projectReviewBusyId === project.id}
+                >
+                  {projectReviewBusyId === project.id
+                    ? "复盘生成中"
+                    : "生成 AI 项目复盘"}
+                </Button>
               </div>
             ))}
           </div>
@@ -16254,6 +16411,204 @@ function ShotMetric({ label, value }) {
   );
 }
 
+function AdmissionCalibrationDashboard({
+  metrics,
+  loading,
+  error,
+  onRetry,
+}) {
+  const rows = latestAdmissionCalibrationRows(metrics);
+  const overallAgreement = rows.find(
+    (row) =>
+      row.metricKey === "ai_mcn_agreement" && !row.checkpointKey,
+  );
+  const mcnMiss = rows.find(
+    (row) => row.metricKey === "mcn_miss" && !row.checkpointKey,
+  );
+  const worstFalsePass = rows
+    .filter(
+      (row) =>
+        row.metricKey === "ai_false_pass" && Boolean(row.checkpointKey),
+    )
+    .sort((left, right) => metricRate(right) - metricRate(left))[0];
+  const vendorReasons = rows
+    .filter(
+      (row) =>
+        row.metricKey === "vendor_reject_reason" &&
+        Boolean(row.checkpointKey),
+    )
+    .sort(
+      (left, right) =>
+        Number(right.numerator || 0) - Number(left.numerator || 0),
+    )
+    .slice(0, 5);
+  const latestPeriod = rows[0]?.periodEnd
+    ? `${rows[0].periodStart || "—"} 至 ${rows[0].periodEnd}`
+    : "";
+
+  return (
+    <Card
+      title="组织审核校准"
+      extra={
+        latestPeriod ? <Badge tone="violet">{latestPeriod}</Badge> : null
+      }
+      padded={true}
+    >
+      {loading && metrics == null ? (
+        <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+          正在加载校准指标…
+        </span>
+      ) : error ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            aria-live="polite"
+            style={{ fontSize: 12, color: "var(--danger-600)", flex: 1 }}
+          >
+            {error}
+          </span>
+          <Button size="sm" kind="default" onClick={onRetry}>
+            重试
+          </Button>
+        </div>
+      ) : rows.length === 0 ? (
+        <EmptyHint
+          title="暂无组织校准样本"
+          hint="夜间指标任务生成样本后，这里会展示 AI 与人工一致率、漏放和一审漏判。"
+        />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+              gap: 10,
+            }}
+          >
+            <AdmissionCalibrationMetric
+              label="AI / MCN 一致率"
+              row={overallAgreement}
+              tone="green"
+            />
+            <AdmissionCalibrationMetric
+              label="一审漏判率"
+              row={mcnMiss}
+              tone="red"
+            />
+            <AdmissionCalibrationMetric
+              label="最高 AI 漏放"
+              row={worstFalsePass}
+              tone="amber"
+              detail={
+                worstFalsePass?.checkpointKey
+                  ? admissionCheckpointLabel(worstFalsePass.checkpointKey)
+                  : ""
+              }
+            />
+          </div>
+          <div
+            style={{
+              paddingTop: 10,
+              borderTop: "1px dashed var(--line)",
+            }}
+          >
+            <div
+              style={{
+                marginBottom: 7,
+                fontSize: 12,
+                fontWeight: 700,
+                color: "var(--ink-700)",
+              }}
+            >
+              厂家拒绝原因
+            </div>
+            {vendorReasons.length > 0 ? (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {vendorReasons.map((row) => (
+                  <Badge key={row.checkpointKey} tone="red">
+                    {admissionCheckpointLabel(row.checkpointKey)} ·{" "}
+                    {row.numerator}
+                  </Badge>
+                ))}
+              </div>
+            ) : (
+              <span style={{ fontSize: 12, color: "var(--ink-300)" }}>
+                当前窗口暂无厂家拒绝理由样本
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function AdmissionCalibrationMetric({ label, row, tone, detail = "" }) {
+  return (
+    <div
+      style={{
+        minWidth: 0,
+        padding: 10,
+        border: "1px solid var(--line)",
+        borderRadius: 8,
+        background: "var(--bg-soft)",
+      }}
+    >
+      <div style={{ fontSize: 11, color: "var(--ink-400)" }}>{label}</div>
+      <div
+        className="num"
+        style={{
+          marginTop: 3,
+          fontSize: 19,
+          fontWeight: 700,
+          color:
+            tone === "red"
+              ? "var(--danger-600)"
+              : tone === "amber"
+                ? "var(--warn-600)"
+                : "var(--ok-600)",
+        }}
+      >
+        {formatAdmissionMetricRate(row)}
+      </div>
+      <div
+        style={{
+          marginTop: 2,
+          fontSize: 10.5,
+          color: "var(--ink-400)",
+        }}
+      >
+        {row
+          ? `${detail ? `${detail} · ` : ""}样本 ${row.numerator}/${row.denominator}`
+          : "暂无样本"}
+      </div>
+    </div>
+  );
+}
+
+function latestAdmissionCalibrationRows(metrics) {
+  if (!Array.isArray(metrics) || metrics.length === 0) return [];
+  const latestPeriodEnd = metrics
+    .map((row) => String(row?.periodEnd || ""))
+    .sort()
+    .at(-1);
+  return metrics.filter(
+    (row) => String(row?.periodEnd || "") === latestPeriodEnd,
+  );
+}
+
+function metricRate(row) {
+  return typeof row?.rate === "number" && Number.isFinite(row.rate)
+    ? row.rate
+    : row?.denominator > 0
+      ? Number(row.numerator || 0) / row.denominator
+      : Number.NEGATIVE_INFINITY;
+}
+
+function formatAdmissionMetricRate(row) {
+  const rate = metricRate(row);
+  return Number.isFinite(rate) ? `${(rate * 100).toFixed(1)}%` : "暂无";
+}
+
 function ScreenAdmission({ focusRequest = null }) {
   const applications = useOpsApplications();
   const { applications: applicationData } =
@@ -16269,6 +16624,11 @@ function ScreenAdmission({ focusRequest = null }) {
     "operator_business",
   ].includes(currentUser.role);
   const [projectBoards, setProjectBoards] = React.useState(null);
+  const [calibrationMetrics, setCalibrationMetrics] = React.useState(null);
+  const [calibrationMetricsError, setCalibrationMetricsError] =
+    React.useState("");
+  const [calibrationMetricsLoading, setCalibrationMetricsLoading] =
+    React.useState(false);
   // 行内抽屉展开的项目：默认全部收起，点谁展开谁，明细跟随行出现。
   const [expandedProjectId, setExpandedProjectId] = React.useState("");
   const [searchQuery, setSearchQuery] = React.useState("");
@@ -16297,6 +16657,25 @@ function ScreenAdmission({ focusRequest = null }) {
       return;
     }
     setProjectBoards(projects);
+  };
+
+  const loadAdmissionCalibrationMetrics = async () => {
+    if (!actions.refreshAdmissionReviewMetrics) {
+      setCalibrationMetricsError("组织审核校准指标后台暂未接入。");
+      return;
+    }
+    setCalibrationMetricsLoading(true);
+    setCalibrationMetricsError("");
+    try {
+      const metrics = await actions.refreshAdmissionReviewMetrics();
+      setCalibrationMetrics(Array.isArray(metrics) ? metrics : []);
+    } catch (error) {
+      setCalibrationMetricsError(
+        error?.message || "组织审核校准指标加载失败",
+      );
+    } finally {
+      setCalibrationMetricsLoading(false);
+    }
   };
 
   // 返回是否审核成功：工作台据此决定是否自动跳到下一条待审核。
@@ -16501,6 +16880,10 @@ function ScreenAdmission({ focusRequest = null }) {
     return () => {
       active = false;
     };
+  }, [actions]);
+
+  React.useEffect(() => {
+    loadAdmissionCalibrationMetrics();
   }, [actions]);
 
   // B6：m3 页 SSR 不再预取报名队列，挂载后按需拉取（与看板刷新并行）。
@@ -16921,7 +17304,16 @@ function ScreenAdmission({ focusRequest = null }) {
             fetchPreReview={actions.fetchAdmissionPreReview}
           />
         ) : (
-        <Card title="项目准入板" padded={false}>
+          <>
+            <div style={{ marginBottom: 16 }}>
+              <AdmissionCalibrationDashboard
+                metrics={calibrationMetrics}
+                loading={calibrationMetricsLoading}
+                error={calibrationMetricsError}
+                onRetry={loadAdmissionCalibrationMetrics}
+              />
+            </div>
+            <Card title="项目准入板" padded={false}>
           <div
             style={{
               display: "flex",
@@ -17092,7 +17484,8 @@ function ScreenAdmission({ focusRequest = null }) {
               },
             ]}
           />
-        </Card>
+            </Card>
+          </>
         )}
         {shareResult ? (
           <AdmissionShareLinkDialog
@@ -34856,6 +35249,27 @@ function OpsReferenceInner({
       return Array.isArray(body.projects) ? body.projects : [];
     };
 
+    const refreshAdmissionReviewMetrics = async () => {
+      const body = await fetchJson(
+        "/api/admission-review/metrics?limit=200",
+        "refresh admission review metrics failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.metrics) ? body.metrics : [];
+    };
+
+    const runStreamerProjectReview = async (streamerId, projectId) => {
+      return fetchJson(
+        "/api/ai/streamer-project-review",
+        "run streamer project review failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ streamerId, projectId }),
+        },
+      );
+    };
+
     const fetchAdmissionPreReview = async (submissionId) => {
       const body = await fetchJson(
         `/api/admission-review/pre-review?submissionId=${encodeURIComponent(submissionId)}`,
@@ -34982,6 +35396,8 @@ function OpsReferenceInner({
       refreshStreamers,
       refreshApplications,
       refreshAdmissionProjectBoards,
+      refreshAdmissionReviewMetrics,
+      runStreamerProjectReview,
       fetchAdmissionPreReview,
       refreshOpsTasks,
       refreshReports,

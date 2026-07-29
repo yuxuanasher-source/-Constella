@@ -437,6 +437,8 @@ flowchart LR
 - 维护实名、性别、来源、品类、平台、风格、默认结算方式。
 - 读取主播池列表和主播桌面档案 DTO。
 - 统计近 90 天录屏、任务、报数、项目贡献，生成 matchScore、趋势、项目贡献。
+- 主播详情展示结构化的厂家驳回原因直方图，并将检查点代码翻译为业务标签。
+- 在主播参与项目列表中由运营手动触发 AI 项目复盘；复盘卡展示该主播在当前项目的平均 PCU、平均 ACU、复盘摘要和建议，不在打开抽屉时自动消耗 AI 调用。
 - 更新主播风险状态。
 - 黑名单主播不能被邀约或报名。
 - 主播录屏链接库支持主播提交产品、品类、URL、月份，后台可审核。
@@ -473,6 +475,7 @@ flowchart LR
 - 最终确认加入。
 - 最终拒绝并记录原因。
 - 经营端读取准入队列。
+- 经营端在项目准入板上方读取最近一个统计窗口的组织审核校准，展示 AI/MCN 一致率、一审漏判率、最高 AI 漏放检查点和厂家拒绝原因。
 - 主播端读取自己的报名卡片。
 - 项目详情的“厂家分享看板”直接定位到当前项目的准入工作台。
 - 运营按项目创建厂家分享看板，只纳入 MCN 已通过的录屏。
@@ -491,6 +494,7 @@ flowchart LR
 - 审核和入项决策均写审计并发通知。
 - 分享 token 仅在创建时返回明文，服务端保存哈希；厂家访问必须同时满足 token 有效、看板 active、未过期。
 - 厂家交付只走项目级准入分享看板，不再生成独立“厂家交付包”或 `vendor_delivery` CSV。
+- 组织校准指标只汇总当前组织，卡片同时展示分子/分母样本量；没有夜间计算结果时显示空态，不把缺失率伪装为 0%。
 
 ### 8.5 M4 排班直播
 
@@ -748,6 +752,7 @@ AI 经营问答：
 - 识别最佳/最差主播。
 - 统计异常和争议。
 - 输出是否继续、下一轮报价建议和推荐动作。
+- 主播详情内的项目级复盘通过 `/api/ai/streamer-project-review` 读取 PCU/ACU；其它列表、匹配和普通画像接口不重复拼接这组直播并发指标。
 
 自动审核八类门禁：
 
@@ -938,6 +943,7 @@ P6 正式商业化规格已沉淀：
 | `/api/public/admission-share/:token`            | GET   | token 门控读取厂家分享看板 |
 | `/api/public/admission-share/:token/recordings/:recordingSubmissionId` | GET | 受控读取私有录屏 |
 | `/api/public/admission-share/:token/reviews`    | POST  | 厂家提交选择和备注     |
+| `/api/admission-review/metrics?limit=:limit`    | GET   | 读取当前组织审核校准指标 |
 
 ### 10.4 排班、报数、OCR
 
@@ -995,6 +1001,7 @@ P6 正式商业化规格已沉淀：
 | `/api/auto-review/rollout-metrics` | GET  | 自动审核 rollout 指标  |
 | `/api/ai/briefs`                   | POST | 选播建议 / brief       |
 | `/api/ai/project-reviews`          | POST | AI 项目复盘            |
+| `/api/ai/streamer-project-review`  | POST | 主播在指定项目的 AI 复盘及 PCU/ACU |
 | `/api/ai/scripts`                  | POST | AI 脚本优化草稿        |
 | `/api/ai/diagnosis`                | POST | 主播 AI 卡点诊断       |
 | `/api/ai/copilot`                  | POST | M10 Copilot 路由       |
