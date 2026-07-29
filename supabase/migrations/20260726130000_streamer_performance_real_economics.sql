@@ -1,4 +1,4 @@
--- Task 9: persist real streamer economics without rewriting legacy proxy history.
+-- Task 9: persist measured streamer economics without rewriting legacy proxy history.
 --
 -- total_settlement_amount is the sum of computed_amount + manual_amount +
 -- adjustment_amount for payable batches in confirmed/locked state.
