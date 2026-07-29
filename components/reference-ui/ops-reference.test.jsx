@@ -2583,6 +2583,86 @@ describe("OpsReferenceApp project smoke", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows vendor rejection reasons and runs a project review with PCU and ACU", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/ai/streamer-project-review") {
+        return {
+          ok: true,
+          json: async () => ({
+            result: {
+              answer: "主播项目复盘已生成，建议继续人工观察。",
+              output: {
+                profile: {
+                  liveMetrics: {
+                    averagePcu: 320,
+                    averageAcu: 180,
+                  },
+                  reviewDraft: {
+                    summary: "已形成 3 个有效直播日，录屏采用率稳定。",
+                  },
+                },
+              },
+            },
+            profileInput: {
+              streamer: { id: "streamer-one", displayName: "Streamer One" },
+              project: { id: "project-live", name: "Fixture Project" },
+            },
+          }),
+        };
+      }
+      return {
+        ok: false,
+        json: async () => ({ error: "unexpected request" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="streamers"
+        streamerCards={[
+          {
+            ...taskStreamerCards[0],
+            metrics: {
+              ...taskStreamerCards[0].metrics,
+              rejectionReasonHistogram: {
+                media_quality: 3,
+                script_fit: 2,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("厂家驳回原因明细")).toBeInTheDocument();
+    expect(screen.getByText("音画质量")).toBeInTheDocument();
+    expect(screen.getByText("话术贴合项目卖点")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "生成 AI 项目复盘" }),
+    );
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/ai/streamer-project-review",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            streamerId: "streamer-one",
+            projectId: "project-live",
+          }),
+        }),
+      ),
+    );
+    expect(await screen.findByText("平均 PCU 320")).toBeInTheDocument();
+    expect(screen.getByText("平均 ACU 180")).toBeInTheDocument();
+    expect(
+      screen.getByText("已形成 3 个有效直播日，录屏采用率稳定。"),
+    ).toBeInTheDocument();
+  });
+
   it("warns when project-detail background roster refresh fails", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const projectCard = {
@@ -5576,6 +5656,87 @@ describe("OpsReferenceApp admission smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
     expect(screen.getByText("app-ui-1")).toBeInTheDocument();
     expect(screen.getByText("小鹿")).toBeInTheDocument();
+  });
+
+  it("loads the organization admission calibration dashboard", async () => {
+    const fetchMock = vi.fn(async (url) => {
+      if (String(url) === "/api/admission-review/metrics?limit=200") {
+        return {
+          ok: true,
+          json: async () => ({
+            metrics: [
+              {
+                periodStart: "2026-06-01",
+                periodEnd: "2026-06-30",
+                metricKey: "ai_mcn_agreement",
+                checkpointKey: null,
+                numerator: 34,
+                denominator: 40,
+                rate: 0.85,
+                computedAt: "2026-07-01T00:00:00.000Z",
+              },
+              {
+                periodStart: "2026-06-01",
+                periodEnd: "2026-06-30",
+                metricKey: "ai_false_pass",
+                checkpointKey: "script_fit",
+                numerator: 4,
+                denominator: 40,
+                rate: 0.1,
+                computedAt: "2026-07-01T00:00:00.000Z",
+              },
+              {
+                periodStart: "2026-06-01",
+                periodEnd: "2026-06-30",
+                metricKey: "mcn_miss",
+                checkpointKey: null,
+                numerator: 4,
+                denominator: 20,
+                rate: 0.2,
+                computedAt: "2026-07-01T00:00:00.000Z",
+              },
+              {
+                periodStart: "2026-06-01",
+                periodEnd: "2026-06-30",
+                metricKey: "vendor_reject_reason",
+                checkpointKey: "media_quality",
+                numerator: 3,
+                denominator: 5,
+                rate: 0.6,
+                computedAt: "2026-07-01T00:00:00.000Z",
+              },
+            ],
+          }),
+        };
+      }
+      if (String(url) === "/api/applications/admission-board") {
+        return {
+          ok: true,
+          json: async () => ({ projects: [] }),
+        };
+      }
+      return {
+        ok: false,
+        json: async () => ({ error: "unexpected request" }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={[]}
+      />,
+    );
+
+    expect(await screen.findByText("组织审核校准")).toBeInTheDocument();
+    expect(screen.getByText("AI / MCN 一致率")).toBeInTheDocument();
+    expect(screen.getByText("85.0%")).toBeInTheDocument();
+    expect(screen.getByText("一审漏判率")).toBeInTheDocument();
+    expect(screen.getByText("20.0%")).toBeInTheDocument();
+    expect(screen.getByText("最高 AI 漏放")).toBeInTheDocument();
+    expect(screen.getByText("10.0%")).toBeInTheDocument();
+    expect(screen.getByText("音画质量 · 3")).toBeInTheDocument();
   });
 
   it("lets operations proxy-upload an external recording and refreshes admission data", async () => {
