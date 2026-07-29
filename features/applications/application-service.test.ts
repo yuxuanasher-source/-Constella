@@ -25,6 +25,20 @@ const operatorActor = {
   organizationId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
 };
 
+const ownerActor = {
+  userId: "11111111-1111-1111-1111-111111111111",
+  name: "Owner",
+  role: "owner" as const,
+  organizationId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+};
+
+const financeActor = {
+  userId: "44444444-4444-4444-4444-444444444444",
+  name: "Finance",
+  role: "finance" as const,
+  organizationId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+};
+
 const streamerActor = {
   userId: "55555555-5555-5555-5555-555555555555",
   name: "Streamer One",
@@ -92,6 +106,7 @@ function makeRepo(
       applicationId: "app-1",
       version: 1,
       status: "submitted",
+      uploadedBy: streamerActor.userId,
     }),
     getLatestRecordingSubmission: vi.fn().mockResolvedValue({
       id: "recording-1",
@@ -503,6 +518,7 @@ describe("application service", () => {
     expect(repo.createRecordingSubmission).toHaveBeenCalledWith(
       expect.objectContaining({
         version: 2,
+        uploadedBy: streamerActor.userId,
         storagePath:
           "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/recordings/project-1/video.mp4",
       }),
@@ -512,8 +528,254 @@ describe("application service", () => {
     );
     expect(repo.updateApplicationStatus).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(
-      expect.objectContaining({ recipientRole: "operator_business" }),
+      expect.objectContaining({
+        recipientRole: "operator_business",
+        content: expect.stringContaining("submitted their screening recording"),
+      }),
     );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorUserId: streamerActor.userId,
+        streamerId: "streamer-1",
+        after: expect.objectContaining({
+          uploadedBy: streamerActor.userId,
+          uploadMode: "self",
+        }),
+        changedFields: expect.arrayContaining(["uploaded_by", "upload_mode"]),
+      }),
+    );
+  });
+
+  it.each([
+    ["owner", ownerActor],
+    ["ops_manager", staffActor],
+    ["operator_business", operatorActor],
+  ] as const)(
+    "allows %s to proxy-upload for an application in the actor organization",
+    async (_role, actor) => {
+      const repo = makeRepo({
+        getApplicationById: vi.fn().mockResolvedValue({
+          ...baseApplication,
+          status: "recording_required",
+        }),
+      });
+      const audit = vi.fn().mockResolvedValue(undefined);
+      const notify = vi.fn().mockResolvedValue(undefined);
+
+      await submitRecording({
+        repo,
+        audit,
+        notify,
+        actor,
+        input: {
+          applicationId: "app-1",
+          externalUrl: "https://videos.example.com/proxy-upload",
+        },
+      });
+
+      expect(repo.createRecordingSubmission).toHaveBeenCalledWith(
+        expect.objectContaining({
+          streamerId: "streamer-1",
+          uploadedBy: actor.userId,
+          externalUrl: "https://videos.example.com/proxy-upload",
+        }),
+      );
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorUserId: actor.userId,
+          actorRole: actor.role,
+          streamerId: "streamer-1",
+          after: expect.objectContaining({
+            uploadedBy: actor.userId,
+            uploadMode: "proxy",
+          }),
+          changedFields: expect.arrayContaining(["uploaded_by", "upload_mode"]),
+        }),
+      );
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining("proxy-uploaded"),
+        }),
+      );
+    },
+  );
+
+  it("rejects finance proxy uploads", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_required",
+      }),
+    });
+
+    await expect(
+      submitRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: financeActor,
+        input: {
+          applicationId: "app-1",
+          externalUrl: "https://videos.example.com/finance-upload",
+        },
+      }),
+    ).rejects.toThrow("Current role cannot submit screening recordings");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
+  it("rejects staff proxy uploads for applications outside the actor organization", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        organizationId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        status: "recording_required",
+      }),
+    });
+
+    await expect(
+      submitRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: operatorActor,
+        input: {
+          applicationId: "app-1",
+          externalUrl: "https://videos.example.com/cross-org",
+        },
+      }),
+    ).rejects.toThrow("Cross-organization access is not allowed");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
+  it("allows an authorized contributor organization to proxy-upload", async () => {
+    const contributorActor = {
+      ...operatorActor,
+      organizationId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    };
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_required",
+        collaborationId: "collaboration-1",
+        contributorOrganizationId: contributorActor.organizationId,
+      }),
+      getActiveCollaborationAgreement: vi.fn().mockResolvedValue({
+        id: "collaboration-1",
+        projectId: "project-1",
+        partnerOrganizationId: contributorActor.organizationId,
+        status: "active",
+      }),
+    });
+
+    await submitRecording({
+      repo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      notify: vi.fn().mockResolvedValue(undefined),
+      actor: contributorActor,
+      input: {
+        applicationId: "app-1",
+        externalUrl: "https://videos.example.com/contributor-proxy",
+      },
+    });
+
+    expect(repo.getActiveCollaborationAgreement).toHaveBeenCalledWith({
+      projectId: "project-1",
+      collaborationId: "collaboration-1",
+      contributorOrganizationId: contributorActor.organizationId,
+    });
+    expect(repo.createRecordingSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: contributorActor.organizationId,
+        uploadedBy: contributorActor.userId,
+      }),
+    );
+  });
+
+  it("rejects contributor proxy upload when the collaboration agreement is not active", async () => {
+    const contributorActor = {
+      ...operatorActor,
+      organizationId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    };
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_required",
+        collaborationId: "collaboration-1",
+        contributorOrganizationId: contributorActor.organizationId,
+      }),
+      getActiveCollaborationAgreement: vi.fn().mockResolvedValue(null),
+    });
+
+    await expect(
+      submitRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: contributorActor,
+        input: {
+          applicationId: "app-1",
+          externalUrl: "https://videos.example.com/inactive-contributor",
+        },
+      }),
+    ).rejects.toThrow("Cross-organization access is not allowed");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
+  it("rejects proxy uploads for a blacklisted subject streamer", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_required",
+      }),
+      getStreamerForAdmission: vi.fn().mockResolvedValue({
+        id: "streamer-1",
+        displayName: "Blocked Streamer",
+        riskLevel: "blacklisted",
+      }),
+    });
+
+    await expect(
+      submitRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: operatorActor,
+        input: {
+          applicationId: "app-1",
+          externalUrl: "https://videos.example.com/blocked-proxy",
+        },
+      }),
+    ).rejects.toThrow("Blacklisted streamers cannot submit");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "ftp://videos.example.com/not-http",
+    "javascript:alert(1)",
+    "not-a-url",
+  ])("rejects a non-http(s) external recording URL: %s", async (externalUrl) => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_required",
+      }),
+    });
+
+    await expect(
+      submitRecording({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: streamerActor,
+        input: { applicationId: "app-1", externalUrl },
+      }),
+    ).rejects.toThrow("Recording link must be an http(s) URL");
+
+    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
   });
 
   it("rejects streamer recording submissions for another streamer's application", async () => {

@@ -136,6 +136,7 @@ describe("streamer recordings route", () => {
         applicationId: "application-1",
         version: 1,
         status: "submitted",
+        uploadedBy: "user-streamer",
       },
       reviewStatusLabel: "审核中",
     });

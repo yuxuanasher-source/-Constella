@@ -31,6 +31,8 @@ export type AdmissionActor = {
 export type ProjectAdmissionConfig = {
   id: string;
   name: string;
+  organizationId: string;
+  status: string;
   openSignup: boolean;
   allowDirectInvite: boolean;
   forceRecording: boolean;
@@ -69,6 +71,7 @@ export type RecordingSubmissionRecord = {
   applicationId: string;
   version: number;
   status: RecordingReviewStatus;
+  uploadedBy: string | null;
   collaborationId?: string | null;
   contributorOrganizationId?: string | null;
 };
@@ -148,6 +151,7 @@ export type ApplicationRepository = {
     applicationId: string;
     projectId: string;
     streamerId: string;
+    uploadedBy: string;
     version: number;
     storagePath?: string;
     externalUrl?: string;
@@ -357,15 +361,16 @@ export async function submitRecording({
     durationSeconds?: number;
   };
 }): Promise<RecordingSubmissionRecord> {
-  if (actor.role !== "streamer") {
-    throw new Error("Only streamers can submit screening recordings");
+  const isSelfUpload = actor.role === "streamer";
+  if (!isSelfUpload && !canManageAdmission(actor.role)) {
+    throw new Error("Current role cannot submit screening recordings");
   }
 
   const storagePath = normalizeRecordingStoragePath(
     input.storagePath,
     actor.organizationId,
   );
-  const externalUrl = input.externalUrl?.trim() || undefined;
+  const externalUrl = normalizeExternalRecordingUrl(input.externalUrl);
   if (!storagePath && !externalUrl) {
     throw new Error(
       "Recording submission requires a storage path or external URL",
@@ -373,9 +378,15 @@ export async function submitRecording({
   }
 
   const application = await requireApplication(repo, input.applicationId);
-  if (actor.role === "streamer") {
+  if (isSelfUpload) {
     if (!actor.streamerId || application.streamerId !== actor.streamerId) {
       throw new Error("Application is not available for the current streamer");
+    }
+  } else {
+    await assertStaffCanAccessApplication(repo, actor, application);
+    const streamer = await requireStreamer(repo, application.streamerId);
+    if (streamer.riskLevel === "blacklisted") {
+      throw new Error("Blacklisted streamers cannot submit recordings");
     }
   }
   assertCanSubmitRecording(application.status);
@@ -392,6 +403,7 @@ export async function submitRecording({
     applicationId: application.id,
     projectId: application.projectId,
     streamerId: application.streamerId,
+    uploadedBy: actor.userId,
     version: (latest?.version ?? 0) + 1,
     storagePath,
     externalUrl,
@@ -412,15 +424,27 @@ export async function submitRecording({
     objectId: recording.id,
     projectId: application.projectId,
     streamerId: application.streamerId,
-    after: recording,
-    changedFields: ["version", "storage_path", "external_url"],
+    after: {
+      ...recording,
+      uploadedBy: actor.userId,
+      uploadMode: isSelfUpload ? "self" : "proxy",
+    },
+    changedFields: [
+      "version",
+      "storage_path",
+      "external_url",
+      "uploaded_by",
+      "upload_mode",
+    ],
   });
   await notify({
     organizationId: actor.organizationId,
     recipientRole: "operator_business",
     type: "review",
     title: "Screening recording submitted",
-    content: `Application ${application.id} has a recording ready for review.`,
+    content: isSelfUpload
+      ? `Streamer submitted their screening recording for application ${application.id}.`
+      : `${actor.name || actor.role} proxy-uploaded a screening recording for application ${application.id}.`,
     objectType: "application",
     objectId: application.id,
     source: "application.recording.submit",
@@ -736,6 +760,56 @@ export async function rejectApplicationJoin({
 
 function canManageAdmission(role: AppRole): boolean {
   return isMcnStaff(role) && role !== "finance";
+}
+
+function normalizeExternalRecordingUrl(value?: string): string | undefined {
+  const normalized = value?.trim() || undefined;
+  if (!normalized) {
+    return undefined;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error("Recording link must be an http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Recording link must be an http(s) URL");
+  }
+
+  return normalized;
+}
+
+async function assertStaffCanAccessApplication(
+  repo: Pick<ApplicationRepository, "getActiveCollaborationAgreement">,
+  actor: AdmissionActor,
+  application: ApplicationRecord,
+): Promise<void> {
+  if (application.organizationId === actor.organizationId) {
+    return;
+  }
+
+  if (
+    application.collaborationId &&
+    application.contributorOrganizationId === actor.organizationId
+  ) {
+    const agreement = await repo.getActiveCollaborationAgreement({
+      projectId: application.projectId,
+      collaborationId: application.collaborationId,
+      contributorOrganizationId: actor.organizationId,
+    });
+    if (
+      agreement?.id === application.collaborationId &&
+      agreement.projectId === application.projectId &&
+      agreement.partnerOrganizationId === actor.organizationId &&
+      agreement.status === "active"
+    ) {
+      return;
+    }
+  }
+
+  throw new Error("Cross-organization access is not allowed");
 }
 
 function canConfirmJoin(role: AppRole): boolean {

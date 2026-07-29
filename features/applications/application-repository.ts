@@ -14,6 +14,8 @@ import type {
 type ProjectAdmissionRow = {
   id: string;
   name: string;
+  organization_id: string;
+  status: string;
   open_signup: boolean;
   allow_direct_invite: boolean;
   force_recording: boolean;
@@ -60,6 +62,7 @@ type RecordingSubmissionRow = {
   application_id: string;
   version: number;
   status: RecordingSubmissionRecord["status"];
+  uploaded_by: string | null;
   collaboration_id: string | null;
   contributor_organization_id: string | null;
 };
@@ -101,7 +104,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     const { data, error } = await this.client
       .from("projects")
       .select(
-        "id, name, open_signup, allow_direct_invite, force_recording, default_settlement_method, default_hourly_rate, default_base_salary, default_settlement_rule",
+        "id, name, organization_id, status, open_signup, allow_direct_invite, force_recording, default_settlement_method, default_hourly_rate, default_base_salary, default_settlement_rule",
       )
       .eq("id", projectId)
       .maybeSingle<ProjectAdmissionRow>();
@@ -303,6 +306,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     applicationId: string;
     projectId: string;
     streamerId: string;
+    uploadedBy: string;
     version: number;
     storagePath?: string;
     externalUrl?: string;
@@ -317,6 +321,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         application_id: input.applicationId,
         project_id: input.projectId,
         streamer_id: input.streamerId,
+        uploaded_by: input.uploadedBy,
         version: input.version,
         storage_path: input.storagePath,
         external_url: input.externalUrl,
@@ -325,7 +330,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         contributor_organization_id: input.contributorOrganizationId,
       })
       .select(
-        "id, application_id, version, status, collaboration_id, contributor_organization_id",
+        "id, application_id, version, status, uploaded_by, collaboration_id, contributor_organization_id",
       )
       .single<RecordingSubmissionRow>();
 
@@ -342,7 +347,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
     const { data, error } = await this.client
       .from("recording_submissions")
       .select(
-        "id, application_id, version, status, collaboration_id, contributor_organization_id",
+        "id, application_id, version, status, uploaded_by, collaboration_id, contributor_organization_id",
       )
       .eq("application_id", applicationId)
       .order("version", { ascending: false })
@@ -375,7 +380,7 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
       })
       .eq("id", recordingId)
       .select(
-        "id, application_id, version, status, collaboration_id, contributor_organization_id",
+        "id, application_id, version, status, uploaded_by, collaboration_id, contributor_organization_id",
       )
       .single<RecordingSubmissionRow>();
 
@@ -469,6 +474,8 @@ function toProjectAdmissionConfig(
   return {
     id: row.id,
     name: row.name,
+    organizationId: row.organization_id,
+    status: row.status,
     openSignup: row.open_signup,
     allowDirectInvite: row.allow_direct_invite,
     forceRecording: row.force_recording,
@@ -518,6 +525,7 @@ function toRecordingSubmissionRecord(
     applicationId: row.application_id,
     version: row.version,
     status: row.status,
+    uploadedBy: row.uploaded_by,
     collaborationId: row.collaboration_id,
     contributorOrganizationId: row.contributor_organization_id,
   };

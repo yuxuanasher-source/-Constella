@@ -94,6 +94,7 @@ erDiagram
   projects ||--o{ project_applications : "project_id"
   streamers ||--o{ project_applications : "streamer_id"
   project_applications ||--o{ recording_submissions : "application_id"
+  profiles ||--o{ recording_submissions : "uploaded_by"
   projects ||--o{ project_streamers : "project_id"
   streamers ||--o{ project_streamers : "streamer_id"
 
@@ -142,6 +143,7 @@ erDiagram
 
 - `organizations` 是多租户根节点，绝大多数业务表都带 `organization_id`，配合 RLS 做租户隔离。
 - `projects + streamers` 是业务主轴：先通过 `project_applications` 和 `recording_submissions` 完成准入，再落到 `project_streamers`，之后才能排班、报数、结算。
+- `recording_submissions.uploaded_by` 记录实际上传用户：新写入必须提供，历史行可为空；审计另以 `uploadMode=self|proxy` 区分主播自传和运营代传。
 - `live_reports` 是证据与结算的连接点：截图、OCR、审核日志、抽检样本、结算明细都从报数记录向外展开。
 - `project_recording_share_*` 是项目级录屏外部审核链路，链接到报名和录屏，不新建独立厂商门户数据源。
 - `streamer_payable_items_safe` 与 `streamer_public_project_announcements` 是对主播侧暴露的安全读模型，用视图/RPC 控制字段和状态转换。

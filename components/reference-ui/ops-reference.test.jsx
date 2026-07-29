@@ -5578,6 +5578,193 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(screen.getByText("小鹿")).toBeInTheDocument();
   });
 
+  it("lets operations proxy-upload an external recording and refreshes admission data", async () => {
+    const application = {
+      id: "app-proxy",
+      status: "recording_required",
+      source: "direct_invite",
+      submittedAt: "2026-07-26T10:00:00.000Z",
+      project: { id: "project-proxy", code: "PX-1", name: "Proxy Project" },
+      streamer: {
+        id: "streamer-proxy",
+        displayName: "待代传主播",
+        cooperationStatus: "active",
+        riskLevel: "low",
+      },
+      latestRecording: null,
+    };
+    const projectBoard = {
+      project: application.project,
+      counts: {
+        totalApplications: 1,
+        recordingCount: 0,
+        mcnPendingReview: 0,
+        mcnApproved: 0,
+        mcnRejected: 0,
+        needsChanges: 1,
+        vendorPending: 1,
+        vendorSelected: 0,
+        vendorBackup: 0,
+        vendorRejected: 0,
+        vendorNeedsChanges: 0,
+        pendingFinalConfirm: 0,
+      },
+      share: { status: "unshared" },
+      lastActivityAt: application.submittedAt,
+    };
+    const fetchMock = vi.fn(async (url) => {
+      if (url === "/api/applications/app-proxy/videos") {
+        return {
+          ok: true,
+          json: async () => ({
+            recording: {
+              id: "recording-proxy",
+              applicationId: "app-proxy",
+              uploadedBy: "user-ops",
+            },
+          }),
+        };
+      }
+      if (url === "/api/applications") {
+        return {
+          ok: true,
+          json: async () => ({
+            applications: [
+              {
+                ...application,
+                status: "recording_reviewing",
+                latestRecording: {
+                  id: "recording-proxy",
+                  version: 1,
+                  status: "submitted",
+                  externalUrl: "https://videos.example.com/operator-proxy",
+                },
+              },
+            ],
+          }),
+        };
+      }
+      if (url === "/api/applications/admission-board") {
+        return {
+          ok: true,
+          json: async () => ({ projects: [projectBoard] }),
+        };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal(
+      "prompt",
+      vi.fn(() => "https://videos.example.com/operator-proxy"),
+    );
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        currentUser={{ id: "user-ops", role: "operator_business" }}
+        applicationQueue={[application]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
+    fireEvent.click(screen.getByRole("button", { name: "代传录屏" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/app-proxy/videos",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            externalUrl: "https://videos.example.com/operator-proxy",
+          }),
+        }),
+      ),
+    );
+    expect(await screen.findByText("已由运营代传，待审核")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/applications/admission-board",
+      ).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/applications",
+      undefined,
+    );
+  });
+
+  it.each(["owner", "ops_manager", "operator_business"])(
+    "shows proxy upload to %s only for eligible application states",
+    async (role) => {
+      const statuses = [
+        "submitted",
+        "invited",
+        "recording_required",
+        "recording_rejected",
+        "recording_reviewing",
+        "recording_approved",
+      ];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({
+          ok: true,
+          json: async () => ({ projects: [] }),
+        })),
+      );
+
+      render(
+        <OpsReferenceApp
+          initialRoute="admission"
+          currentUser={{ id: `user-${role}`, role }}
+          applicationQueue={statuses.map((status) => ({
+            id: `app-${status}`,
+            status,
+            project: { id: "project-role", name: "Role Project" },
+            streamer: {
+              id: `streamer-${status}`,
+              displayName: `主播 ${status}`,
+            },
+          }))}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
+      expect(
+        screen.getAllByRole("button", { name: "代传录屏" }),
+      ).toHaveLength(4);
+    },
+  );
+
+  it("hides proxy upload from finance", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ projects: [] }),
+      })),
+    );
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        currentUser={{ id: "user-finance", role: "finance" }}
+        applicationQueue={[
+          {
+            id: "app-finance",
+            status: "recording_required",
+            project: { id: "project-finance", name: "Finance Project" },
+            streamer: { id: "streamer-finance", displayName: "财务不可代传" },
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
+    expect(
+      screen.queryByRole("button", { name: "代传录屏" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("focuses the requested project and restores the full list on an unfocused admission navigation", () => {
     render(
       <OpsReferenceApp
