@@ -3194,6 +3194,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   );
   const [attachments, setAttachments] = React.useState([]);
   const [attachmentError, setAttachmentError] = React.useState("");
+  const [conversations, setConversations] = React.useState([]);
+  const [conversationSwitching, setConversationSwitching] =
+    React.useState(false);
   const name =
     (user?.name && user.name !== "未登录用户" ? user.name : null) ||
     "经营舱用户";
@@ -3221,7 +3224,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     if (!conversationInitRef.current) {
       conversationInitRef.current = restoreServerConversation();
     }
-    void conversationInitRef.current;
+    void conversationInitRef.current.then(() => refreshConversations());
     return () => {
       panelMountedRef.current = false;
     };
@@ -3294,6 +3297,82 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     } catch {
       // A transient restore failure is surfaced on the next user action.
       return null;
+    }
+  }
+
+  async function refreshConversations() {
+    try {
+      const response = await fetch("/api/ai/conversations", {
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !Array.isArray(payload?.conversations)) return;
+      if (panelMountedRef.current) {
+        setConversations(
+          payload.conversations.filter(
+            (conversation) => typeof conversation?.id === "string",
+          ),
+        );
+      }
+    } catch {
+      // 列表刷新失败不阻断会话本身，下一次动作会重新拉取。
+    }
+  }
+
+  async function switchConversation(nextId) {
+    if (busy || conversationSwitching) return;
+    if (!nextId || nextId === conversationIdRef.current) return;
+    setConversationSwitching(true);
+    try {
+      conversationIdRef.current = nextId;
+      if (panelMountedRef.current) {
+        setConversationId(nextId);
+        setMsgs([]);
+        setRunProgress(createEmptyAiRunProgress());
+        setAttachments([]);
+        setAttachmentError("");
+      }
+      saveStoredConversationId(conversationStorageKey, nextId);
+      await restoreServerConversation();
+    } finally {
+      if (panelMountedRef.current) setConversationSwitching(false);
+    }
+  }
+
+  async function startNewConversation() {
+    if (busy || conversationSwitching) return;
+    if (conversationIdRef.current && msgs.length === 0) return;
+    setConversationSwitching(true);
+    try {
+      const response = await fetch("/api/ai/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "新会话" }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const nextId =
+        typeof payload?.conversation?.id === "string"
+          ? payload.conversation.id
+          : "";
+      if (!nextId) {
+        throw new Error(payload?.error || "无法创建新会话，请稍后重试");
+      }
+      conversationIdRef.current = nextId;
+      if (panelMountedRef.current) {
+        setConversationId(nextId);
+        setMsgs([]);
+        setRunProgress(createEmptyAiRunProgress());
+        setAttachments([]);
+        setAttachmentError("");
+      }
+      saveStoredConversationId(conversationStorageKey, nextId);
+      await refreshConversations();
+    } catch (error) {
+      if (panelMountedRef.current) {
+        push("ai", `⚠ ${error?.message || "无法创建新会话"}`);
+      }
+    } finally {
+      if (panelMountedRef.current) setConversationSwitching(false);
     }
   }
 
@@ -3801,6 +3880,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     } finally {
       if (!activeRunRef.current?.localAbort) setBusy(false);
       activeRunRef.current = null;
+      void refreshConversations();
     }
   }
 
@@ -4180,6 +4260,83 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         >
           Beta
         </span>
+      </div>
+      {/* 会话切换条 */}
+      <div
+        aria-label="AI 会话列表"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "9px 12px 0",
+          background: "rgba(255,255,255,.55)",
+        }}
+      >
+        <button
+          type="button"
+          aria-label="新建会话"
+          onClick={() => void startNewConversation()}
+          disabled={busy || conversationSwitching}
+          style={{
+            flexShrink: 0,
+            border: `1px solid ${C.border}`,
+            borderRadius: 9,
+            background: "#fff",
+            color: C.primaryDeep,
+            fontSize: 12,
+            fontWeight: 700,
+            padding: "5px 10px",
+            cursor: busy || conversationSwitching ? "default" : "pointer",
+          }}
+        >
+          ＋ 新会话
+        </button>
+        <div
+          className="scl"
+          role="tablist"
+          aria-label="历史会话"
+          style={{
+            display: "flex",
+            gap: 6,
+            overflowX: "auto",
+            flex: 1,
+            minWidth: 0,
+            paddingBottom: 2,
+          }}
+        >
+          {conversations.map((conversation) => {
+            const active = conversation.id === conversationId;
+            const label = String(conversation.title || "新会话");
+            return (
+              <button
+                key={conversation.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                title={label}
+                onClick={() => void switchConversation(conversation.id)}
+                disabled={busy || conversationSwitching}
+                style={{
+                  flexShrink: 0,
+                  maxWidth: 128,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  border: `1px solid ${active ? C.primary : C.border}`,
+                  borderRadius: 9,
+                  background: active ? C.primarySoft : "#fff",
+                  color: active ? C.primaryDeep : C.muted,
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                  padding: "5px 9px",
+                  cursor: busy || conversationSwitching ? "default" : "pointer",
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
       </div>
       <div
         aria-label="AI 回复模式"
