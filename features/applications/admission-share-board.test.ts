@@ -585,7 +585,6 @@ describe("admission share board service", () => {
     const dto = await getPublicAdmissionShareBoard({
       repo,
       token: "plain-token",
-      accessCode: "2468",
       now: "2026-06-07T01:00:00.000Z",
     });
 
@@ -593,7 +592,7 @@ describe("admission share board service", () => {
       expect.objectContaining({
         recordingUrl: "https://video.example/rec-1",
         playbackUrl:
-          "/api/public/admission-share/plain-token/recordings/rec-1?accessCode=2468",
+          "/api/public/admission-share/plain-token/recordings/rec-1",
         hasPrivateStorage: true,
       }),
     );

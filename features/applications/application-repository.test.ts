@@ -182,6 +182,8 @@ describe("SupabaseApplicationRepository", () => {
       uploadedBy: "user-ops",
       collaborationId: null,
       contributorOrganizationId: null,
+      selfScoreTotal: null,
+      selfAssessmentLevel: null,
     });
     expect(insert).toHaveBeenCalledWith(
       expect.objectContaining({ uploaded_by: "user-ops" }),

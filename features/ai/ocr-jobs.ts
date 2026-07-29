@@ -225,7 +225,12 @@ export async function claimPlatformOcrJobs({
   if (error) {
     throw error;
   }
-  return (data ?? []).map((row) => toOcrJobRecord(row as OcrJobRow));
+  if (!Array.isArray(data)) {
+    return [];
+  }
+  return data.map((row: Record<string, unknown>) =>
+    toOcrJobRecord(row as OcrJobRow),
+  );
 }
 
 export async function getOcrJob({

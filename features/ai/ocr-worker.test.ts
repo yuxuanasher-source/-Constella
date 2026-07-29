@@ -47,18 +47,30 @@ function createClient({ jobs = [] }: { jobs?: OcrJobRecord[] } = {}) {
         }
         return { data: null, error: null };
       }),
-      update: vi.fn((payload: Record<string, unknown>) => ({
-        eq: vi.fn(async () => {
-          updates[table] = [...(updates[table] ?? []), payload];
-          return { data: null, error: null };
-        }),
-      })),
+      update: vi.fn((payload: Record<string, unknown>) => {
+        const result = Object.assign(
+          Promise.resolve({ data: null, error: null }),
+          {
+            eq: vi.fn(() => result),
+          },
+        );
+        return {
+          eq: vi.fn(() => {
+            updates[table] = [...(updates[table] ?? []), payload];
+            return result;
+          }),
+        };
+      }),
       select: vi.fn(() => ({
         eq: vi.fn(() => ({
           maybeSingle: vi.fn(async () => ({
             data:
               table === "live_reports"
-                ? { id: "report-1", organization_id: "org-1" }
+                ? {
+                    id: "report-1",
+                    organization_id: "org-1",
+                    status: "ocr_ing",
+                  }
                 : null,
             error: null,
           })),
