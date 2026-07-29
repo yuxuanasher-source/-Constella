@@ -39,7 +39,7 @@ const preparedAccess = {
     accessCodeFailureVersion: 3,
     accessCodeLockedUntil: null,
     status: "active" as const,
-    expiresAt: "2026-07-27T01:30:00.000Z",
+    expiresAt: "2099-07-27T01:30:00.000Z",
   },
 };
 

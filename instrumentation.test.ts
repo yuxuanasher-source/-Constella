@@ -8,6 +8,7 @@ describe("instrumentation register", () => {
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-key");
     vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "service-role-key");
     vi.stubEnv("STORAGE_BUCKET_PRIVATE", "jy-private");
+    vi.stubEnv("ADMISSION_SHARE_CAPABILITY_SECRET", "s".repeat(64));
   });
 
   afterEach(() => {
