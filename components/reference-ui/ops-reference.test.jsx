@@ -181,6 +181,7 @@ describe("OpsReferenceApp responsive navigation shell", () => {
         streamerCards={[]}
         applicationQueue={[]}
         auditEntries={[]}
+        accountLibraryAccounts={[]}
       />,
     );
 
@@ -583,6 +584,26 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     expect(menuButton).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("全部项目")).toBeInTheDocument();
     expect(menuButton).toHaveFocus();
+  });
+
+  it("switches the account library through the internal scene router", () => {
+    renderShell();
+
+    fireEvent.click(screen.getByRole("button", { name: "账号库" }));
+    expect(
+      screen.getByRole("heading", { name: "账号库" }),
+    ).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "项目管理" }));
+    expect(screen.getByText("全部项目")).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "账号库", hidden: true }),
+    ).not.toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "账号库" }));
+    expect(
+      screen.getByRole("heading", { name: "账号库" }),
+    ).toBeVisible();
   });
 });
 
