@@ -184,7 +184,12 @@ function aiPublicStatus(status, fallback = "running") {
 }
 
 function aiConversationStorageKey(user) {
-  const identity = user?.id || user?.name || user?.role || "anonymous";
+  const userIdentity =
+    user?.id || user?.userId || user?.name || user?.role || "anonymous";
+  const organizationIdentity = user?.organizationId || user?.organization_id;
+  const identity = organizationIdentity
+    ? `${organizationIdentity}.${userIdentity}`
+    : userIdentity;
   return `${AI_CONVERSATION_STORAGE_PREFIX}.${identity}`;
 }
 
@@ -3195,6 +3200,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   const [attachments, setAttachments] = React.useState([]);
   const [attachmentError, setAttachmentError] = React.useState("");
   const [conversations, setConversations] = React.useState([]);
+  const [conversationError, setConversationError] = React.useState("");
   const [conversationSwitching, setConversationSwitching] =
     React.useState(false);
   const name =
@@ -3203,6 +3209,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   const bodyRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
   const conversationIdRef = React.useRef(conversationId);
+  const conversationEpochRef = React.useRef(0);
   const conversationInitRef = React.useRef(null);
   const conversationCreateRef = React.useRef(null);
   const panelMountedRef = React.useRef(true);
@@ -3243,6 +3250,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     );
   async function restoreServerConversation() {
     const clearActiveConversation = () => {
+      conversationEpochRef.current += 1;
       conversationIdRef.current = "";
       if (panelMountedRef.current) {
         setConversationId("");
@@ -3282,7 +3290,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         return null;
       }
 
-      conversationIdRef.current = activeId;
+      if (conversationIdRef.current !== activeId) {
+        conversationEpochRef.current += 1;
+        conversationIdRef.current = activeId;
+      }
       if (panelMountedRef.current) {
         setConversationId(activeId);
         setMsgs(normalizeConversationHistory(history));
@@ -3323,17 +3334,34 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     if (busy || conversationSwitching) return;
     if (!nextId || nextId === conversationIdRef.current) return;
     setConversationSwitching(true);
+    setConversationError("");
     try {
+      const historyResponse = await fetch(
+        `/api/ai/conversations/${encodeURIComponent(nextId)}`,
+        { cache: "no-store" },
+      );
+      const history = await historyResponse.json().catch(() => ({}));
+      if (!historyResponse.ok || history?.conversation?.id !== nextId) {
+        throw new Error(history?.error || "无法切换会话");
+      }
+
+      conversationEpochRef.current += 1;
       conversationIdRef.current = nextId;
       if (panelMountedRef.current) {
         setConversationId(nextId);
-        setMsgs([]);
-        setRunProgress(createEmptyAiRunProgress());
+        setMsgs(normalizeConversationHistory(history));
+        setRunProgress({
+          ...createEmptyAiRunProgress(),
+          clarify: normalizePendingClarify(history),
+        });
         setAttachments([]);
         setAttachmentError("");
       }
       saveStoredConversationId(conversationStorageKey, nextId);
-      await restoreServerConversation();
+    } catch {
+      if (panelMountedRef.current) {
+        setConversationError("无法切换会话，请稍后重试");
+      }
     } finally {
       if (panelMountedRef.current) setConversationSwitching(false);
     }
@@ -3343,6 +3371,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     if (busy || conversationSwitching) return;
     if (conversationIdRef.current && msgs.length === 0) return;
     setConversationSwitching(true);
+    setConversationError("");
     try {
       const response = await fetch("/api/ai/conversations", {
         method: "POST",
@@ -3357,6 +3386,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       if (!nextId) {
         throw new Error(payload?.error || "无法创建新会话，请稍后重试");
       }
+      conversationEpochRef.current += 1;
       conversationIdRef.current = nextId;
       if (panelMountedRef.current) {
         setConversationId(nextId);
@@ -3399,6 +3429,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         throw new Error(payload?.error || "星耀 AI 会话协议不可用，请稍后重试");
       }
 
+      conversationEpochRef.current += 1;
       conversationIdRef.current = nextId;
       if (panelMountedRef.current) {
         setMsgs([]);
@@ -3643,6 +3674,12 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
             bodyText = serverContent;
           } else if (!bodyText) {
             bodyText = serverContent || processParts.pop();
+            if (
+              serverContent &&
+              processParts[processParts.length - 1] === serverContent
+            ) {
+              processParts.pop();
+            }
           }
         } else {
           bodyText = serverContent || streamedText;
@@ -3798,7 +3835,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   }
 
   async function run(kind, userText, options = {}) {
-    if (busy) return;
+    if (busy || conversationSwitching) return;
     const requestMode = options.mode || mode;
     const requestAttachments = options.attachments || [];
     const userMessageClientId = createAiClientRequestId("user");
@@ -4041,8 +4078,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
 
   async function submitClarifyResponse({ clarify, choice, text }) {
     const currentClarify = runProgressRef.current?.clarify;
+    const submittedConversationId = conversationIdRef.current;
+    const submittedConversationEpoch = conversationEpochRef.current;
     if (
-      !conversationIdRef.current ||
+      !submittedConversationId ||
       !clarify?.turnId ||
       clarify.submitted ||
       !currentClarify ||
@@ -4064,7 +4103,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     if (!answer) return;
     const response = await fetch(
       `/api/ai/conversations/${encodeURIComponent(
-        conversationIdRef.current,
+        submittedConversationId,
       )}/turns/${encodeURIComponent(clarify.turnId)}/clarify`,
       {
         method: "POST",
@@ -4078,6 +4117,13 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         }),
       },
     );
+    if (
+      !panelMountedRef.current ||
+      conversationIdRef.current !== submittedConversationId ||
+      conversationEpochRef.current !== submittedConversationEpoch
+    ) {
+      return;
+    }
     if (!response.ok) {
       setRunProgress((current) => ({
         ...current,
@@ -4095,9 +4141,11 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     }
     setRunProgress((current) => ({
       ...current,
-      clarify: current.clarify
-        ? { ...current.clarify, submitted: true, error: "" }
-        : current.clarify,
+      clarify:
+        current.clarify?.clarifyId === clarify.clarifyId &&
+        current.clarify?.turnId === clarify.turnId
+          ? { ...current.clarify, submitted: true, error: "" }
+          : current.clarify,
     }));
   }
 
@@ -4185,6 +4233,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   }
 
   const send = () => {
+    if (conversationSwitching) return;
     const t = draft.trim();
     if (!t) return;
     const selectedAttachments = attachments;
@@ -4193,6 +4242,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   };
 
   const handleAttachmentChange = async (event) => {
+    if (conversationSwitching) return;
+    const attachmentConversationEpoch = conversationEpochRef.current;
     const files = Array.from(event.target.files || []);
     event.target.value = "";
     if (!files.length) return;
@@ -4204,10 +4255,22 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     try {
       setAttachmentError("");
       const nextAttachments = await Promise.all(files.map(fileToAiAttachment));
+      if (
+        !panelMountedRef.current ||
+        conversationEpochRef.current !== attachmentConversationEpoch
+      ) {
+        return;
+      }
       setAttachments((current) =>
         current.concat(nextAttachments).slice(0, AI_CHAT_ATTACHMENT_LIMIT),
       );
     } catch (error) {
+      if (
+        !panelMountedRef.current ||
+        conversationEpochRef.current !== attachmentConversationEpoch
+      ) {
+        return;
+      }
       setAttachmentError(
         error instanceof Error ? error.message : "附件读取失败，请重新选择",
       );
@@ -4217,7 +4280,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     <button
       type="button"
       onClick={onClick}
-      disabled={busy}
+      disabled={busy || conversationSwitching}
       style={{
         display: "flex",
         alignItems: "center",
@@ -4228,9 +4291,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         border: `1px solid ${C.border}`,
         borderRadius: 12,
         padding: "11px 12px",
-        cursor: busy ? "default" : "pointer",
+        cursor: busy || conversationSwitching ? "default" : "pointer",
         boxShadow: "0 1px 2px rgba(24,27,46,.03)",
-        opacity: busy ? 0.6 : 1,
+        opacity: busy || conversationSwitching ? 0.6 : 1,
       }}
     >
       <span
@@ -4407,6 +4470,19 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           })}
         </div>
       </div>
+      {conversationError ? (
+        <div
+          role="alert"
+          style={{
+            padding: "7px 12px 0",
+            color: C.red,
+            fontSize: 12,
+            background: "rgba(255,255,255,.55)",
+          }}
+        >
+          {conversationError}
+        </div>
+      ) : null}
       <div
         aria-label="AI 回复模式"
         role="group"
@@ -4427,7 +4503,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
               key={itemMode}
               type="button"
               onClick={() => setMode(itemMode)}
-              disabled={busy}
+              disabled={busy || conversationSwitching}
               style={{
                 flex: 1,
                 border: `1px solid ${active ? C.primary : C.border}`,
@@ -4437,7 +4513,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
                 fontSize: 12,
                 fontWeight: 700,
                 padding: "6px 8px",
-                cursor: busy ? "default" : "pointer",
+                cursor:
+                  busy || conversationSwitching ? "default" : "pointer",
                 boxShadow: active
                   ? "inset 0 0 0 1px rgba(85,102,230,.08)"
                   : "none",
@@ -4942,7 +5019,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
             type="button"
             aria-label="上传附件"
             onClick={() => fileInputRef.current?.click()}
-            disabled={busy}
+            disabled={busy || conversationSwitching}
             style={{
               width: 22,
               height: 22,
@@ -4953,7 +5030,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              cursor: busy ? "default" : "pointer",
+              cursor: busy || conversationSwitching ? "default" : "pointer",
               flexShrink: 0,
               padding: 0,
             }}
@@ -4973,6 +5050,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           </button>
           <input
             value={draft}
+            disabled={conversationSwitching}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -4998,6 +5076,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
             type="file"
             multiple
             accept={AI_CHAT_ATTACHMENT_ACCEPT}
+            disabled={busy || conversationSwitching}
             onChange={handleAttachmentChange}
             style={{ display: "none" }}
           />
@@ -5007,6 +5086,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
             aria-label={busy ? "停止生成" : "发送"}
             title={busy ? "停止生成" : "发送"}
             onClick={busy ? stopActiveRun : send}
+            disabled={conversationSwitching}
             style={{
               width: 32,
               height: 32,
@@ -5016,9 +5096,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              cursor: "pointer",
+              cursor: conversationSwitching ? "default" : "pointer",
               flexShrink: 0,
-              opacity: 1,
+              opacity: conversationSwitching ? 0.6 : 1,
             }}
           >
             {busy ? (
@@ -7042,6 +7122,7 @@ export function OverviewBoard({
         {/* ===== 右：AI 助手 ===== */}
         <aside className="ob-ai">
           <AiPanel
+            key={aiConversationStorageKey(currentUser)}
             user={currentUser}
             projects={scopedProjects}
             go={go}

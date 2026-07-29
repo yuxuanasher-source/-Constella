@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -3663,6 +3664,382 @@ describe("OverviewBoard AI conversation switcher", () => {
       ),
     );
   });
+
+  it("blocks the composer and preserves the prior context when switching fails", async () => {
+    let resolveConversationB;
+    const conversationBResponse = new Promise((resolve) => {
+      resolveConversationB = resolve;
+    });
+    const turnRequests = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url, options = {}) => {
+        if (url === "/api/ai/conversations") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversations: [
+                  { id: "conversation-a", title: "会话A" },
+                  { id: "conversation-b", title: "会话B" },
+                ],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-a") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-a" },
+                messages: [{ id: "m-a", role: "user", content: "A 的历史" }],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-b") {
+          return conversationBResponse;
+        }
+        if (url.endsWith("/turns") && options.method === "POST") {
+          turnRequests.push(url);
+        }
+        return defaultFetchResponse(url);
+      }),
+    );
+
+    renderBoard();
+    await screen.findByText("A 的历史");
+
+    fireEvent.click(screen.getByRole("tab", { name: "会话B" }));
+
+    const input = screen.getByPlaceholderText("向 AI 助手提问或下达指令…");
+    await waitFor(() => expect(input).toBeDisabled());
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "上传附件" })).toBeDisabled();
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    expect(turnRequests).toHaveLength(0);
+
+    resolveConversationB({
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({ error: "历史暂时不可用" }),
+    });
+
+    await screen.findByText("无法切换会话，请稍后重试");
+    expect(screen.getByText("A 的历史")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "会话A" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("blocks the composer while creating a conversation", async () => {
+    let resolveCreate;
+    const createResponse = new Promise((resolve) => {
+      resolveCreate = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url, options = {}) => {
+        if (url === "/api/ai/conversations" && options.method === "POST") {
+          return createResponse;
+        }
+        if (url === "/api/ai/conversations") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversations: [{ id: "conversation-a", title: "会话A" }],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-a") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-a" },
+                messages: [{ id: "m-a", role: "user", content: "A 的历史" }],
+              }),
+          });
+        }
+        return defaultFetchResponse(url);
+      }),
+    );
+
+    renderBoard();
+    await screen.findByText("A 的历史");
+    fireEvent.click(screen.getByRole("button", { name: "新建会话" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByPlaceholderText("向 AI 助手提问或下达指令…"),
+      ).toBeDisabled(),
+    );
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+
+    resolveCreate({
+      ok: true,
+      status: 201,
+      json: () =>
+        Promise.resolve({ conversation: { id: "conversation-new" } }),
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "发送" })).not.toBeDisabled(),
+    );
+  });
+
+  it("resets conversation context when the organization identity changes", async () => {
+    let activeOrganization = "org-a";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url) => {
+        if (url === "/api/ai/conversations") {
+          const suffix = activeOrganization === "org-a" ? "a" : "b";
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversations: [
+                  {
+                    id: `conversation-${suffix}`,
+                    title: `会话${suffix.toUpperCase()}`,
+                  },
+                ],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-a") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-a" },
+                messages: [{ id: "m-a", role: "user", content: "组织A历史" }],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-b") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-b" },
+                messages: [{ id: "m-b", role: "user", content: "组织B历史" }],
+              }),
+          });
+        }
+        return defaultFetchResponse(url);
+      }),
+    );
+
+    const boardProps = {
+      dashboard,
+      projects: [],
+      tasks: [],
+      reports: [],
+      batches: [],
+    };
+    const { rerender } = render(
+      <OverviewBoard
+        {...boardProps}
+        currentUser={{
+          id: "same-user",
+          organizationId: "org-a",
+          name: "123",
+          role: "owner",
+        }}
+      />,
+    );
+    await screen.findByText("组织A历史");
+
+    activeOrganization = "org-b";
+    rerender(
+      <OverviewBoard
+        {...boardProps}
+        currentUser={{
+          id: "same-user",
+          organizationId: "org-b",
+          name: "123",
+          role: "owner",
+        }}
+      />,
+    );
+
+    await screen.findByText("组织B历史");
+    expect(screen.queryByText("组织A历史")).not.toBeInTheDocument();
+  });
+
+  it("discards an attachment read that finishes after a conversation switch", async () => {
+    let finishAttachmentRead;
+    const OriginalFileReader = globalThis.FileReader;
+    class DeferredFileReader {
+      readAsDataURL() {
+        finishAttachmentRead = () => {
+          this.result = "data:image/png;base64,c3RhbGU=";
+          this.onload?.();
+        };
+      }
+    }
+
+    vi.stubGlobal("FileReader", DeferredFileReader);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url) => {
+        if (url === "/api/ai/conversations") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversations: [
+                  { id: "conversation-a", title: "会话A" },
+                  { id: "conversation-b", title: "会话B" },
+                ],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-a") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-a" },
+                messages: [{ id: "m-a", role: "user", content: "A 的历史" }],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-b") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-b" },
+                messages: [{ id: "m-b", role: "user", content: "B 的历史" }],
+              }),
+          });
+        }
+        return defaultFetchResponse(url);
+      }),
+    );
+
+    try {
+      renderBoard();
+      await screen.findByText("A 的历史");
+
+      fireEvent.change(screen.getByTestId("ai-attachment-input"), {
+        target: {
+          files: [
+            new File(["stale"], "from-a.png", { type: "image/png" }),
+          ],
+        },
+      });
+      await waitFor(() => expect(finishAttachmentRead).toBeTypeOf("function"));
+
+      fireEvent.click(screen.getByRole("tab", { name: "会话B" }));
+      await screen.findByText("B 的历史");
+      await act(async () => {
+        finishAttachmentRead();
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByText("from-a.png")).not.toBeInTheDocument();
+    } finally {
+      vi.stubGlobal("FileReader", OriginalFileReader);
+    }
+  });
+
+  it("ignores a delayed clarify response after switching conversations", async () => {
+    let resolveClarify;
+    const clarifyResponse = new Promise((resolve) => {
+      resolveClarify = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url, options = {}) => {
+        if (url === "/api/ai/conversations") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversations: [
+                  { id: "conversation-a", title: "会话A" },
+                  { id: "conversation-b", title: "会话B" },
+                ],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-a") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-a" },
+                messages: [],
+                turns: [
+                  {
+                    id: "turn-a",
+                    pendingClarify: {
+                      clarifyId: "clarify-a",
+                      question: "A 需要补充",
+                      choices: ["A 选项"],
+                    },
+                  },
+                ],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-b") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-b" },
+                messages: [],
+                turns: [
+                  {
+                    id: "turn-b",
+                    pendingClarify: {
+                      clarifyId: "clarify-b",
+                      question: "B 需要补充",
+                      choices: ["B 选项"],
+                    },
+                  },
+                ],
+              }),
+          });
+        }
+        if (
+          url ===
+            "/api/ai/conversations/conversation-a/turns/turn-a/clarify" &&
+          options.method === "POST"
+        ) {
+          return clarifyResponse;
+        }
+        return defaultFetchResponse(url);
+      }),
+    );
+
+    renderBoard();
+    await screen.findByText("A 需要补充");
+    fireEvent.click(screen.getByRole("button", { name: "A 选项" }));
+    fireEvent.click(screen.getByRole("button", { name: "提交澄清" }));
+
+    fireEvent.click(screen.getByRole("tab", { name: "会话B" }));
+    await screen.findByText("B 需要补充");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "B 选项" }));
+    expect(screen.getByRole("button", { name: "提交澄清" })).toBeEnabled();
+
+    await act(async () => {
+      resolveClarify({ ok: true });
+      await clarifyResponse;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("button", { name: "提交澄清" })).toBeEnabled();
+  });
 });
 
 describe("OverviewBoard AI thinking process quote", () => {
@@ -3754,6 +4131,73 @@ describe("OverviewBoard AI thinking process quote", () => {
     ).toBeInTheDocument();
     expect(
       within(quote).queryByText("结论：本月经营状况稳定。"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not duplicate a terminal response in the quote when there is no tail delta", async () => {
+    mockConversationProtocolEvents({
+      conversationId: "conversation-no-tail",
+      events: [
+        [
+          "turn.started",
+          {
+            type: "turn.started",
+            conversationId: "conversation-no-tail",
+            turnId: "turn-no-tail",
+            userMessageId: "message-user-no-tail",
+            assistantMessageId: "message-assistant-no-tail",
+          },
+        ],
+        [
+          "response.delta",
+          {
+            type: "response.delta",
+            conversationId: "conversation-no-tail",
+            turnId: "turn-no-tail",
+            messageId: "message-assistant-no-tail",
+            delta: "本月经营状况稳定。",
+          },
+        ],
+        [
+          "tool.completed",
+          {
+            type: "tool.completed",
+            conversationId: "conversation-no-tail",
+            turnId: "turn-no-tail",
+            toolCallId: "tool-no-tail-1",
+            toolName: "xingyao_search_projects",
+            label: "xingyao_search_projects",
+            status: "completed",
+            evidence: [],
+          },
+        ],
+        completedEvent({
+          conversationId: "conversation-no-tail",
+          turnId: "turn-no-tail",
+          messageId: "message-assistant-no-tail",
+          content: "本月经营状况稳定。",
+        }),
+      ],
+    });
+
+    const { container } = render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ name: "123", role: "owner" }}
+      />,
+    );
+    const input = container.querySelector("input");
+    fireEvent.change(input, { target: { value: "分析当前经营状况" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await screen.findByText("本月经营状况稳定。");
+    const quote = screen.getByTestId("ai-thinking-quote");
+    expect(
+      within(quote).queryByText("本月经营状况稳定。"),
     ).not.toBeInTheDocument();
   });
 });
