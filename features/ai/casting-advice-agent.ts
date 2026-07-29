@@ -169,6 +169,13 @@ function collectFacts(
           statement: `${match.streamerName} risk note count is ${match.riskNotes.length}`,
           ...source(match.streamerId, "riskNoteCount"),
         },
+        ...(candidate?.profileInsights ?? []).map((insight) => ({
+          statement: `${match.streamerName} profile insight ${insight.title}: ${insight.summary}`,
+          sourceTool: "streamer_profile_insights",
+          sourceId:
+            insight.sourceRef ||
+            `streamer_profile_insights:${match.streamerId}:${insight.id}`,
+        })),
       ];
     }),
   ];

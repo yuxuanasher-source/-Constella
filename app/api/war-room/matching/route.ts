@@ -5,32 +5,12 @@ import {
   rankStreamerCandidates,
   scoreSupplierQuality,
 } from "@/features/war-room/matching-engine";
+import { loadCastingCandidates } from "@/features/streamers/casting-candidate-loader";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { toHttpError } from "@/lib/http/http-error";
 import { parseJsonBody } from "@/lib/http/parse-json-body";
 import { isMcnStaff } from "@/lib/rbac/roles";
-
-const referenceProjectSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  result: z.string(),
-});
-
-const streamerCandidateSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  categories: z.array(z.string()),
-  platforms: z.array(z.string()),
-  styles: z.array(z.string()),
-  completionRateBps: z.number().nullable(),
-  screeningPassRateBps: z.number().nullable(),
-  roiBps: z.number().nullable(),
-  grossMarginContributionCents: z.number().nullable(),
-  riskTags: z.array(z.string()),
-  availableMinutes: z.number(),
-  referenceProjects: z.array(referenceProjectSchema),
-});
 
 const supplierSchema = z.object({
   id: z.string(),
@@ -43,16 +23,18 @@ const supplierSchema = z.object({
   isBlacklisted: z.boolean(),
 });
 
-const matchingBodySchema = z.object({
-  project: z.object({
-    category: z.string(),
-    platform: z.string(),
-    preferredStyles: z.array(z.string()),
-    requiredMinutes: z.number(),
-  }),
-  candidates: z.array(streamerCandidateSchema).default([]),
-  suppliers: z.array(supplierSchema).default([]),
-});
+const matchingBodySchema = z
+  .object({
+    project: z.object({
+      category: z.string(),
+      platform: z.string(),
+      preferredStyles: z.array(z.string()),
+      requiredMinutes: z.number(),
+    }),
+    candidateIds: z.array(z.string().min(1)).max(200).default([]),
+    suppliers: z.array(supplierSchema).default([]),
+  })
+  .strict();
 
 export async function POST(request: Request) {
   try {
@@ -74,13 +56,18 @@ export async function POST(request: Request) {
     }
 
     const body = await parseJsonBody(request, matchingBodySchema);
+    const { candidates, dataGaps } = await loadCastingCandidates(supabase, {
+      organizationId: auth.organizationId,
+      requiredMinutes: body.project.requiredMinutes,
+      candidateIds: body.candidateIds,
+    });
     const matches = rankStreamerCandidates({
       project: body.project,
-      candidates: body.candidates,
+      candidates,
     });
     const suppliers = body.suppliers.map(scoreSupplierQuality);
 
-    return NextResponse.json({ matches, suppliers });
+    return NextResponse.json({ matches, suppliers, dataGaps });
   } catch (error) {
     const httpError = toHttpError(error);
     return NextResponse.json(

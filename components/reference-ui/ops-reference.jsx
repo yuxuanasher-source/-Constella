@@ -6776,47 +6776,18 @@ function buildWarRoomMatchingInput(streamers = STREAMERS) {
 
   return {
     project: buildWarRoomCastingMatching(),
-    candidates: streamerRows.map((streamer) => ({
-      id: streamer.id ?? "streamer-war-room-fallback",
-      name: streamer.alias ?? streamer.name ?? "主播待配置",
-      categories: (streamer.games ?? ["moba"]).map(toWarRoomCategory),
-      platforms: (streamer.platforms ?? ["抖音"]).map(toWarRoomPlatform),
-      styles: [streamer.style ?? "高互动"],
-      completionRateBps: warRoomMetricUnit(
-        streamer.metrics?.projectFinish,
-        100,
+    candidateIds: Array.from(
+      new Set(
+        streamerRows.map(
+          (streamer) => streamer.id ?? "streamer-war-room-fallback",
+        ),
       ),
-      screeningPassRateBps: warRoomMetricUnit(
-        streamer.metrics?.screenPass,
-        100,
-      ),
-      roiBps: warRoomMetricUnit(streamer.metrics?.roi, 10000),
-      grossMarginContributionCents: warRoomMetricUnit(
-        streamer.metrics?.grossContrib,
-        100,
-      ),
-      riskTags:
-        streamer.risk === "low"
-          ? []
-          : streamer.risk === "medium"
-            ? ["recent_anomaly"]
-            : ["dispute"],
-      availableMinutes: Math.max(300, (streamer.completedProjects ?? 1) * 120),
-      referenceProjects: [
-        {
-          id: `${streamer.id}-ref`,
-          name: `${streamer.alias ?? streamer.name ?? "主播待配置"} 历史项目`,
-          result: hasStreamerMetricValue(streamer.metrics?.projectFinish)
-            ? `完成率 ${streamer.metrics.projectFinish}%`
-            : "完成率 暂无数据",
-        },
-      ],
-    })),
+    ),
     suppliers: supplierRows.map((supplier) => ({
       id: supplier.id ?? "supplier-war-room-fallback",
       name: supplier.name ?? "未命名供应商",
-      screeningPassRateBps: Math.min(10000, (supplier.finishRate ?? 80) * 100),
-      completionRateBps: Math.min(10000, (supplier.finishRate ?? 80) * 100),
+      screeningPassRateBps: Math.min(10000, (supplier.finishRate ?? 0) * 100),
+      completionRateBps: Math.min(10000, (supplier.finishRate ?? 0) * 100),
       marginContributionCents: (supplier.grossContrib ?? 0) * 100,
       anomalyRateBps: (supplier.anomalyRate ?? 0) * 100,
       blacklistRateBps: 0,
@@ -6904,20 +6875,6 @@ function buildAutoReviewRuleSnapshot() {
     minimumEvidenceLevel: "green",
     maximumDurationDeltaRateBps: 1000,
   };
-}
-
-function toWarRoomCategory(game) {
-  if (game.includes("moba") || game.includes("party")) return "moba";
-  if (game.includes("rpg") || game.includes("story")) return "rpg";
-  if (game.includes("action")) return "action";
-  return "other";
-}
-
-function toWarRoomPlatform(platform) {
-  if (platform.includes("抖音")) return "douyin";
-  if (platform.includes("快手")) return "kuaishou";
-  if (platform.includes("B站")) return "bilibili";
-  return platform.toLowerCase();
 }
 
 function Field({ label, children }) {

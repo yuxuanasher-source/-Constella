@@ -1,3 +1,5 @@
+import type { StreamerAiInsightDto } from "@/features/streamers/streamer-ui-dto";
+
 export type MatchingProjectContext = {
   category: string;
   platform: string;
@@ -23,6 +25,7 @@ export type StreamerCandidateSnapshot = {
   grossMarginContributionCents: number | null;
   riskTags: string[];
   availableMinutes: number;
+  profileInsights?: StreamerAiInsightDto[];
   referenceProjects: StreamerReferenceProject[];
 };
 
