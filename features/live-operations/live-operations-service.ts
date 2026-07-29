@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { AuditLogInput } from "@/lib/audit/audit";
 import type { NotificationInput } from "@/lib/notify/notify";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
@@ -97,6 +99,14 @@ export type ActiveLiveCollaborationAgreementRecord = {
   status: "active";
 };
 
+export type ReportScreenshotRecord = {
+  id: string;
+  liveReportId: string;
+  storagePath: string;
+  fileHash: string;
+  uploadedAt: string;
+};
+
 export type LiveOperationsRepository = {
   getProjectStreamer(input: {
     projectId: string;
@@ -166,6 +176,10 @@ export type LiveOperationsRepository = {
     uploadedBy: string;
     metadata?: Record<string, unknown>;
   }): Promise<void>;
+  findReportScreenshotByFileHash(input: {
+    organizationId: string;
+    fileHash: string;
+  }): Promise<ReportScreenshotRecord | null>;
   createReportChangeLog(input: {
     organizationId: string;
     liveReportId: string;
@@ -646,6 +660,7 @@ export async function submitLiveReportScreenshotForOcr({
   actor,
   taskId,
   input,
+  resolveScreenshotContent,
   createOcrJob,
 }: {
   repo: LiveOperationsRepository;
@@ -655,10 +670,13 @@ export async function submitLiveReportScreenshotForOcr({
   taskId: string;
   input: {
     screenshotStoragePath: string;
-    screenshotFileHash: string;
     imageBucket?: string;
     collaborationId?: string;
   };
+  resolveScreenshotContent: (input: {
+    imageBucket?: string;
+    imagePath: string;
+  }) => Promise<ArrayBuffer | Uint8Array>;
   createOcrJob: (input: {
     liveReportId: string;
     screenshotId?: string;
@@ -684,6 +702,19 @@ export async function submitLiveReportScreenshotForOcr({
   }
   if (!task.systemDuration || task.systemDuration <= 0) {
     throw new Error("OCR report requires a recorded system duration");
+  }
+
+  const screenshotFileHash = await resolveScreenshotSha256({
+    imageBucket: input.imageBucket,
+    imagePath: input.screenshotStoragePath,
+    resolveScreenshotContent,
+  });
+  const duplicate = await repo.findReportScreenshotByFileHash({
+    organizationId: actor.organizationId,
+    fileHash: screenshotFileHash,
+  });
+  if (duplicate) {
+    throw new Error("Duplicate report screenshot content");
   }
 
   // Supersede any still-open report for this task so a resubmit (e.g. after a
@@ -734,7 +765,7 @@ export async function submitLiveReportScreenshotForOcr({
     projectId: report.projectId,
     streamerId: report.streamerId,
     storagePath: input.screenshotStoragePath,
-    fileHash: input.screenshotFileHash,
+    fileHash: screenshotFileHash,
     uploadedBy: actor.userId,
     metadata: { imageBucket: input.imageBucket },
   });
@@ -810,6 +841,24 @@ export async function submitLiveReportScreenshotForOcr({
   });
 
   return { report, job };
+}
+
+async function resolveScreenshotSha256({
+  imageBucket,
+  imagePath,
+  resolveScreenshotContent,
+}: {
+  imageBucket?: string;
+  imagePath: string;
+  resolveScreenshotContent: (input: {
+    imageBucket?: string;
+    imagePath: string;
+  }) => Promise<ArrayBuffer | Uint8Array>;
+}): Promise<string> {
+  const content = await resolveScreenshotContent({ imageBucket, imagePath });
+  const bytes =
+    content instanceof ArrayBuffer ? new Uint8Array(content) : content;
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 export async function confirmLiveReportOcrResult({
@@ -1017,7 +1066,9 @@ export async function reviewLiveReport({
     content:
       input.decision === "approve"
         ? "Your report has entered the settlement pool."
-        : "Your report was rejected or needs more information.",
+        : `Your report was rejected or needs more information. Reason: ${
+            input.reason ?? input.reviewNotes ?? "Not specified"
+          }`,
     objectType: "live_report",
     objectId: report.id,
     source: "live_report.review",

@@ -502,3 +502,12 @@ git commit -m "test: cover custom settlement production paths"
 ## Phase 3 Handoff
 
 Proceed to `docs/superpowers/plans/2026-07-11-ai-custom-settlement-phase-4-cost-reconciliation.md` after a real payable and receivable batch matches its submitted simulation and the production exit gate is green.
+
+## 2026-07-29 Task 10 Status Audit
+
+- [x] Phase 3 implementation artifacts are present in the repository: execution planning/context/business inputs, effective layer resolution, deterministic composition, aggregate report links, rule exceptions, missing-data policies, production executor, settlement batch integration, exception resolution, and internal/streamer-safe explanations.
+- [x] Production batch generation is wired to `createProductionCustomSettlementExecutionPort`, and generation fails closed when active custom layers exist while `CUSTOM_SETTLEMENT_RULE_EXECUTION_ENABLED` is false.
+- [x] Approval and generation now read the server execution capability through the shared custom-rule feature-flag helper path, avoiding duplicate route-local flag logic.
+- [x] The execution flag remains default-off in `.env.example` with `CUSTOM_SETTLEMENT_RULE_EXECUTION_ENABLED=false`; rollout still requires an environment-level enablement step.
+- [x] Focused verification passed on 2026-07-29: `pnpm test:custom-settlement` returned 47 files / 1096 tests passed.
+- [ ] Production-like data simulation, internal-organization enablement, real payable/receivable batch comparison, and rollback drill were not performed in this Task 10 audit; they remain required before broad rollout.

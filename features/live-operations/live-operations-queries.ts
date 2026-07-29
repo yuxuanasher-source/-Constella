@@ -33,6 +33,8 @@ export type OpsLiveReportQueueItem = {
   viewers: number | null;
   riskFlags: string[];
   submittedAt: string;
+  screenshotUploadedAt?: string | null;
+  screenshotFileHash?: string | null;
 };
 
 export type OpsLiveTaskQueueItem = {
@@ -80,6 +82,10 @@ type OpsLiveReportRow = {
   live_tasks: { title: string } | { title: string }[] | null;
   projects: { name: string } | { name: string }[] | null;
   streamers: { display_name: string } | { display_name: string }[] | null;
+  report_screenshots:
+    | Array<{ file_hash: string | null; uploaded_at: string | null }>
+    | { file_hash: string | null; uploaded_at: string | null }
+    | null;
 };
 
 type OpsLiveTaskRow = {
@@ -125,7 +131,7 @@ export async function listOpsLiveReportQueue(
   let query = client
     .from("live_reports")
     .select(
-      "id, live_task_id, project_id, streamer_id, status, settlement_duration, system_duration, screenshot_duration, divergence_pct, time_source, evidence_level, viewers, risk_flags, created_at, live_tasks(title), projects(name), streamers(display_name)",
+      "id, live_task_id, project_id, streamer_id, status, settlement_duration, system_duration, screenshot_duration, divergence_pct, time_source, evidence_level, viewers, risk_flags, created_at, live_tasks(title), projects(name), streamers(display_name), report_screenshots(file_hash, uploaded_at)",
     )
     .in("status", [
       "pending_review",
@@ -202,6 +208,7 @@ export function toOpsLiveReportQueueItem(
   const task = first(row.live_tasks);
   const project = first(row.projects);
   const streamer = first(row.streamers);
+  const screenshot = latestScreenshot(row.report_screenshots);
 
   return {
     id: row.id,
@@ -221,6 +228,8 @@ export function toOpsLiveReportQueueItem(
     viewers: row.viewers,
     riskFlags: row.risk_flags ?? [],
     submittedAt: row.created_at,
+    screenshotUploadedAt: screenshot?.uploaded_at ?? null,
+    screenshotFileHash: screenshot?.file_hash ?? null,
   };
 }
 
@@ -249,4 +258,25 @@ export function toOpsLiveTaskQueueItem(
 
 function first<T>(value: T | T[] | null): T | null {
   return Array.isArray(value) ? (value[0] ?? null) : value;
+}
+
+function latestScreenshot(
+  value:
+    | Array<{ file_hash: string | null; uploaded_at: string | null }>
+    | { file_hash: string | null; uploaded_at: string | null }
+    | null,
+) {
+  const screenshots = Array.isArray(value)
+    ? value
+    : value
+      ? [value]
+      : [];
+
+  return screenshots
+    .filter((screenshot) => screenshot.uploaded_at || screenshot.file_hash)
+    .sort((left, right) =>
+      String(right.uploaded_at ?? "").localeCompare(
+        String(left.uploaded_at ?? ""),
+      ),
+    )[0];
 }

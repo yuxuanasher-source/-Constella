@@ -61,7 +61,7 @@ describe("audit logs route", () => {
 
     const response = await GET(
       new Request(
-        "http://localhost/api/audit-logs?module=settlement&action=lock&projectId=project-1&highRiskOnly=1&limit=20",
+        "http://localhost/api/audit-logs?module=settlement&action=lock&projectId=project-1&objectType=settlement_batch&objectId=batch-1&highRiskOnly=1&limit=20",
       ),
     );
 
@@ -86,6 +86,8 @@ describe("audit logs route", () => {
         module: "settlement",
         action: "lock",
         projectId: "project-1",
+        objectType: "settlement_batch",
+        objectId: "batch-1",
         highRiskOnly: true,
         limit: 20,
       },

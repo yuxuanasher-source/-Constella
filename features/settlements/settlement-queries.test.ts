@@ -141,6 +141,7 @@ describe("settlement DTO mappers", () => {
       evidence_snapshot: {
         settlementDuration: 120,
         timeSource: "system",
+        riskFlags: ["duration_divergence"],
       },
       streamers: { display_name: "Streamer One" },
     });
@@ -165,6 +166,7 @@ describe("settlement DTO mappers", () => {
       settlementDuration: 120,
       systemAmount: 160,
       manualAmount: 0,
+      riskFlags: ["duration_divergence"],
     });
     expect(toOpsReferenceBatchDetailItem(liveReportItem)).toEqual({
       streamer: "Streamer One",
@@ -176,6 +178,8 @@ describe("settlement DTO mappers", () => {
       variable: 160,
       adjust: 0,
       total: 160,
+      evidenceLevel: "green",
+      riskFlags: ["duration_divergence"],
     });
     expect(toOpsReferenceBatchDetailItem(manualItem)).toEqual({
       streamer: "人工承载",
@@ -187,6 +191,8 @@ describe("settlement DTO mappers", () => {
       variable: 300,
       adjust: 20,
       total: 320,
+      evidenceLevel: "red",
+      riskFlags: [],
     });
   });
 
@@ -307,6 +313,119 @@ describe("settlement DTO mappers", () => {
       ruleBreakdown: item.ruleBreakdown,
       openExceptions: item.openExceptions,
     });
+  });
+
+  it("maps legacy settlement snapshots into staff-only rule breakdowns", () => {
+    const item = toOpsSettlementBatchDetailItem({
+      id: "item-legacy-1",
+      settlement_batch_id: "batch-1",
+      item_type: "live_report",
+      computed_amount: 470,
+      manual_amount: 0,
+      adjustment_amount: 0,
+      evidence_level: "green",
+      evidence_snapshot: {
+        liveReportId: "report-1",
+        settlementDuration: 390,
+        timeSource: "system",
+        evidenceLevel: "green",
+        legacyEngine: {
+          rule: {
+            settlementMethod: "base_salary_cpt",
+            hourlyRate: 80,
+            baseSalary: 200,
+            hourlyTiers: [],
+            floorAmount: null,
+            capAmount: null,
+          },
+          includeBaseSalary: true,
+          breakdown: {
+            baseAmount: 520,
+            penaltyAmount: 50,
+            penalties: [
+              {
+                key: "yellow-evidence",
+                trigger: "yellow_evidence",
+                label: "黄证据扣罚",
+                amount: 50,
+              },
+            ],
+            floorApplied: false,
+            capApplied: false,
+            computedAmount: 470,
+          },
+        },
+      },
+      streamers: { display_name: "Streamer One" },
+    });
+
+    expect(item.ruleBreakdown).toEqual({
+      mode: "legacy",
+      executionGrain: "单条报数",
+      appliedVersionLabels: ["固定规则 · 底薪 + 时长计费"],
+      components: [
+        { key: "legacy:baseAmount", label: "基础金额", amountCents: 52000 },
+        { key: "legacy:penaltyAmount", label: "扣罚合计", amountCents: -5000 },
+        {
+          key: "legacy:computedAmount",
+          label: "最终金额",
+          amountCents: 47000,
+        },
+      ],
+      sourceReportCount: 1,
+      missingDataDecisions: [],
+      explanationZh:
+        "系统计时 390 分钟（约 6.5 小时）× 时薪 ¥80/小时；计入底薪 ¥200（每批次仅计一次）；触发「黄证据扣罚」，扣 ¥50；最终系统金额 ¥470",
+    });
+  });
+
+  it("explains why non-green legacy evidence receives no time-based amount", () => {
+    const item = toOpsSettlementBatchDetailItem({
+      id: "item-legacy-yellow",
+      settlement_batch_id: "batch-1",
+      item_type: "live_report",
+      computed_amount: 150,
+      manual_amount: 0,
+      adjustment_amount: 0,
+      evidence_level: "yellow",
+      evidence_snapshot: {
+        liveReportId: "report-1",
+        settlementDuration: 390,
+        timeSource: "screenshot",
+        evidenceLevel: "yellow",
+        legacyEngine: {
+          rule: {
+            settlementMethod: "base_salary_cpt",
+            hourlyRate: 80,
+            baseSalary: 200,
+            hourlyTiers: [],
+            floorAmount: null,
+            capAmount: null,
+          },
+          includeBaseSalary: true,
+          breakdown: {
+            baseAmount: 200,
+            penaltyAmount: 50,
+            penalties: [
+              {
+                key: "yellow-evidence",
+                trigger: "yellow_evidence",
+                label: "黄证据扣罚",
+                amount: 50,
+              },
+            ],
+            floorApplied: false,
+            capApplied: false,
+            computedAmount: 150,
+          },
+        },
+      },
+      streamers: { display_name: "Streamer One" },
+    });
+
+    expect(item.ruleBreakdown?.explanationZh).toBe(
+      "时长证据为黄色、来源为截图计时，时长计费部分按规则记 ¥0（仅绿色证据 + 系统计时可计费）；计入底薪 ¥200（每批次仅计一次）；触发「黄证据扣罚」，扣 ¥50；最终系统金额 ¥150",
+    );
   });
 
   it("maps project cost items for staff and hides them from streamer-safe details", () => {

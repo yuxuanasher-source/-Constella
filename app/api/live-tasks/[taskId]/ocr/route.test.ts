@@ -35,7 +35,12 @@ vi.mock("@/lib/db/supabase-server", () => ({
 }));
 
 const supabase = { client: "supabase" };
-const adminSupabase = { client: "admin-supabase" };
+const storageDownload = vi.fn();
+const storageFrom = vi.fn(() => ({ download: storageDownload }));
+const adminSupabase = {
+  client: "admin-supabase",
+  storage: { from: storageFrom },
+};
 const auth = {
   userId: "user-streamer",
   email: "streamer@example.com",
@@ -94,11 +99,19 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
         expectedDuration: 67,
       },
     });
+    storageDownload.mockResolvedValue({
+      data: new Blob(["route screenshot bytes"]),
+      error: null,
+    });
   });
 
   it("queues a safe OCR job for a report screenshot", async () => {
     vi.mocked(submitLiveReportScreenshotForOcr).mockImplementationOnce(
-      async ({ createOcrJob: queueOcrJob, input }) => {
+      async ({ createOcrJob: queueOcrJob, input, resolveScreenshotContent }) => {
+        await resolveScreenshotContent({
+          imageBucket: input.imageBucket,
+          imagePath: input.screenshotStoragePath,
+        });
         const job = await queueOcrJob({
           liveReportId: "report-1",
           screenshotId: "screenshot-1",
@@ -131,6 +144,10 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
     expect(JSON.stringify(body)).not.toContain("imageBase64");
 
     expect(actorFromContext).toHaveBeenCalledWith(context, true);
+    expect(storageFrom).toHaveBeenCalledWith("evidence-private");
+    expect(storageDownload).toHaveBeenCalledWith(
+      "org/report-screenshots/task-1/end.png",
+    );
     // 一次是入队路由本身，一次是入队后 inline kick 的 runner 身份解析。
     expect(createSupabaseAdminClient).toHaveBeenCalledTimes(2);
     expect(submitLiveReportScreenshotForOcr).toHaveBeenCalledWith(
@@ -140,10 +157,10 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
         taskId: "task-1",
         input: {
           screenshotStoragePath: "org/report-screenshots/task-1/end.png",
-          screenshotFileHash: "sha256:abc123",
           imageBucket: "evidence-private",
           collaborationId: "agreement-1",
         },
+        resolveScreenshotContent: expect.any(Function),
       }),
     );
     expect(createOcrJob).toHaveBeenCalledWith({
@@ -210,16 +227,20 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
     expect(createOcrJob).not.toHaveBeenCalled();
   });
 
-  it("requires the screenshot file hash", async () => {
+  it("maps duplicate screenshot content to conflict", async () => {
+    vi.mocked(submitLiveReportScreenshotForOcr).mockRejectedValueOnce(
+      new Error("Duplicate report screenshot content"),
+    );
+
     const response = await postTaskOcr({
       screenshotStoragePath: "org/report-screenshots/task-1/end.png",
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({
-      error: "screenshotFileHash is required",
+      error: "Duplicate report screenshot content",
     });
-    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
-    expect(submitLiveReportScreenshotForOcr).not.toHaveBeenCalled();
+    expect(submitLiveReportScreenshotForOcr).toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
   });
 });

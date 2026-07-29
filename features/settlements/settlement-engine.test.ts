@@ -30,11 +30,88 @@ describe("settlement engine", () => {
       adjustmentAmount: 0,
       evidenceLevel: "green",
     });
-    expect(item.evidenceSnapshot).toEqual({
+    expect(item.evidenceSnapshot).toMatchObject({
       liveReportId: "report-1",
       settlementDuration: 120,
       timeSource: "system",
       evidenceLevel: "green",
+      legacyEngine: {
+        rule: {
+          settlementMethod: "cpt",
+          hourlyRate: 80,
+          baseSalary: 0,
+          hourlyTiers: [],
+          floorAmount: null,
+          capAmount: null,
+        },
+        includeBaseSalary: true,
+        breakdown: {
+          baseAmount: 160,
+          penaltyAmount: 0,
+          penalties: [],
+          floorApplied: false,
+          capApplied: false,
+          computedAmount: 160,
+        },
+      },
+    });
+  });
+
+  it("persists a legacy snapshot for yellow evidence with base salary and penalties", () => {
+    const item = calculateSettlementItem({
+      report: {
+        ...baseReport,
+        settlementDuration: 390,
+        evidenceLevel: "yellow",
+      },
+      rule: {
+        settlementMethod: "base_salary_cpt",
+        hourlyRate: 80,
+        baseSalary: 200,
+        penalties: [
+          {
+            key: "yellow-evidence",
+            trigger: "yellow_evidence",
+            mode: "fixed",
+            value: 50,
+            label: "黄证据扣罚",
+          },
+        ],
+      },
+    });
+
+    expect(item.computedAmount).toBe(150);
+    expect(item.evidenceSnapshot).toMatchObject({
+      liveReportId: "report-1",
+      settlementDuration: 390,
+      timeSource: "system",
+      evidenceLevel: "yellow",
+      legacyEngine: {
+        rule: {
+          settlementMethod: "base_salary_cpt",
+          hourlyRate: 80,
+          baseSalary: 200,
+          hourlyTiers: [],
+          floorAmount: null,
+          capAmount: null,
+        },
+        includeBaseSalary: true,
+        breakdown: {
+          baseAmount: 200,
+          penaltyAmount: 50,
+          penalties: [
+            {
+              key: "yellow-evidence",
+              trigger: "yellow_evidence",
+              label: "黄证据扣罚",
+              amount: 50,
+            },
+          ],
+          floorApplied: false,
+          capApplied: false,
+          computedAmount: 150,
+        },
+      },
     });
   });
 

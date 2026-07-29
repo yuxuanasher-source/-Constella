@@ -44,9 +44,12 @@ const partnerStreamerActor = {
 
 const ocrInput = {
   screenshotStoragePath: "org/report-screenshots/task-1/end.png",
-  screenshotFileHash: "hash-1",
   imageBucket: "evidence-private",
 };
+
+const screenshotBytes = new TextEncoder().encode("report screenshot bytes");
+const screenshotSha256 =
+  "sha256:f9879dae71f39a3dcbc229a84a8097d7bb5d4fb76bf8a066a794780011876bea";
 
 const task = {
   id: "task-1",
@@ -142,6 +145,7 @@ function createRepo(): LiveOperationsRepository {
       ...patch,
     })),
     createReportScreenshot: vi.fn(async () => undefined),
+    findReportScreenshotByFileHash: vi.fn(async () => null),
     createReportChangeLog: vi.fn(async () => undefined),
   };
 }
@@ -158,6 +162,10 @@ function createQueuedOcrJob() {
       imagePath: "org/report-screenshots/task-1/end.png",
     },
   }));
+}
+
+function resolveScreenshotContent() {
+  return vi.fn(async () => screenshotBytes);
 }
 
 describe("live operations service", () => {
@@ -503,6 +511,7 @@ describe("live operations service", () => {
       systemDuration: 80,
     });
     const createOcrJob = createQueuedOcrJob();
+    const getScreenshotContent = resolveScreenshotContent();
 
     const result = await submitLiveReportScreenshotForOcr({
       repo,
@@ -511,6 +520,7 @@ describe("live operations service", () => {
       actor: streamerActor,
       taskId: "task-1",
       input: ocrInput,
+      resolveScreenshotContent: getScreenshotContent,
       createOcrJob,
     });
 
@@ -531,11 +541,19 @@ describe("live operations service", () => {
     expect(repo.createReportScreenshot).toHaveBeenCalledWith(
       expect.objectContaining({
         storagePath: "org/report-screenshots/task-1/end.png",
-        fileHash: "hash-1",
+        fileHash: screenshotSha256,
         uploadedBy: "user-streamer",
         metadata: { imageBucket: "evidence-private" },
       }),
     );
+    expect(getScreenshotContent).toHaveBeenCalledWith({
+      imageBucket: "evidence-private",
+      imagePath: "org/report-screenshots/task-1/end.png",
+    });
+    expect(repo.findReportScreenshotByFileHash).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      fileHash: screenshotSha256,
+    });
     expect(createOcrJob).toHaveBeenCalledWith(
       expect.objectContaining({
         liveReportId: "report-1",
@@ -559,11 +577,11 @@ describe("live operations service", () => {
     expect(JSON.stringify(audit.mock.calls)).not.toContain(
       "org/report-screenshots",
     );
-    expect(JSON.stringify(audit.mock.calls)).not.toContain("hash-1");
+    expect(JSON.stringify(audit.mock.calls)).not.toContain(screenshotSha256);
     expect(JSON.stringify(notify.mock.calls)).not.toContain(
       "org/report-screenshots",
     );
-    expect(JSON.stringify(notify.mock.calls)).not.toContain("hash-1");
+    expect(JSON.stringify(notify.mock.calls)).not.toContain(screenshotSha256);
   });
 
   it("queues OCR from a rejected report retry path", async () => {
@@ -583,6 +601,7 @@ describe("live operations service", () => {
       actor: streamerActor,
       taskId: "task-1",
       input: ocrInput,
+      resolveScreenshotContent: resolveScreenshotContent(),
       createOcrJob,
     });
 
@@ -597,6 +616,40 @@ describe("live operations service", () => {
       "task-1",
       expect.objectContaining({ status: "report_pending_review" }),
     );
+  });
+
+  it("rejects duplicate OCR screenshot content before report or job creation", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    vi.mocked(repo.findReportScreenshotByFileHash).mockResolvedValueOnce({
+      id: "screenshot-existing",
+      liveReportId: "report-existing",
+      storagePath: "org/report-screenshots/old/end.png",
+      fileHash: screenshotSha256,
+      uploadedAt: "2026-06-02T11:00:00.000Z",
+    });
+    const createOcrJob = createQueuedOcrJob();
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        resolveScreenshotContent: resolveScreenshotContent(),
+        createOcrJob,
+      }),
+    ).rejects.toThrow("Duplicate report screenshot content");
+
+    expect(repo.createLiveReport).not.toHaveBeenCalled();
+    expect(repo.createReportScreenshot).not.toHaveBeenCalled();
+    expect(repo.updateLiveTask).not.toHaveBeenCalled();
+    expect(createOcrJob).not.toHaveBeenCalled();
   });
 
   it("blocks OCR submission from another streamer's task", async () => {
@@ -618,6 +671,7 @@ describe("live operations service", () => {
         actor: { ...streamerActor, streamerId: "streamer-2" },
         taskId: "task-1",
         input: ocrInput,
+        resolveScreenshotContent: resolveScreenshotContent(),
         createOcrJob,
       }),
     ).rejects.toThrow("Streamers can only operate their own live tasks");
@@ -643,6 +697,7 @@ describe("live operations service", () => {
         actor: streamerActor,
         taskId: "task-1",
         input: ocrInput,
+        resolveScreenshotContent: resolveScreenshotContent(),
         createOcrJob,
       }),
     ).rejects.toThrow(
@@ -676,6 +731,7 @@ describe("live operations service", () => {
           actor: streamerActor,
           taskId: "task-1",
           input: ocrInput,
+          resolveScreenshotContent: resolveScreenshotContent(),
           createOcrJob,
         }),
       ).rejects.toThrow("OCR report requires a recorded system duration");
@@ -704,6 +760,7 @@ describe("live operations service", () => {
         actor: streamerActor,
         taskId: "task-1",
         input: ocrInput,
+        resolveScreenshotContent: resolveScreenshotContent(),
         createOcrJob,
       }),
     ).rejects.toThrow("Cross-organization access is not allowed");
@@ -733,6 +790,7 @@ describe("live operations service", () => {
         },
         taskId: "task-1",
         input: ocrInput,
+        resolveScreenshotContent: resolveScreenshotContent(),
         createOcrJob,
       }),
     ).rejects.toThrow("Current role cannot operate live tasks");
@@ -761,6 +819,7 @@ describe("live operations service", () => {
         actor: streamerActor,
         taskId: "task-1",
         input: ocrInput,
+        resolveScreenshotContent: resolveScreenshotContent(),
         createOcrJob,
       }),
     ).rejects.toThrow("OCR 入队失败");
@@ -797,6 +856,7 @@ describe("live operations service", () => {
       actor: streamerActor,
       taskId: "task-1",
       input: ocrInput,
+      resolveScreenshotContent: resolveScreenshotContent(),
       createOcrJob,
     });
 
@@ -1214,6 +1274,7 @@ describe("live operations service", () => {
         includeInTaskResult: true,
         enterSettlementPool: true,
         reviewNotes: "bad evidence",
+        reason: "预审卡点：截图缺失",
       },
     });
 
@@ -1227,6 +1288,12 @@ describe("live operations service", () => {
       expect.objectContaining({
         includeInTaskResult: false,
         enterSettlementPool: false,
+      }),
+    );
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientRole: "streamer",
+        content: expect.stringContaining("预审卡点：截图缺失"),
       }),
     );
 

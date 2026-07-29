@@ -12,6 +12,7 @@ import {
   requiredString,
 } from "@/features/live-operations/live-operations-route-utils";
 import { submitLiveReportScreenshotForOcr } from "@/features/live-operations/live-operations-service";
+import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import { scheduleInstantKick } from "@/lib/http/schedule-instant-kick";
 
@@ -23,7 +24,6 @@ export async function POST(
     const { taskId } = await params;
     const body = await readJsonBody(request);
     const screenshotStoragePath = requiredString(body, "screenshotStoragePath");
-    const screenshotFileHash = requiredString(body, "screenshotFileHash");
     const imageBucket = optionalString(body, "imageBucket");
     const collaborationId = optionalString(body, "collaborationId");
     const context = await getLiveOperationsRouteContext();
@@ -40,9 +40,22 @@ export async function POST(
       taskId,
       input: {
         screenshotStoragePath,
-        screenshotFileHash,
         imageBucket,
         collaborationId,
+      },
+      resolveScreenshotContent: async (input) => {
+        const bucket = input.imageBucket || getPrivateStorageBucket();
+        const { data, error } = await ocrJobClient.storage
+          .from(bucket)
+          .download(input.imagePath);
+        if (error) {
+          throw error;
+        }
+        if (!data) {
+          throw new Error("Report screenshot object was not found");
+        }
+
+        return Buffer.from(await data.arrayBuffer());
       },
       createOcrJob: (input) =>
         createOcrJob({

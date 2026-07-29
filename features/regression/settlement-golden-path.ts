@@ -311,6 +311,10 @@ class GoldenPathRepository
 
   async createReportScreenshot(): Promise<void> {}
 
+  async findReportScreenshotByFileHash(): Promise<null> {
+    return null;
+  }
+
   async createReportChangeLog(): Promise<void> {}
 
   async listSettlementPoolReports(input: {

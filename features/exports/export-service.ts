@@ -20,12 +20,14 @@ export async function createGovernedExport({
   actor,
   kind,
   rows = [],
+  parameters,
   now = new Date().toISOString(),
 }: {
   client: ExportClient;
   actor: Pick<AuthContext, "userId" | "name" | "role" | "organizationId">;
   kind: ExportKind;
   rows?: Array<Record<string, unknown>>;
+  parameters?: Record<string, unknown>;
   now?: string;
 }): Promise<GovernedExportResult> {
   const fields = getAllowedExportFields(kind, actor.role);
@@ -51,8 +53,11 @@ export async function createGovernedExport({
       kind,
       rowCount: rows.length,
       fieldCount: fields.length,
+      ...(parameters ? { parameters } : {}),
     },
-    changedFields: ["export_kind", "row_count"],
+    changedFields: parameters
+      ? ["export_kind", "row_count", "export_parameters"]
+      : ["export_kind", "row_count"],
   });
 
   return result;

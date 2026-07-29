@@ -33,6 +33,8 @@ export type OpsReferenceBatchDetailItem = {
   variable: number;
   adjust: number;
   total: number;
+  evidenceLevel?: "green" | "yellow" | "red" | null;
+  riskFlags?: string[];
   ruleBreakdown?: OpsSettlementRuleBreakdown;
   openExceptions?: OpsSettlementRuleExceptionSummary[];
 };
@@ -91,6 +93,8 @@ export function toOpsReferenceBatchDetailItem(
     variable: item.systemAmount + item.manualAmount,
     adjust: item.adjustmentAmount,
     total: item.totalAmount,
+    evidenceLevel: item.evidenceLevel,
+    riskFlags: item.riskFlags,
     ...(item.ruleBreakdown ? { ruleBreakdown: item.ruleBreakdown } : {}),
     ...(item.openExceptions?.length
       ? { openExceptions: item.openExceptions }

@@ -72,6 +72,8 @@ export type OpsReferenceReport = {
   screens: number;
   source: "OCR" | "manual";
   riskFlags: string[];
+  screenshotUploadedAt: string | null;
+  screenshotFileHash: string | null;
   note: string;
 };
 
@@ -195,6 +197,8 @@ export function toOpsReferenceReport(
     screens: 1,
     source: report.timeSource === "claimed" ? "manual" : "OCR",
     riskFlags: report.riskFlags ?? [],
+    screenshotUploadedAt: report.screenshotUploadedAt ?? null,
+    screenshotFileHash: report.screenshotFileHash ?? null,
     note: `${report.timeSource ?? "unknown"} · ${report.evidenceLevel ?? "unknown"}`,
   };
 }

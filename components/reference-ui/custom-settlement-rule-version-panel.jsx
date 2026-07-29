@@ -36,6 +36,38 @@ function normalizeParameters(parameters) {
   });
 }
 
+function normalizeTemplateParameters(template) {
+  const explicit = normalizeParameters(template?.parameters);
+  if (explicit.length) return explicit;
+  return (template?.contract?.parameters ?? []).map((parameter) => ({
+    key: parameter.name,
+    labelZh: parameter.description || parameter.name,
+    ...typedValueToUiParameter(parameter.defaultValue),
+  }));
+}
+
+function typedValueToUiParameter(value) {
+  if (value?.type === "money_cents") {
+    return {
+      type: "money_yuan",
+      value: Number(value.amountCents) / 100,
+    };
+  }
+  if (value?.type === "rate_bps") {
+    return {
+      type: "percent",
+      value: Number(value.rateBps) / 100,
+    };
+  }
+  if (value?.type === "integer") {
+    return {
+      type: "number",
+      value: value.value,
+    };
+  }
+  return { type: "text", value: value?.value ?? value };
+}
+
 function formatParameter(parameter) {
   if (parameter.type === "money_yuan") return formatYuan(parameter.value);
   if (parameter.type === "percent") return formatPercent(parameter.value);
@@ -145,8 +177,8 @@ export default function CustomSettlementRuleVersionPanel({
     onPrimaryAction?.(primary?.type, currentRule);
   };
 
-  const handleClone = (templateId) => {
-    const result = onCloneTemplate?.(templateId);
+  const handleClone = (template) => {
+    const result = onCloneTemplate?.(template);
     if (typeof result?.then === "function") {
       result.then((payload) => {
         if (payload) setCloneResult(payload);
@@ -223,9 +255,9 @@ export default function CustomSettlementRuleVersionPanel({
                 <strong>{template.name}</strong>
                 <p>{template.description}</p>
               </div>
-              {normalizeParameters(template.parameters).length ? (
+              {normalizeTemplateParameters(template).length ? (
                 <dl>
-                  {normalizeParameters(template.parameters).map((parameter) => (
+                  {normalizeTemplateParameters(template).map((parameter) => (
                     <React.Fragment key={parameter.key}>
                       <dt>{parameter.labelZh}</dt>
                       <dd>{formatParameter(parameter)}</dd>
@@ -234,12 +266,18 @@ export default function CustomSettlementRuleVersionPanel({
                 </dl>
               ) : null}
               {template.kind === "organization" ? (
-                <button type="button" onClick={() => handleClone(template.id)}>
+                <button type="button" onClick={() => handleClone(template)}>
                   <Copy size={14} aria-hidden="true" />
                   克隆为草稿
                 </button>
               ) : (
-                <span className="crw-muted">只读</span>
+                <>
+                  <button type="button" onClick={() => handleClone(template)}>
+                    <FilePenLine size={14} aria-hidden="true" />
+                    用模板起草
+                  </button>
+                  <span className="crw-muted">只读</span>
+                </>
               )}
             </div>
           ))}

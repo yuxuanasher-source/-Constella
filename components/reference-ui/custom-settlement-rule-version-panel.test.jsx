@@ -279,11 +279,13 @@ describe("CustomSettlementRuleVersionPanel", () => {
       "open",
     );
 
+    expect(screen.getByRole("button", { name: "用模板起草" })).toBeInTheDocument();
+
     fireEvent.click(
       within(orgTemplate).getByRole("button", { name: "克隆为草稿" }),
     );
 
-    expect(clone).toHaveBeenCalledWith("template-1");
+    expect(clone).toHaveBeenCalledWith(expect.objectContaining({ id: "template-1" }));
     expect(screen.getByRole("heading", { name: "可编辑草稿" })).toBeInTheDocument();
     expect(screen.getByText("缺少目标数据：系统直播时长")).toBeInTheDocument();
   });

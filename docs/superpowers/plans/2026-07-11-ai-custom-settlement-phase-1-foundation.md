@@ -629,3 +629,10 @@ Verify ambiguous prompt -> one question -> confirmed Chinese contract -> determi
 ## Phase 1 Handoff
 
 Proceed to `docs/superpowers/plans/2026-07-11-ai-custom-settlement-phase-2-governance.md` only after every exit criterion passes. Phase 2 may rely on the compiled AST, contract hashes, data-readiness report, AI draft repository, and immutable simulation records created here.
+
+## 2026-07-29 Task 10 Status Audit
+
+- [x] Phase 1 implementation artifacts are present in the repository: feature flags, typed contracts, parser/validator, pure engine, explanations, variable catalog/readiness, repository, authoring service, system templates, route context, API routes, and reference UI workspace.
+- [x] The public authoring flag remains default-off in `.env.example` with `NEXT_PUBLIC_AI_CUSTOM_SETTLEMENT_RULES_ENABLED=false`.
+- [x] Focused verification passed on 2026-07-29: `pnpm test:custom-settlement` returned 47 files / 1096 tests passed, and the authoring/governance API route suite returned 21 files / 196 tests passed.
+- [ ] Local Supabase reset, RLS role walkthrough, and browser acceptance were not performed in this Task 10 audit; they remain required before broad rollout.
