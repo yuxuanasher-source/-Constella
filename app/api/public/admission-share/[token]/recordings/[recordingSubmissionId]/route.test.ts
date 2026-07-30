@@ -12,14 +12,24 @@ import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
 
-vi.mock("@/features/applications/admission-share-board", () => ({
-  SupabaseAdmissionShareBoardRepository: vi
-    .fn()
-    .mockImplementation(function () {
-      return { repo: "share-repo" };
-    }),
-  getPublicAdmissionRecordingPlaybackSource: vi.fn(),
-}));
+vi.mock(
+  "@/features/applications/admission-share-board",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/features/applications/admission-share-board")
+      >();
+    return {
+      ...actual,
+      SupabaseAdmissionShareBoardRepository: vi
+        .fn()
+        .mockImplementation(function () {
+          return { repo: "share-repo" };
+        }),
+      getPublicAdmissionRecordingPlaybackSource: vi.fn(),
+    };
+  },
+);
 
 vi.mock("@/features/storage/private-upload", () => ({
   createSignedDownloadUrl: vi.fn(),
@@ -121,5 +131,25 @@ describe("public admission recording playback route", () => {
       "https://video.example/rec-1.mp4",
     );
     expect(createSignedDownloadUrl).not.toHaveBeenCalled();
+  });
+
+  it("returns the dedicated stable error when a shared recording has no playback source", async () => {
+    vi.mocked(getPublicAdmissionRecordingPlaybackSource).mockResolvedValue({
+      recordingUrl: null,
+      storagePath: null,
+    });
+
+    const response = await GET(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token/recordings/rec-2",
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      code: "RECORDING_SOURCE_UNAVAILABLE",
+      error: "录屏来源暂时不可用，请重试或打开备用视频。",
+    });
   });
 });

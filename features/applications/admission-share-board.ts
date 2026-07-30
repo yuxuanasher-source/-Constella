@@ -1440,6 +1440,18 @@ type GetPublicAdmissionShareBoardInput = {
   onViewAuditError?: (error: unknown) => void;
 };
 
+type PreparedPublicAdmissionShareSession =
+  | {
+      sessionToken: string;
+      expiresAt: string;
+      created: true;
+    }
+  | {
+      sessionToken: string;
+      created: false;
+    }
+  | null;
+
 export async function getPublicAdmissionShareBoardContext({
   repo,
   accessStore,
@@ -1467,16 +1479,58 @@ export async function getPublicAdmissionShareBoardContext({
     onViewAuditError,
   );
 
-  return {
-    organizationId: snapshot.organizationId,
-    board: toPublicShareDto(snapshot, { token }),
-  };
+  return publicAdmissionShareContext(snapshot, token);
 }
 
 export async function getPublicAdmissionShareBoard(
   input: GetPublicAdmissionShareBoardInput,
 ): Promise<PublicAdmissionShareBoard> {
   return (await getPublicAdmissionShareBoardContext(input)).board;
+}
+
+export async function getPublicAdmissionShareBoardContextWithSession({
+  repo,
+  accessStore,
+  token,
+  accessCode,
+  sessionToken,
+  now = new Date().toISOString(),
+  onViewAuditError = observeViewAuditError,
+  sessionTokenFactory = createShareToken,
+}: GetPublicAdmissionShareBoardInput & {
+  accessStore: AdmissionShareAccessStore;
+  sessionTokenFactory?: () => string;
+}): Promise<{
+  organizationId: string;
+  board: PublicAdmissionShareBoard;
+  session: PreparedPublicAdmissionShareSession;
+}> {
+  const snapshot = await requireAvailablePublicSnapshot({ repo, token, now });
+  const session = await preparePublicAdmissionShareSession({
+    snapshot,
+    accessStore,
+    sessionToken,
+    now,
+    sessionTokenFactory,
+  });
+  await requirePublicSnapshotAccess({
+    snapshot,
+    accessStore,
+    accessCode,
+    sessionToken: session?.sessionToken ?? sessionToken,
+    now,
+  });
+  await markShareBoardViewedBestEffort(
+    repo,
+    snapshot.id,
+    now,
+    onViewAuditError,
+  );
+
+  return {
+    ...publicAdmissionShareContext(snapshot, token),
+    session,
+  };
 }
 
 export async function ensurePublicAdmissionShareSession({
@@ -1493,19 +1547,30 @@ export async function ensurePublicAdmissionShareSession({
   sessionToken?: string;
   now?: string;
   sessionTokenFactory?: () => string;
-}): Promise<
-  | {
-      sessionToken: string;
-      expiresAt: string;
-      created: true;
-    }
-  | {
-      sessionToken: string;
-      created: false;
-    }
-  | null
-> {
+}): Promise<PreparedPublicAdmissionShareSession> {
   const snapshot = await requireAvailablePublicSnapshot({ repo, token, now });
+  return preparePublicAdmissionShareSession({
+    snapshot,
+    accessStore,
+    sessionToken,
+    now,
+    sessionTokenFactory,
+  });
+}
+
+async function preparePublicAdmissionShareSession({
+  snapshot,
+  accessStore,
+  sessionToken,
+  now,
+  sessionTokenFactory,
+}: {
+  snapshot: PublicAdmissionShareBoardSnapshot;
+  accessStore: AdmissionShareAccessStore;
+  sessionToken?: string;
+  now: string;
+  sessionTokenFactory: () => string;
+}): Promise<PreparedPublicAdmissionShareSession> {
   if (
     snapshot.mode !== "formal_review" ||
     !snapshot.allowVendorSubmit ||
@@ -2241,6 +2306,28 @@ async function requirePublicSnapshot({
   now: string;
 }) {
   const snapshot = await requireAvailablePublicSnapshot({ repo, token, now });
+  return requirePublicSnapshotAccess({
+    snapshot,
+    accessStore,
+    accessCode,
+    sessionToken,
+    now,
+  });
+}
+
+async function requirePublicSnapshotAccess({
+  snapshot,
+  accessStore,
+  accessCode,
+  sessionToken,
+  now,
+}: {
+  snapshot: PublicAdmissionShareBoardSnapshot;
+  accessStore?: AdmissionShareAccessStore;
+  accessCode?: string;
+  sessionToken?: string;
+  now: string;
+}) {
   if (!snapshot.accessCodeHash) {
     return snapshot;
   }
@@ -2351,6 +2438,16 @@ async function requireAvailablePublicSnapshot({
 
 function earlierIsoDate(left: string, right: string) {
   return Date.parse(left) <= Date.parse(right) ? left : right;
+}
+
+function publicAdmissionShareContext(
+  snapshot: PublicAdmissionShareBoardSnapshot,
+  token: string,
+) {
+  return {
+    organizationId: snapshot.organizationId,
+    board: toPublicShareDto(snapshot, { token }),
+  };
 }
 
 function toPublicShareDto(

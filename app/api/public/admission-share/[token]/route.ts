@@ -9,8 +9,7 @@ import {
   type AdmissionReviewClient,
 } from "@/features/admission-review/evaluation-service";
 import {
-  ensurePublicAdmissionShareSession,
-  getPublicAdmissionShareBoardContext,
+  getPublicAdmissionShareBoardContextWithSession,
   PublicAdmissionShareError,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
@@ -45,19 +44,16 @@ export async function GET(
     const accessStore = new SupabaseAdmissionShareAccessStore(supabase);
     const requestSession =
       readAdmissionShareAccessSession(request, token) ?? undefined;
-    const preparedSession = await ensurePublicAdmissionShareSession({
+    const {
+      organizationId,
+      board: shareBoard,
+      session: preparedSession,
+    } = await getPublicAdmissionShareBoardContextWithSession({
       repo,
       accessStore,
       token,
       sessionToken: requestSession,
     });
-    const { organizationId, board: shareBoard } =
-      await getPublicAdmissionShareBoardContext({
-        repo,
-        accessStore,
-        token,
-        sessionToken: preparedSession?.sessionToken ?? requestSession,
-      });
 
     // 厂家端可选理由标签（仅 key/名称/说明，不泄漏内部配置）。
     // 解析失败不影响看板本身，退回内置默认字典。

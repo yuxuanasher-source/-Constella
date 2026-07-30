@@ -56,7 +56,7 @@ export async function GET(
     }
 
     throw new PublicAdmissionShareError(
-      "RECORDING_NOT_SHARED",
+      "RECORDING_SOURCE_UNAVAILABLE",
       "Recording playback source is unavailable",
       404,
     );

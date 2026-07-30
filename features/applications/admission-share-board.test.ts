@@ -6,6 +6,7 @@ import {
   ensurePublicAdmissionShareSession,
   extendAdmissionShareBoard,
   getPublicAdmissionShareBoard,
+  getPublicAdmissionShareBoardContextWithSession,
   getPublicAdmissionRecordingPlaybackSource,
   hashAdmissionShareAccessCode,
   hashShareSecret,
@@ -1336,6 +1337,96 @@ describe("admission share board service", () => {
     expect(protectedFormal).toBeNull();
     expect(protectedAccessStore.hasValidSession).not.toHaveBeenCalled();
     expect(protectedAccessStore.createSession).not.toHaveBeenCalled();
+  });
+
+  it("hydrates the full public snapshot once while preparing each main-GET session mode", async () => {
+    const passwordlessRepo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+    });
+    const passwordlessAccessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn().mockResolvedValue(undefined),
+      hasValidSession: vi.fn(),
+    };
+
+    const passwordless = await getPublicAdmissionShareBoardContextWithSession({
+      repo: passwordlessRepo,
+      accessStore: passwordlessAccessStore,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+      sessionTokenFactory: () => "new-opaque-session",
+    });
+
+    expect(passwordlessRepo.getPublicShareBoardSnapshot).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(passwordless.session).toEqual({
+      sessionToken: "new-opaque-session",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+      created: true,
+    });
+    expect(passwordless.board).toMatchObject({
+      mode: "formal_review",
+      canSubmit: true,
+    });
+
+    const protectedRepo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("24681024"),
+        }),
+      ),
+    });
+    const protectedAccessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+
+    const protectedFormal =
+      await getPublicAdmissionShareBoardContextWithSession({
+        repo: protectedRepo,
+        accessStore: protectedAccessStore,
+        token: "protected-token",
+        sessionToken: "existing-protected-session",
+        now: "2026-06-07T01:00:00.000Z",
+      });
+
+    expect(protectedRepo.getPublicShareBoardSnapshot).toHaveBeenCalledTimes(1);
+    expect(protectedFormal.session).toBeNull();
+    expect(protectedAccessStore.createSession).not.toHaveBeenCalled();
+    expect(protectedAccessStore.hasValidSession).toHaveBeenCalledTimes(1);
+
+    const previewRepo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          mode: "preview",
+          allowVendorSubmit: false,
+          roundNumber: 0,
+        }),
+      ),
+    });
+    const previewAccessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn(),
+    };
+
+    const preview = await getPublicAdmissionShareBoardContextWithSession({
+      repo: previewRepo,
+      accessStore: previewAccessStore,
+      token: "preview-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(previewRepo.getPublicShareBoardSnapshot).toHaveBeenCalledTimes(1);
+    expect(preview.session).toBeNull();
+    expect(preview.board).toMatchObject({
+      mode: "preview",
+      canSubmit: false,
+    });
+    expect(previewAccessStore.createSession).not.toHaveBeenCalled();
+    expect(previewAccessStore.hasValidSession).not.toHaveBeenCalled();
   });
 
   it("surfaces stable draft conflicts and locked-review errors", async () => {

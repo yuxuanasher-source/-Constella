@@ -3,8 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "./route";
 
 import {
-  ensurePublicAdmissionShareSession,
-  getPublicAdmissionShareBoardContext,
+  getPublicAdmissionShareBoardContextWithSession,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
@@ -28,8 +27,7 @@ vi.mock(
         .mockImplementation(function () {
           return { repo: "share-repo" };
         }),
-      getPublicAdmissionShareBoardContext: vi.fn(),
-      ensurePublicAdmissionShareSession: vi.fn(),
+      getPublicAdmissionShareBoardContextWithSession: vi.fn(),
     };
   },
 );
@@ -57,6 +55,9 @@ vi.mock("@/lib/http/admission-share-access-session", async (importOriginal) => {
 
 const params = Promise.resolve({ token: "plain-token" });
 const supabase = { client: "supabase" };
+let publicContext: Awaited<
+  ReturnType<typeof getPublicAdmissionShareBoardContextWithSession>
+>;
 
 describe("public admission share route", () => {
   beforeEach(() => {
@@ -65,12 +66,12 @@ describe("public admission share route", () => {
     vi.mocked(readAdmissionShareAccessSession).mockReturnValue(
       "opaque-session-token",
     );
-    vi.mocked(ensurePublicAdmissionShareSession).mockResolvedValue({
-      sessionToken: "opaque-session-token",
-      created: false,
-    });
-    vi.mocked(getPublicAdmissionShareBoardContext).mockResolvedValue({
+    publicContext = {
       organizationId: "org-1",
+      session: {
+        sessionToken: "opaque-session-token",
+        created: false,
+      },
       board: {
         id: "share-1",
         title: "Vendor review",
@@ -124,10 +125,13 @@ describe("public admission share route", () => {
           },
         ],
       },
-    });
+    };
+    vi.mocked(getPublicAdmissionShareBoardContextWithSession).mockResolvedValue(
+      publicContext,
+    );
   });
 
-  it("returns the public share snapshot without requiring auth", async () => {
+  it("returns the public share snapshot through one combined hydrate without requiring auth", async () => {
     const response = await GET(
       new Request(
         "http://localhost/api/public/admission-share/plain-token?accessCode=2468",
@@ -147,12 +151,17 @@ describe("public admission share route", () => {
       supabase,
     );
     expect(SupabaseAdmissionShareAccessStore).toHaveBeenCalledWith(supabase);
-    expect(getPublicAdmissionShareBoardContext).toHaveBeenCalledWith({
-      repo: { repo: "share-repo" },
-      accessStore: { store: "access-store" },
-      token: "plain-token",
-      sessionToken: "opaque-session-token",
-    });
+    expect(
+      getPublicAdmissionShareBoardContextWithSession,
+    ).toHaveBeenCalledTimes(1);
+    expect(getPublicAdmissionShareBoardContextWithSession).toHaveBeenCalledWith(
+      {
+        repo: { repo: "share-repo" },
+        accessStore: { store: "access-store" },
+        token: "plain-token",
+        sessionToken: "opaque-session-token",
+      },
+    );
     expect(body.shareBoard).toEqual(
       expect.objectContaining({
         mode: "formal_review",
@@ -174,7 +183,7 @@ describe("public admission share route", () => {
   });
 
   it("maps expired shares to a service error response", async () => {
-    vi.mocked(getPublicAdmissionShareBoardContext).mockRejectedValue(
+    vi.mocked(getPublicAdmissionShareBoardContextWithSession).mockRejectedValue(
       new Error("Share link is expired"),
     );
 
@@ -197,17 +206,22 @@ describe("public admission share route", () => {
       { params },
     );
 
-    expect(getPublicAdmissionShareBoardContext).toHaveBeenCalledWith(
+    expect(getPublicAdmissionShareBoardContextWithSession).toHaveBeenCalledWith(
       expect.not.objectContaining({ accessCode: expect.anything() }),
     );
   });
 
   it("creates an HttpOnly session for a passwordless formal review without exposing it in JSON", async () => {
     vi.mocked(readAdmissionShareAccessSession).mockReturnValue(null);
-    vi.mocked(ensurePublicAdmissionShareSession).mockResolvedValue({
-      sessionToken: "new-opaque-session",
-      expiresAt: "2026-06-14T00:00:00.000Z",
-      created: true,
+    vi.mocked(
+      getPublicAdmissionShareBoardContextWithSession,
+    ).mockResolvedValueOnce({
+      ...publicContext,
+      session: {
+        sessionToken: "new-opaque-session",
+        expiresAt: "2026-06-14T00:00:00.000Z",
+        created: true,
+      },
     });
 
     const response = await GET(
@@ -219,14 +233,13 @@ describe("public admission share route", () => {
     const body = await response.json();
     const cookie = response.headers.get("set-cookie") ?? "";
 
-    expect(ensurePublicAdmissionShareSession).toHaveBeenCalledWith({
-      repo: { repo: "share-repo" },
-      accessStore: { store: "access-store" },
-      token: "plain-token",
-      sessionToken: undefined,
-    });
-    expect(getPublicAdmissionShareBoardContext).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionToken: "new-opaque-session" }),
+    expect(getPublicAdmissionShareBoardContextWithSession).toHaveBeenCalledWith(
+      {
+        repo: { repo: "share-repo" },
+        accessStore: { store: "access-store" },
+        token: "plain-token",
+        sessionToken: undefined,
+      },
     );
     expect(cookie).toContain("new-opaque-session");
     expect(cookie).toContain("HttpOnly");
@@ -237,7 +250,12 @@ describe("public admission share route", () => {
 
   it("does not create a session for a passwordless preview", async () => {
     vi.mocked(readAdmissionShareAccessSession).mockReturnValue(null);
-    vi.mocked(ensurePublicAdmissionShareSession).mockResolvedValue(null);
+    vi.mocked(
+      getPublicAdmissionShareBoardContextWithSession,
+    ).mockResolvedValueOnce({
+      ...publicContext,
+      session: null,
+    });
 
     const response = await GET(
       new Request("http://localhost/api/public/admission-share/plain-token"),
@@ -246,7 +264,7 @@ describe("public admission share route", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("set-cookie")).toBeNull();
-    expect(getPublicAdmissionShareBoardContext).toHaveBeenCalledWith(
+    expect(getPublicAdmissionShareBoardContextWithSession).toHaveBeenCalledWith(
       expect.objectContaining({ sessionToken: undefined }),
     );
   });
