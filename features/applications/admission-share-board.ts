@@ -1904,6 +1904,7 @@ export async function getPublicAdmissionRecordingPlaybackSource({
     onViewAuditError,
   );
   return {
+    allowExternalFallback: snapshot.allowExternalFallback,
     recordingUrl: item.recordingUrl,
     storagePath: item.storagePath,
   };

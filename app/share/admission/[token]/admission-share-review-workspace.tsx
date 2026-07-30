@@ -396,7 +396,7 @@ function MobileRecordingListDialog({
           <button
             ref={closeRef}
             type="button"
-            className="grid h-10 w-10 place-items-center rounded-md outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)]"
+            className="grid h-11 w-11 place-items-center rounded-md outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)]"
             aria-label="关闭录屏列表"
             onClick={onClose}
           >

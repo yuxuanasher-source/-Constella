@@ -74,6 +74,7 @@ describe("public admission recording playback route", () => {
 
   it("redirects private uploaded recordings to a signed playback URL after share gating", async () => {
     vi.mocked(getPublicAdmissionRecordingPlaybackSource).mockResolvedValue({
+      allowExternalFallback: true,
       recordingUrl: null,
       storagePath: "private/path/rec-2.mp4",
     });
@@ -110,6 +111,7 @@ describe("public admission recording playback route", () => {
 
   it("redirects public external recordings without signing storage", async () => {
     vi.mocked(getPublicAdmissionRecordingPlaybackSource).mockResolvedValue({
+      allowExternalFallback: true,
       recordingUrl: "https://video.example/rec-1.mp4",
       storagePath: null,
     });
@@ -135,6 +137,7 @@ describe("public admission recording playback route", () => {
 
   it("returns the dedicated stable error when a shared recording has no playback source", async () => {
     vi.mocked(getPublicAdmissionRecordingPlaybackSource).mockResolvedValue({
+      allowExternalFallback: true,
       recordingUrl: null,
       storagePath: null,
     });
@@ -157,6 +160,7 @@ describe("public admission recording playback route", () => {
     "refuses to redirect an unsafe external recording URL: %s",
     async (recordingUrl) => {
       vi.mocked(getPublicAdmissionRecordingPlaybackSource).mockResolvedValue({
+        allowExternalFallback: true,
         recordingUrl,
         storagePath: null,
       });
@@ -178,6 +182,7 @@ describe("public admission recording playback route", () => {
 
   it("refuses to redirect an unsafe signed storage URL", async () => {
     vi.mocked(getPublicAdmissionRecordingPlaybackSource).mockResolvedValue({
+      allowExternalFallback: true,
       recordingUrl: null,
       storagePath: "private/path/rec-2.mp4",
     });
@@ -194,5 +199,52 @@ describe("public admission recording playback route", () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("does not leak an external fallback when the share policy disables it", async () => {
+    vi.mocked(getPublicAdmissionRecordingPlaybackSource).mockResolvedValue({
+      allowExternalFallback: false,
+      recordingUrl: "https://video.example/private-fallback.mp4",
+      storagePath: "private/path/rec-2.mp4",
+    });
+    vi.mocked(createSignedDownloadUrl).mockResolvedValue({
+      signedUrl: "data:text/html,unsafe",
+    } as never);
+
+    const response = await GET(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token/recordings/rec-2",
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("location")).toBeNull();
+    await expect(response.json()).resolves.toMatchObject({
+      code: "RECORDING_SOURCE_UNAVAILABLE",
+    });
+  });
+
+  it("uses an external fallback after private playback fails only when allowed", async () => {
+    vi.mocked(getPublicAdmissionRecordingPlaybackSource).mockResolvedValue({
+      allowExternalFallback: true,
+      recordingUrl: "https://video.example/allowed-fallback.mp4",
+      storagePath: "private/path/rec-2.mp4",
+    });
+    vi.mocked(createSignedDownloadUrl).mockResolvedValue({
+      signedUrl: "data:text/html,unsafe",
+    } as never);
+
+    const response = await GET(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token/recordings/rec-2",
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      "https://video.example/allowed-fallback.mp4",
+    );
   });
 });

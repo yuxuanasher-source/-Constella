@@ -46,6 +46,12 @@ type PageError = {
   recovery: "none" | "reload" | "refresh_conflict" | "refresh_receipt";
 };
 
+type HydrationLocalDraftCandidate = {
+  draft: ReviewDraft;
+  recordingVersion: number;
+  isDirty: boolean;
+};
+
 const emptyDraft = (): ReviewDraft => ({
   decision: "pending",
   remark: "",
@@ -95,6 +101,8 @@ export default function AdmissionSharePageClient({
   const hydrationGenerationRef = useRef(0);
   const submittingRef = useRef(false);
   const accessLockedRef = useRef(false);
+  const receiptRefreshAfterAccessRef = useRef(false);
+  const pendingReceiptBoardRef = useRef<PublicAdmissionShareBoard | null>(null);
 
   const lockProtectedWorkspaceForAccess = useCallback(
     (requestError: PageError) => {
@@ -314,31 +322,55 @@ export default function AdmissionSharePageClient({
     await Promise.all(saves);
   }, [queueDraftSave]);
 
+  const flushDirtyDraftsBeforeHydration = useCallback(async () => {
+    const currentBoard = boardRef.current;
+    if (!currentBoard || currentBoard.mode !== "formal_review") {
+      return;
+    }
+
+    await Promise.all(
+      currentBoard.items.map(async (item) => {
+        const recordingSubmissionId = item.recordingSubmissionId;
+        clearRemarkTimer(recordingSubmissionId, remarkTimersRef.current);
+        const existingSave = saveChainsRef.current.get(recordingSubmissionId);
+        if (existingSave) {
+          await existingSave;
+        }
+        if (
+          accessLockedRef.current ||
+          conflictIdsRef.current.has(recordingSubmissionId)
+        ) {
+          return;
+        }
+        const hasFailed = failedIdsRef.current.has(recordingSubmissionId);
+        const editEpoch = editEpochRef.current.get(recordingSubmissionId) ?? 0;
+        const savedEpoch =
+          savedEpochRef.current.get(recordingSubmissionId) ?? 0;
+        if (editEpoch > savedEpoch || hasFailed) {
+          await queueDraftSave(recordingSubmissionId, {
+            force: hasFailed,
+          });
+        }
+      }),
+    );
+  }, [queueDraftSave]);
+
   const applyHydratedBoard = useCallback(
     (
       nextBoard: PublicAdmissionShareBoard,
       nextReasons: VendorCheckpointOption[],
       remoteDrafts: Awaited<ReturnType<typeof loadAdmissionShareDrafts>>,
-      ordinaryPreservedDrafts = new Map<
-        string,
-        {
-          draft: ReviewDraft;
-          recordingVersion: number;
-          saveState: ReviewDraftSaveState;
-        }
-      >(),
+      ordinaryLocalDrafts = new Map<string, HydrationLocalDraftCandidate>(),
     ) => {
+      const accessPreservedIds = new Set(preservedDraftIdsRef.current);
       const preservedDrafts = new Map(
-        [...preservedDraftIdsRef.current].map((recordingSubmissionId) => [
+        [...accessPreservedIds].map((recordingSubmissionId) => [
           recordingSubmissionId,
           draftsRef.current[recordingSubmissionId],
         ]),
       );
       const preservedVersions = new Map(preservedDraftVersionsRef.current);
-      for (const [
-        recordingSubmissionId,
-        preserved,
-      ] of ordinaryPreservedDrafts) {
+      for (const [recordingSubmissionId, preserved] of ordinaryLocalDrafts) {
         preservedDrafts.set(recordingSubmissionId, preserved.draft);
         preservedVersions.set(
           recordingSubmissionId,
@@ -359,6 +391,8 @@ export default function AdmissionSharePageClient({
       const remoteByRecording = new Map(
         remoteDrafts.map((draft) => [draft.recordingSubmissionId, draft]),
       );
+      const restoredDirtyIds = new Set<string>();
+      const restoredConfirmedIds = new Set<string>();
       const nextDrafts =
         nextBoard.mode === "formal_review"
           ? Object.fromEntries(
@@ -383,14 +417,35 @@ export default function AdmissionSharePageClient({
                   preservedDraft &&
                   preservedVersions.get(item.recordingSubmissionId) ===
                     item.recordingVersion;
-                const draft = canRestoreLocal
-                  ? {
-                      ...remoteDraft,
-                      decision: preservedDraft.decision,
-                      remark: preservedDraft.remark,
-                      reasonCodes: preservedDraft.reasonCodes,
-                    }
-                  : remoteDraft;
+                const ordinaryLocal = ordinaryLocalDrafts.get(
+                  item.recordingSubmissionId,
+                );
+                const localIsDirty =
+                  accessPreservedIds.has(item.recordingSubmissionId) ||
+                  ordinaryLocal?.isDirty === true;
+                const localRevisionIsNewer =
+                  canRestoreLocal &&
+                  preservedDraft.revision > remoteDraft.revision;
+                const shouldRestoreLocalFields =
+                  canRestoreLocal && (localIsDirty || localRevisionIsNewer);
+                let draft = remoteDraft;
+                if (shouldRestoreLocalFields) {
+                  const revisionSource =
+                    preservedDraft.revision > remoteDraft.revision
+                      ? preservedDraft
+                      : remoteDraft;
+                  draft = {
+                    ...revisionSource,
+                    decision: preservedDraft.decision,
+                    remark: preservedDraft.remark,
+                    reasonCodes: preservedDraft.reasonCodes,
+                  };
+                  if (localIsDirty) {
+                    restoredDirtyIds.add(item.recordingSubmissionId);
+                  } else {
+                    restoredConfirmedIds.add(item.recordingSubmissionId);
+                  }
+                }
                 return [item.recordingSubmissionId, draft];
               }),
             )
@@ -400,14 +455,13 @@ export default function AdmissionSharePageClient({
           ? Object.fromEntries(
               nextBoard.items.map((item) => [
                 item.recordingSubmissionId,
-                preservedDrafts.has(item.recordingSubmissionId) &&
-                preservedVersions.get(item.recordingSubmissionId) ===
-                  item.recordingVersion
-                  ? (ordinaryPreservedDrafts.get(item.recordingSubmissionId)
-                      ?.saveState ?? "failed")
-                  : remoteByRecording.has(item.recordingSubmissionId)
+                restoredDirtyIds.has(item.recordingSubmissionId)
+                  ? "failed"
+                  : restoredConfirmedIds.has(item.recordingSubmissionId)
                     ? "saved"
-                    : "idle",
+                    : remoteByRecording.has(item.recordingSubmissionId)
+                      ? "saved"
+                      : "idle",
               ]),
             )
           : {};
@@ -420,21 +474,13 @@ export default function AdmissionSharePageClient({
         ReviewDraftSaveState
       >;
       for (const item of nextBoard.items) {
-        if (
-          preservedDrafts.has(item.recordingSubmissionId) &&
-          preservedVersions.get(item.recordingSubmissionId) ===
-            item.recordingVersion
-        ) {
+        if (restoredDirtyIds.has(item.recordingSubmissionId)) {
           editEpochRef.current.set(item.recordingSubmissionId, 1);
-          const preservedSaveState = ordinaryPreservedDrafts.get(
-            item.recordingSubmissionId,
-          )?.saveState;
-          if (preservedSaveState === "failed" || !preservedSaveState) {
-            failedIdsRef.current.add(item.recordingSubmissionId);
-            savedEpochRef.current.set(item.recordingSubmissionId, 0);
-          } else {
-            savedEpochRef.current.set(item.recordingSubmissionId, 1);
-          }
+          failedIdsRef.current.add(item.recordingSubmissionId);
+          savedEpochRef.current.set(item.recordingSubmissionId, 0);
+        } else if (restoredConfirmedIds.has(item.recordingSubmissionId)) {
+          editEpochRef.current.set(item.recordingSubmissionId, 1);
+          savedEpochRef.current.set(item.recordingSubmissionId, 1);
         }
       }
       preservedDraftIdsRef.current.clear();
@@ -480,40 +526,33 @@ export default function AdmissionSharePageClient({
         }
       }
       try {
-        const ordinaryPreservedDrafts = new Map<
+        const ordinaryLocalDrafts = new Map<
           string,
-          {
-            draft: ReviewDraft;
-            recordingVersion: number;
-            saveState: ReviewDraftSaveState;
-          }
+          HydrationLocalDraftCandidate
         >();
         const currentBoard = boardRef.current;
         if (preserveLocalDrafts && currentBoard?.mode === "formal_review") {
-          for (const item of currentBoard.items) {
-            const recordingSubmissionId = item.recordingSubmissionId;
-            if (saveChainsRef.current.has(recordingSubmissionId)) {
-              clearRemarkTimer(recordingSubmissionId, remarkTimersRef.current);
-            } else {
-              void queueDraftSave(recordingSubmissionId);
-            }
+          await flushDirtyDraftsBeforeHydration();
+          if (!mountedRef.current || loadEpoch !== loadEpochRef.current) {
+            return;
           }
           for (const item of currentBoard.items) {
             const recordingSubmissionId = item.recordingSubmissionId;
             const localDraft = draftsRef.current[recordingSubmissionId];
             const wasEdited =
-              (editEpochRef.current.get(recordingSubmissionId) ?? 0) > 0;
+              (editEpochRef.current.get(recordingSubmissionId) ?? 0) > 0 ||
+              failedIdsRef.current.has(recordingSubmissionId) ||
+              conflictIdsRef.current.has(recordingSubmissionId);
             if (localDraft && wasEdited) {
               const hasUnpersistedChanges =
                 (editEpochRef.current.get(recordingSubmissionId) ?? 0) >
                   (savedEpochRef.current.get(recordingSubmissionId) ?? 0) ||
                 failedIdsRef.current.has(recordingSubmissionId) ||
-                conflictIdsRef.current.has(recordingSubmissionId) ||
-                saveStateRef.current[recordingSubmissionId] === "saving";
-              ordinaryPreservedDrafts.set(recordingSubmissionId, {
+                conflictIdsRef.current.has(recordingSubmissionId);
+              ordinaryLocalDrafts.set(recordingSubmissionId, {
                 draft: localDraft,
                 recordingVersion: item.recordingVersion,
-                saveState: hasUnpersistedChanges ? "failed" : "saved",
+                isDirty: hasUnpersistedChanges,
               });
             }
           }
@@ -533,7 +572,7 @@ export default function AdmissionSharePageClient({
           response.shareBoard,
           response.vendorCheckpoints,
           remoteDrafts,
-          ordinaryPreservedDrafts,
+          ordinaryLocalDrafts,
         );
       } catch (error) {
         if (!mountedRef.current || loadEpoch !== loadEpochRef.current) {
@@ -561,8 +600,8 @@ export default function AdmissionSharePageClient({
     },
     [
       applyHydratedBoard,
+      flushDirtyDraftsBeforeHydration,
       lockProtectedWorkspaceForAccess,
-      queueDraftSave,
       token,
     ],
   );
@@ -717,8 +756,13 @@ export default function AdmissionSharePageClient({
       };
       boardRef.current = lockedBoard;
       accessLockedRef.current = false;
+      receiptRefreshAfterAccessRef.current = false;
+      pendingReceiptBoardRef.current = null;
+      preservedDraftIdsRef.current.clear();
+      preservedDraftVersionsRef.current.clear();
       setBoard(lockedBoard);
       setReasonOptions(response.vendorCheckpoints);
+      setNeedsAccessCode(false);
       setActiveRecordingId((current) =>
         lockedBoard.items.some((item) => item.recordingSubmissionId === current)
           ? current
@@ -730,13 +774,25 @@ export default function AdmissionSharePageClient({
         return;
       }
       const requestError = normalizePageError(error, "回执暂时无法刷新。");
+      if (isAccessSessionError(requestError)) {
+        receiptRefreshAfterAccessRef.current = true;
+        pendingReceiptBoardRef.current = boardRef.current;
+        lockProtectedWorkspaceForAccess(requestError);
+        return;
+      }
+      const pendingReceiptBoard = pendingReceiptBoardRef.current;
+      if (pendingReceiptBoard) {
+        boardRef.current = pendingReceiptBoard;
+        setBoard(pendingReceiptBoard);
+        setNeedsAccessCode(false);
+      }
       setPageError({
         ...requestError,
         message: "已提交，回执刷新失败。",
         recovery: "refresh_receipt",
       });
     }
-  }, [token]);
+  }, [lockProtectedWorkspaceForAccess, token]);
 
   const submitReview = useCallback(async () => {
     if (submittingRef.current) {
@@ -851,7 +907,11 @@ export default function AdmissionSharePageClient({
     try {
       await authenticateAdmissionShareAccess(token, normalized);
       setAccessCodeInput("");
-      await hydrate();
+      if (receiptRefreshAfterAccessRef.current) {
+        await refreshSubmissionReceipt();
+      } else {
+        await hydrate();
+      }
     } catch (error) {
       setNeedsAccessCode(true);
       setPageError({
@@ -863,7 +923,7 @@ export default function AdmissionSharePageClient({
         setIsAuthenticating(false);
       }
     }
-  }, [accessCodeInput, hydrate, token]);
+  }, [accessCodeInput, hydrate, refreshSubmissionReceipt, token]);
 
   const reviewCounts = useMemo(
     () => reviewSummary(board, drafts),
@@ -1116,7 +1176,7 @@ function SubmissionSummaryDialog({
           <button
             type="button"
             aria-label="关闭提交汇总"
-            className="grid h-10 w-10 place-items-center rounded-md outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)]"
+            className="grid h-11 w-11 place-items-center rounded-md outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)]"
             disabled={isSubmitting}
             onClick={close}
           >
@@ -1409,7 +1469,7 @@ function formatDateTime(value: string) {
 }
 
 const dangerButtonClass =
-  "inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-[var(--danger-600)] bg-white px-3 text-xs font-semibold outline-none hover:bg-[var(--danger-50)] focus-visible:ring-2 focus-visible:ring-[var(--danger-600)] focus-visible:ring-offset-2";
+  "inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border border-[var(--danger-600)] bg-white px-3 text-xs font-semibold outline-none hover:bg-[var(--danger-50)] focus-visible:ring-2 focus-visible:ring-[var(--danger-600)] focus-visible:ring-offset-2";
 
 const secondaryButtonClass =
   "inline-flex min-h-11 items-center justify-center rounded-md border border-[var(--line)] bg-white px-4 text-sm font-semibold outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-offset-2 disabled:opacity-60";

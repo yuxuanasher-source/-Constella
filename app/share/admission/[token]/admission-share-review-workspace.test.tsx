@@ -351,6 +351,9 @@ describe("AdmissionShareReviewWorkspace", () => {
     const trigger = screen.getByRole("button", { name: "打开录屏列表" });
     fireEvent.click(trigger);
     const dialog = screen.getByRole("dialog", { name: "选择录屏" });
+    expect(
+      within(dialog).getByRole("button", { name: "关闭录屏列表" }).className,
+    ).toMatch(/\b(?:h-11|min-h-11)\b/);
 
     fireEvent.click(within(dialog).getByRole("button", { name: /已完成主播/ }));
 

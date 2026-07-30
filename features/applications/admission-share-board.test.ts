@@ -1151,6 +1151,7 @@ describe("admission share board service", () => {
     });
 
     expect(source).toEqual({
+      allowExternalFallback: true,
       recordingUrl: null,
       storagePath: "private/path/rec-2.mp4",
     });
@@ -1161,6 +1162,29 @@ describe("admission share board service", () => {
       "share-1",
       "2026-06-07T01:00:00.000Z",
     );
+  });
+
+  it("keeps the board external-fallback policy on the gated playback source", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          allowExternalFallback: false,
+        }),
+      ),
+    });
+
+    const source = await getPublicAdmissionRecordingPlaybackSource({
+      repo,
+      token: "plain-token",
+      recordingSubmissionId: "rec-1",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(source).toMatchObject({
+      allowExternalFallback: false,
+      recordingUrl: "https://video.example/rec-1",
+      storagePath: "private/path/rec-1.mp4",
+    });
   });
 
   it("reads only the shared team's drafts after token and HttpOnly session gating", async () => {

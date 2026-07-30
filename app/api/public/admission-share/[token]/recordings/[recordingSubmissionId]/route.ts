@@ -55,7 +55,9 @@ export async function GET(
       }
     }
 
-    const recordingUrl = normalizeAbsoluteHttpUrl(source.recordingUrl);
+    const recordingUrl = source.allowExternalFallback
+      ? normalizeAbsoluteHttpUrl(source.recordingUrl)
+      : null;
     if (recordingUrl) {
       return NextResponse.redirect(recordingUrl, 302);
     }
