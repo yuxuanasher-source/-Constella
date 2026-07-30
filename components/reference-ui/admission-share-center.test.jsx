@@ -830,6 +830,123 @@ describe("AdmissionShareCenter", () => {
     );
   });
 
+  it("keeps business result pending work beside technical playback issues", async () => {
+    actions.listAdmissionShareBoards.mockResolvedValue([
+      {
+        id: "share-submitted",
+        title: "第二轮正式复核",
+        purpose: "确认本轮主播",
+        mode: "formal_review",
+        status: "active",
+        reviewState: "submitted_locked",
+        roundNumber: 2,
+        expiresAt: "2026-08-06T00:00:00.000Z",
+        itemCount: 3,
+        draftCompletedCount: 3,
+        lastSubmittedAt: "2026-07-30T09:00:00.000Z",
+      },
+    ]);
+    actions.listAdmissionSharePlaybackIssues.mockResolvedValue([
+      {
+        id: "issue-1",
+        shareBoardId: "share-submitted",
+        recordingSubmissionId: "recording-v1",
+        recordingVersion: 1,
+        streamerDisplayName: "主播甲",
+        sourceType: "original",
+        errorCode: "MEDIA_DECODE_FAILED",
+        status: "open",
+        reportedAt: "2026-07-30T09:10:00.000Z",
+        resolvedAt: null,
+      },
+    ]);
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+
+    expect(
+      await screen.findByRole("heading", { name: "复核结果待办" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("第二轮正式复核")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "播放问题" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("MEDIA_DECODE_FAILED")).toBeInTheDocument();
+  });
+
+  it("shows a scoped retry when playback issue loading fails", async () => {
+    actions.listAdmissionSharePlaybackIssues
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce([
+        {
+          id: "issue-retry",
+          shareBoardId: "share-1",
+          recordingSubmissionId: "recording-v1",
+          recordingVersion: 1,
+          streamerDisplayName: "主播甲",
+          sourceType: "original",
+          errorCode: "MEDIA_LOAD_FAILED",
+          status: "open",
+          reportedAt: "2026-07-30T09:00:00.000Z",
+          resolvedAt: null,
+        },
+      ]);
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+    expect(
+      await screen.findByRole("alert", { name: "播放问题加载失败" }),
+    ).toHaveTextContent("network down");
+
+    fireEvent.click(screen.getByRole("button", { name: "重试加载播放问题" }));
+    expect(await screen.findByText("MEDIA_LOAD_FAILED")).toBeInTheDocument();
+    expect(actions.listAdmissionSharePlaybackIssues).toHaveBeenCalledTimes(2);
+  });
+
+  it("serializes issue resolution and keeps a failed item retryable", async () => {
+    let rejectResolve;
+    actions.listAdmissionSharePlaybackIssues.mockResolvedValue([
+      {
+        id: "issue-1",
+        shareBoardId: "share-1",
+        recordingSubmissionId: "recording-v1",
+        recordingVersion: 1,
+        streamerDisplayName: "主播甲",
+        sourceType: "original",
+        errorCode: "MEDIA_DECODE_FAILED",
+        status: "open",
+        reportedAt: "2026-07-30T09:00:00.000Z",
+        resolvedAt: null,
+      },
+    ]);
+    actions.resolveAdmissionSharePlaybackIssue.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectResolve = reject;
+        }),
+    );
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+
+    const resolveButton = await screen.findByRole("button", {
+      name: "标记已解决",
+    });
+    fireEvent.click(resolveButton);
+    fireEvent.click(resolveButton);
+    expect(actions.resolveAdmissionSharePlaybackIssue).toHaveBeenCalledTimes(1);
+    expect(resolveButton).toBeDisabled();
+    expect(resolveButton).toHaveTextContent("处理中");
+
+    rejectResolve(new Error("resolve failed"));
+    expect(
+      await screen.findByRole("alert", { name: "播放问题处理失败" }),
+    ).toHaveTextContent("resolve failed");
+    expect(
+      screen.getByRole("button", { name: "重试标记已解决" }),
+    ).toBeEnabled();
+    expect(screen.getByText("MEDIA_DECODE_FAILED")).toBeInTheDocument();
+  });
+
   it("uses a fixed, accessible selection bar with 44px critical actions", async () => {
     renderShareCenter(actions);
     fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));

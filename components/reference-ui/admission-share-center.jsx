@@ -322,6 +322,8 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [tasksLoading, setTasksLoading] = React.useState(true);
   const [candidateError, setCandidateError] = React.useState("");
   const [taskError, setTaskError] = React.useState("");
+  const [issueError, setIssueError] = React.useState("");
+  const [issueResolveErrors, setIssueResolveErrors] = React.useState({});
   const [busy, setBusy] = React.useState("");
   const [pendingTasks, setPendingTasks] = React.useState(new Set());
   const [message, setMessage] = React.useState("");
@@ -342,6 +344,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [taskExpiresAt, setTaskExpiresAt] = React.useState({});
   const [reopenReasons, setReopenReasons] = React.useState({});
   const [submissions, setSubmissions] = React.useState({});
+  const resolvingIssueIdsRef = React.useRef(new Set());
   const canCreateShare = canShareAdmissionRecordingsForProject(project.status);
   const projectGateMessage =
     project.status === "settling"
@@ -402,14 +405,22 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   }, [actions, project.id]);
 
   const loadIssues = React.useCallback(async () => {
-    if (!actions.listAdmissionSharePlaybackIssues) return [];
-    const result = await actions.listAdmissionSharePlaybackIssues(
-      project.id,
-      "open",
-    );
-    const next = Array.isArray(result) ? result : [];
-    setIssues(next);
-    return next;
+    setIssueError("");
+    try {
+      if (!actions.listAdmissionSharePlaybackIssues) {
+        throw new Error("播放问题接口暂未接入");
+      }
+      const result = await actions.listAdmissionSharePlaybackIssues(
+        project.id,
+        "open",
+      );
+      const next = Array.isArray(result) ? result : [];
+      setIssues(next);
+      return next;
+    } catch (error) {
+      setIssueError(error?.message || "播放问题待办加载失败");
+      throw error;
+    }
   }, [actions, project.id]);
 
   React.useEffect(() => {
@@ -730,21 +741,36 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     if (nextTab === "results") {
       setBusy("issues");
       loadIssues()
-        .catch((error) => setMessage(error?.message || "结果待办加载失败"))
+        .catch(() => {})
         .finally(() => setBusy(""));
     }
   };
 
   const resolveIssue = async (issue) => {
-    if (!actions.resolveAdmissionSharePlaybackIssue) return;
+    if (
+      !actions.resolveAdmissionSharePlaybackIssue ||
+      resolvingIssueIdsRef.current.has(issue.id)
+    ) {
+      return;
+    }
+    resolvingIssueIdsRef.current.add(issue.id);
+    setIssueResolveErrors((current) => {
+      const next = { ...current };
+      delete next[issue.id];
+      return next;
+    });
     setBusy(`issue:${issue.id}`);
     try {
       await actions.resolveAdmissionSharePlaybackIssue(project.id, issue.id);
       setIssues((current) => current.filter((item) => item.id !== issue.id));
       setMessage("播放问题已标记为解决");
     } catch (error) {
-      setMessage(error?.message || "播放问题处理失败");
+      setIssueResolveErrors((current) => ({
+        ...current,
+        [issue.id]: error?.message || "播放问题处理失败",
+      }));
     } finally {
+      resolvingIssueIdsRef.current.delete(issue.id);
       setBusy("");
     }
   };
@@ -1051,12 +1077,26 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
               />
             ) : null}
             {tab === "results" ? (
-              <PlaybackIssues
-                issues={issues}
-                loading={busy === "issues"}
-                busy={busy}
-                onResolve={resolveIssue}
-              />
+              <div style={{ display: "grid", gap: 20 }}>
+                <ResultPendingTasks
+                  tasks={tasks}
+                  onViewSubmissions={viewSubmissions}
+                />
+                <PlaybackIssues
+                  issues={issues}
+                  loading={busy === "issues"}
+                  error={issueError}
+                  resolveErrors={issueResolveErrors}
+                  busy={busy}
+                  onRetry={() => {
+                    setBusy("issues");
+                    loadIssues()
+                      .catch(() => {})
+                      .finally(() => setBusy(""));
+                  }}
+                  onResolve={resolveIssue}
+                />
+              </div>
             ) : null}
           </main>
         </div>
@@ -2172,7 +2212,98 @@ function ShareTasks({
   );
 }
 
-function PlaybackIssues({ issues, loading, busy, onResolve }) {
+function ResultPendingTasks({ tasks, onViewSubmissions }) {
+  const pendingResults = tasks.filter(
+    (task) => task.reviewState === "submitted_locked",
+  );
+
+  return (
+    <section aria-label="复核结果待办">
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 12,
+          marginBottom: 12,
+        }}
+      >
+        <div>
+          <h3 style={{ margin: 0, fontSize: 15 }}>复核结果待办</h3>
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: 12,
+              color: "var(--ink-500)",
+            }}
+          >
+            先处理甲方已提交结果；播放问题作为独立技术待办跟进
+          </p>
+        </div>
+        <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+          {pendingResults.length} 个结果
+        </span>
+      </div>
+      {pendingResults.length === 0 ? (
+        <div style={emptyStyle}>暂无待处理复核结果</div>
+      ) : (
+        <div style={panelStyle}>
+          {pendingResults.map((task, index) => (
+            <div
+              key={task.id}
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "12px 14px",
+                borderTop: index ? "1px solid var(--line)" : 0,
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    overflowWrap: "anywhere",
+                    fontSize: 13,
+                    fontWeight: 650,
+                  }}
+                >
+                  {task.title || "未命名复核任务"}
+                </div>
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                  }}
+                >
+                  第 {task.roundNumber || 1} 轮 · {task.itemCount || 0} 条录屏
+                  {task.lastSubmittedAt
+                    ? ` · ${formatDate(task.lastSubmittedAt)} 提交`
+                    : ""}
+                </div>
+              </div>
+              <ActionButton onClick={() => onViewSubmissions(task)}>
+                查看复核结果
+              </ActionButton>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PlaybackIssues({
+  issues,
+  loading,
+  error,
+  resolveErrors,
+  busy,
+  onRetry,
+  onResolve,
+}) {
   return (
     <section aria-label="播放问题待办">
       <div
@@ -2202,6 +2333,18 @@ function PlaybackIssues({ issues, loading, busy, onResolve }) {
       </div>
       {loading ? (
         <div style={emptyStyle}>结果待办加载中…</div>
+      ) : error ? (
+        <div
+          role="alert"
+          aria-label="播放问题加载失败"
+          style={{
+            ...emptyStyle,
+            color: "var(--danger-700, #b42318)",
+          }}
+        >
+          <div>{error}</div>
+          <ActionButton onClick={onRetry}>重试加载播放问题</ActionButton>
+        </div>
       ) : issues.length === 0 ? (
         <div style={emptyStyle}>暂无播放问题</div>
       ) : (
@@ -2250,11 +2393,28 @@ function PlaybackIssues({ issues, loading, busy, onResolve }) {
                   <td style={tableCellStyle}>{issue.errorCode}</td>
                   <td style={tableCellStyle}>{formatDate(issue.reportedAt)}</td>
                   <td style={tableCellStyle}>
+                    {resolveErrors[issue.id] ? (
+                      <div
+                        role="alert"
+                        aria-label="播放问题处理失败"
+                        style={{
+                          marginBottom: 6,
+                          color: "var(--danger-700, #b42318)",
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        {resolveErrors[issue.id]}
+                      </div>
+                    ) : null}
                     <ActionButton
                       onClick={() => onResolve(issue)}
                       disabled={busy === `issue:${issue.id}`}
                     >
-                      标记已解决
+                      {busy === `issue:${issue.id}`
+                        ? "处理中…"
+                        : resolveErrors[issue.id]
+                          ? "重试标记已解决"
+                          : "标记已解决"}
                     </ActionButton>
                   </td>
                 </tr>

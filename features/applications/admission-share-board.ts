@@ -9,7 +9,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { AuditLogInput } from "@/lib/audit/audit";
 import { normalizeAbsoluteHttpUrl } from "@/lib/http/safe-public-url";
-import type { AppRole } from "@/lib/rbac/roles";
+import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
 
 import type {
   ApplicationStatus,
@@ -115,6 +115,26 @@ export type AdmissionShareBoardRepository = {
     shareBoardId: string;
     projectId: string;
     actorUserId: string;
+  }): Promise<void>;
+  reportPlaybackIssue(input: {
+    shareBoardId: string;
+    recordingSubmissionId: string;
+    sourceType: AdmissionSharePlaybackSource;
+    errorCode: AdmissionSharePlaybackErrorCode;
+    userAgentFamily: AdmissionShareBrowserFamily;
+    reportedAt: string;
+  }): Promise<{ issueId: string }>;
+  listPlaybackIssues(input: {
+    organizationId: string;
+    projectId: string;
+    status?: AdmissionSharePlaybackIssueStatus;
+  }): Promise<AdmissionSharePlaybackIssueDto[]>;
+  resolvePlaybackIssue(input: {
+    organizationId: string;
+    projectId: string;
+    issueId: string;
+    actorUserId: string;
+    resolvedAt: string;
   }): Promise<void>;
   getPublicShareBoardSnapshot(
     tokenHash: string,
@@ -344,6 +364,38 @@ export type PublicAdmissionShareBoard = {
     streamer: PublicAdmissionShareItemSnapshot["streamer"];
     finalReview: PublicAdmissionShareFinalReview | null;
   }>;
+};
+
+export type AdmissionSharePlaybackSource = "original" | "external" | "none";
+
+export type AdmissionSharePlaybackErrorCode =
+  | "MEDIA_LOAD_FAILED"
+  | "MEDIA_DECODE_FAILED"
+  | "EXTERNAL_LINK_FAILED"
+  | "NO_PLAYABLE_SOURCE";
+
+export type AdmissionShareBrowserFamily =
+  | "Chrome"
+  | "Edge"
+  | "Firefox"
+  | "Safari"
+  | "Opera"
+  | "Samsung Internet"
+  | "Unknown";
+
+export type AdmissionSharePlaybackIssueStatus = "open" | "resolved";
+
+export type AdmissionSharePlaybackIssueDto = {
+  id: string;
+  shareBoardId: string;
+  recordingSubmissionId: string;
+  recordingVersion: number;
+  streamerDisplayName: string;
+  sourceType: AdmissionSharePlaybackSource;
+  errorCode: string;
+  status: AdmissionSharePlaybackIssueStatus;
+  reportedAt: string;
+  resolvedAt: string | null;
 };
 
 export type VendorReviewUpsertInput = {
@@ -585,6 +637,84 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
 
     if (error) {
       throw mapAdmissionShareLifecycleRpcError(error);
+    }
+  }
+
+  async reportPlaybackIssue(input: {
+    shareBoardId: string;
+    recordingSubmissionId: string;
+    sourceType: AdmissionSharePlaybackSource;
+    errorCode: AdmissionSharePlaybackErrorCode;
+    userAgentFamily: AdmissionShareBrowserFamily;
+    reportedAt: string;
+  }): Promise<{ issueId: string }> {
+    const { data, error } = await this.client
+      .rpc("report_admission_share_playback_issue", {
+        p_share_board_id: input.shareBoardId,
+        p_recording_submission_id: input.recordingSubmissionId,
+        p_source_type: input.sourceType,
+        p_error_code: input.errorCode,
+        p_user_agent_family: input.userAgentFamily,
+        p_reported_at: input.reportedAt,
+      })
+      .single<{ id: string }>();
+
+    if (error) {
+      throw error;
+    }
+
+    return { issueId: data.id };
+  }
+
+  async listPlaybackIssues(input: {
+    organizationId: string;
+    projectId: string;
+    status?: AdmissionSharePlaybackIssueStatus;
+  }): Promise<AdmissionSharePlaybackIssueDto[]> {
+    let query = this.client
+      .from("project_recording_share_playback_issues")
+      .select(
+        "id, share_board_id, recording_submission_id, source_type, error_code, status, reported_at, resolved_at, recording_submissions!inner(version, streamers!inner(display_name))",
+      )
+      .eq("organization_id", input.organizationId)
+      .eq("project_id", input.projectId);
+
+    if (input.status) {
+      query = query.eq("status", input.status);
+    }
+
+    const { data, error } = await query.order("reported_at", {
+      ascending: false,
+    });
+    if (error) {
+      throw error;
+    }
+
+    return ((data ?? []) as AdmissionSharePlaybackIssueRow[]).map(
+      toAdmissionSharePlaybackIssueDto,
+    );
+  }
+
+  async resolvePlaybackIssue(input: {
+    organizationId: string;
+    projectId: string;
+    issueId: string;
+    actorUserId: string;
+    resolvedAt: string;
+  }): Promise<void> {
+    const { error } = await this.client.rpc(
+      "resolve_admission_share_playback_issue",
+      {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_issue_id: input.issueId,
+        p_actor_user_id: input.actorUserId,
+        p_resolved_at: input.resolvedAt,
+      },
+    );
+
+    if (error) {
+      throw error;
     }
   }
 
@@ -1140,6 +1270,33 @@ type PublicSubmissionReceiptItemRow = {
   decision: Exclude<VendorAdmissionDecision, "pending">;
   remark: string | null;
   reason_codes: string[];
+};
+
+type AdmissionSharePlaybackIssueRow = {
+  id: string;
+  share_board_id: string;
+  recording_submission_id: string;
+  source_type: AdmissionSharePlaybackSource;
+  error_code: string;
+  status: AdmissionSharePlaybackIssueStatus;
+  reported_at: string;
+  resolved_at: string | null;
+  recording_submissions:
+    | {
+        version: number;
+        streamers:
+          | { display_name: string | null }
+          | Array<{ display_name: string | null }>
+          | null;
+      }
+    | Array<{
+        version: number;
+        streamers:
+          | { display_name: string | null }
+          | Array<{ display_name: string | null }>
+          | null;
+      }>
+    | null;
 };
 
 export async function createAdmissionShareBoard({
@@ -1908,6 +2065,204 @@ export async function getPublicAdmissionRecordingPlaybackSource({
     recordingUrl: item.recordingUrl,
     storagePath: item.storagePath,
   };
+}
+
+const admissionSharePlaybackIssueCodes =
+  new Set<AdmissionSharePlaybackErrorCode>([
+    "MEDIA_LOAD_FAILED",
+    "MEDIA_DECODE_FAILED",
+    "EXTERNAL_LINK_FAILED",
+    "NO_PLAYABLE_SOURCE",
+  ]);
+
+const admissionSharePlaybackSources = new Set<AdmissionSharePlaybackSource>([
+  "original",
+  "external",
+  "none",
+]);
+
+const admissionShareBrowserFamilies = new Set<AdmissionShareBrowserFamily>([
+  "Chrome",
+  "Edge",
+  "Firefox",
+  "Safari",
+  "Opera",
+  "Samsung Internet",
+  "Unknown",
+]);
+
+export async function recordPublicAdmissionPlaybackIssue({
+  repo,
+  accessStore,
+  token,
+  sessionToken,
+  recordingSubmissionId,
+  sourceType,
+  errorCode,
+  userAgentFamily,
+  now = new Date().toISOString(),
+}: {
+  repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
+  token: string;
+  sessionToken?: string;
+  recordingSubmissionId: string;
+  sourceType: AdmissionSharePlaybackSource;
+  errorCode: string;
+  userAgentFamily: string;
+  now?: string;
+}): Promise<{ issueId: string }> {
+  const snapshot = await requirePublicPlaybackIssueSnapshot({
+    repo,
+    accessStore,
+    token,
+    sessionToken,
+    now,
+  });
+  const item = snapshot.items.find(
+    (entry) => entry.recordingSubmissionId === recordingSubmissionId,
+  );
+  if (!item) {
+    throw new PublicAdmissionShareError(
+      "RECORDING_NOT_SHARED",
+      "Recording is not part of this share board",
+      404,
+    );
+  }
+  if (
+    !admissionSharePlaybackSources.has(sourceType) ||
+    !admissionSharePlaybackIssueCodes.has(
+      errorCode as AdmissionSharePlaybackErrorCode,
+    ) ||
+    !admissionShareBrowserFamilies.has(
+      userAgentFamily as AdmissionShareBrowserFamily,
+    )
+  ) {
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Invalid playback issue",
+      400,
+    );
+  }
+
+  return repo.reportPlaybackIssue({
+    shareBoardId: snapshot.id,
+    recordingSubmissionId,
+    sourceType,
+    errorCode: errorCode as AdmissionSharePlaybackErrorCode,
+    userAgentFamily: userAgentFamily as AdmissionShareBrowserFamily,
+    reportedAt: now,
+  });
+}
+
+async function requirePublicPlaybackIssueSnapshot({
+  repo,
+  accessStore,
+  token,
+  sessionToken,
+  now,
+}: {
+  repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
+  token: string;
+  sessionToken?: string;
+  now: string;
+}) {
+  const snapshot = await requireAvailablePublicSnapshot({ repo, token, now });
+  if (snapshot.mode !== "formal_review" || !snapshot.allowVendorSubmit) {
+    return requirePublicSnapshotAccess({
+      snapshot,
+      accessStore,
+      sessionToken,
+      now,
+    });
+  }
+  if (
+    sessionToken &&
+    accessStore &&
+    (await accessStore.hasValidSession({
+      shareBoardId: snapshot.id,
+      sessionToken,
+      now,
+    }))
+  ) {
+    return snapshot;
+  }
+  throw new PublicAdmissionShareError(
+    "ACCESS_CODE_REQUIRED",
+    "Access session is required",
+    401,
+  );
+}
+
+export async function listAdmissionSharePlaybackIssues({
+  repo,
+  actor,
+  organizationId,
+  projectId,
+  status,
+}: {
+  repo: AdmissionShareBoardRepository;
+  actor: AdmissionShareBoardActor;
+  organizationId: string;
+  projectId: string;
+  status?: AdmissionSharePlaybackIssueStatus;
+}): Promise<AdmissionSharePlaybackIssueDto[]> {
+  assertAdmissionSharePlaybackIssueActor(actor, organizationId);
+  return repo.listPlaybackIssues({ organizationId, projectId, status });
+}
+
+export async function resolveAdmissionSharePlaybackIssue({
+  repo,
+  audit,
+  actor,
+  organizationId,
+  projectId,
+  issueId,
+  now = new Date().toISOString(),
+}: {
+  repo: AdmissionShareBoardRepository;
+  audit: AdmissionShareBoardAuditWriter;
+  actor: AdmissionShareBoardActor;
+  organizationId: string;
+  projectId: string;
+  issueId: string;
+  now?: string;
+}): Promise<void> {
+  assertAdmissionSharePlaybackIssueActor(actor, organizationId);
+  await repo.resolvePlaybackIssue({
+    organizationId,
+    projectId,
+    issueId,
+    actorUserId: actor.userId,
+    resolvedAt: now,
+  });
+  await writeLifecycleAuditBestEffort(audit, {
+    organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "resolve_share_playback_issue",
+    module: "admission",
+    objectType: "project_recording_share_playback_issue",
+    objectId: issueId,
+    projectId,
+    after: { status: "resolved" },
+    changedFields: ["status", "resolved_by", "resolved_at", "share_event"],
+  });
+}
+
+function assertAdmissionSharePlaybackIssueActor(
+  actor: AdmissionShareBoardActor,
+  organizationId: string,
+) {
+  if (actor.organizationId !== organizationId || !isMcnStaff(actor.role)) {
+    throw new AdmissionShareLifecycleError(
+      "SHARE_FORBIDDEN",
+      "Cross-organization access is not allowed",
+      403,
+    );
+  }
 }
 
 export type SubmitVendorAdmissionReviewsInput = {
@@ -2836,6 +3191,25 @@ function toPublicShareItemSnapshot(
       accountLabel: accountLabel(streamer?.streamer_accounts),
     },
     finalReview: finalReview ?? null,
+  };
+}
+
+function toAdmissionSharePlaybackIssueDto(
+  row: AdmissionSharePlaybackIssueRow,
+): AdmissionSharePlaybackIssueDto {
+  const recording = first(row.recording_submissions);
+  const streamer = first(recording?.streamers);
+  return {
+    id: row.id,
+    shareBoardId: row.share_board_id,
+    recordingSubmissionId: row.recording_submission_id,
+    recordingVersion: recording?.version ?? 0,
+    streamerDisplayName: streamer?.display_name?.trim() || "",
+    sourceType: row.source_type,
+    errorCode: row.error_code,
+    status: row.status,
+    reportedAt: row.reported_at,
+    resolvedAt: row.resolved_at,
   };
 }
 

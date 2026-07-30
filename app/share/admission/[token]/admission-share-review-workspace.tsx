@@ -47,7 +47,7 @@ export type AdmissionShareReviewWorkspaceProps = {
   onReportPlaybackIssue: (
     recordingSubmissionId: string,
     sourceType: AdmissionSharePlaybackSource,
-  ) => void;
+  ) => Promise<boolean>;
   reasonOptions?: VendorCheckpointOption[];
 };
 
@@ -87,7 +87,11 @@ export function AdmissionShareReviewWorkspace({
 }: AdmissionShareReviewWorkspaceProps) {
   const [pendingOnly, setPendingOnly] = useState(false);
   const [isListOpen, setIsListOpen] = useState(false);
+  const [playbackReportState, setPlaybackReportState] = useState<
+    Record<string, "idle" | "reporting" | "reported" | "failed">
+  >({});
   const listTriggerRef = useRef<HTMLButtonElement>(null);
+  const playbackReportLocksRef = useRef(new Set<string>());
   const activeIndex = Math.max(
     0,
     board.items.findIndex(
@@ -129,6 +133,31 @@ export function AdmissionShareReviewWorkspace({
     }
   };
 
+  const reportPlaybackIssue = async (
+    recordingSubmissionId: string,
+    sourceType: AdmissionSharePlaybackSource,
+  ) => {
+    if (playbackReportLocksRef.current.has(recordingSubmissionId)) {
+      return;
+    }
+    playbackReportLocksRef.current.add(recordingSubmissionId);
+    setPlaybackReportState((current) => ({
+      ...current,
+      [recordingSubmissionId]: "reporting",
+    }));
+    const reported = await onReportPlaybackIssue(
+      recordingSubmissionId,
+      sourceType,
+    );
+    if (!reported) {
+      playbackReportLocksRef.current.delete(recordingSubmissionId);
+    }
+    setPlaybackReportState((current) => ({
+      ...current,
+      [recordingSubmissionId]: reported ? "reported" : "failed",
+    }));
+  };
+
   return (
     <section
       aria-label="录屏复核工作台"
@@ -167,7 +196,10 @@ export function AdmissionShareReviewWorkspace({
           <ActiveRecordingPane
             key={activeItem.recordingSubmissionId}
             item={activeItem}
-            onReportPlaybackIssue={onReportPlaybackIssue}
+            reportState={
+              playbackReportState[activeItem.recordingSubmissionId] ?? "idle"
+            }
+            onReportPlaybackIssue={reportPlaybackIssue}
           />
         ) : (
           <EmptyRecordingPane />
@@ -413,12 +445,18 @@ function MobileRecordingListDialog({
 
 function ActiveRecordingPane({
   item,
+  reportState,
   onReportPlaybackIssue,
 }: {
   item: PublicAdmissionShareBoard["items"][number];
-  onReportPlaybackIssue: AdmissionShareReviewWorkspaceProps["onReportPlaybackIssue"];
+  reportState: "idle" | "reporting" | "reported" | "failed";
+  onReportPlaybackIssue: (
+    recordingSubmissionId: string,
+    sourceType: AdmissionSharePlaybackSource,
+  ) => Promise<void>;
 }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
+  const [playbackAttempt, setPlaybackAttempt] = useState(0);
   const safeItem = {
     ...item,
     externalUrl: normalizeAbsoluteHttpUrl(item.externalUrl),
@@ -453,7 +491,13 @@ function ActiveRecordingPane({
       <div className="grid flex-1 place-items-center p-3 sm:p-5">
         <div className="w-full max-w-5xl">
           {playbackFailed ? (
-            <PlaybackFallback item={safeItem} />
+            <PlaybackFallback
+              item={safeItem}
+              onRetryOriginal={() => {
+                setPlaybackAttempt((current) => current + 1);
+                setPlaybackFailed(false);
+              }}
+            />
           ) : embedUrl ? (
             <iframe
               className="aspect-video w-full rounded-md border-0 bg-black"
@@ -466,7 +510,7 @@ function ActiveRecordingPane({
             />
           ) : sourceType === "original" ? (
             <video
-              key={item.recordingSubmissionId}
+              key={`${item.recordingSubmissionId}:${playbackAttempt}`}
               aria-label={`${item.streamer.displayName || "主播"} 原始录屏播放器`}
               className="aspect-video w-full rounded-md bg-black"
               src={item.playbackUrl}
@@ -478,7 +522,7 @@ function ActiveRecordingPane({
             safeItem.externalUrl &&
             isDirectVideoSource(safeItem.externalUrl) ? (
             <video
-              key={item.recordingSubmissionId}
+              key={`${item.recordingSubmissionId}:${playbackAttempt}`}
               aria-label={`${item.streamer.displayName || "主播"} 外部录屏播放器`}
               className="aspect-video w-full rounded-md bg-black"
               src={item.playbackUrl}
@@ -496,17 +540,37 @@ function ActiveRecordingPane({
 
       <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 px-4 py-3 text-xs text-[var(--ink-200)] sm:px-5">
         <span>若播放异常，请反馈当前录屏，运营会跟进来源。</span>
-        <button
-          type="button"
-          className="inline-flex min-h-11 items-center gap-2 rounded-md border border-white/30 px-3 font-medium text-white outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50"
-          disabled={sourceType === "none"}
-          onClick={() =>
-            onReportPlaybackIssue(item.recordingSubmissionId, sourceType)
-          }
-        >
-          <AlertTriangle className="h-4 w-4" aria-hidden="true" />
-          反馈播放问题
-        </button>
+        <div className="flex min-h-11 items-center gap-3">
+          {reportState === "reported" || reportState === "failed" ? (
+            <span
+              role="status"
+              aria-label="播放问题反馈状态"
+              aria-live="polite"
+              className="font-medium"
+            >
+              {reportState === "reported" ? "已反馈" : "反馈失败，可重试"}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="inline-flex min-h-11 items-center gap-2 rounded-md border border-white/30 px-3 font-medium text-white outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50"
+            disabled={reportState === "reporting" || reportState === "reported"}
+            onClick={() =>
+              void onReportPlaybackIssue(item.recordingSubmissionId, sourceType)
+            }
+          >
+            <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+            {reportState === "reporting"
+              ? "反馈中…"
+              : reportState === "reported"
+                ? "已反馈"
+                : reportState === "failed"
+                  ? "重试反馈无法播放"
+                  : playbackFailed
+                    ? "反馈无法播放"
+                    : "反馈播放问题"}
+          </button>
+        </div>
       </footer>
     </section>
   );
@@ -774,8 +838,10 @@ function SaveStateIndicator({
 
 function PlaybackFallback({
   item,
+  onRetryOriginal,
 }: {
   item: PublicAdmissionShareBoard["items"][number];
+  onRetryOriginal: () => void;
 }) {
   return (
     <div className="grid aspect-video place-items-center rounded-md bg-black p-6 text-center text-white">
@@ -788,17 +854,27 @@ function PlaybackFallback({
         <p className="mx-auto mt-1 max-w-md text-xs leading-5 text-[var(--ink-200)]">
           请尝试重新加载；若仍无法播放，可打开允许的外部来源并反馈问题。
         </p>
-        {item.externalUrl ? (
-          <a
-            className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-md border border-white/30 px-3 text-xs font-semibold outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white"
-            href={item.externalUrl}
-            target="_blank"
-            rel="noreferrer"
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          <button
+            type="button"
+            className="inline-flex min-h-11 items-center gap-2 rounded-md bg-white px-3 text-xs font-semibold text-[var(--ink-900)] outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-white"
+            onClick={onRetryOriginal}
           >
-            打开外部录屏
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-          </a>
-        ) : null}
+            <RotateCcw className="h-4 w-4" aria-hidden="true" />
+            重试原始视频
+          </button>
+          {item.externalUrl ? (
+            <a
+              className="inline-flex min-h-11 items-center gap-2 rounded-md border border-white/30 px-3 text-xs font-semibold outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white"
+              href={item.externalUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              打开备用视频
+              <ExternalLink className="h-4 w-4" aria-hidden="true" />
+            </a>
+          ) : null}
+        </div>
       </div>
     </div>
   );

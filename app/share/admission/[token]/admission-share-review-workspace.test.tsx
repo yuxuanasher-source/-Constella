@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -398,5 +404,58 @@ describe("AdmissionShareReviewWorkspace", () => {
     expect(
       screen.getByRole("link", { name: "打开外部录屏" }).className,
     ).toMatch(/\bmin-h-11\b/);
+  });
+
+  it("isolates a playback failure with retry, safe fallback and one per-recording report", async () => {
+    const reportIssue = vi.fn().mockResolvedValue(true);
+    const board = {
+      ...formalBoard,
+      items: [
+        {
+          ...formalBoard.items[0],
+          externalUrl: "https://video.example/recording-1.mp4",
+          sourceHealth: "original_with_external_fallback" as const,
+        },
+        formalBoard.items[1],
+      ],
+    };
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={board}
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+
+    fireEvent.error(screen.getByLabelText("待判断主播 原始录屏播放器"));
+    expect(
+      screen.getByRole("button", { name: "重试原始视频" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "打开备用视频" })).toHaveAttribute(
+      "href",
+      "https://video.example/recording-1.mp4",
+    );
+
+    const reportButton = screen.getByRole("button", {
+      name: "反馈无法播放",
+    });
+    expect(reportButton.className).toMatch(/\bmin-h-11\b/);
+    fireEvent.click(reportButton);
+    fireEvent.click(reportButton);
+
+    await waitFor(() => expect(reportIssue).toHaveBeenCalledTimes(1));
+    expect(reportIssue).toHaveBeenCalledWith("recording-1", "original");
+    expect(
+      await screen.findByRole("status", { name: "播放问题反馈状态" }),
+    ).toHaveTextContent("已反馈");
+    expect(reportButton).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一条" }));
+    expect(onActiveRecordingChange).toHaveBeenCalledWith("recording-2");
+
+    fireEvent.click(screen.getByRole("button", { name: "重试原始视频" }));
+    expect(
+      screen.getByLabelText("待判断主播 原始录屏播放器"),
+    ).toBeInTheDocument();
   });
 });

@@ -874,9 +874,9 @@ export default function AdmissionSharePageClient({
                 : "NO_PLAYABLE_SOURCE",
         });
         if (mountedRef.current) {
-          setSuccessMessage("播放问题已反馈，运营会尽快处理。");
           setPageError(null);
         }
+        return true;
       } catch (error) {
         const requestError = normalizePageError(
           error,
@@ -887,6 +887,7 @@ export default function AdmissionSharePageClient({
         } else if (mountedRef.current) {
           setPageError({ ...requestError, recovery: "reload" });
         }
+        return false;
       }
     },
     [lockProtectedWorkspaceForAccess, token],
@@ -1069,7 +1070,7 @@ export default function AdmissionSharePageClient({
             onRetryDraft={retryDraft}
             onOpenSubmissionSummary={openSummary}
             onReportPlaybackIssue={(recordingSubmissionId, sourceType) =>
-              void reportPlaybackIssue(recordingSubmissionId, sourceType)
+              reportPlaybackIssue(recordingSubmissionId, sourceType)
             }
             reasonOptions={reasonOptions}
           />

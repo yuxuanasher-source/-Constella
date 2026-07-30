@@ -10,9 +10,12 @@ import {
   getPublicAdmissionRecordingPlaybackSource,
   hashAdmissionShareAccessCode,
   hashShareSecret,
+  listAdmissionSharePlaybackIssues,
   mapVendorDecisionToSyncPatch,
   listPublicAdmissionReviewDrafts,
+  recordPublicAdmissionPlaybackIssue,
   reopenAdmissionShareBoard,
+  resolveAdmissionSharePlaybackIssue,
   revokeAdmissionShareBoard,
   rotateAdmissionShareBoardToken,
   savePublicAdmissionReviewDraft,
@@ -58,6 +61,9 @@ function createRepo(
     reopenShareBoard: vi.fn(),
     rotateShareBoardToken: vi.fn(),
     revokeShareBoard: vi.fn(),
+    reportPlaybackIssue: vi.fn(),
+    listPlaybackIssues: vi.fn().mockResolvedValue([]),
+    resolvePlaybackIssue: vi.fn(),
     getPublicShareBoardSnapshot: vi.fn(),
     submitReview: vi.fn(),
     listReviewSubmissions: vi.fn().mockResolvedValue([]),
@@ -2646,6 +2652,327 @@ describe("admission share board service", () => {
     const selectedColumns = String(boardSelect.mock.calls[0]?.[0]);
     expect(selectedColumns).not.toContain("token_hash");
     expect(selectedColumns).not.toContain("access_code_hash");
+  });
+});
+
+describe("admission share playback issue service", () => {
+  const issue = {
+    id: "issue-1",
+    shareBoardId: "share-1",
+    recordingSubmissionId: "rec-1",
+    recordingVersion: 2,
+    streamerDisplayName: "Streamer One",
+    sourceType: "original" as const,
+    errorCode: "MEDIA_DECODE_FAILED",
+    status: "open" as const,
+    reportedAt: "2026-07-30T09:00:00.000Z",
+    resolvedAt: null,
+  };
+
+  it("gates a public report by the opaque session and shared item before one RPC", async () => {
+    const reportPlaybackIssue = vi
+      .fn()
+      .mockResolvedValue({ issueId: "issue-1" });
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      reportPlaybackIssue,
+    });
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+
+    await expect(
+      recordPublicAdmissionPlaybackIssue({
+        repo,
+        accessStore,
+        token: "plain-token",
+        sessionToken: "opaque-session-token",
+        recordingSubmissionId: "rec-1",
+        sourceType: "original",
+        errorCode: "MEDIA_DECODE_FAILED",
+        userAgentFamily: "Chrome",
+        now: "2026-06-07T09:00:00.000Z",
+      }),
+    ).resolves.toEqual({ issueId: "issue-1" });
+
+    expect(accessStore.hasValidSession).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      sessionToken: "opaque-session-token",
+      now: "2026-06-07T09:00:00.000Z",
+    });
+    expect(reportPlaybackIssue).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      recordingSubmissionId: "rec-1",
+      sourceType: "original",
+      errorCode: "MEDIA_DECODE_FAILED",
+      userAgentFamily: "Chrome",
+      reportedAt: "2026-06-07T09:00:00.000Z",
+    });
+    expect(JSON.stringify(reportPlaybackIssue.mock.calls)).not.toMatch(
+      /plain-token|opaque-session-token|storage_path|access_code/iu,
+    );
+  });
+
+  it("rejects unshared recordings and non-whitelisted issue data before persistence", async () => {
+    const reportPlaybackIssue = vi.fn();
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      reportPlaybackIssue,
+    });
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+    const base = {
+      repo,
+      accessStore,
+      token: "plain-token",
+      sessionToken: "opaque-session-token",
+      recordingSubmissionId: "rec-1",
+      sourceType: "original" as const,
+      errorCode: "MEDIA_LOAD_FAILED",
+      userAgentFamily: "Chrome",
+      now: "2026-06-07T09:00:00.000Z",
+    };
+
+    await expect(
+      recordPublicAdmissionPlaybackIssue({
+        ...base,
+        recordingSubmissionId: "rec-not-shared",
+      }),
+    ).rejects.toMatchObject({ code: "RECORDING_NOT_SHARED", statusCode: 404 });
+    await expect(
+      recordPublicAdmissionPlaybackIssue({
+        ...base,
+        sourceType: "script" as never,
+      }),
+    ).rejects.toMatchObject({
+      code: "REVIEW_VALIDATION_FAILED",
+      statusCode: 400,
+    });
+    await expect(
+      recordPublicAdmissionPlaybackIssue({
+        ...base,
+        errorCode: "CUSTOM_ERROR",
+      }),
+    ).rejects.toMatchObject({
+      code: "REVIEW_VALIDATION_FAILED",
+      statusCode: 400,
+    });
+    await expect(
+      recordPublicAdmissionPlaybackIssue({
+        ...base,
+        userAgentFamily: "Mozilla/5.0 Chrome/140 secret-tail",
+      }),
+    ).rejects.toMatchObject({
+      code: "REVIEW_VALIDATION_FAILED",
+      statusCode: 400,
+    });
+    expect(reportPlaybackIssue).not.toHaveBeenCalled();
+  });
+
+  it("requires the established session for an access-code protected preview report", async () => {
+    const reportPlaybackIssue = vi.fn();
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          mode: "preview",
+          allowVendorSubmit: false,
+          roundNumber: 0,
+          accessCodeHash: hashAdmissionShareAccessCode("24681024"),
+        }),
+      ),
+      reportPlaybackIssue,
+    });
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(false),
+    };
+
+    await expect(
+      recordPublicAdmissionPlaybackIssue({
+        repo,
+        accessStore,
+        token: "plain-token",
+        recordingSubmissionId: "rec-1",
+        sourceType: "original",
+        errorCode: "MEDIA_LOAD_FAILED",
+        userAgentFamily: "Chrome",
+        now: "2026-06-07T09:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACCESS_CODE_REQUIRED",
+      statusCode: 401,
+    });
+    expect(reportPlaybackIssue).not.toHaveBeenCalled();
+  });
+
+  it("checks MCN role and organization again before listing or resolving", async () => {
+    const repo = createRepo({
+      listPlaybackIssues: vi.fn().mockResolvedValue([issue]),
+      resolvePlaybackIssue: vi.fn(),
+    });
+    const audit = vi.fn().mockRejectedValue(new Error("audit unavailable"));
+
+    await expect(
+      listAdmissionSharePlaybackIssues({
+        repo,
+        actor,
+        organizationId: "org-1",
+        projectId: "project-1",
+        status: "open",
+      }),
+    ).resolves.toEqual([issue]);
+    expect(repo.listPlaybackIssues).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      projectId: "project-1",
+      status: "open",
+    });
+
+    await expect(
+      resolveAdmissionSharePlaybackIssue({
+        repo,
+        audit,
+        actor,
+        organizationId: "org-1",
+        projectId: "project-1",
+        issueId: "issue-1",
+        now: "2026-07-30T10:00:00.000Z",
+      }),
+    ).resolves.toBeUndefined();
+    expect(repo.resolvePlaybackIssue).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      projectId: "project-1",
+      issueId: "issue-1",
+      actorUserId: "user-ops",
+      resolvedAt: "2026-07-30T10:00:00.000Z",
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org-1",
+        action: "resolve_share_playback_issue",
+        objectId: "issue-1",
+        projectId: "project-1",
+      }),
+    );
+
+    for (const unauthorizedActor of [
+      { ...actor, organizationId: "org-2" },
+      { ...actor, role: "streamer" as const },
+    ]) {
+      await expect(
+        listAdmissionSharePlaybackIssues({
+          repo,
+          actor: unauthorizedActor,
+          organizationId: "org-1",
+          projectId: "project-1",
+          status: "open",
+        }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+    }
+  });
+
+  it("maps staff issue rows to the strict DTO without persistence-only fields", async () => {
+    const row = {
+      id: "issue-1",
+      share_board_id: "share-1",
+      recording_submission_id: "rec-1",
+      source_type: "original",
+      error_code: "MEDIA_DECODE_FAILED",
+      status: "open",
+      reported_at: "2026-07-30T09:00:00.000Z",
+      resolved_at: null,
+      user_agent_family: "Chrome",
+      resolution_note: "internal",
+      recording_submissions: {
+        version: 2,
+        streamers: { display_name: "Streamer One" },
+      },
+    };
+    const order = vi.fn().mockResolvedValue({ data: [row], error: null });
+    const statusEq = vi.fn().mockReturnValue({ order });
+    const projectEq = vi.fn().mockReturnValue({ eq: statusEq });
+    const organizationEq = vi.fn().mockReturnValue({ eq: projectEq });
+    const select = vi.fn().mockReturnValue({ eq: organizationEq });
+    const from = vi.fn().mockReturnValue({ select });
+    const repo = new SupabaseAdmissionShareBoardRepository({ from } as never);
+
+    const result = await repo.listPlaybackIssues({
+      organizationId: "org-1",
+      projectId: "project-1",
+      status: "open",
+    });
+
+    expect(organizationEq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(projectEq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(statusEq).toHaveBeenCalledWith("status", "open");
+    expect(result).toEqual([issue]);
+    expect(JSON.stringify(result)).not.toMatch(
+      /userAgent|resolutionNote|organizationId|projectId/iu,
+    );
+  });
+
+  it("uses only the atomic report and resolve RPCs for issue mutations", async () => {
+    const single = vi.fn().mockResolvedValue({
+      data: { id: "issue-1" },
+      error: null,
+    });
+    const rpc = vi
+      .fn()
+      .mockReturnValueOnce({ single })
+      .mockResolvedValueOnce({ error: null });
+    const from = vi.fn();
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      rpc,
+      from,
+    } as never);
+
+    await expect(
+      repo.reportPlaybackIssue({
+        shareBoardId: "share-1",
+        recordingSubmissionId: "rec-1",
+        sourceType: "original",
+        errorCode: "MEDIA_DECODE_FAILED",
+        userAgentFamily: "Chrome",
+        reportedAt: "2026-07-30T09:00:00.000Z",
+      }),
+    ).resolves.toEqual({ issueId: "issue-1" });
+    await repo.resolvePlaybackIssue({
+      organizationId: "org-1",
+      projectId: "project-1",
+      issueId: "issue-1",
+      actorUserId: "user-ops",
+      resolvedAt: "2026-07-30T10:00:00.000Z",
+    });
+
+    expect(rpc).toHaveBeenNthCalledWith(
+      1,
+      "report_admission_share_playback_issue",
+      {
+        p_share_board_id: "share-1",
+        p_recording_submission_id: "rec-1",
+        p_source_type: "original",
+        p_error_code: "MEDIA_DECODE_FAILED",
+        p_user_agent_family: "Chrome",
+        p_reported_at: "2026-07-30T09:00:00.000Z",
+      },
+    );
+    expect(rpc).toHaveBeenNthCalledWith(
+      2,
+      "resolve_admission_share_playback_issue",
+      {
+        p_organization_id: "org-1",
+        p_project_id: "project-1",
+        p_issue_id: "issue-1",
+        p_actor_user_id: "user-ops",
+        p_resolved_at: "2026-07-30T10:00:00.000Z",
+      },
+    );
+    expect(from).not.toHaveBeenCalled();
   });
 });
 
