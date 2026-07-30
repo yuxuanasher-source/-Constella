@@ -8,6 +8,7 @@ import type {
 } from "./application-state";
 import type { ApplicationSource } from "./application-service";
 import { latestRecordingAiAnalysesByAsset } from "./application-queries";
+import { listAdmissionShareBoardProgress } from "./admission-share-progress";
 
 type MaybeArray<T> = T | T[] | null | undefined;
 
@@ -339,6 +340,10 @@ export function toAdmissionRecordingDetails(
 export function toAdmissionResultTask(
   detail: AdmissionRecordingDetail,
 ): AdmissionResultTask | null {
+  if (detail.status === "joined") {
+    return null;
+  }
+
   const recording = detail.latestRecording;
   const review = detail.vendorReview;
   if (!recording || !review) {
@@ -348,6 +353,14 @@ export function toAdmissionResultTask(
   const reviewTargetsCurrentVersion =
     review.recordingSubmissionId === recording.id &&
     review.recordingVersion === recording.version;
+  if (review.syncStatus === "failed") {
+    return resultTask(
+      "historical_result_manual_review",
+      detail.id,
+      review.recordingSubmissionId,
+      "结果同步失败，待人工处理",
+    );
+  }
   if (
     review.syncStatus === "skipped" &&
     review.syncError === "application_already_joined"
@@ -383,7 +396,7 @@ export function toAdmissionResultTask(
     return null;
   }
 
-  if (review.decision === "selected" && detail.status !== "joined") {
+  if (review.decision === "selected") {
     return resultTask(
       "mcn_final_confirm",
       detail.id,
@@ -525,40 +538,15 @@ async function listShareBoardRows(
     return [];
   }
 
-  const shareBoardIds = shareBoards.map((shareBoard) => shareBoard.id);
-  const [itemResult, draftResult] = await Promise.all([
-    supabase
-      .from("project_recording_share_items")
-      .select("share_board_id")
-      .in("share_board_id", shareBoardIds),
-    supabase
-      .from("project_recording_vendor_review_drafts")
-      .select("share_board_id, decision")
-      .in("share_board_id", shareBoardIds),
-  ]);
-
-  if (itemResult.error) {
-    throw itemResult.error;
-  }
-  if (draftResult.error) {
-    throw draftResult.error;
-  }
-
-  const itemCounts = countRowsByShareBoard(itemResult.data ?? []);
-  const completedDraftCounts = countRowsByShareBoard(
-    (draftResult.data ?? []).filter(
-      (draft) =>
-        (draft as { decision?: VendorAdmissionDecision }).decision !==
-        "pending",
-    ),
+  const progressByBoard = await listAdmissionShareBoardProgress(
+    supabase,
+    projectIds,
   );
   return shareBoards.map((shareBoard) => ({
     ...shareBoard,
-    item_count: itemCounts.get(shareBoard.id) ?? 0,
-    draft_completed_count: Math.min(
-      completedDraftCounts.get(shareBoard.id) ?? 0,
-      itemCounts.get(shareBoard.id) ?? 0,
-    ),
+    item_count: progressByBoard.get(shareBoard.id)?.itemCount ?? 0,
+    draft_completed_count:
+      progressByBoard.get(shareBoard.id)?.draftCompletedCount ?? 0,
   }));
 }
 
@@ -785,17 +773,4 @@ function resultTask(
     recordingSubmissionId,
     label,
   };
-}
-
-function countRowsByShareBoard(
-  rows: ArrayLike<{ share_board_id?: unknown }>,
-): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const row of Array.from(rows)) {
-    if (typeof row.share_board_id !== "string") {
-      continue;
-    }
-    counts.set(row.share_board_id, (counts.get(row.share_board_id) ?? 0) + 1);
-  }
-  return counts;
 }

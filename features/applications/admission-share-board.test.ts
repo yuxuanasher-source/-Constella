@@ -2277,6 +2277,16 @@ describe("admission share board service", () => {
         order: vi.fn().mockResolvedValue({ data: itemRows, error: null }),
       }),
     });
+    const rpc = vi.fn().mockResolvedValue({
+      data: [
+        {
+          share_board_id: "share-1",
+          item_count: 2,
+          draft_completed_count: 2,
+        },
+      ],
+      error: null,
+    });
     const from = vi.fn().mockImplementation((table: string) => {
       queriedTables.push(table);
       if (table === "project_recording_share_boards") {
@@ -2292,25 +2302,6 @@ describe("admission share board service", () => {
       }
       if (table === "project_recording_share_items") {
         return { select: itemSelect };
-      }
-      if (table === "project_recording_vendor_review_drafts") {
-        return {
-          select: vi.fn().mockReturnValue({
-            eq: vi.fn().mockResolvedValue({
-              data: [
-                {
-                  recording_submission_id: "rec-1",
-                  decision: "selected",
-                },
-                {
-                  recording_submission_id: "rec-2",
-                  decision: "backup",
-                },
-              ],
-              error: null,
-            }),
-          }),
-        };
       }
       if (table === "project_recording_vendor_review_submissions") {
         return {
@@ -2350,7 +2341,10 @@ describe("admission share board service", () => {
       }
       throw new Error(`unexpected public snapshot table: ${table}`);
     });
-    const repo = new SupabaseAdmissionShareBoardRepository({ from } as never);
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      from,
+      rpc,
+    } as never);
 
     const snapshot = await repo.getPublicShareBoardSnapshot(
       hashShareSecret("plain-token"),
@@ -2360,6 +2354,12 @@ describe("admission share board service", () => {
       expect.stringContaining("source_health"),
     );
     expect(queriedTables).not.toContain("project_recording_vendor_reviews");
+    expect(queriedTables).not.toContain(
+      "project_recording_vendor_review_drafts",
+    );
+    expect(rpc).toHaveBeenCalledWith("list_admission_share_board_progress", {
+      p_project_ids: ["project-1"],
+    });
     expect(snapshot).toMatchObject({
       progress: { completed: 2, total: 2 },
       latestSubmission: {
@@ -2452,7 +2452,7 @@ describe("admission share board service", () => {
     expect(drafts).toEqual([saved]);
   });
 
-  it("aggregates safe operational share-task progress without selecting secrets", async () => {
+  it("uses database aggregation across multiple boards and more than 1000 items without selecting secrets", async () => {
     const boardSelect = vi.fn().mockReturnValue({
       eq: vi.fn().mockReturnValue({
         order: vi.fn().mockResolvedValue({
@@ -2473,43 +2473,52 @@ describe("admission share board service", () => {
               created_by: "user-ops",
               created_at: "2026-07-30T00:00:00.000Z",
             },
+            {
+              id: "share-2",
+              title: "第二轮复核",
+              purpose: "确认补录主播",
+              mode: "formal_review",
+              status: "active",
+              review_state: "submitted_locked",
+              round_number: 2,
+              expires_at: "2026-08-10T00:00:00.000Z",
+              last_viewed_at: "2026-07-31T08:00:00.000Z",
+              last_draft_at: "2026-07-31T08:20:00.000Z",
+              last_submitted_at: "2026-07-31T10:00:00.000Z",
+              locked_at: "2026-07-31T10:00:00.000Z",
+              created_by: "user-ops",
+              created_at: "2026-07-31T00:00:00.000Z",
+            },
           ],
           error: null,
         }),
       }),
     });
-    const itemSelect = vi.fn().mockReturnValue({
-      in: vi.fn().mockResolvedValue({
-        data: [
-          { share_board_id: "share-1" },
-          { share_board_id: "share-1" },
-          { share_board_id: "share-1" },
-        ],
-        error: null,
-      }),
-    });
-    const draftSelect = vi.fn().mockReturnValue({
-      in: vi.fn().mockResolvedValue({
-        data: [
-          { share_board_id: "share-1", decision: "selected" },
-          { share_board_id: "share-1", decision: "pending" },
-        ],
-        error: null,
-      }),
+    const rpc = vi.fn().mockResolvedValue({
+      data: [
+        {
+          share_board_id: "share-1",
+          item_count: 1501,
+          draft_completed_count: 1201,
+        },
+        {
+          share_board_id: "share-2",
+          item_count: 1200,
+          draft_completed_count: 1200,
+        },
+      ],
+      error: null,
     });
     const from = vi.fn().mockImplementation((table: string) => {
       if (table === "project_recording_share_boards") {
         return { select: boardSelect };
       }
-      if (table === "project_recording_share_items") {
-        return { select: itemSelect };
-      }
-      if (table === "project_recording_vendor_review_drafts") {
-        return { select: draftSelect };
-      }
-      throw new Error(`unexpected table: ${table}`);
+      throw new Error(`unexpected detail-table query: ${table}`);
     });
-    const repo = new SupabaseAdmissionShareBoardRepository({ from } as never);
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      from,
+      rpc,
+    } as never);
 
     await expect(repo.listShareBoards("project-1")).resolves.toEqual([
       {
@@ -2521,8 +2530,8 @@ describe("admission share board service", () => {
         reviewState: "in_progress",
         roundNumber: 1,
         expiresAt: "2026-08-06T00:00:00.000Z",
-        itemCount: 3,
-        draftCompletedCount: 1,
+        itemCount: 1501,
+        draftCompletedCount: 1201,
         lastViewedAt: "2026-07-30T08:00:00.000Z",
         lastDraftAt: "2026-07-30T08:20:00.000Z",
         lastSubmittedAt: null,
@@ -2530,7 +2539,28 @@ describe("admission share board service", () => {
         createdBy: "user-ops",
         createdAt: "2026-07-30T00:00:00.000Z",
       },
+      {
+        id: "share-2",
+        title: "第二轮复核",
+        purpose: "确认补录主播",
+        mode: "formal_review",
+        status: "active",
+        reviewState: "submitted_locked",
+        roundNumber: 2,
+        expiresAt: "2026-08-10T00:00:00.000Z",
+        itemCount: 1200,
+        draftCompletedCount: 1200,
+        lastViewedAt: "2026-07-31T08:00:00.000Z",
+        lastDraftAt: "2026-07-31T08:20:00.000Z",
+        lastSubmittedAt: "2026-07-31T10:00:00.000Z",
+        lockedAt: "2026-07-31T10:00:00.000Z",
+        createdBy: "user-ops",
+        createdAt: "2026-07-31T00:00:00.000Z",
+      },
     ]);
+    expect(rpc).toHaveBeenCalledWith("list_admission_share_board_progress", {
+      p_project_ids: ["project-1"],
+    });
     const selectedColumns = String(boardSelect.mock.calls[0]?.[0]);
     expect(selectedColumns).not.toContain("token_hash");
     expect(selectedColumns).not.toContain("access_code_hash");

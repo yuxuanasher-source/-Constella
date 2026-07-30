@@ -609,23 +609,8 @@ describe("admission result task DTO", () => {
     });
   });
 
-  it("does not require final confirmation for an already joined streamer", () => {
-    expect(
-      toAdmissionResultTask(
-        resultDetail({
-          status: "joined",
-          vendorReview: {
-            ...resultDetail().vendorReview!,
-            syncStatus: "skipped",
-            syncError: "application_already_joined",
-          },
-        }),
-      ),
-    ).toBeNull();
-  });
-
-  it.each(["rejected", "needs_changes"] as const)(
-    "does not create a %s follow-up task after a joined application is skipped",
+  it.each(["selected", "rejected", "needs_changes"] as const)(
+    "does not create a %s task for a joined application with a legacy null sync error",
     (decision) => {
       expect(
         toAdmissionResultTask(
@@ -635,11 +620,65 @@ describe("admission result task DTO", () => {
               ...resultDetail().vendorReview!,
               decision,
               syncStatus: "skipped",
-              syncError: "application_already_joined",
+              syncError: null,
             },
           }),
         ),
       ).toBeNull();
+    },
+  );
+
+  it("suppresses an application-already-joined skip even when the legacy detail status has not caught up", () => {
+    expect(
+      toAdmissionResultTask(
+        resultDetail({
+          vendorReview: {
+            ...resultDetail().vendorReview!,
+            recordingSubmissionId: "recording-v1",
+            recordingVersion: 1,
+            decision: "rejected",
+            syncStatus: "skipped",
+            syncError: "application_already_joined",
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    {
+      name: "current",
+      vendorReview: {
+        ...resultDetail().vendorReview!,
+        syncStatus: "failed" as const,
+        syncError: "vendor_state_sync_failed",
+      },
+    },
+    {
+      name: "historical",
+      vendorReview: {
+        ...resultDetail().vendorReview!,
+        recordingSubmissionId: "recording-v1",
+        recordingVersion: 1,
+        syncStatus: "failed" as const,
+        syncError: "vendor_state_sync_failed",
+      },
+    },
+  ])(
+    "routes a failed $name result to stable manual handling",
+    ({ vendorReview }) => {
+      expect(
+        toAdmissionResultTask(
+          resultDetail({
+            vendorReview,
+          }),
+        ),
+      ).toEqual({
+        type: "historical_result_manual_review",
+        applicationId: "app-result",
+        recordingSubmissionId: vendorReview.recordingSubmissionId,
+        label: "结果同步失败，待人工处理",
+      });
     },
   );
 });

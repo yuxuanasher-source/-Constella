@@ -16,6 +16,7 @@ import type {
 } from "./application-state";
 import type { VendorAdmissionDecision } from "./admission-board";
 import type { AdmissionShareCandidateRepository } from "./admission-share-candidates";
+import { listAdmissionShareBoardProgress } from "./admission-share-progress";
 import {
   preflightAdmissionShareSelection,
   type AdmissionShareMode,
@@ -494,42 +495,16 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       return [];
     }
 
-    const shareBoardIds = rows.map((row) => row.id);
-    const [itemResult, draftResult] = await Promise.all([
-      this.client
-        .from("project_recording_share_items")
-        .select("share_board_id")
-        .in("share_board_id", shareBoardIds),
-      this.client
-        .from("project_recording_vendor_review_drafts")
-        .select("share_board_id, decision")
-        .in("share_board_id", shareBoardIds),
+    const progressByBoard = await listAdmissionShareBoardProgress(this.client, [
+      projectId,
     ]);
-
-    if (itemResult.error) {
-      throw itemResult.error;
-    }
-    if (draftResult.error) {
-      throw draftResult.error;
-    }
-
-    const itemCounts = countShareBoardRows(itemResult.data ?? []);
-    const completedDraftCounts = countShareBoardRows(
-      (draftResult.data ?? []).filter(
-        (draft) =>
-          (draft as { decision?: VendorAdmissionDecision }).decision !==
-          "pending",
-      ),
-    );
-    return rows.map((row) =>
-      toShareBoardTaskRecord(row, {
-        itemCount: itemCounts.get(row.id) ?? 0,
-        draftCompletedCount: Math.min(
-          completedDraftCounts.get(row.id) ?? 0,
-          itemCounts.get(row.id) ?? 0,
-        ),
-      }),
-    );
+    return rows.map((row) => {
+      const progress = progressByBoard.get(row.id) ?? {
+        itemCount: 0,
+        draftCompletedCount: 0,
+      };
+      return toShareBoardTaskRecord(row, progress);
+    });
   }
 
   async extendShareBoard(input: {
@@ -638,7 +613,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     const itemRows = (itemData ?? []) as PublicShareItemRow[];
     const workflow =
       boardData.mode === "formal_review"
-        ? await this.getPublicReviewWorkflow(boardData.id)
+        ? await this.getPublicReviewWorkflow(boardData.id, boardData.project_id)
         : {
             completedDraftCount: 0,
             latestSubmission: null,
@@ -917,16 +892,16 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     }
   }
 
-  private async getPublicReviewWorkflow(shareBoardId: string): Promise<{
+  private async getPublicReviewWorkflow(
+    shareBoardId: string,
+    projectId: string,
+  ): Promise<{
     completedDraftCount: number;
     latestSubmission: PublicAdmissionShareSubmissionSummary | null;
     finalReviewByRecording: Map<string, PublicAdmissionShareFinalReview>;
   }> {
-    const [draftResult, submissionResult] = await Promise.all([
-      this.client
-        .from("project_recording_vendor_review_drafts")
-        .select("recording_submission_id, decision")
-        .eq("share_board_id", shareBoardId),
+    const [progressByBoard, submissionResult] = await Promise.all([
+      listAdmissionShareBoardProgress(this.client, [projectId]),
       this.client
         .from("project_recording_vendor_review_submissions")
         .select(
@@ -937,16 +912,12 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
         .limit(1),
     ]);
 
-    if (draftResult.error) {
-      throw draftResult.error;
-    }
     if (submissionResult.error) {
       throw submissionResult.error;
     }
 
-    const completedDraftCount = (
-      (draftResult.data ?? []) as PublicReviewDraftProgressRow[]
-    ).filter((draft) => draft.decision !== "pending").length;
+    const completedDraftCount =
+      progressByBoard.get(shareBoardId)?.draftCompletedCount ?? 0;
     const latestRow = (
       (submissionResult.data ?? []) as AdmissionReviewSubmissionRow[]
     )[0];
@@ -1154,11 +1125,6 @@ type PublicShareItemRow = {
         storage_path: string | null;
       }>
     | null;
-};
-
-type PublicReviewDraftProgressRow = {
-  recording_submission_id: string;
-  decision: VendorAdmissionDecision;
 };
 
 type PublicSubmissionReceiptItemRow = {
@@ -2725,19 +2691,6 @@ function toShareBoardTaskRecord(
     createdBy: row.created_by,
     createdAt: row.created_at,
   };
-}
-
-function countShareBoardRows(
-  rows: ArrayLike<{ share_board_id?: unknown }>,
-): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const row of Array.from(rows)) {
-    if (typeof row.share_board_id !== "string") {
-      continue;
-    }
-    counts.set(row.share_board_id, (counts.get(row.share_board_id) ?? 0) + 1);
-  }
-  return counts;
 }
 
 function toReviewDraftDto(
