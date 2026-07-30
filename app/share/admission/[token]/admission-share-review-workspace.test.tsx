@@ -561,6 +561,105 @@ describe("AdmissionShareReviewWorkspace", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("keeps the newer report locked when an older same-board request rejects after an active-recording ABA switch", async () => {
+    let rejectFirstReport: (reason?: unknown) => void = () => {};
+    let finishSecondReport: (reported: boolean) => void = () => {};
+    const reportIssue = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((_resolve, reject) => {
+            rejectFirstReport = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishSecondReport = resolve;
+          }),
+      );
+    const { rerender } = render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "反馈播放问题" }));
+
+    rerender(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        activeRecordingId="recording-2"
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+    rerender(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        activeRecordingId="recording-1"
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "反馈播放问题" }));
+    await waitFor(() => expect(reportIssue).toHaveBeenCalledTimes(2));
+
+    await act(async () => rejectFirstReport(new Error("stale request")));
+
+    const secondReportButton = screen.getByRole("button", { name: "反馈中…" });
+    expect(secondReportButton).toBeDisabled();
+    fireEvent.click(secondReportButton);
+    expect(reportIssue).toHaveBeenCalledTimes(2);
+
+    await act(async () => finishSecondReport(true));
+  });
+
+  it("keeps the newer board report locked when the previous board request completes", async () => {
+    let finishFirstReport: (reported: boolean) => void = () => {};
+    let finishSecondReport: (reported: boolean) => void = () => {};
+    const reportIssue = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishFirstReport = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishSecondReport = resolve;
+          }),
+      );
+    const { rerender } = render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "反馈播放问题" }));
+
+    rerender(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={{ ...formalBoard, id: "share-2" }}
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "反馈播放问题" }));
+    await waitFor(() => expect(reportIssue).toHaveBeenCalledTimes(2));
+
+    await act(async () => finishFirstReport(true));
+
+    const secondReportButton = screen.getByRole("button", { name: "反馈中…" });
+    expect(secondReportButton).toBeDisabled();
+    expect(reportIssue).toHaveBeenCalledTimes(2);
+
+    await act(async () => finishSecondReport(true));
+    expect(
+      await screen.findByRole("status", { name: "播放问题反馈状态" }),
+    ).toHaveTextContent("已反馈");
+  });
+
   it("uses external-source actions after an external-only video fails", () => {
     const externalItem = {
       ...formalBoard.items[1],

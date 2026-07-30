@@ -92,8 +92,8 @@ export function AdmissionShareReviewWorkspace({
     reports: Record<string, "idle" | "reporting" | "reported" | "failed">;
   }>(() => ({ boardId: board.id, reports: {} }));
   const listTriggerRef = useRef<HTMLButtonElement>(null);
-  const playbackReportLocksRef = useRef(new Set<string>());
-  const playbackReportGenerationRef = useRef(new Map<string, number>());
+  const playbackReportLocksRef = useRef(new Map<string, number>());
+  const nextPlaybackReportRequestIdRef = useRef(0);
   const mountedRef = useRef(false);
   const currentBoardIdRef = useRef(board.id);
   const currentRecordingIdRef = useRef(activeRecordingId);
@@ -124,19 +124,16 @@ export function AdmissionShareReviewWorkspace({
 
   useEffect(() => {
     const playbackReportLocks = playbackReportLocksRef.current;
-    const playbackReportGenerations = playbackReportGenerationRef.current;
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       playbackReportLocks.clear();
-      playbackReportGenerations.clear();
     };
   }, []);
 
   useEffect(() => {
     currentBoardIdRef.current = board.id;
     playbackReportLocksRef.current.clear();
-    playbackReportGenerationRef.current.clear();
   }, [board.id]);
 
   useEffect(() => {
@@ -146,8 +143,9 @@ export function AdmissionShareReviewWorkspace({
     if (previousRecordingId === activeRecordingId) {
       return;
     }
-    playbackReportLocksRef.current.delete(previousRecordingId);
-    playbackReportGenerationRef.current.delete(previousRecordingId);
+    playbackReportLocksRef.current.delete(
+      `${currentBoardIdRef.current}:${previousRecordingId}`,
+    );
     setPlaybackReportState((current) => {
       if (current.reports[previousRecordingId] !== "reporting") {
         return current;
@@ -181,17 +179,14 @@ export function AdmissionShareReviewWorkspace({
     recordingSubmissionId: string,
     sourceType: AdmissionSharePlaybackSource,
   ) => {
-    if (playbackReportLocksRef.current.has(recordingSubmissionId)) {
+    const requestBoardId = board.id;
+    const requestKey = `${requestBoardId}:${recordingSubmissionId}`;
+    if (playbackReportLocksRef.current.has(requestKey)) {
       return;
     }
-    playbackReportLocksRef.current.add(recordingSubmissionId);
-    const requestGeneration =
-      (playbackReportGenerationRef.current.get(recordingSubmissionId) ?? 0) + 1;
-    playbackReportGenerationRef.current.set(
-      recordingSubmissionId,
-      requestGeneration,
-    );
-    const requestBoardId = board.id;
+    const requestId = nextPlaybackReportRequestIdRef.current + 1;
+    nextPlaybackReportRequestIdRef.current = requestId;
+    playbackReportLocksRef.current.set(requestKey, requestId);
     setPlaybackReportState((current) => ({
       boardId: requestBoardId,
       reports: {
@@ -205,17 +200,19 @@ export function AdmissionShareReviewWorkspace({
     } catch {
       reported = false;
     } finally {
+      const ownsCurrentLock =
+        playbackReportLocksRef.current.get(requestKey) === requestId;
+      const currentRequestKey = `${currentBoardIdRef.current}:${currentRecordingIdRef.current}`;
       const isCurrentRequest =
         mountedRef.current &&
+        ownsCurrentLock &&
         currentBoardIdRef.current === requestBoardId &&
-        currentRecordingIdRef.current === recordingSubmissionId &&
-        playbackReportGenerationRef.current.get(recordingSubmissionId) ===
-          requestGeneration;
-      if (!reported || !isCurrentRequest) {
-        playbackReportLocksRef.current.delete(recordingSubmissionId);
-      }
+        currentRequestKey === requestKey;
       if (!isCurrentRequest) {
         return;
+      }
+      if (!reported) {
+        playbackReportLocksRef.current.delete(requestKey);
       }
       setPlaybackReportState((current) => ({
         boardId: requestBoardId,
