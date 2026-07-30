@@ -53,4 +53,20 @@ describe("public admission share route errors", () => {
       error: "分享服务暂时不可用，请稍后重试。",
     });
   });
+
+  it.each([
+    ["DRAFT_CONFLICT", 409, "其他复核人刚刚更新了结果，请刷新后查看最新内容。"],
+    ["DRAFT_SAVE_FAILED", 503, "草稿暂时无法保存，请保留页面并稍后重试。"],
+    ["REVIEW_ALREADY_LOCKED", 409, "本轮结果已经提交并锁定。"],
+  ] as const)(
+    "maps %s to a stable public response",
+    async (code, status, error) => {
+      const response = publicAdmissionShareErrorResponse(
+        new PublicAdmissionShareError(code, "internal detail", status),
+      );
+
+      expect(response.status).toBe(status);
+      await expect(response.json()).resolves.toEqual({ code, error });
+    },
+  );
 });

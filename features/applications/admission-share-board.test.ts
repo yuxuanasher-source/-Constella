@@ -9,9 +9,11 @@ import {
   hashAdmissionShareAccessCode,
   hashShareSecret,
   mapVendorDecisionToSyncPatch,
+  listPublicAdmissionReviewDrafts,
   reopenAdmissionShareBoard,
   revokeAdmissionShareBoard,
   rotateAdmissionShareBoardToken,
+  savePublicAdmissionReviewDraft,
   submitVendorAdmissionReviews,
   SupabaseAdmissionShareBoardRepository,
   verifyAdmissionShareAccessCode,
@@ -60,6 +62,8 @@ function createRepo(
     updateApplicationStatusForVendor: vi.fn(),
     markShareBoardSubmitted: vi.fn(),
     markShareBoardViewed: vi.fn().mockResolvedValue(undefined),
+    listReviewDrafts: vi.fn().mockResolvedValue([]),
+    saveReviewDraft: vi.fn(),
     ...overrides,
   };
 }
@@ -999,6 +1003,218 @@ describe("admission share board service", () => {
     );
   });
 
+  it("reads only the shared team's drafts after token and HttpOnly session gating", async () => {
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("24681024"),
+        }),
+      ),
+      listReviewDrafts: vi.fn().mockResolvedValue([
+        {
+          recordingSubmissionId: "rec-1",
+          recordingVersion: 2,
+          decision: "backup",
+          remark: "保留作为备选",
+          reasonCodes: ["account_fit"],
+          revision: 4,
+          updatedAt: "2026-06-07T01:00:00.000Z",
+        },
+      ]),
+    });
+
+    const drafts = await listPublicAdmissionReviewDrafts({
+      repo,
+      accessStore,
+      token: "plain-token",
+      sessionToken: "opaque-session-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(repo.getPublicShareBoardSnapshot).toHaveBeenCalledWith(
+      hashShareSecret("plain-token"),
+    );
+    expect(accessStore.hasValidSession).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      sessionToken: "opaque-session-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+    expect(repo.listReviewDrafts).toHaveBeenCalledWith("share-1");
+    expect(drafts).toEqual([
+      {
+        recordingSubmissionId: "rec-1",
+        recordingVersion: 2,
+        decision: "backup",
+        remark: "保留作为备选",
+        reasonCodes: ["account_fit"],
+        revision: 4,
+        updatedAt: "2026-06-07T01:00:00.000Z",
+      },
+    ]);
+  });
+
+  it("saves a draft with optimistic revision control", async () => {
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("24681024"),
+        }),
+      ),
+      saveReviewDraft: vi.fn().mockResolvedValue({
+        recordingSubmissionId: "rec-1",
+        recordingVersion: 2,
+        decision: "needs_changes",
+        remark: "开场需要更快进入卖点",
+        reasonCodes: ["script_fit"],
+        revision: 3,
+        updatedAt: "2026-06-07T01:00:00.000Z",
+      }),
+    });
+
+    const result = await savePublicAdmissionReviewDraft({
+      repo,
+      accessStore,
+      token: "plain-token",
+      sessionToken: "opaque-session-token",
+      recordingSubmissionId: "rec-1",
+      input: {
+        expectedRevision: 2,
+        decision: "needs_changes",
+        remark: "开场需要更快进入卖点",
+        reasonCodes: ["script_fit"],
+      },
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(repo.saveReviewDraft).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      recordingSubmissionId: "rec-1",
+      expectedRevision: 2,
+      decision: "needs_changes",
+      remark: "开场需要更快进入卖点",
+      reasonCodes: ["script_fit"],
+      savedAt: "2026-06-07T01:00:00.000Z",
+    });
+    expect(result.revision).toBe(3);
+  });
+
+  it("surfaces stable draft conflicts and locked-review errors", async () => {
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+    const snapshot = publicSnapshot({
+      accessCodeHash: hashAdmissionShareAccessCode("24681024"),
+    });
+    const draftInput = {
+      expectedRevision: 2,
+      decision: "needs_changes" as const,
+      remark: "开场需要更快进入卖点",
+      reasonCodes: ["script_fit"],
+    };
+
+    for (const [message, code] of [
+      ["admission_share_draft_conflict", "DRAFT_CONFLICT"],
+      ["admission_share_review_already_locked", "REVIEW_ALREADY_LOCKED"],
+    ] as const) {
+      const repo = createRepo({
+        getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(snapshot),
+        saveReviewDraft: vi.fn().mockRejectedValue(new Error(message)),
+      });
+
+      await expect(
+        savePublicAdmissionReviewDraft({
+          repo,
+          accessStore,
+          token: "plain-token",
+          sessionToken: "opaque-session-token",
+          recordingSubmissionId: "rec-1",
+          input: draftInput,
+          now: "2026-06-07T01:00:00.000Z",
+        }),
+      ).rejects.toMatchObject({ code, statusCode: 409 });
+    }
+  });
+
+  it("rejects cross-board recordings and bounded draft input before the RPC", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      saveReviewDraft: vi.fn(),
+    });
+
+    await expect(
+      savePublicAdmissionReviewDraft({
+        repo,
+        token: "plain-token",
+        recordingSubmissionId: "rec-not-shared",
+        input: {
+          expectedRevision: 0,
+          decision: "pending",
+          remark: "",
+          reasonCodes: [],
+        },
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "RECORDING_NOT_SHARED" });
+
+    await expect(
+      savePublicAdmissionReviewDraft({
+        repo,
+        token: "plain-token",
+        recordingSubmissionId: "rec-1",
+        input: {
+          expectedRevision: -1,
+          decision: "pending",
+          remark: "",
+          reasonCodes: [],
+        },
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "REVIEW_VALIDATION_FAILED" });
+
+    await expect(
+      savePublicAdmissionReviewDraft({
+        repo,
+        token: "plain-token",
+        recordingSubmissionId: "rec-1",
+        input: {
+          expectedRevision: 0,
+          decision: "pending",
+          remark: "x".repeat(2001),
+          reasonCodes: ["script_fit"],
+        },
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "REVIEW_VALIDATION_FAILED" });
+
+    await expect(
+      savePublicAdmissionReviewDraft({
+        repo,
+        token: "plain-token",
+        recordingSubmissionId: "rec-1",
+        input: {
+          expectedRevision: 0,
+          decision: "pending",
+          remark: "",
+          reasonCodes: [null as never],
+        },
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "REVIEW_VALIDATION_FAILED" });
+    expect(repo.saveReviewDraft).not.toHaveBeenCalled();
+  });
+
   it("keeps public reads available when view auditing fails", async () => {
     const auditError = new Error("audit unavailable");
     const onViewAuditError = vi.fn();
@@ -1539,6 +1755,61 @@ describe("admission share board service", () => {
         },
       ],
     ]);
+  });
+
+  it("persists and reads draft DTOs through the constrained repository methods", async () => {
+    const draftRow = {
+      recording_submission_id: "rec-1",
+      recording_version: 2,
+      decision: "needs_changes",
+      remark: "开场需要更快进入卖点",
+      reason_codes: ["script_fit"],
+      revision: 3,
+      updated_at: "2026-07-30T08:30:00.000Z",
+    };
+    const single = vi.fn().mockResolvedValue({ data: draftRow, error: null });
+    const rpc = vi.fn().mockReturnValue({ single });
+    const order = vi.fn().mockResolvedValue({ data: [draftRow], error: null });
+    const eq = vi.fn().mockReturnValue({ order });
+    const select = vi.fn().mockReturnValue({ eq });
+    const from = vi.fn().mockReturnValue({ select });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      rpc,
+      from,
+    } as never);
+
+    const saved = await repo.saveReviewDraft({
+      shareBoardId: "share-1",
+      recordingSubmissionId: "rec-1",
+      expectedRevision: 2,
+      decision: "needs_changes",
+      remark: "开场需要更快进入卖点",
+      reasonCodes: ["script_fit"],
+      savedAt: "2026-07-30T08:30:00.000Z",
+    });
+    const drafts = await repo.listReviewDrafts("share-1");
+
+    expect(rpc).toHaveBeenCalledWith("save_admission_share_review_draft", {
+      p_share_board_id: "share-1",
+      p_recording_submission_id: "rec-1",
+      p_expected_revision: 2,
+      p_decision: "needs_changes",
+      p_remark: "开场需要更快进入卖点",
+      p_reason_codes: ["script_fit"],
+      p_saved_at: "2026-07-30T08:30:00.000Z",
+    });
+    expect(from).toHaveBeenCalledWith("project_recording_vendor_review_drafts");
+    expect(eq).toHaveBeenCalledWith("share_board_id", "share-1");
+    expect(saved).toEqual({
+      recordingSubmissionId: "rec-1",
+      recordingVersion: 2,
+      decision: "needs_changes",
+      remark: "开场需要更快进入卖点",
+      reasonCodes: ["script_fit"],
+      revision: 3,
+      updatedAt: "2026-07-30T08:30:00.000Z",
+    });
+    expect(drafts).toEqual([saved]);
   });
 });
 

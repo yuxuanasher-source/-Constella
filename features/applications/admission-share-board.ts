@@ -97,6 +97,10 @@ export type AdmissionShareBoardRepository = {
   getPublicShareBoardSnapshot(
     tokenHash: string,
   ): Promise<PublicAdmissionShareBoardSnapshot | null>;
+  listReviewDrafts(shareBoardId: string): Promise<AdmissionReviewDraftDto[]>;
+  saveReviewDraft(
+    input: SaveAdmissionReviewDraftPersistenceInput,
+  ): Promise<AdmissionReviewDraftDto>;
   upsertVendorReviews(
     rows: VendorReviewUpsertInput[],
   ): Promise<Array<{ id: string; recordingSubmissionId: string }>>;
@@ -211,6 +215,9 @@ export class PublicAdmissionShareError extends Error {
       | "RECORDING_NOT_SHARED"
       | "REVIEW_VALIDATION_FAILED"
       | "RECORDING_VERSION_STALE"
+      | "DRAFT_CONFLICT"
+      | "DRAFT_SAVE_FAILED"
+      | "REVIEW_ALREADY_LOCKED"
       | "SHARE_SERVICE_UNAVAILABLE",
     message: string,
     public readonly statusCode: number,
@@ -270,6 +277,30 @@ export type VendorReviewUpsertInput = {
   syncStatus: "synced" | "skipped" | "failed";
   syncError?: string | null;
 };
+
+export type AdmissionReviewDraftDto = {
+  recordingSubmissionId: string;
+  recordingVersion: number;
+  decision: VendorAdmissionDecision;
+  remark: string;
+  reasonCodes: string[];
+  revision: number;
+  updatedAt: string;
+};
+
+export type SaveAdmissionReviewDraftInput = {
+  expectedRevision: number;
+  decision: VendorAdmissionDecision;
+  remark: string;
+  reasonCodes: string[];
+};
+
+export type SaveAdmissionReviewDraftPersistenceInput =
+  SaveAdmissionReviewDraftInput & {
+    shareBoardId: string;
+    recordingSubmissionId: string;
+    savedAt: string;
+  };
 
 export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoardRepository {
   constructor(private readonly client: SupabaseClient) {}
@@ -452,6 +483,46 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     };
   }
 
+  async listReviewDrafts(
+    shareBoardId: string,
+  ): Promise<AdmissionReviewDraftDto[]> {
+    const { data, error } = await this.client
+      .from("project_recording_vendor_review_drafts")
+      .select(
+        "recording_submission_id, recording_version, decision, remark, reason_codes, revision, updated_at",
+      )
+      .eq("share_board_id", shareBoardId)
+      .order("updated_at", { ascending: true });
+
+    if (error) {
+      throw error;
+    }
+
+    return ((data ?? []) as AdmissionReviewDraftRow[]).map(toReviewDraftDto);
+  }
+
+  async saveReviewDraft(
+    input: SaveAdmissionReviewDraftPersistenceInput,
+  ): Promise<AdmissionReviewDraftDto> {
+    const { data, error } = await this.client
+      .rpc("save_admission_share_review_draft", {
+        p_share_board_id: input.shareBoardId,
+        p_recording_submission_id: input.recordingSubmissionId,
+        p_expected_revision: input.expectedRevision,
+        p_decision: input.decision,
+        p_remark: input.remark,
+        p_reason_codes: input.reasonCodes,
+        p_saved_at: input.savedAt,
+      })
+      .single<AdmissionReviewDraftRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return toReviewDraftDto(data);
+  }
+
   async upsertVendorReviews(
     rows: VendorReviewUpsertInput[],
   ): Promise<Array<{ id: string; recordingSubmissionId: string }>> {
@@ -611,6 +682,16 @@ type AdmissionShareBoardRow = {
   round_number: number;
   created_by: string;
   created_at?: string;
+};
+
+type AdmissionReviewDraftRow = {
+  recording_submission_id: string;
+  recording_version: number;
+  decision: VendorAdmissionDecision;
+  remark: string;
+  reason_codes: string[];
+  revision: number;
+  updated_at: string;
 };
 
 type AdmissionShareBoardWithProjectRow = AdmissionShareBoardRow & {
@@ -1080,6 +1161,131 @@ export async function getPublicAdmissionShareBoard({
   );
 
   return toPublicShareDto(snapshot, { token });
+}
+
+export async function listPublicAdmissionReviewDrafts({
+  repo,
+  accessStore,
+  token,
+  sessionToken,
+  now = new Date().toISOString(),
+}: {
+  repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
+  token: string;
+  sessionToken?: string;
+  now?: string;
+}): Promise<AdmissionReviewDraftDto[]> {
+  const snapshot = await requirePublicSnapshot({
+    repo,
+    accessStore,
+    token,
+    sessionToken,
+    now,
+  });
+  if (snapshot.mode !== "formal_review" || !snapshot.allowVendorSubmit) {
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Share board does not allow review drafts",
+      400,
+    );
+  }
+
+  return repo.listReviewDrafts(snapshot.id);
+}
+
+export async function savePublicAdmissionReviewDraft({
+  repo,
+  accessStore,
+  token,
+  sessionToken,
+  recordingSubmissionId,
+  input,
+  now = new Date().toISOString(),
+}: {
+  repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
+  token: string;
+  sessionToken?: string;
+  recordingSubmissionId: string;
+  input: SaveAdmissionReviewDraftInput;
+  now?: string;
+}): Promise<AdmissionReviewDraftDto> {
+  const snapshot = await requirePublicSnapshot({
+    repo,
+    accessStore,
+    token,
+    sessionToken,
+    now,
+  });
+  if (
+    snapshot.reviewState === "submitted_locked" ||
+    !snapshot.allowVendorSubmit
+  ) {
+    throw new PublicAdmissionShareError(
+      "REVIEW_ALREADY_LOCKED",
+      "Review is already submitted and locked",
+      409,
+    );
+  }
+  if (snapshot.mode !== "formal_review") {
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Share board does not allow review drafts",
+      400,
+    );
+  }
+
+  const recordingId = recordingSubmissionId.trim();
+  if (
+    !recordingId ||
+    !snapshot.items.some((item) => item.recordingSubmissionId === recordingId)
+  ) {
+    throw new PublicAdmissionShareError(
+      "RECORDING_NOT_SHARED",
+      "Recording is not part of this share board",
+      404,
+    );
+  }
+
+  const normalizedInput = normalizeAdmissionReviewDraftInput(input);
+  if (!Number.isFinite(Date.parse(now))) {
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Draft save time is invalid",
+      400,
+    );
+  }
+
+  try {
+    return await repo.saveReviewDraft({
+      shareBoardId: snapshot.id,
+      recordingSubmissionId: recordingId,
+      ...normalizedInput,
+      savedAt: now,
+    });
+  } catch (error) {
+    const message = admissionShareErrorMessage(error);
+    if (message === "admission_share_draft_conflict") {
+      throw new PublicAdmissionShareError(
+        "DRAFT_CONFLICT",
+        "Draft was updated by another review session",
+        409,
+      );
+    }
+    if (message === "admission_share_review_already_locked") {
+      throw new PublicAdmissionShareError(
+        "REVIEW_ALREADY_LOCKED",
+        "Review is already submitted and locked",
+        409,
+      );
+    }
+    throw new PublicAdmissionShareError(
+      "DRAFT_SAVE_FAILED",
+      "Draft could not be saved",
+      503,
+    );
+  }
 }
 
 export async function authenticatePublicAdmissionShareAccess({
@@ -1805,6 +2011,78 @@ function assertVendorDecision(value: VendorAdmissionDecision) {
   }
 }
 
+function normalizeAdmissionReviewDraftInput(
+  input: SaveAdmissionReviewDraftInput,
+): SaveAdmissionReviewDraftInput {
+  if (
+    !input ||
+    !Number.isSafeInteger(input.expectedRevision) ||
+    input.expectedRevision < 0 ||
+    input.expectedRevision >= 2_147_483_647
+  ) {
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Draft revision is invalid",
+      400,
+    );
+  }
+  assertVendorDecision(input.decision);
+  if (typeof input.remark !== "string" || input.remark.length > 2000) {
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Draft remark is invalid",
+      400,
+    );
+  }
+  if (
+    !Array.isArray(input.reasonCodes) ||
+    input.reasonCodes.length > 20 ||
+    input.reasonCodes.some((reasonCode) => typeof reasonCode !== "string")
+  ) {
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Draft reason codes are invalid",
+      400,
+    );
+  }
+
+  const reasonCodes = Array.from(
+    new Set(input.reasonCodes.map((reasonCode) => reasonCode.trim())),
+  );
+  if (
+    reasonCodes.some(
+      (reasonCode) =>
+        !reasonCode ||
+        reasonCode.length > 64 ||
+        !/^[A-Za-z0-9_.:-]+$/.test(reasonCode),
+    )
+  ) {
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Draft reason codes are invalid",
+      400,
+    );
+  }
+
+  return {
+    expectedRevision: input.expectedRevision,
+    decision: input.decision,
+    remark: input.remark,
+    reasonCodes,
+  };
+}
+
+function admissionShareErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" ? message : "";
+}
+
 function toShareBoardRecord(
   row: AdmissionShareBoardRow,
 ): AdmissionShareBoardRecord {
@@ -1825,6 +2103,20 @@ function toShareBoardRecord(
     roundNumber: row.round_number,
     createdBy: row.created_by,
     createdAt: row.created_at,
+  };
+}
+
+function toReviewDraftDto(
+  row: AdmissionReviewDraftRow,
+): AdmissionReviewDraftDto {
+  return {
+    recordingSubmissionId: row.recording_submission_id,
+    recordingVersion: row.recording_version,
+    decision: row.decision,
+    remark: row.remark,
+    reasonCodes: row.reason_codes,
+    revision: row.revision,
+    updatedAt: row.updated_at,
   };
 }
 

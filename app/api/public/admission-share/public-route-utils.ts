@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 
-import type { PublicAdmissionShareError } from "@/features/applications/admission-share-board";
+import type {
+  AdmissionReviewDraftDto,
+  PublicAdmissionShareError,
+} from "@/features/applications/admission-share-board";
 
 type PublicAdmissionShareErrorCode =
   | PublicAdmissionShareError["code"]
@@ -15,6 +18,9 @@ const PUBLIC_ERROR_MESSAGES: Record<PublicAdmissionShareErrorCode, string> = {
   RECORDING_NOT_SHARED: "该录屏不在当前分享范围内。",
   REVIEW_VALIDATION_FAILED: "提交内容不完整，请检查后重试。",
   RECORDING_VERSION_STALE: "录屏版本已更新，请刷新页面后重新提交。",
+  DRAFT_CONFLICT: "其他复核人刚刚更新了结果，请刷新后查看最新内容。",
+  DRAFT_SAVE_FAILED: "草稿暂时无法保存，请保留页面并稍后重试。",
+  REVIEW_ALREADY_LOCKED: "本轮结果已经提交并锁定。",
   SHARE_SERVICE_UNAVAILABLE: "分享服务暂时不可用，请稍后重试。",
 };
 
@@ -81,6 +87,20 @@ export function publicAdmissionShareErrorResponse(
 
   logger("Public admission share route failed", error);
   return responseForPublicError("SHARE_SERVICE_UNAVAILABLE", 503);
+}
+
+export function publicAdmissionReviewDraftDto(
+  draft: AdmissionReviewDraftDto,
+): AdmissionReviewDraftDto {
+  return {
+    recordingSubmissionId: draft.recordingSubmissionId,
+    recordingVersion: draft.recordingVersion,
+    decision: draft.decision,
+    remark: draft.remark,
+    reasonCodes: draft.reasonCodes,
+    revision: draft.revision,
+    updatedAt: draft.updatedAt,
+  };
 }
 
 function isPublicAdmissionShareError(error: unknown): error is {
