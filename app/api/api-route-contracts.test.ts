@@ -469,10 +469,7 @@ describe("api route contracts", () => {
 
   it("returns 400 when the confirm payload is missing a reason", async () => {
     const response = await confirmSettlementBatchPost(
-      jsonRequest(
-        "http://localhost/api/settlement-batches/batch-1/confirm",
-        {},
-      ),
+      jsonRequest("http://localhost/api/settlement-batches/batch-1/confirm", {}),
       { params: Promise.resolve({ batchId: "batch-1" }) },
     );
 
