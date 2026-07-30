@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -87,12 +87,31 @@ const admissionShareRouteManifest = [
   "app/api/projects/[projectId]/admission-share-playback-issues/route.ts",
   "app/api/projects/[projectId]/admission-share-playback-issues/[issueId]/resolve/route.ts",
   "app/api/public/admission-share/[token]/route.ts",
+  "app/api/public/admission-share/[token]/access/route.ts",
   "app/api/public/admission-share/[token]/drafts/route.ts",
   "app/api/public/admission-share/[token]/drafts/[recordingSubmissionId]/route.ts",
   "app/api/public/admission-share/[token]/reviews/route.ts",
   "app/api/public/admission-share/[token]/recordings/[recordingSubmissionId]/route.ts",
   "app/api/public/admission-share/[token]/recordings/[recordingSubmissionId]/issues/route.ts",
 ] as const;
+
+function listRouteFiles(relativeDirectory: string): string[] {
+  const visit = (absoluteDirectory: string, relativePrefix: string): string[] =>
+    readdirSync(absoluteDirectory, { withFileTypes: true }).flatMap((entry) => {
+      const relativePath = relativePrefix
+        ? `${relativePrefix}/${entry.name}`
+        : entry.name;
+      const absolutePath = join(absoluteDirectory, entry.name);
+      if (entry.isDirectory()) {
+        return visit(absolutePath, relativePath);
+      }
+      return entry.isFile() && entry.name === "route.ts"
+        ? [`${relativeDirectory}/${relativePath}`.replaceAll("\\", "/")]
+        : [];
+    });
+
+  return visit(join(process.cwd(), relativeDirectory), "");
+}
 
 const liveActor = {
   userId: "user-streamer",
@@ -153,14 +172,18 @@ describe("api route contracts", () => {
     vi.mocked(assertBillingWriteAllowed).mockResolvedValue(undefined);
   });
 
-  it("keeps every admission share operations and public route in the API manifest", () => {
-    expect(admissionShareRouteManifest).toHaveLength(17);
-    expect(new Set(admissionShareRouteManifest)).toHaveLength(17);
-    expect(
-      admissionShareRouteManifest.filter(
-        (route) => !existsSync(join(process.cwd(), route)),
+  it("matches the complete operations and public admission-share route set", () => {
+    const expectedRoutes = new Set(admissionShareRouteManifest);
+    const discoveredRoutes = new Set([
+      ...listRouteFiles("app/api/projects/[projectId]").filter((route) =>
+        route.includes("/admission-share"),
       ),
-    ).toEqual([]);
+      ...listRouteFiles("app/api/public/admission-share"),
+    ]);
+
+    expect(admissionShareRouteManifest).toHaveLength(18);
+    expect(expectedRoutes.size).toBe(admissionShareRouteManifest.length);
+    expect([...discoveredRoutes].sort()).toEqual([...expectedRoutes].sort());
   });
 
   it("returns 403 when the live-task start service rejects a role permission", async () => {

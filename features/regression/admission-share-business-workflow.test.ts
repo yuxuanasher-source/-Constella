@@ -7,7 +7,6 @@ import {
   submitVendorAdmissionReviews,
   type AdmissionShareBoardRecord,
   type AdmissionShareBoardRepository,
-  type AdmissionReviewSubmissionResultItem,
   type PublicAdmissionShareBoardSnapshot,
   type SubmitAdmissionReviewResult,
 } from "@/features/applications/admission-share-board";
@@ -30,9 +29,8 @@ const scenarios = [
     expectedSubmissionWrites: 0,
   },
   {
-    name: "formal review requires every item",
+    name: "atomic RPC incomplete boundary maps REVIEW_INCOMPLETE and never legacy-mutates",
     mode: "formal_review",
-    decisions: ["selected", "pending"],
     expectedError: "REVIEW_INCOMPLETE",
   },
   {
@@ -42,9 +40,8 @@ const scenarios = [
     expectedShareable: true,
   },
   {
-    name: "historical version result never overwrites latest state",
+    name: "atomic RPC skipped outcome preserves latest by avoiding legacy writes",
     selectedVersion: 1,
-    latestVersion: 2,
     expectedSyncStatus: "skipped",
     expectedSyncError: "superseded_recording_version",
   },
@@ -339,30 +336,14 @@ describe("admission share business workflow regression", () => {
       return;
     }
 
-    if (scenario.name === "formal review requires every item") {
-      const sources = [
-        candidate(),
-        candidate({
-          applicationId: "application-2",
-          recordingSubmissionId: "recording-2-v1",
-          streamer: {
-            id: "streamer-2",
-            displayName: "主播乙",
-            accountLabel: "douyin / streamer-2",
-          },
-        }),
-      ];
-      const harness = createWorkflowHarness(sources);
+    if (
+      scenario.name ===
+      "atomic RPC incomplete boundary maps REVIEW_INCOMPLETE and never legacy-mutates"
+    ) {
+      const source = candidate();
+      const harness = createWorkflowHarness([source]);
       const token = "formal-incomplete-token";
-      await createShare(
-        harness,
-        scenario.mode,
-        sources.map((source, index) => selection(source, index)),
-        token,
-      );
-      for (const [index, decision] of scenario.decisions.entries()) {
-        await saveDraft(harness, token, sources[index], decision);
-      }
+      await createShare(harness, scenario.mode, [selection(source)], token);
       harness.setSubmitBehavior(async () => {
         throw new Error("admission_share_review_incomplete");
       });
@@ -375,10 +356,21 @@ describe("admission share business workflow regression", () => {
           now,
         }),
       ).rejects.toMatchObject({ code: scenario.expectedError });
-      expect(harness.draftWrites.map((draft) => draft.decision)).toEqual(
-        scenario.decisions,
-      );
+      expect(harness.repo.submitReview).toHaveBeenCalledTimes(1);
+      expect(harness.repo.submitReview).toHaveBeenCalledWith({
+        shareBoardId: "share-board-1",
+        projectRemark: "仍有一条待判断",
+        submittedAt: now,
+      });
       expect(harness.submissionWrites).toHaveLength(0);
+      expect(harness.repo.upsertVendorReviews).not.toHaveBeenCalled();
+      expect(
+        harness.repo.updateRecordingReviewForVendor,
+      ).not.toHaveBeenCalled();
+      expect(
+        harness.repo.updateApplicationStatusForVendor,
+      ).not.toHaveBeenCalled();
+      expect(harness.repo.markShareBoardSubmitted).not.toHaveBeenCalled();
       return;
     }
 
@@ -411,7 +403,7 @@ describe("admission share business workflow regression", () => {
 
     if (
       scenario.name ===
-      "historical version result never overwrites latest state"
+      "atomic RPC skipped outcome preserves latest by avoiding legacy writes"
     ) {
       const source = candidate({
         recordingVersion: scenario.selectedVersion,
@@ -420,24 +412,26 @@ describe("admission share business workflow regression", () => {
       const harness = createWorkflowHarness([source]);
       const token = "historical-result-token";
       await createShare(harness, "formal_review", [selection(source)], token);
-      const skippedItem: AdmissionReviewSubmissionResultItem = {
-        vendorReviewId: "vendor-review-old-version",
-        applicationId: source.applicationId,
-        recordingSubmissionId: source.recordingSubmissionId,
-        recordingVersion: scenario.selectedVersion,
-        decision: "rejected",
-        remark: "旧版不采用",
-        reasonCodes: ["script_fit"],
-        syncStatus: scenario.expectedSyncStatus,
-        syncError: scenario.expectedSyncError,
-      };
-      harness.setSubmitBehavior(async () => ({
+      const rpcOutcome: SubmitAdmissionReviewResult = {
         submissionRevision: 1,
         submittedCount: 1,
         syncedCount: 0,
         skippedCount: 1,
-        items: [skippedItem],
-      }));
+        items: [
+          {
+            vendorReviewId: "vendor-review-old-version",
+            applicationId: source.applicationId,
+            recordingSubmissionId: source.recordingSubmissionId,
+            recordingVersion: scenario.selectedVersion,
+            decision: "rejected",
+            remark: "旧版不采用",
+            reasonCodes: ["script_fit"],
+            syncStatus: scenario.expectedSyncStatus,
+            syncError: scenario.expectedSyncError,
+          },
+        ],
+      };
+      harness.setSubmitBehavior(async () => rpcOutcome);
 
       const result = await submitVendorAdmissionReviews({
         repo: harness.repo,
@@ -446,14 +440,35 @@ describe("admission share business workflow regression", () => {
         now,
       });
 
-      expect(scenario.selectedVersion).toBeLessThan(scenario.latestVersion);
-      expect(result.items).toEqual([skippedItem]);
+      expect(harness.repo.submitReview).toHaveBeenCalledTimes(1);
+      expect(harness.repo.submitReview).toHaveBeenCalledWith({
+        shareBoardId: "share-board-1",
+        projectRemark: "历史版本复核",
+        submittedAt: now,
+      });
+      expect(result).toBe(rpcOutcome);
+      expect(result).toMatchObject({
+        submissionRevision: 1,
+        submittedCount: 1,
+        syncedCount: 0,
+        skippedCount: 1,
+        items: [
+          {
+            recordingSubmissionId: "recording-1-v1",
+            recordingVersion: 1,
+            syncStatus: "skipped",
+            syncError: "superseded_recording_version",
+          },
+        ],
+      });
+      expect(harness.repo.upsertVendorReviews).not.toHaveBeenCalled();
       expect(
         harness.repo.updateRecordingReviewForVendor,
       ).not.toHaveBeenCalled();
       expect(
         harness.repo.updateApplicationStatusForVendor,
       ).not.toHaveBeenCalled();
+      expect(harness.repo.markShareBoardSubmitted).not.toHaveBeenCalled();
       return;
     }
 
