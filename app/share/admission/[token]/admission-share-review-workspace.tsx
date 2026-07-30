@@ -22,6 +22,8 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 
+import { normalizeAbsoluteHttpUrl } from "@/lib/http/safe-public-url";
+
 import type {
   AdmissionSharePlaybackSource,
   PublicAdmissionShareBoard,
@@ -108,9 +110,16 @@ export function AdmissionShareReviewWorkspace({
     [board.items, drafts, isEditable],
   );
 
+  const closeListAndRestoreFocus = () => {
+    setIsListOpen(false);
+    requestAnimationFrame(() => listTriggerRef.current?.focus());
+  };
+
   const activate = (recordingSubmissionId: string) => {
     onActiveRecordingChange(recordingSubmissionId);
-    setIsListOpen(false);
+    if (isListOpen) {
+      closeListAndRestoreFocus();
+    }
   };
 
   const move = (offset: number) => {
@@ -123,7 +132,7 @@ export function AdmissionShareReviewWorkspace({
   return (
     <section
       aria-label="录屏复核工作台"
-      className="grid min-h-[680px] overflow-hidden rounded-lg border border-[var(--line)] bg-white lg:grid-cols-[280px_minmax(0,1fr)_340px]"
+      className="grid min-h-[680px] rounded-lg border border-[var(--line)] bg-white lg:grid-cols-[280px_minmax(0,1fr)_340px] lg:overflow-hidden"
     >
       <div className="hidden min-h-0 border-r border-[var(--line)] bg-[var(--bg-soft)] lg:flex">
         <RecordingListPane
@@ -183,7 +192,7 @@ export function AdmissionShareReviewWorkspace({
       </aside>
 
       {board.items.length > 0 ? (
-        <div className="sticky bottom-0 z-10 col-span-full flex items-center justify-between gap-3 border-t border-[var(--line)] bg-white px-4 py-3 lg:hidden">
+        <div className="sticky bottom-0 z-10 col-span-full flex items-center justify-between gap-3 border-t border-[var(--line)] bg-white px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] lg:hidden">
           <button
             type="button"
             className={secondaryButtonClass}
@@ -213,10 +222,7 @@ export function AdmissionShareReviewWorkspace({
           pendingOnly={pendingOnly}
           onPendingOnlyChange={setPendingOnly}
           onActivate={activate}
-          onClose={() => {
-            setIsListOpen(false);
-            requestAnimationFrame(() => listTriggerRef.current?.focus());
-          }}
+          onClose={closeListAndRestoreFocus}
         />
       ) : null}
     </section>
@@ -254,12 +260,17 @@ function RecordingListPane({
             录屏列表
           </h2>
           <span className="text-xs tabular-nums text-[var(--ink-500)]">
-            {board.progress.completed}/{board.progress.total}
+            {
+              board.items.filter((item) =>
+                isDraftComplete(drafts[item.recordingSubmissionId]),
+              ).length
+            }
+            /{board.items.length}
           </span>
         </div>
         <button
           type="button"
-          className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-xs font-medium text-[var(--ink-700)] outline-none hover:border-[var(--blue-300)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-offset-2"
+          className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-xs font-medium text-[var(--ink-700)] outline-none hover:border-[var(--blue-300)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-offset-2"
           aria-pressed={pendingOnly}
           onClick={() => onPendingOnlyChange(!pendingOnly)}
         >
@@ -408,10 +419,14 @@ function ActiveRecordingPane({
   onReportPlaybackIssue: AdmissionShareReviewWorkspaceProps["onReportPlaybackIssue"];
 }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
-  const sourceType = sourceTypeFor(item);
+  const safeItem = {
+    ...item,
+    externalUrl: normalizeAbsoluteHttpUrl(item.externalUrl),
+  };
+  const sourceType = sourceTypeFor(safeItem);
   const embedUrl =
-    sourceType === "external" && item.externalUrl
-      ? platformEmbedSource(item.externalUrl)
+    sourceType === "external" && safeItem.externalUrl
+      ? platformEmbedSource(safeItem.externalUrl)
       : null;
   const externalOnly = sourceType === "external";
 
@@ -438,11 +453,12 @@ function ActiveRecordingPane({
       <div className="grid flex-1 place-items-center p-3 sm:p-5">
         <div className="w-full max-w-5xl">
           {playbackFailed ? (
-            <PlaybackFallback item={item} />
+            <PlaybackFallback item={safeItem} />
           ) : embedUrl ? (
             <iframe
               className="aspect-video w-full rounded-md border-0 bg-black"
-              title={`${item.streamer.displayName || "主播"} 外部录屏播放器`}
+              title="外部平台录屏"
+              aria-label={`${item.streamer.displayName || "主播"} 外部录屏播放器`}
               src={embedUrl}
               allow="autoplay; fullscreen; picture-in-picture"
               allowFullScreen
@@ -459,8 +475,8 @@ function ActiveRecordingPane({
               onError={() => setPlaybackFailed(true)}
             />
           ) : externalOnly &&
-            item.externalUrl &&
-            isDirectVideoSource(item.externalUrl) ? (
+            safeItem.externalUrl &&
+            isDirectVideoSource(safeItem.externalUrl) ? (
             <video
               key={item.recordingSubmissionId}
               aria-label={`${item.streamer.displayName || "主播"} 外部录屏播放器`}
@@ -470,8 +486,8 @@ function ActiveRecordingPane({
               preload="metadata"
               onError={() => setPlaybackFailed(true)}
             />
-          ) : externalOnly && item.externalUrl ? (
-            <ExternalRecordingLink item={item} />
+          ) : externalOnly && safeItem.externalUrl ? (
+            <ExternalRecordingLink item={safeItem} />
           ) : (
             <NoPlayableSource />
           )}
@@ -482,7 +498,7 @@ function ActiveRecordingPane({
         <span>若播放异常，请反馈当前录屏，运营会跟进来源。</span>
         <button
           type="button"
-          className="inline-flex min-h-9 items-center gap-2 rounded-md border border-white/30 px-3 font-medium text-white outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50"
+          className="inline-flex min-h-11 items-center gap-2 rounded-md border border-white/30 px-3 font-medium text-white outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50"
           disabled={sourceType === "none"}
           onClick={() =>
             onReportPlaybackIssue(item.recordingSubmissionId, sourceType)
@@ -602,6 +618,10 @@ function DecisionPane({
                   onChange={() =>
                     onDraftChange(item.recordingSubmissionId, {
                       decision: option.value,
+                      reasonCodes:
+                        option.value === "selected" || option.value === "backup"
+                          ? []
+                          : currentDraft.reasonCodes,
                     })
                   }
                 />
@@ -628,7 +648,7 @@ function DecisionPane({
                   <label
                     key={option.key}
                     title={option.description}
-                    className="flex min-h-10 cursor-pointer items-center gap-2 rounded-md border border-[var(--line)] px-3 text-sm text-[var(--ink-700)] outline-none hover:border-[var(--blue-300)] focus-within:ring-2 focus-within:ring-[var(--blue-500)]"
+                    className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md border border-[var(--line)] px-3 text-sm text-[var(--ink-700)] outline-none hover:border-[var(--blue-300)] focus-within:ring-2 focus-within:ring-[var(--blue-500)]"
                   >
                     <input
                       type="checkbox"
@@ -741,7 +761,7 @@ function SaveStateIndicator({
       {state === "failed" ? (
         <button
           type="button"
-          className="ml-1 inline-flex min-h-8 items-center gap-1 rounded px-2 font-semibold outline-none hover:bg-[var(--danger-50)] focus-visible:ring-2 focus-visible:ring-[var(--danger-600)]"
+          className="ml-1 inline-flex min-h-11 items-center gap-1 rounded px-2 font-semibold outline-none hover:bg-[var(--danger-50)] focus-visible:ring-2 focus-visible:ring-[var(--danger-600)]"
           onClick={onRetry}
         >
           <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
@@ -770,7 +790,7 @@ function PlaybackFallback({
         </p>
         {item.externalUrl ? (
           <a
-            className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md border border-white/30 px-3 text-xs font-semibold outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white"
+            className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-md border border-white/30 px-3 text-xs font-semibold outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white"
             href={item.externalUrl}
             target="_blank"
             rel="noreferrer"
@@ -801,7 +821,7 @@ function ExternalRecordingLink({
           此来源不支持站内播放，请在新窗口查看原始录屏。
         </p>
         <a
-          className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md bg-white px-3 text-xs font-semibold text-[var(--ink-900)] outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-white"
+          className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-md bg-white px-3 text-xs font-semibold text-[var(--ink-900)] outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-white"
           href={item.externalUrl ?? item.playbackUrl}
           target="_blank"
           rel="noreferrer"
@@ -926,7 +946,10 @@ function platformEmbedSource(sourceUrl: string) {
 
 function bilibiliEmbedSource(sourceUrl: string) {
   const url = parseUrl(sourceUrl);
-  if (!url || !url.hostname.includes("bilibili.com")) {
+  if (
+    !url ||
+    (url.hostname !== "bilibili.com" && !url.hostname.endsWith(".bilibili.com"))
+  ) {
     return null;
   }
   const videoId = url.pathname.match(/\/video\/([^/?#]+)/)?.[1];
@@ -963,11 +986,8 @@ export function youtubeEmbedSource(sourceUrl: string) {
 }
 
 function parseUrl(sourceUrl: string) {
-  try {
-    return new URL(sourceUrl, "https://delivery.local");
-  } catch {
-    return null;
-  }
+  const safeUrl = normalizeAbsoluteHttpUrl(sourceUrl);
+  return safeUrl ? new URL(safeUrl) : null;
 }
 
 function isDirectVideoSource(sourceUrl: string) {
@@ -979,4 +999,4 @@ function isDirectVideoSource(sourceUrl: string) {
 }
 
 const secondaryButtonClass =
-  "inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold text-[var(--ink-700)] outline-none hover:border-[var(--blue-300)] hover:bg-[var(--blue-50)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold text-[var(--ink-700)] outline-none hover:border-[var(--blue-300)] hover:bg-[var(--blue-50)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50";

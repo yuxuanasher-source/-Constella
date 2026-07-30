@@ -1089,6 +1089,26 @@ describe("admission share board service", () => {
     );
   });
 
+  it.each([
+    "javascript:alert(document.domain)",
+    "data:text/html,<script>alert(1)</script>",
+    "/relative/video.mp4",
+  ])("removes an unsafe external URL from the public DTO: %s", async (url) => {
+    const snapshot = publicSnapshot();
+    snapshot.items[0].recordingUrl = url;
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(snapshot),
+    });
+
+    const dto = await getPublicAdmissionShareBoard({
+      repo,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(dto.items[0].externalUrl).toBeNull();
+  });
+
   it("returns preview mode as read-only without drafts or a submission receipt", async () => {
     const repo = createRepo({
       getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(

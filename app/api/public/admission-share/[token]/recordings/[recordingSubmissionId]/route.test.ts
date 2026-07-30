@@ -152,4 +152,47 @@ describe("public admission recording playback route", () => {
       error: "录屏来源暂时不可用，请重试或打开备用视频。",
     });
   });
+
+  it.each(["javascript:alert(1)", "data:text/html,unsafe"])(
+    "refuses to redirect an unsafe external recording URL: %s",
+    async (recordingUrl) => {
+      vi.mocked(getPublicAdmissionRecordingPlaybackSource).mockResolvedValue({
+        recordingUrl,
+        storagePath: null,
+      });
+
+      const response = await GET(
+        new Request(
+          "http://localhost/api/public/admission-share/plain-token/recordings/rec-2",
+        ),
+        { params },
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+      await expect(response.json()).resolves.toMatchObject({
+        code: "RECORDING_SOURCE_UNAVAILABLE",
+      });
+    },
+  );
+
+  it("refuses to redirect an unsafe signed storage URL", async () => {
+    vi.mocked(getPublicAdmissionRecordingPlaybackSource).mockResolvedValue({
+      recordingUrl: null,
+      storagePath: "private/path/rec-2.mp4",
+    });
+    vi.mocked(createSignedDownloadUrl).mockResolvedValue({
+      signedUrl: "data:text/html,unsafe",
+    } as never);
+
+    const response = await GET(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token/recordings/rec-2",
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("location")).toBeNull();
+  });
 });

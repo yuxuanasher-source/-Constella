@@ -10,6 +10,7 @@ import { createSignedDownloadUrl } from "@/features/storage/private-upload";
 import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
+import { normalizeAbsoluteHttpUrl } from "@/lib/http/safe-public-url";
 
 import { publicAdmissionShareErrorResponse } from "../../../public-route-utils";
 
@@ -48,11 +49,15 @@ export async function GET(
         path: source.storagePath,
         expiresInSeconds: 3600,
       });
-      return NextResponse.redirect(signed.signedUrl, 302);
+      const signedUrl = normalizeAbsoluteHttpUrl(signed.signedUrl);
+      if (signedUrl) {
+        return NextResponse.redirect(signedUrl, 302);
+      }
     }
 
-    if (source.recordingUrl) {
-      return NextResponse.redirect(source.recordingUrl, 302);
+    const recordingUrl = normalizeAbsoluteHttpUrl(source.recordingUrl);
+    if (recordingUrl) {
+      return NextResponse.redirect(recordingUrl, 302);
     }
 
     throw new PublicAdmissionShareError(

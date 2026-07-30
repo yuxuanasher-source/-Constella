@@ -7,6 +7,7 @@ import type {
   ReviewDraft,
   VendorAdmissionDecision,
 } from "./admission-share-types";
+import { normalizeAbsoluteHttpUrl } from "@/lib/http/safe-public-url";
 
 type SaveAdmissionShareDraftInput = {
   expectedRevision: number;
@@ -35,9 +36,22 @@ export class PublicAdmissionShareApiError extends Error {
 export async function loadAdmissionShareBoard(
   token: string,
 ): Promise<PublicAdmissionShareBoardResponse> {
-  return requestJson<PublicAdmissionShareBoardResponse>(shareUrl(token), {
-    method: "GET",
-  });
+  const response = await requestJson<PublicAdmissionShareBoardResponse>(
+    shareUrl(token),
+    {
+      method: "GET",
+    },
+  );
+  return {
+    ...response,
+    shareBoard: {
+      ...response.shareBoard,
+      items: response.shareBoard.items.map((item) => ({
+        ...item,
+        externalUrl: normalizeAbsoluteHttpUrl(item.externalUrl),
+      })),
+    },
+  };
 }
 
 export async function loadAdmissionShareDrafts(

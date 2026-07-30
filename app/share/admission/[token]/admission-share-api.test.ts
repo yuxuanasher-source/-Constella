@@ -80,6 +80,32 @@ describe("admission share public API", () => {
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("accessCode=");
   });
 
+  it("removes unsafe external URLs from an otherwise trusted board response", async () => {
+    fetchMock.mockResolvedValueOnce(
+      okJson({
+        ...boardResponse,
+        shareBoard: {
+          ...boardResponse.shareBoard,
+          items: [
+            { externalUrl: "javascript:alert(1)" },
+            { externalUrl: "data:text/html,unsafe" },
+            { externalUrl: "/relative/video.mp4" },
+            { externalUrl: "https://video.example/safe.mp4" },
+          ],
+        },
+      }),
+    );
+
+    const response = await loadAdmissionShareBoard("public-token");
+
+    expect(response.shareBoard.items.map((item) => item.externalUrl)).toEqual([
+      null,
+      null,
+      null,
+      "https://video.example/safe.mp4",
+    ]);
+  });
+
   it("saves a CAS draft with only the public draft fields", async () => {
     fetchMock.mockResolvedValueOnce(
       okJson({

@@ -242,7 +242,7 @@ describe("AdmissionSharePageClient", () => {
     );
   });
 
-  it("ignores an old save response after a fresh server hydration", async () => {
+  it("preserves the local draft and ignores an old save after ordinary hydration", async () => {
     const oldSave = deferred<{
       decision: "selected";
       remark: string;
@@ -292,9 +292,8 @@ describe("AdmissionSharePageClient", () => {
     await waitFor(() =>
       expect(loadAdmissionShareDrafts).toHaveBeenCalledTimes(2),
     );
-    expect(screen.getByLabelText("当前录屏备注")).toHaveValue(
-      "服务器刷新后的备注",
-    );
+    expect(screen.getByLabelText("入选")).toBeChecked();
+    expect(screen.getByLabelText("当前录屏备注")).toHaveValue("");
 
     await act(async () => {
       oldSave.resolve({
@@ -321,6 +320,42 @@ describe("AdmissionSharePageClient", () => {
         expectedRevision: 10,
         remark: "刷新后继续修改",
       }),
+    );
+  });
+
+  it("flushes and preserves a pending remark before an ordinary reload", async () => {
+    vi.mocked(loadAdmissionShareDrafts)
+      .mockResolvedValueOnce([...serverDrafts])
+      .mockResolvedValueOnce([...serverDrafts]);
+    vi.mocked(reportAdmissionSharePlaybackIssue).mockRejectedValueOnce(
+      new PublicAdmissionShareApiError(
+        "播放问题反馈失败，请稍后重试。",
+        "SHARE_SERVICE_UNAVAILABLE",
+        503,
+      ),
+    );
+
+    render(<AdmissionSharePageClient token="public-token" />);
+    await screen.findAllByText("待判断主播");
+    fireEvent.change(screen.getByLabelText("当前录屏备注"), {
+      target: { value: "普通刷新也必须保留的备注" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "反馈播放问题" }));
+    expect(
+      await screen.findByText("播放问题反馈失败，请稍后重试。"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+
+    await waitFor(() =>
+      expect(loadAdmissionShareBoard).toHaveBeenCalledTimes(2),
+    );
+    expect(saveAdmissionShareDraft).toHaveBeenCalledWith(
+      "public-token",
+      "recording-1",
+      expect.objectContaining({ remark: "普通刷新也必须保留的备注" }),
+    );
+    expect(screen.getByLabelText("当前录屏备注")).toHaveValue(
+      "普通刷新也必须保留的备注",
     );
   });
 
@@ -404,6 +439,35 @@ describe("AdmissionSharePageClient", () => {
     });
     expect(screen.getByRole("status")).toHaveTextContent("保存失败");
     expect(saveAdmissionShareDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves a positive decision atomically without stale negative reasons", async () => {
+    vi.mocked(loadAdmissionShareDrafts).mockResolvedValue([
+      {
+        ...serverDrafts[0],
+        decision: "needs_changes",
+        remark: "需要补充产品卖点",
+        reasonCodes: ["product_fit"],
+      },
+      serverDrafts[1],
+    ]);
+
+    render(<AdmissionSharePageClient token="public-token" />);
+    await screen.findAllByText("待判断主播");
+    fireEvent.click(screen.getByLabelText("入选"));
+
+    await waitFor(() =>
+      expect(saveAdmissionShareDraft).toHaveBeenCalledWith(
+        "public-token",
+        "recording-1",
+        {
+          expectedRevision: 2,
+          decision: "selected",
+          remark: "需要补充产品卖点",
+          reasonCodes: [],
+        },
+      ),
+    );
   });
 
   it("retries a non-conflict save from the item without rehydrating or losing local values", async () => {
@@ -711,6 +775,77 @@ describe("AdmissionSharePageClient", () => {
     expect(submitAdmissionShareReview).toHaveBeenCalledTimes(1);
     expect(await screen.findAllByText("本轮复核已提交并锁定")).toHaveLength(2);
     expect(loadAdmissionShareBoard).toHaveBeenCalledTimes(2);
+  });
+
+  it("locks immediately after POST success and retries a failed receipt with GET only", async () => {
+    const completeDrafts = serverDrafts.map((draft, index) => ({
+      ...draft,
+      decision: index === 0 ? ("selected" as const) : ("backup" as const),
+    }));
+    const lockedBoard: PublicAdmissionShareBoard = {
+      ...formalBoard,
+      canSubmit: false,
+      reviewState: "submitted_locked",
+      progress: { completed: 2, total: 2 },
+      latestSubmission: {
+        revision: 2,
+        submittedAt: "2026-07-30T09:00:00.000Z",
+        summary: {
+          selected: 1,
+          backup: 1,
+          rejected: 0,
+          needsChanges: 0,
+        },
+      },
+    };
+    vi.mocked(loadAdmissionShareDrafts).mockResolvedValue(completeDrafts);
+    vi.mocked(loadAdmissionShareBoard)
+      .mockResolvedValueOnce({
+        shareBoard: formalBoard,
+        vendorCheckpoints: [],
+      })
+      .mockRejectedValueOnce(
+        new PublicAdmissionShareApiError(
+          "回执暂时无法刷新。",
+          "SHARE_SERVICE_UNAVAILABLE",
+          503,
+        ),
+      )
+      .mockResolvedValueOnce({
+        shareBoard: lockedBoard,
+        vendorCheckpoints: [],
+      });
+
+    render(<AdmissionSharePageClient token="public-token" />);
+    await screen.findAllByText("待判断主播");
+    fireEvent.click(screen.getByRole("button", { name: "查看提交汇总" }));
+    fireEvent.change(screen.getByLabelText("项目整体备注"), {
+      target: { value: "提交后应立即清空" },
+    });
+    const submit = screen.getByRole("button", { name: "确认提交复核" });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    expect(
+      await screen.findByText("已提交，回执刷新失败。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("dialog", { name: "提交复核汇总" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText("本轮复核已提交并锁定").length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      screen.queryByText("提交复核失败，请稍后重试。"),
+    ).not.toBeInTheDocument();
+    expect(submitAdmissionShareReview).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "重试回执" }));
+    await waitFor(() =>
+      expect(loadAdmissionShareBoard).toHaveBeenCalledTimes(3),
+    );
+    expect(submitAdmissionShareReview).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/回执修订 2/)).toBeInTheDocument();
   });
 
   it("never reads or writes drafts for preview mode", async () => {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -164,6 +164,12 @@ describe("AdmissionShareReviewWorkspace", () => {
       "recording-1",
       expect.objectContaining({ remark: "需要补充产品卖点" }),
     );
+
+    fireEvent.click(screen.getByLabelText("入选"));
+    expect(onDraftChange).toHaveBeenLastCalledWith("recording-1", {
+      decision: "selected",
+      reasonCodes: [],
+    });
   });
 
   it("requires every item and complete negative reasons before opening summary", () => {
@@ -209,6 +215,22 @@ describe("AdmissionShareReviewWorkspace", () => {
     expect(screen.getByRole("button", { name: "下一条" })).toBeEnabled();
   });
 
+  it("derives progress from complete current drafts instead of stale board progress", () => {
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={{ ...formalBoard, progress: { completed: 0, total: 99 } }}
+      />,
+    );
+
+    expect(
+      within(screen.getByRole("navigation", { name: "录屏列表" })).getByText(
+        "1/2",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("0/99")).not.toBeInTheDocument();
+  });
+
   it("announces save failures and lets the reviewer retry", () => {
     render(
       <AdmissionShareReviewWorkspace
@@ -240,5 +262,138 @@ describe("AdmissionShareReviewWorkspace", () => {
       externalItem.playbackUrl,
     );
     expect(screen.getByRole("button", { name: "反馈播放问题" })).toBeEnabled();
+  });
+
+  it.each([
+    "javascript:alert(document.domain)",
+    "data:text/html,<script>alert(1)</script>",
+    "/relative/video.mp4",
+  ])("does not render an unsafe external URL: %s", (externalUrl) => {
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={{
+          ...formalBoard,
+          items: [{ ...formalBoard.items[1], externalUrl }],
+        }}
+        activeRecordingId="recording-2"
+      />,
+    );
+
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("外部平台录屏")).not.toBeInTheDocument();
+  });
+
+  it("embeds only exact Bilibili hosts or their subdomains", () => {
+    const { rerender } = render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={{
+          ...formalBoard,
+          items: [
+            {
+              ...formalBoard.items[1],
+              externalUrl: "https://evilbilibili.com/video/BV1xx411c7mD",
+            },
+          ],
+        }}
+        activeRecordingId="recording-2"
+      />,
+    );
+
+    expect(screen.queryByTitle("外部平台录屏")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "打开外部录屏" })).toHaveAttribute(
+      "href",
+      "https://evilbilibili.com/video/BV1xx411c7mD",
+    );
+
+    rerender(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={{
+          ...formalBoard,
+          items: [
+            {
+              ...formalBoard.items[1],
+              externalUrl: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+            },
+          ],
+        }}
+        activeRecordingId="recording-2"
+      />,
+    );
+    expect(screen.getByTitle("外部平台录屏")).toHaveAttribute(
+      "src",
+      expect.stringContaining("player.bilibili.com"),
+    );
+  });
+
+  it("keeps mobile navigation sticky outside clipping and honors safe area", () => {
+    render(<AdmissionShareReviewWorkspace {...formalProps} />);
+
+    const workspace = screen.getByRole("region", {
+      name: "录屏复核工作台",
+    });
+    const navigation = screen.getByRole("button", {
+      name: "下一条",
+    }).parentElement;
+    expect(workspace).not.toHaveClass("overflow-hidden");
+    expect(navigation).toHaveClass("sticky", "bottom-0");
+    expect(navigation?.className).toContain("safe-area-inset-bottom");
+  });
+
+  it("closes the mobile drawer through one focus-restoring path after selection", () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+    render(<AdmissionShareReviewWorkspace {...formalProps} />);
+    const trigger = screen.getByRole("button", { name: "打开录屏列表" });
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "选择录屏" });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /已完成主播/ }));
+
+    expect(onActiveRecordingChange).toHaveBeenCalledWith("recording-2");
+    expect(
+      screen.queryByRole("dialog", { name: "选择录屏" }),
+    ).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("uses at least 44px targets for critical mobile controls", () => {
+    render(<AdmissionShareReviewWorkspace {...formalProps} />);
+
+    for (const control of [
+      screen.getByRole("button", { name: "只看待判断" }),
+      screen.getByRole("button", { name: "打开录屏列表" }),
+      screen.getByRole("button", { name: "反馈播放问题" }),
+      screen.getByRole("button", { name: "上一条" }),
+      screen.getByRole("button", { name: "下一条" }),
+    ]) {
+      expect(control.className).toMatch(/\b(?:min-h-11|min-h-14|h-11)\b/);
+    }
+  });
+
+  it("uses at least 44px targets for retry and external-link actions", () => {
+    const { rerender } = render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        saveState={{ ...formalProps.saveState, "recording-1": "failed" }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "重试保存" }).className).toMatch(
+      /\bmin-h-11\b/,
+    );
+
+    rerender(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        activeRecordingId="recording-2"
+      />,
+    );
+    expect(
+      screen.getByRole("link", { name: "打开外部录屏" }).className,
+    ).toMatch(/\bmin-h-11\b/);
   });
 });

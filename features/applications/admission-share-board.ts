@@ -8,6 +8,7 @@ import {
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { AuditLogInput } from "@/lib/audit/audit";
+import { normalizeAbsoluteHttpUrl } from "@/lib/http/safe-public-url";
 import type { AppRole } from "@/lib/rbac/roles";
 
 import type {
@@ -2536,7 +2537,9 @@ function toPublicShareDto(
         token: input.token,
         recordingSubmissionId: item.recordingSubmissionId,
       }),
-      externalUrl: snapshot.allowExternalFallback ? item.recordingUrl : null,
+      externalUrl: snapshot.allowExternalFallback
+        ? normalizeAbsoluteHttpUrl(item.recordingUrl)
+        : null,
       sourceHealth: item.sourceHealth,
       hasPrivateStorage: Boolean(item.storagePath),
       streamer: item.streamer,
