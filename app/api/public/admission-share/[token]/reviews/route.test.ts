@@ -6,7 +6,9 @@ import {
   submitVendorAdmissionReviews,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
+import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
 
 vi.mock("@/features/applications/admission-share-board", () => ({
   SupabaseAdmissionShareBoardRepository: vi
@@ -21,6 +23,16 @@ vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseAdminClient: vi.fn(),
 }));
 
+vi.mock("@/features/applications/admission-share-access-store", () => ({
+  SupabaseAdmissionShareAccessStore: vi.fn().mockImplementation(function () {
+    return { store: "access-store" };
+  }),
+}));
+
+vi.mock("@/lib/http/admission-share-access-session", () => ({
+  readAdmissionShareAccessSession: vi.fn(),
+}));
+
 const params = Promise.resolve({ token: "plain-token" });
 const supabase = { client: "supabase" };
 
@@ -28,6 +40,9 @@ describe("public admission share review route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
+    vi.mocked(readAdmissionShareAccessSession).mockReturnValue(
+      "opaque-session-token",
+    );
     vi.mocked(submitVendorAdmissionReviews).mockResolvedValue({
       submittedCount: 2,
       syncedCount: 1,
@@ -72,10 +87,12 @@ describe("public admission share review route", () => {
     expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
       supabase,
     );
+    expect(SupabaseAdmissionShareAccessStore).toHaveBeenCalledWith(supabase);
     expect(submitVendorAdmissionReviews).toHaveBeenCalledWith({
       repo: { repo: "share-repo" },
+      accessStore: { store: "access-store" },
       token: "plain-token",
-      accessCode: "2468",
+      sessionToken: "opaque-session-token",
       recordEvaluation: expect.any(Function),
       input: expect.objectContaining({
         reviewerName: "Vendor Reviewer",
@@ -120,9 +137,10 @@ describe("public admission share review route", () => {
       { params },
     );
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({
-      error: "Recording version is stale",
+      code: "RECORDING_VERSION_STALE",
+      error: "录屏版本已更新，请刷新页面后重新提交。",
     });
   });
 });

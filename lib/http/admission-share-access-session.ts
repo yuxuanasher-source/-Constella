@@ -1,4 +1,4 @@
-import type { NextRequest, NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
 
 import { hashShareSecret } from "@/features/applications/admission-share-board";
 
@@ -9,12 +9,30 @@ export function admissionShareAccessCookieName(token: string) {
 }
 
 export function readAdmissionShareAccessSession(
-  request: NextRequest,
+  request: Request,
   token: string,
 ) {
-  return (
-    request.cookies.get(admissionShareAccessCookieName(token))?.value ?? null
-  );
+  const cookieName = admissionShareAccessCookieName(token);
+  const requestWithCookies = request as Request & {
+    cookies?: { get(name: string): { value: string } | undefined };
+  };
+  const nextCookie = requestWithCookies.cookies?.get(cookieName)?.value;
+  if (nextCookie) {
+    return nextCookie;
+  }
+
+  const rawCookie = request.headers.get("cookie");
+  if (!rawCookie) {
+    return null;
+  }
+  for (const cookie of rawCookie.split(";")) {
+    const separator = cookie.indexOf("=");
+    if (separator === -1 || cookie.slice(0, separator).trim() !== cookieName) {
+      continue;
+    }
+    return cookie.slice(separator + 1).trim() || null;
+  }
+  return null;
 }
 
 export function setAdmissionShareAccessSession(

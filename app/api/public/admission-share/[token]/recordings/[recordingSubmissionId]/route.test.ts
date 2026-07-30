@@ -6,9 +6,11 @@ import {
   getPublicAdmissionRecordingPlaybackSource,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
+import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSignedDownloadUrl } from "@/features/storage/private-upload";
 import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
 
 vi.mock("@/features/applications/admission-share-board", () => ({
   SupabaseAdmissionShareBoardRepository: vi
@@ -31,6 +33,16 @@ vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseAdminClient: vi.fn(),
 }));
 
+vi.mock("@/features/applications/admission-share-access-store", () => ({
+  SupabaseAdmissionShareAccessStore: vi.fn().mockImplementation(function () {
+    return { store: "access-store" };
+  }),
+}));
+
+vi.mock("@/lib/http/admission-share-access-session", () => ({
+  readAdmissionShareAccessSession: vi.fn(),
+}));
+
 const params = Promise.resolve({
   token: "plain-token",
   recordingSubmissionId: "rec-2",
@@ -41,6 +53,9 @@ describe("public admission recording playback route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
+    vi.mocked(readAdmissionShareAccessSession).mockReturnValue(
+      "opaque-session-token",
+    );
     vi.mocked(getPrivateStorageBucket).mockReturnValue("jy-private");
     vi.mocked(createSignedDownloadUrl).mockResolvedValue({
       signedUrl: "https://download.example/private-rec-2.mp4",
@@ -67,10 +82,12 @@ describe("public admission recording playback route", () => {
     expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
       supabase,
     );
+    expect(SupabaseAdmissionShareAccessStore).toHaveBeenCalledWith(supabase);
     expect(getPublicAdmissionRecordingPlaybackSource).toHaveBeenCalledWith({
       repo: { repo: "share-repo" },
+      accessStore: { store: "access-store" },
       token: "plain-token",
-      accessCode: "2468",
+      sessionToken: "opaque-session-token",
       recordingSubmissionId: "rec-2",
     });
     expect(createSignedDownloadUrl).toHaveBeenCalledWith({

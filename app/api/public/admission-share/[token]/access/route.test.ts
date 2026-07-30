@@ -91,4 +91,28 @@ describe("public admission share access route", () => {
       }),
     );
   });
+
+  it("returns a localized stable error when the code is invalid", async () => {
+    vi.mocked(authenticatePublicAdmissionShareAccess).mockRejectedValue(
+      new Error("Access code is invalid"),
+    );
+
+    const response = await POST(
+      new Request(
+        "https://example.com/api/public/admission-share/plain-token/access",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ accessCode: "wrong-code" }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      code: "ACCESS_CODE_INVALID",
+      error: "访问码不正确，请重新输入。",
+    });
+  });
 });

@@ -584,7 +584,7 @@ describe("admission share board service", () => {
             recordingVersion: 2,
             recordingUrl: "https://video.example/rec-1",
             playbackUrl:
-              "/api/public/admission-share/plain-token/recordings/rec-1?accessCode=2468",
+              "/api/public/admission-share/plain-token/recordings/rec-1",
             hasPrivateStorage: true,
             vendorReview: {
               decision: "backup",
@@ -598,7 +598,7 @@ describe("admission share board service", () => {
             recordingVersion: 1,
             recordingUrl: null,
             playbackUrl:
-              "/api/public/admission-share/plain-token/recordings/rec-2?accessCode=2468",
+              "/api/public/admission-share/plain-token/recordings/rec-2",
             hasPrivateStorage: true,
           }),
         ],

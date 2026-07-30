@@ -10,13 +10,14 @@ import {
 } from "@/features/admission-review/evaluation-service";
 import {
   getPublicAdmissionShareBoard,
+  PublicAdmissionShareError,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
-import {
-  jsonError,
-  RouteError,
-} from "@/features/applications/application-route-utils";
+import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
+
+import { publicAdmissionShareErrorResponse } from "../public-route-utils";
 
 export async function GET(
   request: Request,
@@ -29,15 +30,22 @@ export async function GET(
     // so we read through the service-role client which stays server-side only.
     const supabase = createSupabaseAdminClient();
     if (!supabase) {
-      throw new RouteError("Public share service is unavailable", 500);
+      throw new PublicAdmissionShareError(
+        "SHARE_SERVICE_UNAVAILABLE",
+        "Public share service is unavailable",
+        503,
+      );
     }
 
     const repo = new SupabaseAdmissionShareBoardRepository(supabase);
+    const accessStore = new SupabaseAdmissionShareAccessStore(supabase);
     const { organizationId, ...shareBoard } =
       await getPublicAdmissionShareBoard({
         repo,
+        accessStore,
         token,
-        accessCode: optionalSearchParam(request, "accessCode"),
+        sessionToken:
+          readAdmissionShareAccessSession(request, token) ?? undefined,
       });
 
     // 厂家端可选理由标签（仅 key/名称/说明，不泄漏内部配置）。
@@ -59,13 +67,8 @@ export async function GET(
       vendorCheckpoints,
     });
   } catch (error) {
-    return jsonError(error);
+    return publicAdmissionShareErrorResponse(error);
   }
-}
-
-function optionalSearchParam(request: Request, key: string) {
-  const value = new URL(request.url).searchParams.get(key);
-  return value?.trim() || undefined;
 }
 
 function toPublicResponse(

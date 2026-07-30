@@ -5,11 +5,14 @@ import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admis
 import {
   authenticatePublicAdmissionShareAccess,
   hashShareSecret,
+  PublicAdmissionShareError,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import { ValidationError, parseJsonBody } from "@/lib/http/parse-json-body";
 import { setAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
+
+import { publicAdmissionShareErrorResponse } from "../../public-route-utils";
 
 const accessBodySchema = z.object({
   accessCode: z.string().trim().min(1).max(64),
@@ -24,12 +27,10 @@ export async function POST(
     const body = await parseJsonBody(request, accessBodySchema);
     const supabase = createSupabaseAdminClient();
     if (!supabase) {
-      return NextResponse.json(
-        {
-          code: "SHARE_SERVICE_UNAVAILABLE",
-          error: "Share service unavailable",
-        },
-        { status: 503 },
+      throw new PublicAdmissionShareError(
+        "SHARE_SERVICE_UNAVAILABLE",
+        "Public share service is unavailable",
+        503,
       );
     }
 
@@ -53,39 +54,15 @@ export async function POST(
     return response;
   } catch (error) {
     if (error instanceof ValidationError) {
-      return NextResponse.json(
-        { code: "ACCESS_CODE_INVALID", error: "Access code is invalid" },
-        { status: 400 },
+      return publicAdmissionShareErrorResponse(
+        new PublicAdmissionShareError(
+          "ACCESS_CODE_INVALID",
+          "Access code is invalid",
+          401,
+        ),
       );
     }
-    if (
-      error &&
-      typeof error === "object" &&
-      "statusCode" in error &&
-      "code" in error
-    ) {
-      const retryAfterSeconds =
-        "retryAfterSeconds" in error &&
-        typeof error.retryAfterSeconds === "number"
-          ? error.retryAfterSeconds
-          : undefined;
-      const response = NextResponse.json(
-        {
-          code: String(error.code),
-          error: error instanceof Error ? error.message : "Share access failed",
-          ...(retryAfterSeconds ? { retryAfterSeconds } : {}),
-        },
-        { status: Number(error.statusCode) || 400 },
-      );
-      if (retryAfterSeconds) {
-        response.headers.set("Retry-After", String(retryAfterSeconds));
-      }
-      return response;
-    }
-    return NextResponse.json(
-      { code: "SHARE_SERVICE_UNAVAILABLE", error: "Share service unavailable" },
-      { status: 503 },
-    );
+    return publicAdmissionShareErrorResponse(error);
   }
 }
 

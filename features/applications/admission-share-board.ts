@@ -144,7 +144,13 @@ export class PublicAdmissionShareError extends Error {
     public readonly code:
       | "ACCESS_CODE_REQUIRED"
       | "ACCESS_CODE_INVALID"
-      | "ACCESS_RATE_LIMITED",
+      | "ACCESS_RATE_LIMITED"
+      | "SHARE_NOT_AVAILABLE"
+      | "SHARE_EXPIRED"
+      | "RECORDING_NOT_SHARED"
+      | "REVIEW_VALIDATION_FAILED"
+      | "RECORDING_VERSION_STALE"
+      | "SHARE_SERVICE_UNAVAILABLE",
     message: string,
     public readonly statusCode: number,
     public readonly retryAfterSeconds?: number,
@@ -872,7 +878,7 @@ export async function getPublicAdmissionShareBoard({
     now,
   });
 
-  return toPublicShareDto(snapshot, { token, accessCode });
+  return toPublicShareDto(snapshot, { token });
 }
 
 export async function authenticatePublicAdmissionShareAccess({
@@ -985,7 +991,11 @@ export async function getPublicAdmissionRecordingPlaybackSource({
     (entry) => entry.recordingSubmissionId === recordingSubmissionId,
   );
   if (!item) {
-    throw new Error("Recording is not part of this share board");
+    throw new PublicAdmissionShareError(
+      "RECORDING_NOT_SHARED",
+      "Recording is not part of this share board",
+      404,
+    );
   }
   return {
     recordingUrl: item.recordingUrl,
@@ -1046,10 +1056,18 @@ export async function submitVendorAdmissionReviews({
     now,
   });
   if (!snapshot.allowVendorSubmit) {
-    throw new Error("Share board does not allow vendor submissions");
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Share board does not allow vendor submissions",
+      400,
+    );
   }
   if (!Array.isArray(input.items) || input.items.length === 0) {
-    throw new Error("Vendor review submission requires at least one item");
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Vendor review submission requires at least one item",
+      400,
+    );
   }
 
   const itemsByRecording = new Map(
@@ -1062,10 +1080,18 @@ export async function submitVendorAdmissionReviews({
   for (const item of input.items) {
     const snapshotItem = itemsByRecording.get(item.recordingSubmissionId);
     if (!snapshotItem) {
-      throw new Error("Recording is not part of this share board");
+      throw new PublicAdmissionShareError(
+        "RECORDING_NOT_SHARED",
+        "Recording is not part of this share board",
+        404,
+      );
     }
     if (snapshotItem.recordingVersion !== item.recordingVersion) {
-      throw new Error("Recording version is stale");
+      throw new PublicAdmissionShareError(
+        "RECORDING_VERSION_STALE",
+        "Recording version is stale",
+        409,
+      );
     }
     assertVendorDecision(item.decision);
 
@@ -1074,7 +1100,11 @@ export async function submitVendorAdmissionReviews({
       (item.decision === "rejected" || item.decision === "needs_changes") &&
       !remark
     ) {
-      throw new Error("Vendor rejection or change request requires a remark");
+      throw new PublicAdmissionShareError(
+        "REVIEW_VALIDATION_FAILED",
+        "Vendor rejection or change request requires a remark",
+        400,
+      );
     }
     const syncPatch = mapVendorDecisionToSyncPatch(
       item.decision,
@@ -1344,10 +1374,18 @@ async function requireAvailablePublicSnapshot({
   const tokenHash = hashShareSecret(token.trim());
   const snapshot = await repo.getPublicShareBoardSnapshot(tokenHash);
   if (!snapshot) {
-    throw new Error("Share link is not available");
+    throw new PublicAdmissionShareError(
+      "SHARE_NOT_AVAILABLE",
+      "Share link is not available",
+      404,
+    );
   }
   if (snapshot.status !== "active" || snapshot.expiresAt <= now) {
-    throw new Error("Share link is expired or revoked");
+    throw new PublicAdmissionShareError(
+      "SHARE_EXPIRED",
+      "Share link is expired or revoked",
+      410,
+    );
   }
   return snapshot;
 }
@@ -1358,7 +1396,7 @@ function earlierIsoDate(left: string, right: string) {
 
 function toPublicShareDto(
   snapshot: PublicAdmissionShareBoardSnapshot,
-  input: { token: string; accessCode?: string },
+  input: { token: string },
 ) {
   return {
     id: snapshot.id,
@@ -1379,7 +1417,6 @@ function toPublicShareDto(
       playbackUrl: item.storagePath
         ? publicAdmissionRecordingPlaybackUrl({
             token: input.token,
-            accessCode: input.accessCode,
             recordingSubmissionId: item.recordingSubmissionId,
           })
         : item.recordingUrl,
@@ -1398,16 +1435,11 @@ function toPublicShareDto(
 
 function publicAdmissionRecordingPlaybackUrl(input: {
   token: string;
-  accessCode?: string;
   recordingSubmissionId: string;
 }) {
-  const accessCode = input.accessCode?.trim();
-  const query = accessCode
-    ? `?accessCode=${encodeURIComponent(accessCode)}`
-    : "";
   return `/api/public/admission-share/${encodeURIComponent(
     input.token,
-  )}/recordings/${encodeURIComponent(input.recordingSubmissionId)}${query}`;
+  )}/recordings/${encodeURIComponent(input.recordingSubmissionId)}`;
 }
 
 function assertVendorDecision(value: VendorAdmissionDecision) {
@@ -1418,7 +1450,11 @@ function assertVendorDecision(value: VendorAdmissionDecision) {
     value !== "rejected" &&
     value !== "needs_changes"
   ) {
-    throw new Error("Invalid vendor decision");
+    throw new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Invalid vendor decision",
+      400,
+    );
   }
 }
 

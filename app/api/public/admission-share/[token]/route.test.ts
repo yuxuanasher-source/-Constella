@@ -6,7 +6,9 @@ import {
   getPublicAdmissionShareBoard,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
+import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
 
 vi.mock("@/features/applications/admission-share-board", () => ({
   SupabaseAdmissionShareBoardRepository: vi
@@ -21,6 +23,16 @@ vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseAdminClient: vi.fn(),
 }));
 
+vi.mock("@/features/applications/admission-share-access-store", () => ({
+  SupabaseAdmissionShareAccessStore: vi.fn().mockImplementation(function () {
+    return { store: "access-store" };
+  }),
+}));
+
+vi.mock("@/lib/http/admission-share-access-session", () => ({
+  readAdmissionShareAccessSession: vi.fn(),
+}));
+
 const params = Promise.resolve({ token: "plain-token" });
 const supabase = { client: "supabase" };
 
@@ -28,6 +40,9 @@ describe("public admission share route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
+    vi.mocked(readAdmissionShareAccessSession).mockReturnValue(
+      "opaque-session-token",
+    );
     vi.mocked(getPublicAdmissionShareBoard).mockResolvedValue({
       id: "share-1",
       title: "Vendor review",
@@ -74,10 +89,12 @@ describe("public admission share route", () => {
     expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
       supabase,
     );
+    expect(SupabaseAdmissionShareAccessStore).toHaveBeenCalledWith(supabase);
     expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith({
       repo: { repo: "share-repo" },
+      accessStore: { store: "access-store" },
       token: "plain-token",
-      accessCode: "2468",
+      sessionToken: "opaque-session-token",
     });
     expect(JSON.stringify(body)).not.toContain("tokenHash");
     expect(JSON.stringify(body)).not.toContain("storagePath");
@@ -94,9 +111,23 @@ describe("public admission share route", () => {
       params,
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(410);
     await expect(response.json()).resolves.toEqual({
-      error: "Share link is expired or revoked",
+      code: "SHARE_EXPIRED",
+      error: "分享链接已过期或已撤销。",
     });
+  });
+
+  it("does not pass an access code from the URL to the service", async () => {
+    await GET(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token?accessCode=must-not-leak",
+      ),
+      { params },
+    );
+
+    expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith(
+      expect.not.objectContaining({ accessCode: expect.anything() }),
+    );
   });
 });
