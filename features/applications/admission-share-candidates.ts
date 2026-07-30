@@ -47,6 +47,13 @@ type PlaybackRow = {
 };
 
 const candidatePageSize = 1000;
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type CandidateCursor = {
+  applicationId: string;
+  version: number;
+};
 
 export type AdmissionShareCandidateDto = {
   applicationId: string;
@@ -94,8 +101,9 @@ export class SupabaseAdmissionShareCandidateRepository implements AdmissionShare
     await this.assertProjectOwnership(input);
 
     const rows: CandidateRow[] = [];
-    for (let from = 0; ; from += candidatePageSize) {
-      const { data, error } = await this.supabase
+    let cursor: CandidateCursor | null = null;
+    for (;;) {
+      let query = this.supabase
         .from("recording_submissions")
         .select(
           `
@@ -127,8 +135,13 @@ export class SupabaseAdmissionShareCandidateRepository implements AdmissionShare
         )
         .eq("project_id", input.projectId)
         .order("application_id", { ascending: true })
-        .order("version", { ascending: false })
-        .range(from, from + candidatePageSize - 1);
+        .order("version", { ascending: false });
+
+      if (cursor) {
+        query = query.or(candidateCursorFilter(cursor));
+      }
+
+      const { data, error } = await query.limit(candidatePageSize);
 
       if (error) {
         throw error;
@@ -139,6 +152,7 @@ export class SupabaseAdmissionShareCandidateRepository implements AdmissionShare
       if (page.length < candidatePageSize) {
         break;
       }
+      cursor = candidateCursorFromRow(page[page.length - 1]);
     }
 
     return toCandidateDtos(rows);
@@ -197,6 +211,28 @@ export class SupabaseAdmissionShareCandidateRepository implements AdmissionShare
       throw new RouteError("Project not found", 404);
     }
   }
+}
+
+function candidateCursorFromRow(row: CandidateRow): CandidateCursor {
+  if (
+    !uuidPattern.test(row.application_id) ||
+    !Number.isInteger(row.version) ||
+    row.version <= 0
+  ) {
+    throw new Error("Invalid admission share candidate cursor");
+  }
+
+  return {
+    applicationId: row.application_id,
+    version: row.version,
+  };
+}
+
+function candidateCursorFilter(cursor: CandidateCursor) {
+  return [
+    `application_id.gt.${cursor.applicationId}`,
+    `and(application_id.eq.${cursor.applicationId},version.lt.${cursor.version})`,
+  ].join(",");
 }
 
 export async function listAdmissionShareCandidates(

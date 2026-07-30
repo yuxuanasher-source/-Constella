@@ -9,7 +9,7 @@ import {
 function candidateRow(index: number) {
   return {
     id: `recording-${index}`,
-    application_id: `app-${index}`,
+    application_id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
     streamer_id: `streamer-${index}`,
     version: 1,
     status: "rejected",
@@ -96,15 +96,19 @@ describe("admission share candidates", () => {
     ];
     const order = vi.fn();
     const range = vi.fn().mockResolvedValue({ data: rows, error: null });
+    const limit = vi.fn().mockResolvedValue({ data: rows, error: null });
     const recordingQuery = {
       select: vi.fn(),
       eq: vi.fn(),
       order,
+      or: vi.fn(),
+      limit,
       range,
     };
     recordingQuery.select.mockReturnValue(recordingQuery);
     recordingQuery.eq.mockReturnValue(recordingQuery);
     order.mockReturnValue(recordingQuery);
+    recordingQuery.or.mockReturnValue(recordingQuery);
     const projectMaybeSingle = vi.fn().mockResolvedValue({
       data: { id: "project-1", organization_id: "org-1" },
       error: null,
@@ -185,33 +189,49 @@ describe("admission share candidates", () => {
     });
   });
 
-  it("paginates beyond the PostgREST max rows without omissions or duplicates", async () => {
+  it("keeps the original set stable when a higher version is inserted before the cursor", async () => {
     const rows = Array.from({ length: 1001 }, (_, index) =>
       candidateRow(index),
     );
     rows[999] = {
       ...rows[999],
-      application_id: "app-page-boundary",
       version: 2,
     };
     rows[1000] = {
       ...rows[1000],
-      application_id: "app-page-boundary",
+      application_id: rows[999].application_id,
       version: 1,
     };
+    const insertedAfterFirstPage = {
+      ...rows[999],
+      id: "recording-inserted-after-first-page",
+      version: 3,
+    };
+    const firstPage = rows.slice(0, 1000);
+    const secondPage = rows.slice(1000);
+    const limit = vi
+      .fn()
+      .mockResolvedValueOnce({ data: firstPage, error: null })
+      .mockResolvedValueOnce({ data: secondPage, error: null });
     const range = vi
       .fn()
-      .mockResolvedValueOnce({ data: rows.slice(0, 1000), error: null })
-      .mockResolvedValueOnce({ data: rows.slice(1000), error: null });
+      .mockResolvedValueOnce({ data: firstPage, error: null })
+      .mockResolvedValueOnce({
+        data: [insertedAfterFirstPage, ...rows].slice(1000).slice(0, 1000),
+        error: null,
+      });
     const recordingQuery = {
       select: vi.fn(),
       eq: vi.fn(),
       order: vi.fn(),
+      or: vi.fn(),
+      limit,
       range,
     };
     recordingQuery.select.mockReturnValue(recordingQuery);
     recordingQuery.eq.mockReturnValue(recordingQuery);
     recordingQuery.order.mockReturnValue(recordingQuery);
+    recordingQuery.or.mockReturnValue(recordingQuery);
     const projectMaybeSingle = vi.fn().mockResolvedValue({
       data: { id: "project-1" },
       error: null,
@@ -239,10 +259,19 @@ describe("admission share candidates", () => {
     expect(
       new Set(candidates.map((item) => item.recordingSubmissionId)).size,
     ).toBe(1001);
+    expect(
+      candidates.some(
+        (item) => item.recordingSubmissionId === insertedAfterFirstPage.id,
+      ),
+    ).toBe(false);
     expect(candidates[999].isLatestVersion).toBe(true);
     expect(candidates[1000].isLatestVersion).toBe(false);
-    expect(range).toHaveBeenNthCalledWith(1, 0, 999);
-    expect(range).toHaveBeenNthCalledWith(2, 1000, 1999);
+    expect(range).not.toHaveBeenCalled();
+    expect(limit).toHaveBeenNthCalledWith(1, 1000);
+    expect(limit).toHaveBeenNthCalledWith(2, 1000);
+    expect(recordingQuery.or).toHaveBeenCalledWith(
+      `application_id.gt.${rows[999].application_id},and(application_id.eq.${rows[999].application_id},version.lt.2)`,
+    );
     expect(recordingQuery.order).toHaveBeenNthCalledWith(1, "application_id", {
       ascending: true,
     });
@@ -268,6 +297,10 @@ describe("admission share candidates", () => {
       candidateRow(index),
     );
     const pageError = new Error("candidate page failed");
+    const limit = vi
+      .fn()
+      .mockResolvedValueOnce({ data: rows, error: null })
+      .mockResolvedValueOnce({ data: null, error: pageError });
     const range = vi
       .fn()
       .mockResolvedValueOnce({ data: rows, error: null })
@@ -276,11 +309,14 @@ describe("admission share candidates", () => {
       select: vi.fn(),
       eq: vi.fn(),
       order: vi.fn(),
+      or: vi.fn(),
+      limit,
       range,
     };
     recordingQuery.select.mockReturnValue(recordingQuery);
     recordingQuery.eq.mockReturnValue(recordingQuery);
     recordingQuery.order.mockReturnValue(recordingQuery);
+    recordingQuery.or.mockReturnValue(recordingQuery);
     const projectQuery = {
       select: vi.fn(),
       eq: vi.fn(),
@@ -303,7 +339,58 @@ describe("admission share candidates", () => {
         projectId: "project-1",
       }),
     ).rejects.toBe(pageError);
-    expect(range).toHaveBeenCalledTimes(2);
+    expect(range).not.toHaveBeenCalled();
+    expect(limit).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an invalid database cursor before building a PostgREST filter", async () => {
+    const rows = Array.from({ length: 1000 }, (_, index) =>
+      candidateRow(index),
+    );
+    rows[999] = {
+      ...rows[999],
+      application_id: "bad),or(application_id.neq.null",
+    };
+    const limit = vi.fn().mockResolvedValue({ data: rows, error: null });
+    const range = vi
+      .fn()
+      .mockResolvedValueOnce({ data: rows, error: null })
+      .mockResolvedValueOnce({ data: [], error: null });
+    const recordingQuery = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      order: vi.fn(),
+      or: vi.fn(),
+      limit,
+      range,
+    };
+    recordingQuery.select.mockReturnValue(recordingQuery);
+    recordingQuery.eq.mockReturnValue(recordingQuery);
+    recordingQuery.order.mockReturnValue(recordingQuery);
+    recordingQuery.or.mockReturnValue(recordingQuery);
+    const projectQuery = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      maybeSingle: vi.fn().mockResolvedValue({
+        data: { id: "project-1" },
+        error: null,
+      }),
+    };
+    projectQuery.select.mockReturnValue(projectQuery);
+    projectQuery.eq.mockReturnValue(projectQuery);
+    const repo = new SupabaseAdmissionShareCandidateRepository({
+      from: vi.fn((table: string) =>
+        table === "projects" ? projectQuery : recordingQuery,
+      ),
+    } as never);
+
+    await expect(
+      listAdmissionShareCandidates(repo, {
+        organizationId: "org-1",
+        projectId: "project-1",
+      }),
+    ).rejects.toThrow("Invalid admission share candidate cursor");
+    expect(recordingQuery.or).not.toHaveBeenCalled();
   });
 
   it("lets the host play a contributor-owned original without mutable status filters", async () => {
