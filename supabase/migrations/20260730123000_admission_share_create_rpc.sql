@@ -292,10 +292,10 @@ begin
     v_board.id,
     p_organization_id,
     p_project_id,
-    selected_item.application_id,
-    selected_item.recording_submission_id,
-    selected_item.recording_version,
-    selected_item.sort_order,
+    payload_item.application_id,
+    payload_item.recording_submission_id,
+    payload_item.recording_version,
+    payload_item.sort_order,
     recording.mcn_review_decision,
     case
       when nullif(btrim(recording.storage_path), '') is not null
@@ -308,15 +308,15 @@ begin
       else 'blocked'
     end,
     coalesce(p_allow_external_fallback, true)
-  from jsonb_to_recordset(p_items) as selected_item(
+  from jsonb_to_recordset(p_items) as payload_item(
     application_id uuid,
     recording_submission_id uuid,
     recording_version integer,
     sort_order integer
   )
   join public.recording_submissions as recording
-    on recording.id = selected_item.recording_submission_id
-  order by selected_item.sort_order;
+    on recording.id = payload_item.recording_submission_id
+  order by payload_item.sort_order;
 
   return v_board;
 end;

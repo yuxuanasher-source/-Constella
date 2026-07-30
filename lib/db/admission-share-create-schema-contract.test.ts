@@ -67,6 +67,15 @@ describe("admission share atomic create RPC", () => {
     );
   });
 
+  it("keeps the insert query alias distinct from the PL/pgSQL loop record", () => {
+    expect(sql).toMatch(
+      /from jsonb_to_recordset\(p_items\) as payload_item\([\s\S]+join public\.recording_submissions as recording[\s\S]+recording\.id = payload_item\.recording_submission_id[\s\S]+order by payload_item\.sort_order/u,
+    );
+    expect(sql).not.toMatch(
+      /from jsonb_to_recordset\(p_items\) as selected_item\(/u,
+    );
+  });
+
   it("grants the project host MCN read-only access to contributor-owned selections", () => {
     expect(sql).toMatch(
       /create policy project_applications_host_mcn_share_read[\s\S]+on public\.project_applications[\s\S]+for select[\s\S]+to authenticated[\s\S]+project\.id = project_applications\.project_id[\s\S]+public\.is_org_member\(project\.organization_id\)[\s\S]+public\.is_mcn_staff\(project\.organization_id\)[\s\S]+public\.can_access_project\(project\.id\)/u,
