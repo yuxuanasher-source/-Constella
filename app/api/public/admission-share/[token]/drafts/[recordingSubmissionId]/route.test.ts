@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PUT } from "./route";
 
 import {
+  PublicAdmissionShareError,
   savePublicAdmissionReviewDraft,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
@@ -139,5 +140,45 @@ describe("public admission share draft save route", () => {
       code: "SHARE_SERVICE_UNAVAILABLE",
     });
     expect(savePublicAdmissionReviewDraft).not.toHaveBeenCalled();
+  });
+
+  it("rejects a passwordless formal draft save when the HttpOnly session cookie is missing", async () => {
+    vi.mocked(readAdmissionShareAccessSession).mockReturnValue(null);
+    vi.mocked(savePublicAdmissionReviewDraft).mockRejectedValue(
+      new PublicAdmissionShareError(
+        "ACCESS_CODE_REQUIRED",
+        "A valid access session is required",
+        401,
+      ),
+    );
+
+    const response = await PUT(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token/drafts/rec-1?accessCode=must-not-be-read",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            expectedRevision: 0,
+            decision: "pending",
+            remark: "",
+            reasonCodes: [],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(401);
+    expect(savePublicAdmissionReviewDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: "plain-token",
+        sessionToken: undefined,
+        recordingSubmissionId: "rec-1",
+      }),
+    );
+    expect(savePublicAdmissionReviewDraft).toHaveBeenCalledWith(
+      expect.not.objectContaining({ accessCode: expect.anything() }),
+    );
   });
 });

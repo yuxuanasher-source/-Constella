@@ -1163,6 +1163,66 @@ export async function getPublicAdmissionShareBoard({
   return toPublicShareDto(snapshot, { token });
 }
 
+export async function ensurePublicAdmissionShareSession({
+  repo,
+  accessStore,
+  token,
+  sessionToken,
+  now = new Date().toISOString(),
+  sessionTokenFactory = createShareToken,
+}: {
+  repo: AdmissionShareBoardRepository;
+  accessStore: AdmissionShareAccessStore;
+  token: string;
+  sessionToken?: string;
+  now?: string;
+  sessionTokenFactory?: () => string;
+}): Promise<
+  | {
+      sessionToken: string;
+      expiresAt: string;
+      created: true;
+    }
+  | {
+      sessionToken: string;
+      created: false;
+    }
+  | null
+> {
+  const snapshot = await requireAvailablePublicSnapshot({ repo, token, now });
+  if (
+    snapshot.mode !== "formal_review" ||
+    !snapshot.allowVendorSubmit ||
+    snapshot.accessCodeHash
+  ) {
+    return null;
+  }
+
+  if (
+    sessionToken &&
+    (await accessStore.hasValidSession({
+      shareBoardId: snapshot.id,
+      sessionToken,
+      now,
+    }))
+  ) {
+    return { sessionToken, created: false };
+  }
+
+  const newSessionToken = sessionTokenFactory();
+  const expiresAt = earlierIsoDate(snapshot.expiresAt, daysFrom(now, 7));
+  await accessStore.createSession({
+    shareBoardId: snapshot.id,
+    sessionToken: newSessionToken,
+    expiresAt,
+  });
+  return {
+    sessionToken: newSessionToken,
+    expiresAt,
+    created: true,
+  };
+}
+
 export async function listPublicAdmissionReviewDrafts({
   repo,
   accessStore,
@@ -1176,7 +1236,7 @@ export async function listPublicAdmissionReviewDrafts({
   sessionToken?: string;
   now?: string;
 }): Promise<AdmissionReviewDraftDto[]> {
-  const snapshot = await requirePublicSnapshot({
+  const snapshot = await requirePublicReviewDraftSnapshot({
     repo,
     accessStore,
     token,
@@ -1211,7 +1271,7 @@ export async function savePublicAdmissionReviewDraft({
   input: SaveAdmissionReviewDraftInput;
   now?: string;
 }): Promise<AdmissionReviewDraftDto> {
-  const snapshot = await requirePublicSnapshot({
+  const snapshot = await requirePublicReviewDraftSnapshot({
     repo,
     accessStore,
     token,
@@ -1894,6 +1954,42 @@ async function requirePublicSnapshot({
     accessCodeWasProvided
       ? "Access code is invalid"
       : "Access code is required",
+    401,
+  );
+}
+
+async function requirePublicReviewDraftSnapshot({
+  repo,
+  accessStore,
+  token,
+  sessionToken,
+  now,
+}: {
+  repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
+  token: string;
+  sessionToken?: string;
+  now: string;
+}) {
+  const snapshot = await requireAvailablePublicSnapshot({ repo, token, now });
+  if (snapshot.mode !== "formal_review" || !snapshot.allowVendorSubmit) {
+    return snapshot;
+  }
+  if (
+    sessionToken &&
+    accessStore &&
+    (await accessStore.hasValidSession({
+      shareBoardId: snapshot.id,
+      sessionToken,
+      now,
+    }))
+  ) {
+    return snapshot;
+  }
+
+  throw new PublicAdmissionShareError(
+    "ACCESS_CODE_REQUIRED",
+    "A valid access session is required to review drafts",
     401,
   );
 }

@@ -4,6 +4,7 @@ import { GET } from "./route";
 
 import {
   listPublicAdmissionReviewDrafts,
+  PublicAdmissionShareError,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
@@ -121,5 +122,34 @@ describe("public admission share drafts route", () => {
       code: "SHARE_SERVICE_UNAVAILABLE",
     });
     expect(listPublicAdmissionReviewDrafts).not.toHaveBeenCalled();
+  });
+
+  it("rejects a passwordless formal draft read when the HttpOnly session cookie is missing", async () => {
+    vi.mocked(readAdmissionShareAccessSession).mockReturnValue(null);
+    vi.mocked(listPublicAdmissionReviewDrafts).mockRejectedValue(
+      new PublicAdmissionShareError(
+        "ACCESS_CODE_REQUIRED",
+        "A valid access session is required",
+        401,
+      ),
+    );
+
+    const response = await GET(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token/drafts?accessCode=must-not-be-read",
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(401);
+    expect(listPublicAdmissionReviewDrafts).toHaveBeenCalledWith({
+      repo: { repo: "share-repo" },
+      accessStore: { store: "access-store" },
+      token: "plain-token",
+      sessionToken: undefined,
+    });
+    expect(listPublicAdmissionReviewDrafts).toHaveBeenCalledWith(
+      expect.not.objectContaining({ accessCode: expect.anything() }),
+    );
   });
 });

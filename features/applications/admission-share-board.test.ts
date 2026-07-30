@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   authenticatePublicAdmissionShareAccess,
   createAdmissionShareBoard,
+  ensurePublicAdmissionShareSession,
   extendAdmissionShareBoard,
   getPublicAdmissionShareBoard,
   getPublicAdmissionRecordingPlaybackSource,
@@ -1010,11 +1011,7 @@ describe("admission share board service", () => {
       hasValidSession: vi.fn().mockResolvedValue(true),
     };
     const repo = createRepo({
-      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
-        publicSnapshot({
-          accessCodeHash: hashAdmissionShareAccessCode("24681024"),
-        }),
-      ),
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
       listReviewDrafts: vi.fn().mockResolvedValue([
         {
           recordingSubmissionId: "rec-1",
@@ -1065,11 +1062,7 @@ describe("admission share board service", () => {
       hasValidSession: vi.fn().mockResolvedValue(true),
     };
     const repo = createRepo({
-      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
-        publicSnapshot({
-          accessCodeHash: hashAdmissionShareAccessCode("24681024"),
-        }),
-      ),
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
       saveReviewDraft: vi.fn().mockResolvedValue({
         recordingSubmissionId: "rec-1",
         recordingVersion: 2,
@@ -1106,6 +1099,143 @@ describe("admission share board service", () => {
       savedAt: "2026-06-07T01:00:00.000Z",
     });
     expect(result.revision).toBe(3);
+  });
+
+  it("rejects draft reads and saves without a valid HttpOnly session even when no access code is configured", async () => {
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(false),
+    };
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      listReviewDrafts: vi.fn(),
+      saveReviewDraft: vi.fn(),
+    });
+
+    await expect(
+      listPublicAdmissionReviewDrafts({
+        repo,
+        accessStore,
+        token: "plain-token",
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACCESS_CODE_REQUIRED",
+      statusCode: 401,
+    });
+    await expect(
+      savePublicAdmissionReviewDraft({
+        repo,
+        accessStore,
+        token: "plain-token",
+        recordingSubmissionId: "rec-1",
+        input: {
+          expectedRevision: 0,
+          decision: "pending",
+          remark: "",
+          reasonCodes: [],
+        },
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACCESS_CODE_REQUIRED",
+      statusCode: 401,
+    });
+
+    expect(repo.getPublicShareBoardSnapshot).toHaveBeenCalledWith(
+      hashShareSecret("plain-token"),
+    );
+    expect(repo.listReviewDrafts).not.toHaveBeenCalled();
+    expect(repo.saveReviewDraft).not.toHaveBeenCalled();
+  });
+
+  it("creates and reuses a passwordless formal-review session without creating one for preview", async () => {
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn().mockResolvedValue(undefined),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+    const formalRepo = createRepo({
+      getPublicShareBoardSnapshot: vi
+        .fn()
+        .mockResolvedValue(
+          publicSnapshot({ expiresAt: "2026-07-01T00:00:00.000Z" }),
+        ),
+    });
+
+    const created = await ensurePublicAdmissionShareSession({
+      repo: formalRepo,
+      accessStore,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+      sessionTokenFactory: () => "new-opaque-session",
+    });
+    const reused = await ensurePublicAdmissionShareSession({
+      repo: formalRepo,
+      accessStore,
+      token: "plain-token",
+      sessionToken: "existing-session",
+      now: "2026-06-07T01:00:00.000Z",
+      sessionTokenFactory: () => "must-not-be-created",
+    });
+    const previewAccessStore = {
+      ...accessStore,
+      createSession: vi.fn(),
+      hasValidSession: vi.fn(),
+    };
+    const preview = await ensurePublicAdmissionShareSession({
+      repo: createRepo({
+        getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+          publicSnapshot({
+            mode: "preview",
+            allowVendorSubmit: false,
+            roundNumber: 0,
+          }),
+        ),
+      }),
+      accessStore: previewAccessStore,
+      token: "preview-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+    const protectedAccessStore = {
+      ...accessStore,
+      createSession: vi.fn(),
+      hasValidSession: vi.fn(),
+    };
+    const protectedFormal = await ensurePublicAdmissionShareSession({
+      repo: createRepo({
+        getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+          publicSnapshot({
+            accessCodeHash: hashAdmissionShareAccessCode("24681024"),
+          }),
+        ),
+      }),
+      accessStore: protectedAccessStore,
+      token: "protected-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(created).toEqual({
+      sessionToken: "new-opaque-session",
+      expiresAt: "2026-06-14T01:00:00.000Z",
+      created: true,
+    });
+    expect(accessStore.createSession).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      sessionToken: "new-opaque-session",
+      expiresAt: "2026-06-14T01:00:00.000Z",
+    });
+    expect(reused).toEqual({
+      sessionToken: "existing-session",
+      created: false,
+    });
+    expect(preview).toBeNull();
+    expect(previewAccessStore.hasValidSession).not.toHaveBeenCalled();
+    expect(previewAccessStore.createSession).not.toHaveBeenCalled();
+    expect(protectedFormal).toBeNull();
+    expect(protectedAccessStore.hasValidSession).not.toHaveBeenCalled();
+    expect(protectedAccessStore.createSession).not.toHaveBeenCalled();
   });
 
   it("surfaces stable draft conflicts and locked-review errors", async () => {
@@ -1148,6 +1278,11 @@ describe("admission share board service", () => {
   });
 
   it("rejects cross-board recordings and bounded draft input before the RPC", async () => {
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
     const repo = createRepo({
       getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
       saveReviewDraft: vi.fn(),
@@ -1156,7 +1291,9 @@ describe("admission share board service", () => {
     await expect(
       savePublicAdmissionReviewDraft({
         repo,
+        accessStore,
         token: "plain-token",
+        sessionToken: "opaque-session-token",
         recordingSubmissionId: "rec-not-shared",
         input: {
           expectedRevision: 0,
@@ -1171,7 +1308,9 @@ describe("admission share board service", () => {
     await expect(
       savePublicAdmissionReviewDraft({
         repo,
+        accessStore,
         token: "plain-token",
+        sessionToken: "opaque-session-token",
         recordingSubmissionId: "rec-1",
         input: {
           expectedRevision: -1,
@@ -1186,7 +1325,9 @@ describe("admission share board service", () => {
     await expect(
       savePublicAdmissionReviewDraft({
         repo,
+        accessStore,
         token: "plain-token",
+        sessionToken: "opaque-session-token",
         recordingSubmissionId: "rec-1",
         input: {
           expectedRevision: 0,
@@ -1201,7 +1342,9 @@ describe("admission share board service", () => {
     await expect(
       savePublicAdmissionReviewDraft({
         repo,
+        accessStore,
         token: "plain-token",
+        sessionToken: "opaque-session-token",
         recordingSubmissionId: "rec-1",
         input: {
           expectedRevision: 0,

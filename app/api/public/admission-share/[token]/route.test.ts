@@ -3,21 +3,36 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "./route";
 
 import {
+  ensurePublicAdmissionShareSession,
   getPublicAdmissionShareBoard,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
-import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
+import {
+  readAdmissionShareAccessSession,
+  setAdmissionShareAccessSession,
+} from "@/lib/http/admission-share-access-session";
 
-vi.mock("@/features/applications/admission-share-board", () => ({
-  SupabaseAdmissionShareBoardRepository: vi
-    .fn()
-    .mockImplementation(function () {
-      return { repo: "share-repo" };
-    }),
-  getPublicAdmissionShareBoard: vi.fn(),
-}));
+vi.mock(
+  "@/features/applications/admission-share-board",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/features/applications/admission-share-board")
+      >();
+    return {
+      ...actual,
+      SupabaseAdmissionShareBoardRepository: vi
+        .fn()
+        .mockImplementation(function () {
+          return { repo: "share-repo" };
+        }),
+      getPublicAdmissionShareBoard: vi.fn(),
+      ensurePublicAdmissionShareSession: vi.fn(),
+    };
+  },
+);
 
 vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseAdminClient: vi.fn(),
@@ -29,9 +44,16 @@ vi.mock("@/features/applications/admission-share-access-store", () => ({
   }),
 }));
 
-vi.mock("@/lib/http/admission-share-access-session", () => ({
-  readAdmissionShareAccessSession: vi.fn(),
-}));
+vi.mock("@/lib/http/admission-share-access-session", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/lib/http/admission-share-access-session")
+    >();
+  return {
+    ...actual,
+    readAdmissionShareAccessSession: vi.fn(),
+  };
+});
 
 const params = Promise.resolve({ token: "plain-token" });
 const supabase = { client: "supabase" };
@@ -43,6 +65,10 @@ describe("public admission share route", () => {
     vi.mocked(readAdmissionShareAccessSession).mockReturnValue(
       "opaque-session-token",
     );
+    vi.mocked(ensurePublicAdmissionShareSession).mockResolvedValue({
+      sessionToken: "opaque-session-token",
+      created: false,
+    });
     vi.mocked(getPublicAdmissionShareBoard).mockResolvedValue({
       id: "share-1",
       title: "Vendor review",
@@ -128,6 +154,55 @@ describe("public admission share route", () => {
 
     expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith(
       expect.not.objectContaining({ accessCode: expect.anything() }),
+    );
+  });
+
+  it("creates an HttpOnly session for a passwordless formal review without exposing it in JSON", async () => {
+    vi.mocked(readAdmissionShareAccessSession).mockReturnValue(null);
+    vi.mocked(ensurePublicAdmissionShareSession).mockResolvedValue({
+      sessionToken: "new-opaque-session",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+      created: true,
+    });
+
+    const response = await GET(
+      new Request(
+        "http://localhost/api/public/admission-share/plain-token?accessCode=must-not-be-read",
+      ),
+      { params },
+    );
+    const body = await response.json();
+    const cookie = response.headers.get("set-cookie") ?? "";
+
+    expect(ensurePublicAdmissionShareSession).toHaveBeenCalledWith({
+      repo: { repo: "share-repo" },
+      accessStore: { store: "access-store" },
+      token: "plain-token",
+      sessionToken: undefined,
+    });
+    expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionToken: "new-opaque-session" }),
+    );
+    expect(cookie).toContain("new-opaque-session");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=lax");
+    expect(JSON.stringify(body)).not.toContain("new-opaque-session");
+    expect(setAdmissionShareAccessSession).toBeTypeOf("function");
+  });
+
+  it("does not create a session for a passwordless preview", async () => {
+    vi.mocked(readAdmissionShareAccessSession).mockReturnValue(null);
+    vi.mocked(ensurePublicAdmissionShareSession).mockResolvedValue(null);
+
+    const response = await GET(
+      new Request("http://localhost/api/public/admission-share/plain-token"),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionToken: undefined }),
     );
   });
 });

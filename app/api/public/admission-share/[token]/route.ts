@@ -9,13 +9,17 @@ import {
   type AdmissionReviewClient,
 } from "@/features/admission-review/evaluation-service";
 import {
+  ensurePublicAdmissionShareSession,
   getPublicAdmissionShareBoard,
   PublicAdmissionShareError,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
-import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
+import {
+  readAdmissionShareAccessSession,
+  setAdmissionShareAccessSession,
+} from "@/lib/http/admission-share-access-session";
 
 import { publicAdmissionShareErrorResponse } from "../public-route-utils";
 
@@ -39,13 +43,20 @@ export async function GET(
 
     const repo = new SupabaseAdmissionShareBoardRepository(supabase);
     const accessStore = new SupabaseAdmissionShareAccessStore(supabase);
+    const requestSession =
+      readAdmissionShareAccessSession(request, token) ?? undefined;
+    const preparedSession = await ensurePublicAdmissionShareSession({
+      repo,
+      accessStore,
+      token,
+      sessionToken: requestSession,
+    });
     const { organizationId, ...shareBoard } =
       await getPublicAdmissionShareBoard({
         repo,
         accessStore,
         token,
-        sessionToken:
-          readAdmissionShareAccessSession(request, token) ?? undefined,
+        sessionToken: preparedSession?.sessionToken ?? requestSession,
       });
 
     // 厂家端可选理由标签（仅 key/名称/说明，不泄漏内部配置）。
@@ -62,10 +73,18 @@ export async function GET(
       }),
     );
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       shareBoard: toPublicResponse(shareBoard),
       vendorCheckpoints,
     });
+    if (preparedSession?.created) {
+      setAdmissionShareAccessSession(response, {
+        token,
+        sessionToken: preparedSession.sessionToken,
+        expiresAt: preparedSession.expiresAt,
+      });
+    }
+    return response;
   } catch (error) {
     return publicAdmissionShareErrorResponse(error);
   }
