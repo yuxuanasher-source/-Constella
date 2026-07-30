@@ -77,6 +77,13 @@ export type RecordingSubmissionRecord = {
   version: number;
   status: RecordingReviewStatus;
   uploadedBy: string | null;
+  mcnReviewDecision?: Extract<
+    RecordingReviewStatus,
+    "approved" | "rejected" | "needs_changes"
+  > | null;
+  mcnReviewedBy?: string | null;
+  mcnReviewedAt?: string | null;
+  mcnReviewNote?: string | null;
   collaborationId?: string | null;
   contributorOrganizationId?: string | null;
   selfScoreTotal?: number | null;
@@ -177,6 +184,13 @@ export type ApplicationRepository = {
       reviewedBy: string;
       reviewedAt: string;
       reviewNote?: string;
+      mcnReviewDecision: Extract<
+        RecordingReviewStatus,
+        "approved" | "rejected" | "needs_changes"
+      >;
+      mcnReviewedBy: string;
+      mcnReviewedAt: string;
+      mcnReviewNote?: string;
     },
   ): Promise<RecordingSubmissionRecord>;
   createProjectStreamer(input: {
@@ -534,6 +548,10 @@ export async function reviewRecordingSubmission({
     reviewedBy: actor.userId,
     reviewedAt: now,
     reviewNote: note,
+    mcnReviewDecision: input.decision,
+    mcnReviewedBy: actor.userId,
+    mcnReviewedAt: now,
+    mcnReviewNote: note,
   });
   const updated = await repo.updateApplicationStatus(application.id, {
     status: nextStatus,

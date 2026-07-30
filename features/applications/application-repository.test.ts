@@ -152,6 +152,10 @@ describe("SupabaseApplicationRepository", () => {
         version: 2,
         status: "submitted",
         uploaded_by: "user-ops",
+        mcn_review_decision: null,
+        mcn_reviewed_by: null,
+        mcn_reviewed_at: null,
+        mcn_review_note: null,
         collaboration_id: null,
         contributor_organization_id: null,
         self_score_total: null,
@@ -180,6 +184,10 @@ describe("SupabaseApplicationRepository", () => {
       version: 2,
       status: "submitted",
       uploadedBy: "user-ops",
+      mcnReviewDecision: null,
+      mcnReviewedBy: null,
+      mcnReviewedAt: null,
+      mcnReviewNote: null,
       collaborationId: null,
       contributorOrganizationId: null,
       selfScoreTotal: null,
@@ -188,8 +196,73 @@ describe("SupabaseApplicationRepository", () => {
     expect(insert).toHaveBeenCalledWith(
       expect.objectContaining({ uploaded_by: "user-ops" }),
     );
+    expect(select).toHaveBeenCalledWith(expect.stringContaining("uploaded_by"));
+  });
+
+  it("persists and maps immutable MCN recording review facts", async () => {
+    const single = vi.fn(async () => ({
+      data: {
+        id: "recording-1",
+        application_id: "application-1",
+        version: 2,
+        status: "approved",
+        uploaded_by: "user-ops",
+        mcn_review_decision: "approved",
+        mcn_reviewed_by: "operator-1",
+        mcn_reviewed_at: "2026-07-30T08:00:00.000Z",
+        mcn_review_note: "通过内审",
+        collaboration_id: null,
+        contributor_organization_id: null,
+        self_score_total: null,
+        self_assessment_level: null,
+      },
+      error: null,
+    }));
+    const select = vi.fn(() => ({ single }));
+    const eq = vi.fn(() => ({ select }));
+    const update = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ update }));
+    const repo = new SupabaseApplicationRepository({ from } as never);
+
+    const recording = await repo.updateRecordingReview("recording-1", {
+      status: "approved",
+      reviewedBy: "operator-1",
+      reviewedAt: "2026-07-30T08:00:00.000Z",
+      reviewNote: "通过内审",
+      mcnReviewDecision: "approved",
+      mcnReviewedBy: "operator-1",
+      mcnReviewedAt: "2026-07-30T08:00:00.000Z",
+      mcnReviewNote: "通过内审",
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      status: "approved",
+      reviewed_by: "operator-1",
+      reviewed_at: "2026-07-30T08:00:00.000Z",
+      review_note: "通过内审",
+      mcn_review_decision: "approved",
+      mcn_reviewed_by: "operator-1",
+      mcn_reviewed_at: "2026-07-30T08:00:00.000Z",
+      mcn_review_note: "通过内审",
+    });
     expect(select).toHaveBeenCalledWith(
-      expect.stringContaining("uploaded_by"),
+      expect.stringContaining("mcn_review_decision"),
     );
+    expect(select).toHaveBeenCalledWith(
+      expect.stringContaining("mcn_reviewed_by"),
+    );
+    expect(select).toHaveBeenCalledWith(
+      expect.stringContaining("mcn_reviewed_at"),
+    );
+    expect(select).toHaveBeenCalledWith(
+      expect.stringContaining("mcn_review_note"),
+    );
+    expect(recording).toMatchObject({
+      id: "recording-1",
+      mcnReviewDecision: "approved",
+      mcnReviewedBy: "operator-1",
+      mcnReviewedAt: "2026-07-30T08:00:00.000Z",
+      mcnReviewNote: "通过内审",
+    });
   });
 });

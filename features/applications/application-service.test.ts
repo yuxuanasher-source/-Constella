@@ -757,26 +757,29 @@ describe("application service", () => {
     "ftp://videos.example.com/not-http",
     "javascript:alert(1)",
     "not-a-url",
-  ])("rejects a non-http(s) external recording URL: %s", async (externalUrl) => {
-    const repo = makeRepo({
-      getApplicationById: vi.fn().mockResolvedValue({
-        ...baseApplication,
-        status: "recording_required",
-      }),
-    });
+  ])(
+    "rejects a non-http(s) external recording URL: %s",
+    async (externalUrl) => {
+      const repo = makeRepo({
+        getApplicationById: vi.fn().mockResolvedValue({
+          ...baseApplication,
+          status: "recording_required",
+        }),
+      });
 
-    await expect(
-      submitRecording({
-        repo,
-        audit: vi.fn(),
-        notify: vi.fn(),
-        actor: streamerActor,
-        input: { applicationId: "app-1", externalUrl },
-      }),
-    ).rejects.toThrow("Recording link must be an http(s) URL");
+      await expect(
+        submitRecording({
+          repo,
+          audit: vi.fn(),
+          notify: vi.fn(),
+          actor: streamerActor,
+          input: { applicationId: "app-1", externalUrl },
+        }),
+      ).rejects.toThrow("Recording link must be an http(s) URL");
 
-    expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
-  });
+      expect(repo.createRecordingSubmission).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects streamer recording submissions for another streamer's application", async () => {
     const repo = makeRepo({
@@ -936,6 +939,16 @@ describe("application service", () => {
       "app-1",
       expect.objectContaining({ status: "recording_approved" }),
     );
+    expect(repo.updateRecordingReview).toHaveBeenCalledWith("recording-1", {
+      status: "approved",
+      reviewedBy: operatorActor.userId,
+      reviewedAt: expect.any(String),
+      reviewNote: "Recording meets the project gate.",
+      mcnReviewDecision: "approved",
+      mcnReviewedBy: operatorActor.userId,
+      mcnReviewedAt: expect.any(String),
+      mcnReviewNote: "Recording meets the project gate.",
+    });
     expect(repo.createProjectStreamer).not.toHaveBeenCalled();
   });
 
