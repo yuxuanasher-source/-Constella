@@ -5,9 +5,7 @@ import { PUT } from "./route";
 import {
   PublicAdmissionShareError,
   savePublicAdmissionReviewDraft,
-  SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
-import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
 
