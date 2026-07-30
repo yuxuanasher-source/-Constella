@@ -1,4 +1,9 @@
-import { createHash, randomBytes } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  scryptSync,
+  timingSafeEqual,
+} from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { AuditLogInput } from "@/lib/audit/audit";
@@ -637,6 +642,23 @@ export async function createAdmissionShareBoard({
   now?: string;
   tokenFactory?: () => string;
 }) {
+  const accessCode = input.accessCode?.trim();
+  if (accessCode && (accessCode.length < 6 || accessCode.length > 64)) {
+    throw new Error("Access code must be between 6 and 64 characters");
+  }
+  const expiresAt = input.expiresAt ?? daysFrom(now, 7);
+  const nowMs = Date.parse(now);
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    throw new Error("Share expiry must be a valid date");
+  }
+  if (expiresAtMs <= nowMs) {
+    throw new Error("Share expiry must be in the future");
+  }
+  if (expiresAtMs > nowMs + 30 * 24 * 60 * 60 * 1000) {
+    throw new Error("Share expiry cannot exceed 30 days");
+  }
+
   const applicationIds = input.applicationIds
     ?.map((id) => id.trim())
     .filter(Boolean);
@@ -698,10 +720,10 @@ export async function createAdmissionShareBoard({
     projectId,
     title: input.title?.trim() || "Admission recording review",
     tokenHash: hashShareSecret(token),
-    accessCodeHash: input.accessCode?.trim()
-      ? hashShareSecret(input.accessCode.trim())
+    accessCodeHash: accessCode
+      ? hashAdmissionShareAccessCode(accessCode)
       : null,
-    expiresAt: input.expiresAt ?? daysFrom(now, 7),
+    expiresAt,
     allowVendorSubmit: input.allowVendorSubmit ?? true,
     createdBy: actor.userId,
   });
@@ -1025,6 +1047,38 @@ export function hashShareSecret(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function hashAdmissionShareAccessCode(value: string) {
+  const salt = randomBytes(16).toString("hex");
+  const digest = scryptSync(value, salt, 32).toString("hex");
+  return `scrypt$${salt}$${digest}`;
+}
+
+export function verifyAdmissionShareAccessCode(
+  value: string,
+  storedHash: string,
+) {
+  const [scheme, salt, expectedHex] = storedHash.split("$");
+  if (
+    scheme === "scrypt" &&
+    salt &&
+    expectedHex &&
+    /^[a-f0-9]+$/i.test(salt) &&
+    /^[a-f0-9]{64}$/i.test(expectedHex)
+  ) {
+    const actual = scryptSync(value, salt, 32);
+    const expected = Buffer.from(expectedHex, "hex");
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  }
+
+  if (/^[a-f0-9]{64}$/i.test(storedHash)) {
+    const actual = Buffer.from(hashShareSecret(value), "hex");
+    const expected = Buffer.from(storedHash, "hex");
+    return timingSafeEqual(actual, expected);
+  }
+
+  return false;
+}
+
 export function mapVendorDecisionToSyncPatch(
   decision: VendorAdmissionDecision,
   applicationStatus: ApplicationStatus,
@@ -1112,7 +1166,10 @@ async function requirePublicSnapshot({
   }
   if (
     snapshot.accessCodeHash &&
-    hashShareSecret(accessCode?.trim() || "") !== snapshot.accessCodeHash
+    !verifyAdmissionShareAccessCode(
+      accessCode?.trim() || "",
+      snapshot.accessCodeHash,
+    )
   ) {
     throw new Error("Access code is invalid");
   }
