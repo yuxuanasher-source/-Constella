@@ -28,6 +28,18 @@ using (
   )
 );
 
+create policy project_recording_share_boards_authenticated_create_guard
+on public.project_recording_share_boards
+as restrictive
+for insert
+to authenticated
+with check (
+  public.is_org_member(organization_id)
+  and public.is_mcn_staff(organization_id)
+  and public.can_access_project(project_id)
+  and created_by = auth.uid()
+);
+
 create unique index project_recording_share_events_one_created_idx
 on public.project_recording_share_events (share_board_id)
 where event_type = 'created';

@@ -38,6 +38,12 @@ describe("admission share atomic create RPC", () => {
     expect(sql).toContain("public.can_access_project(p_project_id)");
   });
 
+  it("restricts direct board inserts to the authenticated MCN creator", () => {
+    expect(sql).toMatch(
+      /create policy project_recording_share_boards_authenticated_create_guard\s+on public\.project_recording_share_boards\s+as restrictive\s+for insert\s+to authenticated\s+with check \(\s*public\.is_org_member\(organization_id\)\s+and public\.is_mcn_staff\(organization_id\)\s+and public\.can_access_project\(project_id\)\s+and created_by = auth\.uid\(\)\s*\);/u,
+    );
+  });
+
   it("serializes project creation without requiring project UPDATE RLS", () => {
     expect(sql).toContain("pg_catalog.pg_advisory_xact_lock");
     expect(sql).toContain("pg_catalog.hashtextextended(p_project_id::text, 0)");
