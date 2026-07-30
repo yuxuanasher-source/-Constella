@@ -69,7 +69,10 @@ function optionalSearchParam(request: Request, key: string) {
 }
 
 function toPublicResponse(
-  shareBoard: Awaited<ReturnType<typeof getPublicAdmissionShareBoard>>,
+  shareBoard: Omit<
+    Awaited<ReturnType<typeof getPublicAdmissionShareBoard>>,
+    "organizationId"
+  >,
 ) {
   return {
     ...shareBoard,
