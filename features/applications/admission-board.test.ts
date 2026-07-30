@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  type AdmissionRecordingDetail,
+  toAdmissionResultTask,
   toAdmissionProjectBoards,
   toAdmissionRecordingDetails,
   toAdmissionRecordingExportRows,
@@ -198,11 +200,36 @@ const vendorReviews = [
 
 const shareBoards = [
   {
-    id: "share-1",
+    id: "share-preview-1",
     project_id: "project-1",
     status: "active" as const,
-    expires_at: "2026-06-14T00:00:00.000Z",
-    last_submitted_at: "2026-06-07T04:00:00.000Z",
+    mode: "preview" as const,
+    review_state: "viewed" as const,
+    round_number: 0,
+    expires_at: "2026-08-10T00:00:00.000Z",
+    last_viewed_at: "2026-07-29T08:00:00.000Z",
+    last_draft_at: null,
+    last_submitted_at: null,
+    locked_at: null,
+    item_count: 3,
+    draft_completed_count: 0,
+    created_at: "2026-07-29T00:00:00.000Z",
+  },
+  {
+    id: "share-formal-2",
+    project_id: "project-1",
+    status: "active" as const,
+    mode: "formal_review" as const,
+    review_state: "in_progress" as const,
+    round_number: 2,
+    expires_at: "2026-08-06T00:00:00.000Z",
+    last_viewed_at: "2026-07-30T08:00:00.000Z",
+    last_draft_at: "2026-07-30T08:20:00.000Z",
+    last_submitted_at: null,
+    locked_at: null,
+    item_count: 10,
+    draft_completed_count: 4,
+    created_at: "2026-07-30T00:00:00.000Z",
   },
 ];
 
@@ -239,7 +266,22 @@ describe("admission project board DTO", () => {
           vendorNeedsChanges: 0,
           pendingFinalConfirm: 1,
         },
-        share: expect.objectContaining({ status: "active" }),
+        share: {
+          id: "share-formal-2",
+          mode: "formal_review",
+          status: "active",
+          reviewState: "in_progress",
+          roundNumber: 2,
+          expiresAt: "2026-08-06T00:00:00.000Z",
+          lastViewedAt: "2026-07-30T08:00:00.000Z",
+          lastDraftAt: "2026-07-30T08:20:00.000Z",
+          lastSubmittedAt: null,
+          lockedAt: null,
+        },
+        shareProgress: {
+          completed: 4,
+          total: 10,
+        },
       }),
     );
     expect(boards[1].counts.vendorNeedsChanges).toBe(1);
@@ -399,4 +441,244 @@ describe("admission project board DTO", () => {
     expect(JSON.stringify(rows)).not.toContain("private/org/project");
     expect(JSON.stringify(rows)).not.toContain("Private recording");
   });
+});
+
+function resultDetail(
+  overrides: Partial<AdmissionRecordingDetail> = {},
+): AdmissionRecordingDetail {
+  return {
+    id: "app-result",
+    source: "signup",
+    status: "recording_approved",
+    submittedAt: "2026-07-30T07:00:00.000Z",
+    decisionReason: null,
+    project: {
+      id: "project-1",
+      code: "P-001",
+      name: "Alpha Project",
+      status: "active",
+      vendor: "Vendor A",
+      product: "Game A",
+    },
+    streamer: {
+      id: "streamer-1",
+      displayName: "主播甲",
+      accountLabel: "抖音 / streamer-a",
+      cooperationStatus: "active",
+      riskLevel: "low",
+    },
+    latestRecording: {
+      id: "recording-v2",
+      assetId: "asset-v2",
+      version: 2,
+      status: "approved",
+      durationSeconds: 1800,
+      url: null,
+      hasPrivateStorage: true,
+      submittedAt: "2026-07-30T07:30:00.000Z",
+      aiAnalysis: null,
+    },
+    vendorReview: {
+      recordingSubmissionId: "recording-v2",
+      recordingVersion: 2,
+      decision: "selected",
+      remark: "",
+      reviewerName: "",
+      reviewerContact: "",
+      submittedAt: "2026-07-30T10:00:00.000Z",
+      syncStatus: "synced",
+      syncError: null,
+    },
+    ...overrides,
+  };
+}
+
+describe("admission result task DTO", () => {
+  it("requires MCN final confirmation for a selected current version", () => {
+    const detail = resultDetail();
+
+    expect(toAdmissionResultTask(detail)).toEqual({
+      type: "mcn_final_confirm",
+      applicationId: detail.id,
+      recordingSubmissionId: detail.latestRecording?.id,
+      label: "待 MCN 最终确认",
+    });
+  });
+
+  it("does not turn a backup result into a state-changing task", () => {
+    const detail = resultDetail({
+      vendorReview: {
+        ...resultDetail().vendorReview!,
+        decision: "backup",
+      },
+    });
+
+    expect(toAdmissionResultTask(detail)).toBeNull();
+  });
+
+  it("turns rejected and needs-changes results into explicit streamer follow-up", () => {
+    expect(
+      toAdmissionResultTask(
+        resultDetail({
+          vendorReview: {
+            ...resultDetail().vendorReview!,
+            decision: "rejected",
+          },
+        }),
+      ),
+    ).toEqual({
+      type: "notify_streamer_changes",
+      applicationId: "app-result",
+      recordingSubmissionId: "recording-v2",
+      label: "需要通知主播修改",
+    });
+    expect(
+      toAdmissionResultTask(
+        resultDetail({
+          status: "recording_required",
+          vendorReview: {
+            ...resultDetail().vendorReview!,
+            decision: "needs_changes",
+          },
+        }),
+      ),
+    ).toEqual({
+      type: "await_streamer_resubmission",
+      applicationId: "app-result",
+      recordingSubmissionId: "recording-v2",
+      label: "等待主播重新提交",
+    });
+  });
+
+  it("routes skipped historical results to manual review without overwriting the current version", () => {
+    const detail = resultDetail({
+      vendorReview: {
+        ...resultDetail().vendorReview!,
+        recordingSubmissionId: "recording-v1",
+        recordingVersion: 1,
+        decision: "rejected",
+        syncStatus: "skipped",
+        syncError: "superseded_recording_version",
+      },
+    });
+
+    expect(toAdmissionResultTask(detail)).toEqual({
+      type: "historical_result_manual_review",
+      applicationId: "app-result",
+      recordingSubmissionId: "recording-v1",
+      label: "历史版本结果待人工确认",
+    });
+  });
+
+  it("routes a newer recording through MCN review before another formal round", () => {
+    const previousReview = {
+      ...resultDetail().vendorReview!,
+      recordingSubmissionId: "recording-v1",
+      recordingVersion: 1,
+      decision: "needs_changes" as const,
+    };
+
+    expect(
+      toAdmissionResultTask(
+        resultDetail({
+          status: "recording_reviewing",
+          latestRecording: {
+            ...resultDetail().latestRecording!,
+            status: "reviewing",
+          },
+          vendorReview: previousReview,
+        }),
+      ),
+    ).toEqual({
+      type: "new_version_review",
+      applicationId: "app-result",
+      recordingSubmissionId: "recording-v2",
+      label: "新版本待 MCN 复核",
+    });
+    expect(
+      toAdmissionResultTask(
+        resultDetail({
+          vendorReview: previousReview,
+        }),
+      ),
+    ).toEqual({
+      type: "start_next_round",
+      applicationId: "app-result",
+      recordingSubmissionId: "recording-v2",
+      label: "可以发起下一轮",
+    });
+  });
+
+  it.each(["selected", "rejected", "needs_changes"] as const)(
+    "does not create a %s task for a joined application with a legacy null sync error",
+    (decision) => {
+      expect(
+        toAdmissionResultTask(
+          resultDetail({
+            status: "joined",
+            vendorReview: {
+              ...resultDetail().vendorReview!,
+              decision,
+              syncStatus: "skipped",
+              syncError: null,
+            },
+          }),
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it("suppresses an application-already-joined skip even when the legacy detail status has not caught up", () => {
+    expect(
+      toAdmissionResultTask(
+        resultDetail({
+          vendorReview: {
+            ...resultDetail().vendorReview!,
+            recordingSubmissionId: "recording-v1",
+            recordingVersion: 1,
+            decision: "rejected",
+            syncStatus: "skipped",
+            syncError: "application_already_joined",
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    {
+      name: "current",
+      vendorReview: {
+        ...resultDetail().vendorReview!,
+        syncStatus: "failed" as const,
+        syncError: "vendor_state_sync_failed",
+      },
+    },
+    {
+      name: "historical",
+      vendorReview: {
+        ...resultDetail().vendorReview!,
+        recordingSubmissionId: "recording-v1",
+        recordingVersion: 1,
+        syncStatus: "failed" as const,
+        syncError: "vendor_state_sync_failed",
+      },
+    },
+  ])(
+    "routes a failed $name result to stable manual handling",
+    ({ vendorReview }) => {
+      expect(
+        toAdmissionResultTask(
+          resultDetail({
+            vendorReview,
+          }),
+        ),
+      ).toEqual({
+        type: "historical_result_manual_review",
+        applicationId: "app-result",
+        recordingSubmissionId: vendorReview.recordingSubmissionId,
+        label: "结果同步失败，待人工处理",
+      });
+    },
+  );
 });

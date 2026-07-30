@@ -37,6 +37,15 @@ export async function POST(
 
     return NextResponse.json({ ok: true });
   } catch (error) {
-    return jsonError(error);
+    const status =
+      error && typeof error === "object" && "statusCode" in error
+        ? Number(error.statusCode)
+        : null;
+    return status && status >= 400 && status <= 499
+      ? NextResponse.json(
+          { error: error instanceof Error ? error.message : "Request failed" },
+          { status },
+        )
+      : jsonError(error);
   }
 }

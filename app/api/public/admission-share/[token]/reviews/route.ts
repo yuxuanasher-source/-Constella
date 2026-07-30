@@ -17,7 +17,6 @@ import {
   type SubmitVendorAdmissionReviewsInput,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
-import type { VendorAdmissionDecision } from "@/features/applications/admission-board";
 import {
   optionalString,
   readJsonBody,
@@ -60,14 +59,17 @@ export async function POST(
       input: toVendorReviewInput(body),
       // 厂家勾选理由标签时直接落人工评估；非法标签宽容过滤（外部输入）。
       recordEvaluation: async (evaluation) => {
+        evaluation.signal.throwIfAborted();
         let rubric = rubricCache.get(evaluation.organizationId);
         if (!rubric) {
           rubric = await resolveAdmissionRubric({
             client: reviewClient,
             organizationId: evaluation.organizationId,
+            signal: evaluation.signal,
           });
           rubricCache.set(evaluation.organizationId, rubric);
         }
+        evaluation.signal.throwIfAborted();
         const allowed = new Set(
           checkpointsForStage(rubric, "vendor_second").map(
             (checkpoint) => checkpoint.key,
@@ -79,9 +81,11 @@ export async function POST(
         if (!reasonCodes.length) {
           return;
         }
+        evaluation.signal.throwIfAborted();
         await recordAdmissionEvaluation({
           client: reviewClient,
           rubric,
+          signal: evaluation.signal,
           input: {
             organizationId: evaluation.organizationId,
             applicationId: evaluation.applicationId,
@@ -94,16 +98,23 @@ export async function POST(
             reasonCodes,
           },
         });
+        evaluation.signal.throwIfAborted();
         // 一审 vs 二审对齐信号（一审漏判监测）；失败不阻塞厂家提交。
         await recordMcnVsVendorSignal({
           client: reviewClient as never,
           organizationId: evaluation.organizationId,
           submissionId: evaluation.recordingSubmissionId,
+          signal: evaluation.signal,
         }).catch(() => null);
       },
     });
 
-    return NextResponse.json(result);
+    return NextResponse.json({
+      submissionRevision: result.submissionRevision,
+      submittedCount: result.submittedCount,
+      syncedCount: result.syncedCount,
+      skippedCount: result.skippedCount,
+    });
   } catch (error) {
     return publicAdmissionShareErrorResponse(error);
   }
@@ -113,39 +124,6 @@ function toVendorReviewInput(
   body: Record<string, unknown>,
 ): SubmitVendorAdmissionReviewsInput {
   return {
-    reviewerName: optionalString(body, "reviewerName"),
-    reviewerContact: optionalString(body, "reviewerContact"),
     projectRemark: optionalString(body, "projectRemark"),
-    items: Array.isArray(body.items) ? body.items.map(toReviewItem) : [],
   };
-}
-
-function toReviewItem(value: unknown) {
-  const item = isRecord(value) ? value : {};
-  return {
-    recordingSubmissionId: optionalString(item, "recordingSubmissionId") ?? "",
-    recordingVersion: numberValue(item.recordingVersion),
-    decision: (optionalString(item, "decision") ??
-      "pending") as VendorAdmissionDecision,
-    remark: optionalString(item, "remark"),
-    reasonCodes: stringArrayValue(item.reasonCodes),
-  };
-}
-
-function stringArrayValue(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function numberValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

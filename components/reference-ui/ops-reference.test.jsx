@@ -6154,7 +6154,8 @@ describe("OpsReferenceApp admission smoke", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("renders the project-first admission board and creates vendor share links", async () => {
+  it("renders the project-first admission board and opens an explicit recording share center", async () => {
+    const openWindow = vi.spyOn(window, "open").mockImplementation(() => null);
     const createObjectURL = vi.fn(() => "blob:admission-recordings");
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", {
@@ -6253,7 +6254,7 @@ describe("OpsReferenceApp admission smoke", () => {
         vendorReview: null,
       },
     ];
-    const fetchMock = vi.fn(async (url) => {
+    const fetchMock = vi.fn(async (url, init) => {
       if (String(url) === "/api/applications/admission-board") {
         return {
           ok: true,
@@ -6264,6 +6265,7 @@ describe("OpsReferenceApp admission smoke", () => {
                   id: "project-1",
                   code: "P-001",
                   name: "Alpha Project",
+                  status: "active",
                   vendor: "Vendor A",
                   product: "Game A",
                 },
@@ -6343,12 +6345,80 @@ describe("OpsReferenceApp admission smoke", () => {
         };
       }
 
-      if (String(url) === "/api/projects/project-1/admission-share-boards") {
+      if (
+        String(url) ===
+        "/api/projects/project-1/admission-share-candidates"
+      ) {
         return {
           ok: true,
           json: async () => ({
-            shareUrl: "https://share.example/admission/plain-token",
+            candidates: [
+              {
+                applicationId: "app-ui-1",
+                recordingSubmissionId: "recording-ui-1",
+                recordingVersion: 1,
+                isLatestVersion: false,
+                streamer: {
+                  id: "streamer-1",
+                  displayName: "Streamer One",
+                  accountLabel: "Douyin / one-live",
+                },
+                mcnReviewDecision: "approved",
+                sourceHealth: "original_ready",
+                hasPrivateStorage: true,
+                externalUrl: null,
+                isShareable: true,
+                blockReason: null,
+                currentVendorDecision: "rejected",
+                lastSharedAt: null,
+              },
+            ],
           }),
+        };
+      }
+      if (
+        String(url) ===
+          "/api/projects/project-1/admission-share-boards/preflight" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            summary: { ready: 1, warning: 0, blocked: 0 },
+            items: [
+              {
+                applicationId: "app-ui-1",
+                recordingSubmissionId: "recording-ui-1",
+                recordingVersion: 1,
+                sortOrder: 0,
+                status: "ready",
+                sourceHealth: "original_ready",
+                reasonCode: null,
+              },
+            ],
+          }),
+        };
+      }
+      if (
+        String(url) === "/api/projects/project-1/admission-share-boards" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareBoard: { id: "share-1", mode: "formal_review" },
+            shareUrl: "https://share.example/admission/explicit-token",
+            accessCode: "24681024",
+          }),
+        };
+      }
+      if (
+        String(url) === "/api/projects/project-1/admission-share-boards" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({ shareBoards: [] }),
         };
       }
 
@@ -6441,26 +6511,74 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:admission-recordings");
     createElement.mockRestore();
 
-    fireEvent.click(screen.getByRole("button", { name: "创建分享链接" }));
+    fireEvent.click(screen.getByRole("button", { name: "录屏分享中心" }));
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/projects/project-1/admission-share-boards",
-        expect.objectContaining({ method: "POST" }),
+        "/api/projects/project-1/admission-share-candidates",
+        expect.objectContaining({ method: "GET" }),
       ),
     );
-    const shareCall = fetchMock.mock.calls.find(
-      ([url]) =>
-        String(url) === "/api/projects/project-1/admission-share-boards",
+    expect(screen.getByText("历史版本")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "播放 Streamer One V1" }));
+    expect(openWindow).toHaveBeenCalledWith(
+      "/api/projects/project-1/admission-share-candidates/recording-ui-1/playback",
+      "_blank",
+      "noopener,noreferrer",
     );
-    expect(JSON.parse(shareCall[1].body)).toEqual({
-      title: "Alpha Project 录屏复核",
-      applicationIds: ["app-ui-1", "app-ui-2"],
-      allowVendorSubmit: true,
-    });
+    fireEvent.click(screen.getByLabelText("选择 Streamer One V1"));
+    expect(screen.getByText("已选择 1 条")).toBeInTheDocument();
     expect(
-      await screen.findByText(
-        /https:\/\/share.example\/admission\/plain-token/,
+      fetchMock.mock.calls.some(
+        ([url, requestInit]) =>
+          String(url) === "/api/projects/project-1/admission-share-boards" &&
+          requestInit?.method === "POST",
       ),
+    ).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    expect(await screen.findByLabelText("正式复核")).toBeChecked();
+    const preflightCall = fetchMock.mock.calls.find(
+      ([url, requestInit]) =>
+        String(url) ===
+          "/api/projects/project-1/admission-share-boards/preflight" &&
+        requestInit?.method === "POST",
+    );
+    expect(JSON.parse(preflightCall[1].body)).toEqual({
+      items: [
+        {
+          applicationId: "app-ui-1",
+          recordingSubmissionId: "recording-ui-1",
+          recordingVersion: 1,
+          sortOrder: 0,
+        },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+    const shareCall = await waitFor(() => {
+      const match = fetchMock.mock.calls.find(
+        ([url, requestInit]) =>
+          String(url) === "/api/projects/project-1/admission-share-boards" &&
+          requestInit?.method === "POST",
+      );
+      expect(match).toBeDefined();
+      return match;
+    });
+    expect(JSON.parse(shareCall[1].body)).toEqual(
+      expect.objectContaining({
+        mode: "formal_review",
+        requireAccessCode: true,
+        items: [
+          {
+            applicationId: "app-ui-1",
+            recordingSubmissionId: "recording-ui-1",
+            recordingVersion: 1,
+            sortOrder: 0,
+          },
+        ],
+      }),
+    );
+    expect(
+      await screen.findByText("24681024"),
     ).toBeInTheDocument();
   });
 
@@ -6854,7 +6972,7 @@ describe("OpsReferenceApp admission smoke", () => {
     });
   });
 
-  it("creates a project-level share board when server board rows have recordings but the local queue is stale", async () => {
+  it("uses server share candidates when the local queue is stale", async () => {
     const staleApplications = [
       {
         id: "app-stale",
@@ -6867,7 +6985,7 @@ describe("OpsReferenceApp admission smoke", () => {
         vendorReview: null,
       },
     ];
-    const fetchMock = vi.fn(async (url) => {
+    const fetchMock = vi.fn(async (url, init) => {
       if (String(url) === "/api/applications/admission-board") {
         return {
           ok: true,
@@ -6907,12 +7025,44 @@ describe("OpsReferenceApp admission smoke", () => {
           }),
         };
       }
-      if (String(url) === "/api/projects/project-1/admission-share-boards") {
+      if (
+        String(url) ===
+        "/api/projects/project-1/admission-share-candidates"
+      ) {
         return {
           ok: true,
           json: async () => ({
-            shareUrl: "https://share.example/admission/project-token",
+            candidates: [
+              {
+                applicationId: "app-stale",
+                recordingSubmissionId: "server-recording",
+                recordingVersion: 2,
+                isLatestVersion: true,
+                streamer: {
+                  id: "streamer-1",
+                  displayName: "Server Candidate",
+                  accountLabel: "dy-server",
+                },
+                mcnReviewDecision: "approved",
+                sourceHealth: "original_ready",
+                hasPrivateStorage: true,
+                externalUrl: null,
+                isShareable: true,
+                blockReason: null,
+                currentVendorDecision: "pending",
+                lastSharedAt: null,
+              },
+            ],
           }),
+        };
+      }
+      if (
+        String(url) === "/api/projects/project-1/admission-share-boards" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({ shareBoards: [] }),
         };
       }
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
@@ -6933,29 +7083,20 @@ describe("OpsReferenceApp admission smoke", () => {
       ),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "创建分享链接" }));
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/projects/project-1/admission-share-boards",
-        expect.objectContaining({ method: "POST" }),
-      ),
-    );
-    const shareCall = fetchMock.mock.calls.find(
-      ([url]) =>
-        String(url) === "/api/projects/project-1/admission-share-boards",
-    );
-    expect(JSON.parse(shareCall[1].body)).toEqual({
-      title: "Alpha Project 录屏复核",
-      allowVendorSubmit: true,
-    });
+    fireEvent.click(screen.getByRole("button", { name: "录屏分享中心" }));
     expect(
-      await screen.findByText(
-        /https:\/\/share.example\/admission\/project-token/,
-      ),
+      await screen.findByLabelText("选择 Server Candidate V2"),
     ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, requestInit]) =>
+          String(url) === "/api/projects/project-1/admission-share-boards" &&
+          requestInit?.method === "POST",
+      ),
+    ).toBe(false);
   });
 
-  it("shares existing recordings during promotion without requiring MCN approval", async () => {
+  it("does not auto-share an unapproved recording during promotion", async () => {
     const unapprovedApplications = [
       {
         id: "app-reviewing",
@@ -7020,14 +7161,43 @@ describe("OpsReferenceApp admission smoke", () => {
         };
       }
       if (
-        String(url) === "/api/projects/project-1/admission-share-boards" &&
-        init?.method === "POST"
+        String(url) ===
+        "/api/projects/project-1/admission-share-candidates"
       ) {
         return {
           ok: true,
           json: async () => ({
-            shareUrl: "https://share.example/admission/promotion-token",
+            candidates: [
+              {
+                applicationId: "app-reviewing",
+                recordingSubmissionId: "rec-reviewing",
+                recordingVersion: 1,
+                isLatestVersion: true,
+                streamer: {
+                  id: "streamer-1",
+                  displayName: "Streamer One",
+                  accountLabel: "dy-1",
+                },
+                mcnReviewDecision: null,
+                sourceHealth: "blocked",
+                hasPrivateStorage: true,
+                externalUrl: null,
+                isShareable: false,
+                blockReason: "MCN_APPROVAL_REQUIRED",
+                currentVendorDecision: "pending",
+                lastSharedAt: null,
+              },
+            ],
           }),
+        };
+      }
+      if (
+        String(url) === "/api/projects/project-1/admission-share-boards" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({ shareBoards: [] }),
         };
       }
       return { ok: false, json: async () => ({ error: "unexpected request" }) };
@@ -7048,28 +7218,17 @@ describe("OpsReferenceApp admission smoke", () => {
       ),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "创建分享链接" }));
-
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/projects/project-1/admission-share-boards",
-        expect.objectContaining({ method: "POST" }),
-      ),
-    );
-    const shareCall = fetchMock.mock.calls.find(
-      ([url]) =>
-        String(url) === "/api/projects/project-1/admission-share-boards",
-    );
-    expect(JSON.parse(shareCall[1].body)).toEqual({
-      title: "Alpha Project 录屏复核",
-      applicationIds: ["app-reviewing"],
-      allowVendorSubmit: true,
-    });
+    fireEvent.click(screen.getByRole("button", { name: "录屏分享中心" }));
     expect(
-      await screen.findByText(
-        /https:\/\/share.example\/admission\/promotion-token/,
-      ),
+      await screen.findByText("MCN 审核通过后才可分享"),
     ).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, requestInit]) =>
+          String(url) === "/api/projects/project-1/admission-share-boards" &&
+          requestInit?.method === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("shows vendor decisions with the correct MCN next actions", async () => {

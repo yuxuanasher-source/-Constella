@@ -113,6 +113,17 @@ export function jsonError(error: unknown) {
     );
   }
 
+  const serviceError = serviceErrorDetails(error);
+  if (serviceError) {
+    return NextResponse.json(
+      {
+        ...(serviceError.code ? { code: serviceError.code } : {}),
+        error: serviceError.message,
+      },
+      { status: serviceError.statusCode },
+    );
+  }
+
   if (error instanceof Error) {
     return NextResponse.json(
       { error: error.message },
@@ -126,6 +137,39 @@ export function jsonError(error: unknown) {
   }
 
   return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
+}
+
+function serviceErrorDetails(error: unknown): {
+  code: string | null;
+  message: string;
+  statusCode: number;
+} | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+  const candidate = error as {
+    code?: unknown;
+    message?: unknown;
+    statusCode?: unknown;
+  };
+  if (
+    typeof candidate.message !== "string" ||
+    !candidate.message.trim() ||
+    typeof candidate.statusCode !== "number" ||
+    !Number.isInteger(candidate.statusCode) ||
+    candidate.statusCode < 400 ||
+    candidate.statusCode > 599
+  ) {
+    return null;
+  }
+  return {
+    code:
+      typeof candidate.code === "string" && candidate.code.trim()
+        ? candidate.code
+        : null,
+    message: candidate.message,
+    statusCode: candidate.statusCode,
+  };
 }
 
 function messageFromUnknownError(error: unknown): string | null {

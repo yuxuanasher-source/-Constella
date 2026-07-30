@@ -9,13 +9,16 @@ import {
   type AdmissionReviewClient,
 } from "@/features/admission-review/evaluation-service";
 import {
-  getPublicAdmissionShareBoard,
+  getPublicAdmissionShareBoardContextWithSession,
   PublicAdmissionShareError,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
-import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
+import {
+  readAdmissionShareAccessSession,
+  setAdmissionShareAccessSession,
+} from "@/lib/http/admission-share-access-session";
 
 import { publicAdmissionShareErrorResponse } from "../public-route-utils";
 
@@ -39,14 +42,18 @@ export async function GET(
 
     const repo = new SupabaseAdmissionShareBoardRepository(supabase);
     const accessStore = new SupabaseAdmissionShareAccessStore(supabase);
-    const { organizationId, ...shareBoard } =
-      await getPublicAdmissionShareBoard({
-        repo,
-        accessStore,
-        token,
-        sessionToken:
-          readAdmissionShareAccessSession(request, token) ?? undefined,
-      });
+    const requestSession =
+      readAdmissionShareAccessSession(request, token) ?? undefined;
+    const {
+      organizationId,
+      board: shareBoard,
+      session: preparedSession,
+    } = await getPublicAdmissionShareBoardContextWithSession({
+      repo,
+      accessStore,
+      token,
+      sessionToken: requestSession,
+    });
 
     // 厂家端可选理由标签（仅 key/名称/说明，不泄漏内部配置）。
     // 解析失败不影响看板本身，退回内置默认字典。
@@ -62,32 +69,19 @@ export async function GET(
       }),
     );
 
-    return NextResponse.json({
-      shareBoard: toPublicResponse(shareBoard),
+    const response = NextResponse.json({
+      shareBoard,
       vendorCheckpoints,
     });
+    if (preparedSession?.created) {
+      setAdmissionShareAccessSession(response, {
+        token,
+        sessionToken: preparedSession.sessionToken,
+        expiresAt: preparedSession.expiresAt,
+      });
+    }
+    return response;
   } catch (error) {
     return publicAdmissionShareErrorResponse(error);
   }
-}
-
-function toPublicResponse(
-  shareBoard: Omit<
-    Awaited<ReturnType<typeof getPublicAdmissionShareBoard>>,
-    "organizationId"
-  >,
-) {
-  return {
-    ...shareBoard,
-    items: shareBoard.items.map((item) => ({
-      ...item,
-      vendorReview: item.vendorReview
-        ? {
-            decision: item.vendorReview.decision,
-            remark: item.vendorReview.remark,
-            submittedAt: item.vendorReview.submittedAt,
-          }
-        : null,
-    })),
-  };
 }

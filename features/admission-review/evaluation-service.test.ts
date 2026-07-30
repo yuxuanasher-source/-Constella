@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { defaultAdmissionRubric } from "./contracts";
 import {
@@ -62,10 +62,41 @@ function createFakeClient({
     },
   };
 
-  return client as unknown as AdmissionReviewClient & { inserts: typeof inserts };
+  return client as unknown as AdmissionReviewClient & {
+    inserts: typeof inserts;
+  };
 }
 
 describe("resolveAdmissionRubric", () => {
+  it("passes cancellation to the rubric PostgREST request", async () => {
+    const signal = new AbortController().signal;
+    const response = Promise.resolve({ data: [], error: null });
+    const abortSignal = vi.fn(() => response);
+    const query = {
+      then: response.then.bind(response),
+      abortSignal,
+    };
+    const client = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              order: () => query,
+            }),
+          }),
+        }),
+      }),
+    } as unknown as AdmissionReviewClient;
+
+    await resolveAdmissionRubric({
+      client,
+      organizationId: "org-1",
+      signal,
+    });
+
+    expect(abortSignal).toHaveBeenCalledWith(signal);
+  });
+
   it("falls back to the built-in default rubric", async () => {
     const rubric = await resolveAdmissionRubric({
       client: createFakeClient(),
@@ -127,6 +158,73 @@ describe("resolveAdmissionRubric", () => {
 
 describe("recordAdmissionEvaluation", () => {
   const rubric = defaultAdmissionRubric();
+
+  it("passes cancellation to evaluation and checkpoint-result writes", async () => {
+    const signal = new AbortController().signal;
+    const evaluationResponse = Promise.resolve({
+      data: {
+        id: "evaluation-1",
+        organization_id: "org-1",
+        application_id: "application-1",
+        submission_id: "submission-1",
+        stage: "vendor_second",
+        rubric_version: 1,
+        decision: "rejected",
+        decision_confidence: null,
+        reviewer_id: null,
+        vendor_review_id: "vendor-review-1",
+        ai_invocation_id: null,
+        note: "不采用",
+        note_source: "human",
+        created_at: "2026-07-03T10:00:00.000Z",
+      },
+      error: null,
+    });
+    const resultResponse = Promise.resolve({ error: null });
+    const evaluationAbortSignal = vi.fn(() => evaluationResponse);
+    const resultAbortSignal = vi.fn(() => resultResponse);
+    const client = {
+      from(table: string) {
+        if (table === "admission_review_evaluations") {
+          return {
+            insert: () => ({
+              select: () => ({
+                single: () => ({
+                  then: evaluationResponse.then.bind(evaluationResponse),
+                  abortSignal: evaluationAbortSignal,
+                }),
+              }),
+            }),
+          };
+        }
+        return {
+          insert: () => ({
+            then: resultResponse.then.bind(resultResponse),
+            abortSignal: resultAbortSignal,
+          }),
+        };
+      },
+    } as unknown as AdmissionReviewClient;
+
+    await recordAdmissionEvaluation({
+      client,
+      rubric,
+      signal,
+      input: {
+        organizationId: "org-1",
+        applicationId: "application-1",
+        submissionId: "submission-1",
+        stage: "vendor_second",
+        decision: "rejected",
+        vendorReviewId: "vendor-review-1",
+        note: "不采用",
+        reasonCodes: ["script_fit"],
+      },
+    });
+
+    expect(evaluationAbortSignal).toHaveBeenCalledWith(signal);
+    expect(resultAbortSignal).toHaveBeenCalledWith(signal);
+  });
 
   it("persists the evaluation with reason codes as fail results", async () => {
     const client = createFakeClient();
@@ -190,9 +288,9 @@ describe("recordAdmissionEvaluation", () => {
 
     const results = client.inserts.admission_review_checkpoint_results;
     expect(results).toHaveLength(3);
-    expect(results.find((r) => r.checkpoint_key === "script_fit")).toMatchObject(
-      { verdict: "fail", note: "缺卖点" },
-    );
+    expect(
+      results.find((r) => r.checkpoint_key === "script_fit"),
+    ).toMatchObject({ verdict: "fail", note: "缺卖点" });
     expect(
       results.find((r) => r.checkpoint_key === "opening_hook"),
     ).toMatchObject({ verdict: "pass" });

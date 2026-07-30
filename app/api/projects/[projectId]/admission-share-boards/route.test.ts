@@ -3,13 +3,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET, POST } from "./route";
 
 import {
+  AdmissionShareFormalRoundConflictError,
+  AdmissionShareSelectionError,
   createAdmissionShareBoard,
   listAdmissionShareBoards,
+  SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
+import { SupabaseAdmissionShareCandidateRepository } from "@/features/applications/admission-share-candidates";
 import {
   actorFromContext,
   getAdmissionRouteContext,
 } from "@/features/applications/application-route-utils";
+import {
+  AdmissionShareProjectStatusError,
+  assertCanCreateAdmissionShareForProject,
+} from "@/features/applications/admission-share-policy";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/applications/admission-share-board", () => ({
   SupabaseAdmissionShareBoardRepository: vi
@@ -21,6 +30,48 @@ vi.mock("@/features/applications/admission-share-board", () => ({
     }),
   createAdmissionShareBoard: vi.fn(),
   listAdmissionShareBoards: vi.fn(),
+  AdmissionShareSelectionError: class AdmissionShareSelectionError extends Error {
+    readonly name = "AdmissionShareSelectionError";
+
+    constructor(public readonly items: unknown[]) {
+      super("Admission share selection changed");
+    }
+  },
+  AdmissionShareFormalRoundConflictError: class AdmissionShareFormalRoundConflictError extends Error {
+    readonly name = "AdmissionShareFormalRoundConflictError";
+
+    constructor() {
+      super("Admission share formal round already open");
+    }
+  },
+}));
+
+vi.mock("@/features/applications/admission-share-candidates", () => ({
+  SupabaseAdmissionShareCandidateRepository: vi
+    .fn()
+    .mockImplementation(function () {
+      return {
+        repo: "candidate-repo",
+      };
+    }),
+}));
+
+vi.mock("@/features/applications/admission-share-policy", () => ({
+  assertCanCreateAdmissionShareForProject: vi.fn(),
+  AdmissionShareProjectStatusError: class AdmissionShareProjectStatusError extends Error {
+    readonly code = "ADMISSION_SHARE_PROJECT_STATUS_BLOCKED";
+
+    constructor(
+      message: string,
+      public readonly statusCode: 404 | 409,
+    ) {
+      super(message);
+    }
+  },
+}));
+
+vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseAdminClient: vi.fn(),
 }));
 
 vi.mock("@/features/applications/application-route-utils", () => ({
@@ -31,7 +82,9 @@ vi.mock("@/features/applications/application-route-utils", () => ({
     const status =
       error && typeof error === "object" && "statusCode" in error
         ? Number(error.statusCode)
-        : 500;
+        : error instanceof Error
+          ? 400
+          : 500;
     return Response.json(
       { error: error instanceof Error ? error.message : "Unexpected error" },
       { status },
@@ -67,38 +120,54 @@ describe("project admission share-board route", () => {
     vi.clearAllMocks();
     vi.mocked(getAdmissionRouteContext).mockResolvedValue(context as never);
     vi.mocked(actorFromContext).mockReturnValue(auth);
+    vi.mocked(createSupabaseAdminClient).mockReturnValue({
+      client: "admin",
+    } as never);
     vi.mocked(listAdmissionShareBoards).mockResolvedValue([
       {
         id: "share-1",
-        organizationId: "org-1",
-        projectId: "project-1",
         title: "Vendor review",
-        tokenHash: "hash",
-        accessCodeHash: null,
+        purpose: "",
+        mode: "formal_review",
         status: "active",
         expiresAt: "2026-06-14T00:00:00.000Z",
-        allowVendorSubmit: true,
+        reviewState: "not_started",
+        roundNumber: 1,
+        itemCount: 10,
+        draftCompletedCount: 4,
+        lastViewedAt: "2026-07-30T08:00:00.000Z",
+        lastDraftAt: "2026-07-30T08:20:00.000Z",
+        lastSubmittedAt: null,
+        lockedAt: null,
         createdBy: "user-ops",
+        createdAt: "2026-07-30T00:00:00.000Z",
       },
     ]);
     vi.mocked(createAdmissionShareBoard).mockResolvedValue({
       token: "plain-token",
+      accessCode: "24681024",
       shareBoard: {
         id: "share-1",
         organizationId: "org-1",
         projectId: "project-1",
         title: "Vendor review",
+        purpose: "",
+        mode: "formal_review",
         tokenHash: "hash",
         accessCodeHash: null,
         status: "active",
         expiresAt: "2026-06-14T00:00:00.000Z",
         allowVendorSubmit: true,
+        allowExternalFallback: true,
+        reviewState: "not_started",
+        roundNumber: 1,
         createdBy: "user-ops",
+        createdAt: "2026-07-30T00:00:00.000Z",
       },
     });
   });
 
-  it("lists share boards without token hashes", async () => {
+  it("lists whitelisted share-board task progress without secrets or reviewer data", async () => {
     const response = await GET(new Request("http://localhost/api"), {
       params,
     });
@@ -106,9 +175,32 @@ describe("project admission share-board route", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.shareBoards).toEqual([
-      expect.objectContaining({ id: "share-1", title: "Vendor review" }),
+      {
+        id: "share-1",
+        title: "Vendor review",
+        purpose: "",
+        mode: "formal_review",
+        status: "active",
+        reviewState: "not_started",
+        roundNumber: 1,
+        expiresAt: "2026-06-14T00:00:00.000Z",
+        itemCount: 10,
+        draftCompletedCount: 4,
+        lastViewedAt: "2026-07-30T08:00:00.000Z",
+        lastDraftAt: "2026-07-30T08:20:00.000Z",
+        lastSubmittedAt: null,
+        lockedAt: null,
+        createdBy: "user-ops",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
     ]);
     expect(JSON.stringify(body)).not.toContain("hash");
+    expect(JSON.stringify(body)).not.toContain("organizationId");
+    expect(JSON.stringify(body)).not.toContain("projectId");
+    expect(JSON.stringify(body)).not.toContain("allowVendorSubmit");
+    expect(JSON.stringify(body)).not.toContain("allowExternalFallback");
+    expect(JSON.stringify(body)).not.toContain("storage");
+    expect(JSON.stringify(body)).not.toContain("reviewer");
   });
 
   it("creates a share board and returns one-time share url", async () => {
@@ -118,8 +210,20 @@ describe("project admission share-board route", () => {
         {
           method: "POST",
           body: JSON.stringify({
-            title: "Vendor review",
-            applicationIds: ["app-1"],
+            mode: "preview",
+            title: "客户预览",
+            purpose: "确认画面",
+            expiresAt: "2026-08-06T00:00:00.000Z",
+            requireAccessCode: false,
+            allowExternalFallback: true,
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
           }),
         },
       ),
@@ -129,14 +233,161 @@ describe("project admission share-board route", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.shareUrl).toBe("http://localhost/share/admission/plain-token");
+    expect(body.accessCode).toBe("24681024");
     expect(JSON.stringify(body)).not.toContain("hash");
+    expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
+      context.supabase,
+    );
+    expect(assertCanCreateAdmissionShareForProject).toHaveBeenCalledWith(
+      context.supabase,
+      {
+        organizationId: "org-1",
+        projectId: "project-1",
+      },
+    );
+    expect(SupabaseAdmissionShareCandidateRepository).toHaveBeenCalledWith({
+      client: "admin",
+    });
     expect(createAdmissionShareBoard).toHaveBeenCalledWith(
       expect.objectContaining({
         actor: auth,
+        repo: { repo: "share-repo" },
+        candidateRepo: { repo: "candidate-repo" },
         projectId: "project-1",
-        input: expect.objectContaining({ title: "Vendor review" }),
+        input: {
+          mode: "preview",
+          title: "客户预览",
+          purpose: "确认画面",
+          expiresAt: "2026-08-06T00:00:00.000Z",
+          requireAccessCode: false,
+          accessCode: undefined,
+          allowExternalFallback: true,
+          items: [
+            {
+              applicationId: "app-1",
+              recordingSubmissionId: "recording-v2",
+              recordingVersion: 2,
+              sortOrder: 0,
+            },
+          ],
+        },
       }),
     );
+  });
+
+  it("returns itemized RPC-race selection conflicts as 409", async () => {
+    vi.mocked(createAdmissionShareBoard).mockRejectedValue(
+      new AdmissionShareSelectionError([
+        {
+          applicationId: "app-1",
+          recordingSubmissionId: "recording-v2",
+          recordingVersion: 2,
+          sortOrder: 0,
+          status: "blocked",
+          sourceHealth: "blocked",
+          reasonCode: "SOURCE_UNAVAILABLE",
+        },
+      ]),
+    );
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "formal_review",
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      code: "SHARE_SELECTION_CHANGED",
+      error: "部分录屏状态已变化，请移除异常项后重试。",
+      items: [
+        expect.objectContaining({
+          recordingSubmissionId: "recording-v2",
+          reasonCode: "SOURCE_UNAVAILABLE",
+        }),
+      ],
+    });
+  });
+
+  it("returns a stable 409 for an open formal-round conflict", async () => {
+    vi.mocked(createAdmissionShareBoard).mockRejectedValue(
+      new AdmissionShareFormalRoundConflictError(),
+    );
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "formal_review",
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      code: "SHARE_FORMAL_ROUND_CONFLICT",
+      error: "当前已有进行中的正式复核，请先完成、撤销或等待过期。",
+    });
+  });
+
+  it("returns 400 when service rejects a share shorter than one day", async () => {
+    vi.mocked(createAdmissionShareBoard).mockRejectedValue(
+      new Error("Share expiry must be at least 1 day"),
+    );
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "preview",
+            expiresAt: "2026-07-30T12:00:00.000Z",
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Share expiry must be at least 1 day",
+    });
   });
 
   it("blocks streamers from creating share boards", async () => {
@@ -157,6 +408,82 @@ describe("project admission share-board route", () => {
     );
 
     expect(response.status).toBe(403);
+    expect(assertCanCreateAdmissionShareForProject).not.toHaveBeenCalled();
     expect(createAdmissionShareBoard).not.toHaveBeenCalled();
+  });
+
+  it("blocks create before candidate access after the project lifecycle closes", async () => {
+    vi.mocked(assertCanCreateAdmissionShareForProject).mockRejectedValueOnce(
+      new AdmissionShareProjectStatusError(
+        "Project status does not allow new shares",
+        409,
+      ),
+    );
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "preview",
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "ADMISSION_SHARE_PROJECT_STATUS_BLOCKED",
+    });
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
+    expect(createAdmissionShareBoard).not.toHaveBeenCalled();
+  });
+
+  it("returns the stable lifecycle conflict when the database guard wins a create race", async () => {
+    vi.mocked(createAdmissionShareBoard).mockRejectedValueOnce(
+      new AdmissionShareProjectStatusError(
+        "Project status changed before share creation",
+        409,
+      ),
+    );
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "preview",
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      code: "ADMISSION_SHARE_PROJECT_STATUS_BLOCKED",
+      error: "Project status changed before share creation",
+    });
+    expect(assertCanCreateAdmissionShareForProject).toHaveBeenCalled();
+    expect(createAdmissionShareBoard).toHaveBeenCalled();
   });
 });

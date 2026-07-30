@@ -44,13 +44,27 @@ describe("public admission share review route", () => {
       "opaque-session-token",
     );
     vi.mocked(submitVendorAdmissionReviews).mockResolvedValue({
+      submissionRevision: 1,
       submittedCount: 2,
       syncedCount: 1,
       skippedCount: 1,
+      items: [
+        {
+          vendorReviewId: "vendor-review-1",
+          applicationId: "application-1",
+          recordingSubmissionId: "recording-1",
+          recordingVersion: 2,
+          decision: "rejected",
+          remark: "内部评价备注",
+          reasonCodes: ["script_fit"],
+          syncStatus: "synced",
+          syncError: null,
+        },
+      ],
     });
   });
 
-  it("submits vendor reviews through the server-side token lookup", async () => {
+  it("submits only the project remark through the server-side token lookup", async () => {
     const response = await POST(
       new Request(
         "http://localhost/api/public/admission-share/plain-token/reviews?accessCode=2468",
@@ -59,6 +73,7 @@ describe("public admission share review route", () => {
           body: JSON.stringify({
             reviewerName: "Vendor Reviewer",
             reviewerContact: "reviewer@example.com",
+            projectRemark: " 首轮复核完成 ",
             items: [
               {
                 recordingSubmissionId: "rec-1",
@@ -80,6 +95,7 @@ describe("public admission share review route", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
+      submissionRevision: 1,
       submittedCount: 2,
       syncedCount: 1,
       skippedCount: 1,
@@ -94,28 +110,16 @@ describe("public admission share review route", () => {
       token: "plain-token",
       sessionToken: "opaque-session-token",
       recordEvaluation: expect.any(Function),
-      input: expect.objectContaining({
-        reviewerName: "Vendor Reviewer",
-        reviewerContact: "reviewer@example.com",
-        items: [
-          expect.objectContaining({
-            recordingSubmissionId: "rec-1",
-            recordingVersion: 2,
-            decision: "selected",
-          }),
-          expect.objectContaining({
-            recordingSubmissionId: "rec-2",
-            recordingVersion: 1,
-            decision: "backup",
-          }),
-        ],
-      }),
+      input: { projectRemark: "首轮复核完成" },
     });
   });
 
-  it("rejects stale recording versions from the service", async () => {
+  it("returns stable incomplete-review errors from the atomic service", async () => {
     vi.mocked(submitVendorAdmissionReviews).mockRejectedValue(
-      new Error("Recording version is stale"),
+      Object.assign(new Error("Review is incomplete"), {
+        code: "REVIEW_INCOMPLETE",
+        statusCode: 400,
+      }),
     );
 
     const response = await POST(
@@ -137,10 +141,10 @@ describe("public admission share review route", () => {
       { params },
     );
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
-      code: "RECORDING_VERSION_STALE",
-      error: "录屏版本已更新，请刷新页面后重新提交。",
+      code: "REVIEW_INCOMPLETE",
+      error: "复核尚未完成，请补全所有录屏结论和必填备注。",
     });
   });
 });

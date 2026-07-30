@@ -68,6 +68,10 @@ type RecordingSubmissionRow = {
   version: number;
   status: RecordingSubmissionRecord["status"];
   uploaded_by: string | null;
+  mcn_review_decision: RecordingSubmissionRecord["mcnReviewDecision"];
+  mcn_reviewed_by: string | null;
+  mcn_reviewed_at: string | null;
+  mcn_review_note: string | null;
   collaboration_id: string | null;
   contributor_organization_id: string | null;
   self_score_total: number | null;
@@ -108,6 +112,10 @@ const recordingSubmissionSelect = `
   version,
   status,
   uploaded_by,
+  mcn_review_decision,
+  mcn_reviewed_by,
+  mcn_reviewed_at,
+  mcn_review_note,
   collaboration_id,
   contributor_organization_id,
   self_score_total,
@@ -394,6 +402,12 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
       reviewedBy: string;
       reviewedAt: string;
       reviewNote?: string;
+      mcnReviewDecision: NonNullable<
+        RecordingSubmissionRecord["mcnReviewDecision"]
+      >;
+      mcnReviewedBy: string;
+      mcnReviewedAt: string;
+      mcnReviewNote?: string;
     },
   ): Promise<RecordingSubmissionRecord> {
     const { data, error } = await this.client
@@ -403,6 +417,10 @@ export class SupabaseApplicationRepository implements ApplicationRepository {
         reviewed_by: input.reviewedBy,
         reviewed_at: input.reviewedAt,
         review_note: input.reviewNote,
+        mcn_review_decision: input.mcnReviewDecision,
+        mcn_reviewed_by: input.mcnReviewedBy,
+        mcn_reviewed_at: input.mcnReviewedAt,
+        mcn_review_note: input.mcnReviewNote,
       })
       .eq("id", recordingId)
       .select(recordingSubmissionSelect)
@@ -550,6 +568,10 @@ function toRecordingSubmissionRecord(
     version: row.version,
     status: row.status,
     uploadedBy: row.uploaded_by,
+    mcnReviewDecision: row.mcn_review_decision ?? null,
+    mcnReviewedBy: row.mcn_reviewed_by,
+    mcnReviewedAt: row.mcn_reviewed_at,
+    mcnReviewNote: row.mcn_review_note,
     collaborationId: row.collaboration_id,
     contributorOrganizationId: row.contributor_organization_id,
     selfScoreTotal: row.self_score_total ?? null,

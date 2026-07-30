@@ -43,6 +43,10 @@ type EvaluationRow = {
   created_at: string;
 };
 
+type AbortableQuery<T> = PromiseLike<T> & {
+  abortSignal(signal: AbortSignal): PromiseLike<T>;
+};
+
 export type AdmissionReviewClient = {
   from(table: "admission_review_checkpoints"): {
     select(columns: string): {
@@ -57,7 +61,10 @@ export type AdmissionReviewClient = {
           order(
             column: "rubric_version",
             options: { ascending: boolean },
-          ): PromiseLike<{ data: CheckpointRow[] | null; error: Error | null }>;
+          ): AbortableQuery<{
+            data: CheckpointRow[] | null;
+            error: Error | null;
+          }>;
         };
       };
     };
@@ -65,7 +72,7 @@ export type AdmissionReviewClient = {
   from(table: "admission_review_evaluations"): {
     insert(payload: Record<string, unknown>): {
       select(columns: string): {
-        single(): PromiseLike<{
+        single(): AbortableQuery<{
           data: EvaluationRow | null;
           error: Error | null;
         }>;
@@ -75,7 +82,7 @@ export type AdmissionReviewClient = {
   from(table: "admission_review_checkpoint_results"): {
     insert(
       payload: Record<string, unknown>[],
-    ): PromiseLike<{ error: Error | null }>;
+    ): AbortableQuery<{ error: Error | null }>;
   };
 };
 
@@ -85,11 +92,13 @@ export type AdmissionReviewClient = {
 export async function resolveAdmissionRubric({
   client,
   organizationId,
+  signal,
 }: {
   client: AdmissionReviewClient;
   organizationId: string;
+  signal?: AbortSignal;
 }): Promise<AdmissionRubric> {
-  const { data, error } = await client
+  const query = client
     .from("admission_review_checkpoints")
     .select(
       "rubric_version, key, label, description, severity, applicable_stage, weight, active",
@@ -97,6 +106,7 @@ export async function resolveAdmissionRubric({
     .eq("organization_id", organizationId)
     .eq("active", true)
     .order("rubric_version", { ascending: false });
+  const { data, error } = await abortableQuery(query, signal);
 
   if (error) {
     throw error;
@@ -146,10 +156,12 @@ export async function recordAdmissionEvaluation({
   client,
   rubric,
   input,
+  signal,
 }: {
   client: AdmissionReviewClient;
   rubric: AdmissionRubric;
   input: RecordAdmissionEvaluationInput;
+  signal?: AbortSignal;
 }): Promise<AdmissionEvaluationRecord> {
   const results = mergeCheckpointResults({ rubric, input });
 
@@ -163,7 +175,7 @@ export async function recordAdmissionEvaluation({
     }
   }
 
-  const { data, error } = await client
+  const evaluationQuery = client
     .from("admission_review_evaluations")
     .insert({
       organization_id: input.organizationId,
@@ -183,6 +195,7 @@ export async function recordAdmissionEvaluation({
       "id, organization_id, application_id, submission_id, stage, rubric_version, decision, decision_confidence, reviewer_id, vendor_review_id, ai_invocation_id, note, note_source, created_at",
     )
     .single();
+  const { data, error } = await abortableQuery(evaluationQuery, signal);
 
   if (error) {
     throw error;
@@ -192,7 +205,7 @@ export async function recordAdmissionEvaluation({
   }
 
   if (results.length) {
-    const { error: resultsError } = await client
+    const resultsQuery = client
       .from("admission_review_checkpoint_results")
       .insert(
         results.map((result) => ({
@@ -205,12 +218,20 @@ export async function recordAdmissionEvaluation({
           evidence: result.evidence ?? {},
         })),
       );
+    const { error: resultsError } = await abortableQuery(resultsQuery, signal);
     if (resultsError) {
       throw resultsError;
     }
   }
 
   return toEvaluationRecord(data);
+}
+
+function abortableQuery<T>(
+  query: AbortableQuery<T>,
+  signal: AbortSignal | undefined,
+): PromiseLike<T> {
+  return signal ? query.abortSignal(signal) : query;
 }
 
 function mergeCheckpointResults({

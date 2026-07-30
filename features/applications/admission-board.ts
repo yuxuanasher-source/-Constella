@@ -8,6 +8,7 @@ import type {
 } from "./application-state";
 import type { ApplicationSource } from "./application-service";
 import { latestRecordingAiAnalysesByAsset } from "./application-queries";
+import { listAdmissionShareBoardProgress } from "./admission-share-progress";
 
 type MaybeArray<T> = T | T[] | null | undefined;
 
@@ -76,14 +77,25 @@ export type AdmissionVendorReviewRow = {
   vendor_reviewer_name?: string | null;
   vendor_reviewer_contact?: string | null;
   submitted_at: string;
+  sync_status?: "synced" | "skipped" | "failed" | null;
+  sync_error?: string | null;
 };
 
 export type AdmissionShareBoardRow = {
   id: string;
   project_id: string;
+  mode: "preview" | "formal_review";
   status: "active" | "expired" | "revoked";
+  review_state: "not_started" | "viewed" | "in_progress" | "submitted_locked";
+  round_number: number;
   expires_at: string;
+  last_viewed_at?: string | null;
+  last_draft_at?: string | null;
   last_submitted_at?: string | null;
+  locked_at?: string | null;
+  item_count?: number;
+  draft_completed_count?: number;
+  created_at?: string;
 };
 
 export type AdmissionProjectBoard = {
@@ -111,9 +123,24 @@ export type AdmissionProjectBoard = {
   };
   share: {
     id: string | null;
+    mode: "preview" | "formal_review" | null;
     status: "unshared" | "active" | "expired" | "revoked";
+    reviewState:
+      | "not_started"
+      | "viewed"
+      | "in_progress"
+      | "submitted_locked"
+      | null;
+    roundNumber: number | null;
     expiresAt: string | null;
+    lastViewedAt: string | null;
+    lastDraftAt: string | null;
     lastSubmittedAt: string | null;
+    lockedAt: string | null;
+  };
+  shareProgress: {
+    completed: number;
+    total: number;
   };
   lastActivityAt: string | null;
 };
@@ -144,12 +171,29 @@ export type AdmissionRecordingDetail = {
     aiAnalysis: RecordingAiAnalysisDto | null;
   } | null;
   vendorReview: {
+    recordingSubmissionId: string;
+    recordingVersion: number;
     decision: VendorAdmissionDecision;
     remark: string;
     reviewerName: string;
     reviewerContact: string;
     submittedAt: string;
+    syncStatus: "synced" | "skipped" | "failed";
+    syncError: string | null;
   } | null;
+};
+
+export type AdmissionResultTask = {
+  type:
+    | "mcn_final_confirm"
+    | "notify_streamer_changes"
+    | "await_streamer_resubmission"
+    | "new_version_review"
+    | "start_next_round"
+    | "historical_result_manual_review";
+  applicationId: string;
+  recordingSubmissionId: string | null;
+  label: string;
 };
 
 const applicationSelect = `
@@ -293,6 +337,92 @@ export function toAdmissionRecordingDetails(
   });
 }
 
+export function toAdmissionResultTask(
+  detail: AdmissionRecordingDetail,
+): AdmissionResultTask | null {
+  if (detail.status === "joined") {
+    return null;
+  }
+
+  const recording = detail.latestRecording;
+  const review = detail.vendorReview;
+  if (!recording || !review) {
+    return null;
+  }
+
+  const reviewTargetsCurrentVersion =
+    review.recordingSubmissionId === recording.id &&
+    review.recordingVersion === recording.version;
+  if (review.syncStatus === "failed") {
+    return resultTask(
+      "historical_result_manual_review",
+      detail.id,
+      review.recordingSubmissionId,
+      "结果同步失败，待人工处理",
+    );
+  }
+  if (
+    review.syncStatus === "skipped" &&
+    review.syncError === "application_already_joined"
+  ) {
+    return null;
+  }
+  if (review.syncStatus === "skipped" && !reviewTargetsCurrentVersion) {
+    return resultTask(
+      "historical_result_manual_review",
+      detail.id,
+      review.recordingSubmissionId,
+      "历史版本结果待人工确认",
+    );
+  }
+
+  if (!reviewTargetsCurrentVersion) {
+    if (recording.status === "submitted" || recording.status === "reviewing") {
+      return resultTask(
+        "new_version_review",
+        detail.id,
+        recording.id,
+        "新版本待 MCN 复核",
+      );
+    }
+    if (recording.status === "approved") {
+      return resultTask(
+        "start_next_round",
+        detail.id,
+        recording.id,
+        "可以发起下一轮",
+      );
+    }
+    return null;
+  }
+
+  if (review.decision === "selected") {
+    return resultTask(
+      "mcn_final_confirm",
+      detail.id,
+      recording.id,
+      "待 MCN 最终确认",
+    );
+  }
+  if (review.decision === "rejected") {
+    return resultTask(
+      "notify_streamer_changes",
+      detail.id,
+      recording.id,
+      "需要通知主播修改",
+    );
+  }
+  if (review.decision === "needs_changes") {
+    return resultTask(
+      "await_streamer_resubmission",
+      detail.id,
+      recording.id,
+      "等待主播重新提交",
+    );
+  }
+  return null;
+}
+
 export function toAdmissionRecordingExportRows(
   details: AdmissionRecordingDetail[],
 ): Array<Record<string, unknown>> {
@@ -367,7 +497,7 @@ async function listVendorReviewRows(
   const { data, error } = await supabase
     .from("project_recording_vendor_reviews")
     .select(
-      "application_id, recording_submission_id, recording_version, decision, remark, vendor_reviewer_name, vendor_reviewer_contact, submitted_at",
+      "application_id, recording_submission_id, recording_version, decision, remark, vendor_reviewer_name, vendor_reviewer_contact, submitted_at, sync_status, sync_error",
     )
     .in("application_id", applicationIds)
     .order("submitted_at", { ascending: false });
@@ -392,7 +522,9 @@ async function listShareBoardRows(
   // 作为第二道防线。
   const { data, error } = await supabase
     .from("project_recording_share_boards")
-    .select("id, project_id, status, expires_at, last_submitted_at")
+    .select(
+      "id, project_id, mode, status, review_state, round_number, expires_at, last_viewed_at, last_draft_at, last_submitted_at, locked_at, created_at",
+    )
     .eq("organization_id", organizationId)
     .in("project_id", projectIds)
     .order("created_at", { ascending: false });
@@ -401,7 +533,21 @@ async function listShareBoardRows(
     throw error;
   }
 
-  return (data ?? []) as unknown as AdmissionShareBoardRow[];
+  const shareBoards = (data ?? []) as unknown as AdmissionShareBoardRow[];
+  if (shareBoards.length === 0) {
+    return [];
+  }
+
+  const progressByBoard = await listAdmissionShareBoardProgress(
+    supabase,
+    projectIds,
+  );
+  return shareBoards.map((shareBoard) => ({
+    ...shareBoard,
+    item_count: progressByBoard.get(shareBoard.id)?.itemCount ?? 0,
+    draft_completed_count:
+      progressByBoard.get(shareBoard.id)?.draftCompletedCount ?? 0,
+  }));
 }
 
 function createProjectBoard(
@@ -426,9 +572,19 @@ function createProjectBoard(
     },
     share: {
       id: share?.id ?? null,
+      mode: share?.mode ?? null,
       status: share?.status ?? "unshared",
+      reviewState: share?.review_state ?? null,
+      roundNumber: share?.round_number ?? null,
       expiresAt: share?.expires_at ?? null,
+      lastViewedAt: share?.last_viewed_at ?? null,
+      lastDraftAt: share?.last_draft_at ?? null,
       lastSubmittedAt: share?.last_submitted_at ?? null,
+      lockedAt: share?.locked_at ?? null,
+    },
+    shareProgress: {
+      completed: share?.draft_completed_count ?? 0,
+      total: share?.item_count ?? 0,
     },
     lastActivityAt: share?.last_submitted_at ?? null,
   };
@@ -516,11 +672,15 @@ function toRecordingDto(recording: AdmissionRecordingRow) {
 
 function toVendorReviewDto(review: AdmissionVendorReviewRow) {
   return {
+    recordingSubmissionId: review.recording_submission_id,
+    recordingVersion: review.recording_version,
     decision: review.decision,
     remark: review.remark?.trim() || "",
     reviewerName: review.vendor_reviewer_name?.trim() || "",
     reviewerContact: review.vendor_reviewer_contact?.trim() || "",
     submittedAt: review.submitted_at,
+    syncStatus: review.sync_status ?? "synced",
+    syncError: review.sync_error?.trim() || null,
   };
 }
 
@@ -550,11 +710,19 @@ function latestShareBoardByProject(shareBoards: AdmissionShareBoardRow[]) {
   const latest = new Map<string, AdmissionShareBoardRow>();
   for (const share of shareBoards) {
     const current = latest.get(share.project_id);
-    if (!current || share.expires_at > current.expires_at) {
+    if (!current || shareBoardSortKey(share) > shareBoardSortKey(current)) {
       latest.set(share.project_id, share);
     }
   }
   return latest;
+}
+
+function shareBoardSortKey(shareBoard: AdmissionShareBoardRow) {
+  return (
+    shareBoard.created_at ??
+    shareBoard.last_submitted_at ??
+    shareBoard.expires_at
+  );
 }
 
 function streamerAccountLabel(
@@ -591,4 +759,18 @@ function arrayOf<T>(value: MaybeArray<T>): T[] {
 
 function unique(values: string[]) {
   return [...new Set(values)];
+}
+
+function resultTask(
+  type: AdmissionResultTask["type"],
+  applicationId: string,
+  recordingSubmissionId: string | null,
+  label: string,
+): AdmissionResultTask {
+  return {
+    type,
+    applicationId,
+    recordingSubmissionId,
+    label,
+  };
 }

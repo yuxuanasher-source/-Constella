@@ -76,6 +76,7 @@ describe("revoke admission share-board route", () => {
     expect(revokeAdmissionShareBoard).toHaveBeenCalledWith(
       expect.objectContaining({
         actor: auth,
+        audit: expect.any(Function),
         projectId: "project-1",
         shareBoardId: "share-1",
       }),
