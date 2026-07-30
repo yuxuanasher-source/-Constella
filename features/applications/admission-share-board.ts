@@ -1,6 +1,7 @@
 import {
   createHash,
   randomBytes,
+  randomInt,
   scryptSync,
   timingSafeEqual,
 } from "node:crypto";
@@ -14,6 +15,16 @@ import type {
   RecordingReviewStatus,
 } from "./application-state";
 import type { VendorAdmissionDecision } from "./admission-board";
+import type { AdmissionShareCandidateRepository } from "./admission-share-candidates";
+import {
+  preflightAdmissionShareSelection,
+  type AdmissionShareMode,
+  type AdmissionShareSelectionInput,
+} from "./admission-share-workflow";
+
+type AdmissionSharePreflightResult = ReturnType<
+  typeof preflightAdmissionShareSelection
+>;
 
 export type AdmissionShareBoardActor = {
   userId: string;
@@ -22,57 +33,43 @@ export type AdmissionShareBoardActor = {
   organizationId: string;
 };
 
-export type ShareableApplication = {
-  id: string;
-  organizationId: string;
-  projectId: string;
-  streamerId: string;
-  status: ApplicationStatus;
-};
-
-export type ShareableRecording = {
-  id: string;
-  applicationId: string;
-  projectId: string;
-  streamerId: string;
-  version: number;
-  status: RecordingReviewStatus;
-};
-
 export type AdmissionShareBoardRecord = {
   id: string;
   organizationId: string;
   projectId: string;
   title: string;
+  purpose: string;
+  mode: AdmissionShareMode;
   tokenHash: string;
   accessCodeHash: string | null;
   status: "active" | "expired" | "revoked";
   expiresAt: string;
   allowVendorSubmit: boolean;
+  allowExternalFallback: boolean;
+  reviewState: "not_started" | "viewed" | "in_progress" | "submitted_locked";
+  roundNumber: number;
   createdBy: string;
   createdAt?: string;
 };
 
+export type CreateAdmissionShareBoardPersistenceInput = {
+  organizationId: string;
+  projectId: string;
+  title: string;
+  purpose: string;
+  mode: AdmissionShareMode;
+  tokenHash: string;
+  accessCodeHash: string | null;
+  expiresAt: string;
+  allowExternalFallback: boolean;
+  createdBy: string;
+  items: AdmissionShareSelectionInput[];
+};
+
 export type AdmissionShareBoardRepository = {
-  listShareableApplications(
-    projectId: string,
-    applicationIds?: string[],
-  ): Promise<ShareableApplication[]>;
-  listLatestRecordings(applicationIds: string[]): Promise<ShareableRecording[]>;
-  createShareBoard(
-    input: Omit<AdmissionShareBoardRecord, "id" | "status" | "createdAt">,
+  createShareBoardWithItems(
+    input: CreateAdmissionShareBoardPersistenceInput,
   ): Promise<AdmissionShareBoardRecord>;
-  createShareItems(
-    items: Array<{
-      shareBoardId: string;
-      organizationId: string;
-      projectId: string;
-      applicationId: string;
-      recordingSubmissionId: string;
-      recordingVersion: number;
-      sortOrder: number;
-    }>,
-  ): Promise<void>;
   listShareBoards(projectId: string): Promise<AdmissionShareBoardRecord[]>;
   revokeShareBoard(input: {
     shareBoardId: string;
@@ -111,11 +108,22 @@ export type AdmissionShareBoardRepository = {
 
 export type CreateAdmissionShareBoardInput = {
   title?: string;
+  purpose?: string;
+  mode: AdmissionShareMode;
   expiresAt?: string;
+  requireAccessCode?: boolean;
   accessCode?: string;
-  applicationIds?: string[];
-  allowVendorSubmit?: boolean;
+  allowExternalFallback?: boolean;
+  items: AdmissionShareSelectionInput[];
 };
+
+export class AdmissionShareSelectionError extends Error {
+  readonly name = "AdmissionShareSelectionError";
+
+  constructor(public readonly items: AdmissionSharePreflightResult["items"]) {
+    super("Admission share selection changed");
+  }
+}
 
 export type AdmissionShareBoardAuditWriter = (
   input: AuditLogInput,
@@ -214,73 +222,28 @@ export type VendorReviewUpsertInput = {
 export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoardRepository {
   constructor(private readonly client: SupabaseClient) {}
 
-  async listShareableApplications(
-    projectId: string,
-    applicationIds?: string[],
-  ): Promise<ShareableApplication[]> {
-    let query = this.client
-      .from("project_applications")
-      .select("id, organization_id, project_id, streamer_id, status")
-      .eq("project_id", projectId);
-
-    if (applicationIds?.length) {
-      query = query.in("id", applicationIds);
-    }
-
-    const { data, error } = await query;
-    if (error) {
-      throw error;
-    }
-
-    return ((data ?? []) as ShareableApplicationRow[]).map(
-      toShareableApplication,
-    );
-  }
-
-  async listLatestRecordings(
-    applicationIds: string[],
-  ): Promise<ShareableRecording[]> {
-    if (applicationIds.length === 0) {
-      return [];
-    }
-
-    const { data, error } = await this.client
-      .from("recording_submissions")
-      .select("id, application_id, project_id, streamer_id, version, status")
-      .in("application_id", applicationIds)
-      .order("version", { ascending: false });
-
-    if (error) {
-      throw error;
-    }
-
-    const latest = new Map<string, ShareableRecording>();
-    for (const row of (data ?? []) as ShareableRecordingRow[]) {
-      if (!latest.has(row.application_id)) {
-        latest.set(row.application_id, toShareableRecording(row));
-      }
-    }
-    return [...latest.values()];
-  }
-
-  async createShareBoard(
-    input: Omit<AdmissionShareBoardRecord, "id" | "status" | "createdAt">,
+  async createShareBoardWithItems(
+    input: CreateAdmissionShareBoardPersistenceInput,
   ): Promise<AdmissionShareBoardRecord> {
     const { data, error } = await this.client
-      .from("project_recording_share_boards")
-      .insert({
-        organization_id: input.organizationId,
-        project_id: input.projectId,
-        title: input.title,
-        token_hash: input.tokenHash,
-        access_code_hash: input.accessCodeHash,
-        expires_at: input.expiresAt,
-        allow_vendor_submit: input.allowVendorSubmit,
-        created_by: input.createdBy,
+      .rpc("create_admission_share_board", {
+        p_organization_id: input.organizationId,
+        p_project_id: input.projectId,
+        p_title: input.title,
+        p_purpose: input.purpose,
+        p_mode: input.mode,
+        p_token_hash: input.tokenHash,
+        p_access_code_hash: input.accessCodeHash,
+        p_expires_at: input.expiresAt,
+        p_allow_external_fallback: input.allowExternalFallback,
+        p_created_by: input.createdBy,
+        p_items: input.items.map((item) => ({
+          application_id: item.applicationId,
+          recording_submission_id: item.recordingSubmissionId,
+          recording_version: item.recordingVersion,
+          sort_order: item.sortOrder,
+        })),
       })
-      .select(
-        "id, organization_id, project_id, title, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, created_by, created_at",
-      )
       .single<AdmissionShareBoardRow>();
 
     if (error) {
@@ -290,47 +253,13 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     return toShareBoardRecord(data);
   }
 
-  async createShareItems(
-    items: Array<{
-      shareBoardId: string;
-      organizationId: string;
-      projectId: string;
-      applicationId: string;
-      recordingSubmissionId: string;
-      recordingVersion: number;
-      sortOrder: number;
-    }>,
-  ): Promise<void> {
-    if (items.length === 0) {
-      return;
-    }
-
-    const { error } = await this.client
-      .from("project_recording_share_items")
-      .insert(
-        items.map((item) => ({
-          share_board_id: item.shareBoardId,
-          organization_id: item.organizationId,
-          project_id: item.projectId,
-          application_id: item.applicationId,
-          recording_submission_id: item.recordingSubmissionId,
-          recording_version: item.recordingVersion,
-          sort_order: item.sortOrder,
-        })),
-      );
-
-    if (error) {
-      throw error;
-    }
-  }
-
   async listShareBoards(
     projectId: string,
   ): Promise<AdmissionShareBoardRecord[]> {
     const { data, error } = await this.client
       .from("project_recording_share_boards")
       .select(
-        "id, organization_id, project_id, title, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, created_by, created_at",
+        "id, organization_id, project_id, title, purpose, mode, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, allow_external_fallback, review_state, round_number, created_by, created_at",
       )
       .eq("project_id", projectId)
       .order("created_at", { ascending: false });
@@ -369,7 +298,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     const { data: boardData, error: boardError } = await this.client
       .from("project_recording_share_boards")
       .select(
-        "id, organization_id, project_id, title, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, created_by, created_at, projects(id, code, name, vendor_name, product_name)",
+        "id, organization_id, project_id, title, purpose, mode, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, allow_external_fallback, review_state, round_number, created_by, created_at, projects(id, code, name, vendor_name, product_name)",
       )
       .eq("token_hash", tokenHash)
       .maybeSingle<AdmissionShareBoardWithProjectRow>();
@@ -555,33 +484,21 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
   }
 }
 
-type ShareableApplicationRow = {
-  id: string;
-  organization_id: string;
-  project_id: string;
-  streamer_id: string;
-  status: ApplicationStatus;
-};
-
-type ShareableRecordingRow = {
-  id: string;
-  application_id: string;
-  project_id: string;
-  streamer_id: string;
-  version: number;
-  status: RecordingReviewStatus;
-};
-
 type AdmissionShareBoardRow = {
   id: string;
   organization_id: string;
   project_id: string;
   title: string;
+  purpose: string;
+  mode: AdmissionShareMode;
   token_hash: string;
   access_code_hash: string | null;
   status: "active" | "expired" | "revoked";
   expires_at: string;
   allow_vendor_submit: boolean;
+  allow_external_fallback: boolean;
+  review_state: "not_started" | "viewed" | "in_progress" | "submitted_locked";
+  round_number: number;
   created_by: string;
   created_at?: string;
 };
@@ -684,22 +601,37 @@ type PublicVendorReviewRow = {
 
 export async function createAdmissionShareBoard({
   repo,
+  candidateRepo,
   audit,
   actor,
   projectId,
   input,
   now = new Date().toISOString(),
   tokenFactory = createShareToken,
+  accessCodeFactory = createAdmissionShareAccessCode,
 }: {
   repo: AdmissionShareBoardRepository;
+  candidateRepo: AdmissionShareCandidateRepository;
   audit?: AdmissionShareBoardAuditWriter;
   actor: AdmissionShareBoardActor;
   projectId: string;
   input: CreateAdmissionShareBoardInput;
   now?: string;
   tokenFactory?: () => string;
+  accessCodeFactory?: () => string;
 }) {
-  const accessCode = input.accessCode?.trim();
+  if (input.mode !== "preview" && input.mode !== "formal_review") {
+    throw new Error("Share mode must be preview or formal_review");
+  }
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    throw new Error("Share board requires at least one recording");
+  }
+
+  const requireAccessCode =
+    input.requireAccessCode ?? input.mode === "formal_review";
+  const accessCode = requireAccessCode
+    ? input.accessCode?.trim() || accessCodeFactory()
+    : undefined;
   if (accessCode && (accessCode.length < 6 || accessCode.length > 64)) {
     throw new Error("Access code must be between 6 and 64 characters");
   }
@@ -716,91 +648,39 @@ export async function createAdmissionShareBoard({
     throw new Error("Share expiry cannot exceed 30 days");
   }
 
-  const applicationIds = input.applicationIds
-    ?.map((id) => id.trim())
-    .filter(Boolean);
-  const applications = await repo.listShareableApplications(
+  const candidates = await candidateRepo.listCandidates({
+    organizationId: actor.organizationId,
     projectId,
-    applicationIds?.length ? applicationIds : undefined,
+  });
+  const preflight = preflightAdmissionShareSelection(candidates, input.items);
+  const blockedItems = preflight.items.filter(
+    (item) => item.status === "blocked",
   );
-  if (applications.length === 0) {
-    throw new Error("Share board requires at least one application");
-  }
-  if (
-    applicationIds?.length &&
-    applications.length !== new Set(applicationIds).size
-  ) {
-    throw new Error("All selected applications must exist");
-  }
-  if (applications.some((application) => application.projectId !== projectId)) {
-    throw new Error("Applications must belong to the selected project");
-  }
-
-  const recordings = await repo.listLatestRecordings(
-    applications.map((application) => application.id),
-  );
-  const recordingsByApplication = new Map(
-    recordings.map((recording) => [recording.applicationId, recording]),
-  );
-  const isExplicitSelection = Boolean(applicationIds?.length);
-  const applicationsWithRecordings = applications.filter((application) =>
-    recordingsByApplication.has(application.id),
-  );
-  if (
-    isExplicitSelection &&
-    applicationsWithRecordings.length !== applications.length
-  ) {
-    throw new Error("Every shared application must have a recording");
-  }
-  const approvedApplications = applications.filter((application) =>
-    isMcnApprovedShareCandidate(
-      application,
-      recordingsByApplication.get(application.id),
-    ),
-  );
-  if (
-    isExplicitSelection &&
-    approvedApplications.length !== applications.length
-  ) {
-    throw new Error("Every shared recording must be approved by MCN");
-  }
-  const applicationsToShare = isExplicitSelection
-    ? applications
-    : approvedApplications;
-  if (applicationsToShare.length === 0) {
-    throw new Error("Share board requires at least one MCN-approved recording");
+  if (blockedItems.length > 0) {
+    throw new AdmissionShareSelectionError(blockedItems);
   }
 
   const token = tokenFactory();
-  const shareBoard = await repo.createShareBoard({
+  const shareBoard = await repo.createShareBoardWithItems({
     organizationId: actor.organizationId,
     projectId,
     title: input.title?.trim() || "Admission recording review",
+    purpose: input.purpose?.trim() || "",
+    mode: input.mode,
     tokenHash: hashShareSecret(token),
     accessCodeHash: accessCode
       ? hashAdmissionShareAccessCode(accessCode)
       : null,
     expiresAt,
-    allowVendorSubmit: input.allowVendorSubmit ?? true,
+    allowExternalFallback: input.allowExternalFallback ?? true,
     createdBy: actor.userId,
+    items: preflight.items.map((item) => ({
+      applicationId: item.applicationId,
+      recordingSubmissionId: item.recordingSubmissionId,
+      recordingVersion: item.recordingVersion,
+      sortOrder: item.sortOrder,
+    })),
   });
-
-  const shareItems = applicationsToShare.map((application, index) => {
-    const recording = recordingsByApplication.get(application.id);
-    if (!recording) {
-      throw new Error("Every shared application must have a recording");
-    }
-    return {
-      shareBoardId: shareBoard.id,
-      organizationId: actor.organizationId,
-      projectId,
-      applicationId: application.id,
-      recordingSubmissionId: recording.id,
-      recordingVersion: recording.version,
-      sortOrder: index,
-    };
-  });
-  await repo.createShareItems(shareItems);
 
   await audit?.({
     organizationId: actor.organizationId,
@@ -816,14 +696,15 @@ export async function createAdmissionShareBoard({
     after: {
       id: shareBoard.id,
       projectId,
-      applicationCount: applications.length,
+      itemCount: input.items.length,
+      mode: shareBoard.mode,
       expiresAt: shareBoard.expiresAt,
-      allowVendorSubmit: shareBoard.allowVendorSubmit,
+      allowExternalFallback: shareBoard.allowExternalFallback,
     },
-    changedFields: ["share_board", "share_items"],
+    changedFields: ["share_board", "share_items", "share_event"],
   });
 
-  return { shareBoard, token };
+  return { shareBoard, token, accessCode };
 }
 
 export async function listAdmissionShareBoards({
@@ -1239,6 +1120,10 @@ export function createShareToken() {
   return randomBytes(32).toString("base64url");
 }
 
+function createAdmissionShareAccessCode() {
+  return randomInt(0, 100_000_000).toString().padStart(8, "0");
+}
+
 export function hashShareSecret(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -1327,16 +1212,6 @@ export function mapVendorDecisionToSyncPatch(
     recordingStatus: null,
     syncStatus: "skipped",
   };
-}
-
-function isMcnApprovedShareCandidate(
-  application: ShareableApplication,
-  recording: ShareableRecording | undefined,
-) {
-  return (
-    application.status === "recording_approved" &&
-    recording?.status === "approved"
-  );
 }
 
 function daysFrom(now: string, days: number) {
@@ -1509,29 +1384,6 @@ function assertVendorDecision(value: VendorAdmissionDecision) {
   }
 }
 
-function toShareableApplication(
-  row: ShareableApplicationRow,
-): ShareableApplication {
-  return {
-    id: row.id,
-    organizationId: row.organization_id,
-    projectId: row.project_id,
-    streamerId: row.streamer_id,
-    status: row.status,
-  };
-}
-
-function toShareableRecording(row: ShareableRecordingRow): ShareableRecording {
-  return {
-    id: row.id,
-    applicationId: row.application_id,
-    projectId: row.project_id,
-    streamerId: row.streamer_id,
-    version: row.version,
-    status: row.status,
-  };
-}
-
 function toShareBoardRecord(
   row: AdmissionShareBoardRow,
 ): AdmissionShareBoardRecord {
@@ -1540,11 +1392,16 @@ function toShareBoardRecord(
     organizationId: row.organization_id,
     projectId: row.project_id,
     title: row.title,
+    purpose: row.purpose,
+    mode: row.mode,
     tokenHash: row.token_hash,
     accessCodeHash: row.access_code_hash,
     status: row.status,
     expiresAt: row.expires_at,
     allowVendorSubmit: row.allow_vendor_submit,
+    allowExternalFallback: row.allow_external_fallback,
+    reviewState: row.review_state,
+    roundNumber: row.round_number,
     createdBy: row.created_by,
     createdAt: row.created_at,
   };

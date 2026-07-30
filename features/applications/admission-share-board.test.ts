@@ -12,6 +12,7 @@ import {
   verifyAdmissionShareAccessCode,
   type AdmissionShareBoardRepository,
 } from "./admission-share-board";
+import type { AdmissionShareCandidateRepository } from "./admission-share-candidates";
 
 const actor = {
   userId: "user-ops",
@@ -24,58 +25,21 @@ function createRepo(
   overrides: Partial<AdmissionShareBoardRepository> = {},
 ): AdmissionShareBoardRepository & {
   shareBoardInserts: Record<string, unknown>[];
-  shareItemInserts: Record<string, unknown>[];
 } {
   const shareBoardInserts: Record<string, unknown>[] = [];
-  const shareItemInserts: Record<string, unknown>[] = [];
   return {
     shareBoardInserts,
-    shareItemInserts,
-    listShareableApplications: vi.fn().mockResolvedValue([
-      {
-        id: "app-1",
-        organizationId: "org-1",
-        projectId: "project-1",
-        streamerId: "streamer-1",
-        status: "recording_approved",
-      },
-      {
-        id: "app-2",
-        organizationId: "org-1",
-        projectId: "project-1",
-        streamerId: "streamer-2",
-        status: "recording_approved",
-      },
-    ]),
-    listLatestRecordings: vi.fn().mockResolvedValue([
-      {
-        id: "rec-1",
-        applicationId: "app-1",
-        projectId: "project-1",
-        streamerId: "streamer-1",
-        version: 2,
-        status: "approved",
-      },
-      {
-        id: "rec-2",
-        applicationId: "app-2",
-        projectId: "project-1",
-        streamerId: "streamer-2",
-        version: 1,
-        status: "approved",
-      },
-    ]),
-    createShareBoard: vi.fn().mockImplementation(async (input) => {
+    createShareBoardWithItems: vi.fn().mockImplementation(async (input) => {
       shareBoardInserts.push(input);
       return {
         id: "share-1",
         ...input,
         status: "active",
+        allowVendorSubmit: input.mode === "formal_review",
+        reviewState: "not_started",
+        roundNumber: input.mode === "formal_review" ? 1 : 0,
         createdAt: "2026-06-07T00:00:00.000Z",
       };
-    }),
-    createShareItems: vi.fn().mockImplementation(async (items) => {
-      shareItemInserts.push(...items);
     }),
     listShareBoards: vi.fn().mockResolvedValue([]),
     revokeShareBoard: vi.fn(),
@@ -89,6 +53,38 @@ function createRepo(
   };
 }
 
+function createCandidateRepo(
+  candidates: Awaited<
+    ReturnType<AdmissionShareCandidateRepository["listCandidates"]>
+  > = [
+    {
+      applicationId: "app-2",
+      recordingSubmissionId: "recording-2-v1",
+      recordingVersion: 1,
+      isLatestVersion: true,
+      streamer: {
+        id: "streamer-2",
+        displayName: "主播乙",
+        accountLabel: "dy_2",
+      },
+      mcnReviewDecision: "approved",
+      mcnReviewedAt: "2026-07-30T07:00:00.000Z",
+      sourceHealth: "original_ready",
+      hasPrivateStorage: true,
+      externalUrl: null,
+      isShareable: true,
+      blockReason: null,
+      currentVendorDecision: "pending",
+      lastSharedAt: null,
+    },
+  ],
+): AdmissionShareCandidateRepository {
+  return {
+    listCandidates: vi.fn().mockResolvedValue(candidates),
+    getPlaybackSource: vi.fn(),
+  };
+}
+
 describe("admission share board service", () => {
   it("hashes share secrets deterministically", () => {
     expect(hashShareSecret("share-token")).toBe(hashShareSecret("share-token"));
@@ -98,16 +94,73 @@ describe("admission share board service", () => {
   it("creates a share board without storing the plain token and locks recording versions", async () => {
     const repo = createRepo();
     const audit = vi.fn().mockResolvedValue(undefined);
+    const candidateRepo = createCandidateRepo([
+      {
+        applicationId: "app-1",
+        recordingSubmissionId: "rec-1",
+        recordingVersion: 2,
+        isLatestVersion: true,
+        streamer: {
+          id: "streamer-1",
+          displayName: "主播甲",
+          accountLabel: "dy_1",
+        },
+        mcnReviewDecision: "approved",
+        mcnReviewedAt: "2026-06-06T00:00:00.000Z",
+        sourceHealth: "original_ready",
+        hasPrivateStorage: true,
+        externalUrl: null,
+        isShareable: true,
+        blockReason: null,
+        currentVendorDecision: "pending",
+        lastSharedAt: null,
+      },
+      {
+        applicationId: "app-2",
+        recordingSubmissionId: "rec-2",
+        recordingVersion: 1,
+        isLatestVersion: true,
+        streamer: {
+          id: "streamer-2",
+          displayName: "主播乙",
+          accountLabel: "dy_2",
+        },
+        mcnReviewDecision: "approved",
+        mcnReviewedAt: "2026-06-06T00:00:00.000Z",
+        sourceHealth: "original_ready",
+        hasPrivateStorage: true,
+        externalUrl: null,
+        isShareable: true,
+        blockReason: null,
+        currentVendorDecision: "pending",
+        lastSharedAt: null,
+      },
+    ]);
 
     const result = await createAdmissionShareBoard({
       repo,
+      candidateRepo,
       audit,
       actor,
       projectId: "project-1",
       input: {
+        mode: "formal_review",
         title: "Vendor review",
-        applicationIds: ["app-1", "app-2"],
         accessCode: "246810",
+        items: [
+          {
+            applicationId: "app-1",
+            recordingSubmissionId: "rec-1",
+            recordingVersion: 2,
+            sortOrder: 0,
+          },
+          {
+            applicationId: "app-2",
+            recordingSubmissionId: "rec-2",
+            recordingVersion: 1,
+            sortOrder: 1,
+          },
+        ],
       },
       now: "2026-06-07T00:00:00.000Z",
       tokenFactory: () => "plain-token",
@@ -122,7 +175,7 @@ describe("admission share board service", () => {
         tokenHash: hashShareSecret("plain-token"),
         accessCodeHash: expect.stringMatching(/^scrypt\$[a-f0-9]+\$[a-f0-9]+$/),
         expiresAt: "2026-06-14T00:00:00.000Z",
-        allowVendorSubmit: true,
+        mode: "formal_review",
         createdBy: "user-ops",
       }),
     );
@@ -133,19 +186,19 @@ describe("admission share board service", () => {
         String(repo.shareBoardInserts[0]?.accessCodeHash),
       ),
     ).toBe(true);
-    expect(repo.shareItemInserts).toEqual([
-      expect.objectContaining({
-        shareBoardId: "share-1",
+    expect(repo.shareBoardInserts[0]?.items).toEqual([
+      {
         applicationId: "app-1",
         recordingSubmissionId: "rec-1",
         recordingVersion: 2,
-      }),
-      expect.objectContaining({
-        shareBoardId: "share-1",
+        sortOrder: 0,
+      },
+      {
         applicationId: "app-2",
         recordingSubmissionId: "rec-2",
         recordingVersion: 1,
-      }),
+        sortOrder: 1,
+      },
     ]);
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -153,6 +206,177 @@ describe("admission share board service", () => {
         module: "admission",
         objectType: "project_recording_share_board",
         projectId: "project-1",
+      }),
+    );
+  });
+
+  it("creates only the explicitly selected recording versions", async () => {
+    const repo = createRepo({
+      createShareBoardWithItems: vi.fn().mockResolvedValue({
+        id: "share-1",
+        organizationId: "org-1",
+        projectId: "project-1",
+        title: "第一轮正式复核",
+        purpose: "品牌方首轮选人",
+        mode: "formal_review",
+        tokenHash: hashShareSecret("plain-token"),
+        accessCodeHash: hashAdmissionShareAccessCode("24681024"),
+        status: "active",
+        expiresAt: "2026-08-06T00:00:00.000Z",
+        allowVendorSubmit: true,
+        allowExternalFallback: true,
+        reviewState: "not_started",
+        roundNumber: 1,
+        createdBy: "user-ops",
+      }),
+    } as never);
+    const candidateRepo = createCandidateRepo();
+
+    const result = await createAdmissionShareBoard({
+      repo,
+      candidateRepo,
+      audit: vi.fn().mockResolvedValue(undefined),
+      actor,
+      projectId: "project-1",
+      input: {
+        mode: "formal_review",
+        title: "第一轮正式复核",
+        purpose: "品牌方首轮选人",
+        expiresAt: "2026-08-06T00:00:00.000Z",
+        requireAccessCode: true,
+        allowExternalFallback: true,
+        items: [
+          {
+            applicationId: "app-2",
+            recordingSubmissionId: "recording-2-v1",
+            recordingVersion: 1,
+            sortOrder: 0,
+          },
+        ],
+      },
+      now: "2026-07-30T00:00:00.000Z",
+      tokenFactory: () => "plain-token",
+      accessCodeFactory: () => "24681024",
+    });
+
+    expect(candidateRepo.listCandidates).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      projectId: "project-1",
+    });
+    expect(repo.createShareBoardWithItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "formal_review",
+        purpose: "品牌方首轮选人",
+        items: [
+          expect.objectContaining({
+            applicationId: "app-2",
+            recordingSubmissionId: "recording-2-v1",
+            recordingVersion: 1,
+            sortOrder: 0,
+          }),
+        ],
+      }),
+    );
+    expect(result.token).toBe("plain-token");
+    expect(result.accessCode).toBe("24681024");
+    expect(JSON.stringify(repo.shareBoardInserts)).not.toContain("plain-token");
+  });
+
+  it("returns itemized conflicts instead of silently adding project recordings", async () => {
+    const repo = createRepo({
+      createShareBoardWithItems: vi.fn(),
+    } as never);
+    const candidateRepo = createCandidateRepo([
+      {
+        applicationId: "app-2",
+        recordingSubmissionId: "blocked",
+        recordingVersion: 1,
+        isLatestVersion: true,
+        streamer: {
+          id: "streamer-2",
+          displayName: "主播乙",
+          accountLabel: "dy_2",
+        },
+        mcnReviewDecision: null,
+        mcnReviewedAt: null,
+        sourceHealth: "blocked",
+        hasPrivateStorage: true,
+        externalUrl: null,
+        isShareable: false,
+        blockReason: "MCN_APPROVAL_REQUIRED",
+        currentVendorDecision: "pending",
+        lastSharedAt: null,
+      },
+    ]);
+
+    await expect(
+      createAdmissionShareBoard({
+        repo,
+        candidateRepo,
+        actor,
+        projectId: "project-1",
+        input: {
+          mode: "formal_review",
+          title: "第一轮正式复核",
+          items: [
+            {
+              applicationId: "app-2",
+              recordingSubmissionId: "blocked",
+              recordingVersion: 1,
+              sortOrder: 0,
+            },
+          ],
+        },
+        tokenFactory: () => "plain-token",
+        accessCodeFactory: () => "24681024",
+      }),
+    ).rejects.toMatchObject({
+      name: "AdmissionShareSelectionError",
+      items: [
+        expect.objectContaining({
+          recordingSubmissionId: "blocked",
+          reasonCode: "MCN_APPROVAL_REQUIRED",
+        }),
+      ],
+    });
+    expect(repo.createShareBoardWithItems).not.toHaveBeenCalled();
+  });
+
+  it("generates one eight-digit access code by default for formal review", async () => {
+    const repo = createRepo({
+      createShareBoardWithItems: vi.fn().mockImplementation(async (input) => ({
+        id: "share-1",
+        ...input,
+        status: "active",
+        reviewState: "not_started",
+        roundNumber: 1,
+      })),
+    } as never);
+
+    const result = await createAdmissionShareBoard({
+      repo,
+      candidateRepo: createCandidateRepo(),
+      actor,
+      projectId: "project-1",
+      input: {
+        mode: "formal_review",
+        items: [
+          {
+            applicationId: "app-2",
+            recordingSubmissionId: "recording-2-v1",
+            recordingVersion: 1,
+            sortOrder: 0,
+          },
+        ],
+      },
+      tokenFactory: () => "plain-token",
+      accessCodeFactory: () => "13572468",
+    });
+
+    expect(result.accessCode).toBe("13572468");
+    expect(repo.createShareBoardWithItems).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accessCodeHash: expect.stringMatching(/^scrypt\$[a-f0-9]+\$[a-f0-9]+$/),
       }),
     );
   });
@@ -318,10 +542,22 @@ describe("admission share board service", () => {
     await expect(
       createAdmissionShareBoard({
         repo,
+        candidateRepo: createCandidateRepo(),
         audit: vi.fn().mockResolvedValue(undefined),
         actor,
         projectId: "project-1",
-        input: { accessCode: "12345" },
+        input: {
+          mode: "formal_review",
+          accessCode: "12345",
+          items: [
+            {
+              applicationId: "app-2",
+              recordingSubmissionId: "recording-2-v1",
+              recordingVersion: 1,
+              sortOrder: 0,
+            },
+          ],
+        },
         now: "2026-06-07T00:00:00.000Z",
         tokenFactory: () => "plain-token",
       }),
@@ -339,204 +575,28 @@ describe("admission share board service", () => {
     await expect(
       createAdmissionShareBoard({
         repo,
+        candidateRepo: createCandidateRepo(),
         audit: vi.fn().mockResolvedValue(undefined),
         actor,
         projectId: "project-1",
-        input: { expiresAt },
+        input: {
+          mode: "preview",
+          expiresAt,
+          items: [
+            {
+              applicationId: "app-2",
+              recordingSubmissionId: "recording-2-v1",
+              recordingVersion: 1,
+              sortOrder: 0,
+            },
+          ],
+        },
         now: "2026-06-07T00:00:00.000Z",
         tokenFactory: () => "plain-token",
       }),
     ).rejects.toThrow(expectedMessage);
 
     expect(repo.shareBoardInserts).toHaveLength(0);
-  });
-
-  it("rejects share creation when a selected application has no recording", async () => {
-    const repo = createRepo({
-      listShareableApplications: vi.fn().mockResolvedValue([
-        {
-          id: "app-1",
-          organizationId: "org-1",
-          projectId: "project-1",
-          streamerId: "streamer-1",
-          status: "recording_approved",
-        },
-      ]),
-      listLatestRecordings: vi.fn().mockResolvedValue([]),
-    });
-
-    await expect(
-      createAdmissionShareBoard({
-        repo,
-        actor,
-        projectId: "project-1",
-        input: { title: "Vendor review", applicationIds: ["app-1"] },
-        now: "2026-06-07T00:00:00.000Z",
-        tokenFactory: () => "plain-token",
-      }),
-    ).rejects.toThrow("Every shared application must have a recording");
-  });
-
-  it("rejects explicitly selected recordings that are not MCN approved", async () => {
-    const repo = createRepo({
-      listShareableApplications: vi.fn().mockResolvedValue([
-        {
-          id: "app-1",
-          organizationId: "org-1",
-          projectId: "project-1",
-          streamerId: "streamer-1",
-          status: "recording_approved",
-        },
-      ]),
-      listLatestRecordings: vi.fn().mockResolvedValue([
-        {
-          id: "rec-1",
-          applicationId: "app-1",
-          projectId: "project-1",
-          streamerId: "streamer-1",
-          version: 1,
-          status: "submitted",
-        },
-      ]),
-    });
-
-    await expect(
-      createAdmissionShareBoard({
-        repo,
-        actor,
-        projectId: "project-1",
-        input: { title: "Vendor review", applicationIds: ["app-1"] },
-        now: "2026-06-07T00:00:00.000Z",
-        tokenFactory: () => "plain-token",
-      }),
-    ).rejects.toThrow("Every shared recording must be approved by MCN");
-  });
-
-  it("shares only approved applications with recordings when creating a project-level board", async () => {
-    const repo = createRepo({
-      listShareableApplications: vi.fn().mockResolvedValue([
-        {
-          id: "app-1",
-          organizationId: "org-1",
-          projectId: "project-1",
-          streamerId: "streamer-1",
-          status: "recording_approved",
-        },
-        {
-          id: "app-no-recording",
-          organizationId: "org-1",
-          projectId: "project-1",
-          streamerId: "streamer-2",
-          status: "submitted",
-        },
-      ]),
-      listLatestRecordings: vi.fn().mockResolvedValue([
-        {
-          id: "rec-1",
-          applicationId: "app-1",
-          projectId: "project-1",
-          streamerId: "streamer-1",
-          version: 1,
-          status: "approved",
-        },
-      ]),
-    });
-
-    await createAdmissionShareBoard({
-      repo,
-      actor,
-      projectId: "project-1",
-      input: { title: "Vendor review" },
-      now: "2026-06-07T00:00:00.000Z",
-      tokenFactory: () => "plain-token",
-    });
-
-    expect(repo.shareItemInserts).toEqual([
-      expect.objectContaining({
-        applicationId: "app-1",
-        recordingSubmissionId: "rec-1",
-      }),
-    ]);
-  });
-
-  it("shares only MCN-approved recordings when creating a project-level board", async () => {
-    const repo = createRepo({
-      listShareableApplications: vi.fn().mockResolvedValue([
-        {
-          id: "app-approved",
-          organizationId: "org-1",
-          projectId: "project-1",
-          streamerId: "streamer-1",
-          status: "recording_approved",
-        },
-        {
-          id: "app-reviewing",
-          organizationId: "org-1",
-          projectId: "project-1",
-          streamerId: "streamer-2",
-          status: "recording_reviewing",
-        },
-      ]),
-      listLatestRecordings: vi.fn().mockResolvedValue([
-        {
-          id: "rec-approved",
-          applicationId: "app-approved",
-          projectId: "project-1",
-          streamerId: "streamer-1",
-          version: 1,
-          status: "approved",
-        },
-        {
-          id: "rec-reviewing",
-          applicationId: "app-reviewing",
-          projectId: "project-1",
-          streamerId: "streamer-2",
-          version: 1,
-          status: "submitted",
-        },
-      ]),
-    });
-
-    await createAdmissionShareBoard({
-      repo,
-      actor,
-      projectId: "project-1",
-      input: { title: "Vendor review" },
-      now: "2026-06-07T00:00:00.000Z",
-      tokenFactory: () => "plain-token",
-    });
-
-    expect(repo.shareItemInserts).toEqual([
-      expect.objectContaining({
-        applicationId: "app-approved",
-        recordingSubmissionId: "rec-approved",
-      }),
-    ]);
-  });
-
-  it("rejects applications outside the target project", async () => {
-    const repo = createRepo({
-      listShareableApplications: vi.fn().mockResolvedValue([
-        {
-          id: "app-1",
-          organizationId: "org-1",
-          projectId: "project-2",
-          streamerId: "streamer-1",
-          status: "recording_reviewing",
-        },
-      ]),
-    });
-
-    await expect(
-      createAdmissionShareBoard({
-        repo,
-        actor,
-        projectId: "project-1",
-        input: { title: "Vendor review", applicationIds: ["app-1"] },
-        now: "2026-06-07T00:00:00.000Z",
-        tokenFactory: () => "plain-token",
-      }),
-    ).rejects.toThrow("Applications must belong to the selected project");
   });
 
   it("maps vendor decisions to application and recording sync patches", () => {
@@ -979,11 +1039,16 @@ function publicSnapshot(overrides: Record<string, unknown> = {}) {
     organizationId: "org-1",
     projectId: "project-1",
     title: "Vendor review",
+    purpose: "",
+    mode: "formal_review" as const,
     tokenHash: hashShareSecret("plain-token"),
     accessCodeHash: null,
     status: "active" as const,
     expiresAt: "2026-06-14T00:00:00.000Z",
     allowVendorSubmit: true,
+    allowExternalFallback: true,
+    reviewState: "not_started" as const,
+    roundNumber: 1,
     project: {
       id: "project-1",
       code: "P-001",
