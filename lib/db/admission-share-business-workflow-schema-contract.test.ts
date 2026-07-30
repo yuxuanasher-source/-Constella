@@ -27,6 +27,16 @@ describe("admission share business workflow migration", () => {
     expect(migration).toContain("mcn_review_decision = 'approved'");
   });
 
+  it("backfills and derives MCN review facts for legacy writers", () => {
+    expect(migration).toMatch(
+      /update public\.recording_submissions\s+set[\s\S]+mcn_reviewed_at = coalesce\(reviewed_at, updated_at, created_at\)[\s\S]+where status in \('approved', 'rejected', 'needs_changes'\);/u,
+    );
+    expect(migration).not.toContain("and reviewed_at is not null");
+    expect(migration).toMatch(
+      /if old\.mcn_review_decision is null[\s\S]+new\.mcn_review_decision is null[\s\S]+new\.status is distinct from old\.status[\s\S]+new\.status in \('approved', 'rejected', 'needs_changes'\)[\s\S]+new\.mcn_review_decision := new\.status[\s\S]+new\.mcn_reviewed_by := new\.reviewed_by[\s\S]+new\.mcn_reviewed_at := coalesce\(\s*new\.reviewed_at,\s*new\.updated_at,\s*new\.created_at\s*\)[\s\S]+new\.mcn_review_note := coalesce\(new\.review_note, ''\)/u,
+    );
+  });
+
   it("preserves first-share provenance for legacy shared recordings", () => {
     expect(migration).toMatch(
       /update public\.recording_submissions as recording[\s\S]+mcn_reviewed_at = shared_recordings\.first_shared_at,[\s\S]+mcn_review_note = ''[\s\S]+from shared_recordings/u,
@@ -51,6 +61,15 @@ describe("admission share business workflow migration", () => {
     ]) {
       expect(migration).toContain(`create table public.${table}`);
     }
+  });
+
+  it("keeps board mode and legacy vendor-submit flag consistent", () => {
+    expect(migration).toContain(
+      "project_recording_share_boards_mode_submit_consistency_check",
+    );
+    expect(migration).toContain(
+      "check (allow_vendor_submit = (mode = 'formal_review'))",
+    );
   });
 
   it("derives workflow fields for current board and share-item writers", () => {

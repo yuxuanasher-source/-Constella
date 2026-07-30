@@ -8,10 +8,9 @@ update public.recording_submissions
 set
   mcn_review_decision = status,
   mcn_reviewed_by = reviewed_by,
-  mcn_reviewed_at = reviewed_at,
+  mcn_reviewed_at = coalesce(reviewed_at, updated_at, created_at),
   mcn_review_note = coalesce(review_note, '')
-where status in ('approved', 'rejected', 'needs_changes')
-  and reviewed_at is not null;
+where status in ('approved', 'rejected', 'needs_changes');
 
 with shared_recordings as (
   select
@@ -42,6 +41,20 @@ language plpgsql
 set search_path = pg_catalog, public
 as $$
 begin
+  if old.mcn_review_decision is null
+     and new.mcn_review_decision is null
+     and new.status is distinct from old.status
+     and new.status in ('approved', 'rejected', 'needs_changes') then
+    new.mcn_review_decision := new.status;
+    new.mcn_reviewed_by := new.reviewed_by;
+    new.mcn_reviewed_at := coalesce(
+      new.reviewed_at,
+      new.updated_at,
+      new.created_at
+    );
+    new.mcn_review_note := coalesce(new.review_note, '');
+  end if;
+
   if old.mcn_review_decision is not null
      and (
        new.mcn_review_decision is distinct from old.mcn_review_decision
@@ -99,6 +112,8 @@ alter table public.project_recording_share_boards
   alter column mode set not null,
   add constraint project_recording_share_boards_mode_check
   check (mode in ('preview', 'formal_review')),
+  add constraint project_recording_share_boards_mode_submit_consistency_check
+  check (allow_vendor_submit = (mode = 'formal_review')),
   add constraint project_recording_share_boards_review_state_check
   check (
     review_state in (
