@@ -4,10 +4,11 @@ import { POST } from "./route";
 
 import {
   submitVendorAdmissionReviews,
-  preparePublicAdmissionShareAccess,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
+import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
 
 vi.mock("@/features/applications/admission-share-board", () => ({
   SupabaseAdmissionShareBoardRepository: vi
@@ -16,33 +17,32 @@ vi.mock("@/features/applications/admission-share-board", () => ({
       return { repo: "share-repo" };
     }),
   submitVendorAdmissionReviews: vi.fn(),
-  preparePublicAdmissionShareAccess: vi.fn(),
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseAdminClient: vi.fn(),
 }));
 
+vi.mock("@/features/applications/admission-share-access-store", () => ({
+  SupabaseAdmissionShareAccessStore: vi.fn().mockImplementation(function () {
+    return { store: "access-store" };
+  }),
+}));
+
+vi.mock("@/lib/http/admission-share-access-session", () => ({
+  readAdmissionShareAccessSession: vi.fn(),
+}));
+
 const params = Promise.resolve({ token: "plain-token" });
-const rpc = vi.fn();
-const supabase = { client: "supabase", rpc };
-const preparedAccess = {
-  token: "plain-token",
-  tokenHash: "a".repeat(64),
-  access: { id: "share-1", accessCodeHash: null },
-};
+const supabase = { client: "supabase" };
 
 describe("public admission share review route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    rpc.mockResolvedValue({
-      data: [{ allowed: true, retry_after_seconds: 0, remaining: 9 }],
-      error: null,
-    });
-    vi.mocked(preparePublicAdmissionShareAccess).mockResolvedValue(
-      preparedAccess as never,
-    );
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
+    vi.mocked(readAdmissionShareAccessSession).mockReturnValue(
+      "opaque-session-token",
+    );
     vi.mocked(submitVendorAdmissionReviews).mockResolvedValue({
       submittedCount: 2,
       syncedCount: 1,
@@ -53,12 +53,9 @@ describe("public admission share review route", () => {
   it("submits vendor reviews through the server-side token lookup", async () => {
     const response = await POST(
       new Request(
-        "http://localhost/api/public/admission-share/plain-token/reviews",
+        "http://localhost/api/public/admission-share/plain-token/reviews?accessCode=2468",
         {
           method: "POST",
-          headers: {
-            Cookie: "admission_share_capability=signed-capability",
-          },
           body: JSON.stringify({
             reviewerName: "Vendor Reviewer",
             reviewerContact: "reviewer@example.com",
@@ -90,11 +87,12 @@ describe("public admission share review route", () => {
     expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
       supabase,
     );
+    expect(SupabaseAdmissionShareAccessStore).toHaveBeenCalledWith(supabase);
     expect(submitVendorAdmissionReviews).toHaveBeenCalledWith({
       repo: { repo: "share-repo" },
+      accessStore: { store: "access-store" },
       token: "plain-token",
-      capability: "signed-capability",
-      preparedAccess,
+      sessionToken: "opaque-session-token",
       recordEvaluation: expect.any(Function),
       input: expect.objectContaining({
         reviewerName: "Vendor Reviewer",
@@ -139,35 +137,10 @@ describe("public admission share review route", () => {
       { params },
     );
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({
-      error: "Recording version is stale",
+      code: "RECORDING_VERSION_STALE",
+      error: "录屏版本已更新，请刷新页面后重新提交。",
     });
-  });
-
-  it("strictly enforces the 10-per-10-minute token and IP limits before review work", async () => {
-    rpc.mockResolvedValue({
-      data: [{ allowed: false, retry_after_seconds: 311, remaining: 0 }],
-      error: null,
-    });
-
-    const response = await POST(
-      new Request(
-        "http://localhost/api/public/admission-share/plain-token/reviews",
-        {
-          method: "POST",
-          body: JSON.stringify({ items: [] }),
-        },
-      ),
-      { params },
-    );
-
-    expect(response.status).toBe(429);
-    expect(response.headers.get("retry-after")).toBe("311");
-    expect(rpc).toHaveBeenCalledWith(
-      "consume_admission_share_rate_limit",
-      expect.objectContaining({ p_limit: 10, p_window_seconds: 600 }),
-    );
-    expect(submitVendorAdmissionReviews).not.toHaveBeenCalled();
   });
 });

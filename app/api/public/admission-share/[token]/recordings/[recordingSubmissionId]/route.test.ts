@@ -4,12 +4,13 @@ import { GET } from "./route";
 
 import {
   getPublicAdmissionRecordingPlaybackSource,
-  preparePublicAdmissionShareAccess,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
+import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSignedDownloadUrl } from "@/features/storage/private-upload";
 import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
 
 vi.mock("@/features/applications/admission-share-board", () => ({
   SupabaseAdmissionShareBoardRepository: vi
@@ -18,7 +19,6 @@ vi.mock("@/features/applications/admission-share-board", () => ({
       return { repo: "share-repo" };
     }),
   getPublicAdmissionRecordingPlaybackSource: vi.fn(),
-  preparePublicAdmissionShareAccess: vi.fn(),
 }));
 
 vi.mock("@/features/storage/private-upload", () => ({
@@ -33,29 +33,29 @@ vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseAdminClient: vi.fn(),
 }));
 
+vi.mock("@/features/applications/admission-share-access-store", () => ({
+  SupabaseAdmissionShareAccessStore: vi.fn().mockImplementation(function () {
+    return { store: "access-store" };
+  }),
+}));
+
+vi.mock("@/lib/http/admission-share-access-session", () => ({
+  readAdmissionShareAccessSession: vi.fn(),
+}));
+
 const params = Promise.resolve({
   token: "plain-token",
   recordingSubmissionId: "rec-2",
 });
-const rpc = vi.fn();
-const supabase = { client: "supabase", storage: {}, rpc };
-const preparedAccess = {
-  token: "plain-token",
-  tokenHash: "a".repeat(64),
-  access: { id: "share-1", accessCodeHash: null },
-};
+const supabase = { client: "supabase", storage: {} };
 
 describe("public admission recording playback route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    rpc.mockResolvedValue({
-      data: [{ allowed: true, retry_after_seconds: 0, remaining: 29 }],
-      error: null,
-    });
-    vi.mocked(preparePublicAdmissionShareAccess).mockResolvedValue(
-      preparedAccess as never,
-    );
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
+    vi.mocked(readAdmissionShareAccessSession).mockReturnValue(
+      "opaque-session-token",
+    );
     vi.mocked(getPrivateStorageBucket).mockReturnValue("jy-private");
     vi.mocked(createSignedDownloadUrl).mockResolvedValue({
       signedUrl: "https://download.example/private-rec-2.mp4",
@@ -70,10 +70,7 @@ describe("public admission recording playback route", () => {
 
     const response = await GET(
       new Request(
-        "http://localhost/api/public/admission-share/plain-token/recordings/rec-2",
-        {
-          headers: { Cookie: "admission_share_capability=signed-capability" },
-        },
+        "http://localhost/api/public/admission-share/plain-token/recordings/rec-2?accessCode=2468",
       ),
       { params },
     );
@@ -85,11 +82,12 @@ describe("public admission recording playback route", () => {
     expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
       supabase,
     );
+    expect(SupabaseAdmissionShareAccessStore).toHaveBeenCalledWith(supabase);
     expect(getPublicAdmissionRecordingPlaybackSource).toHaveBeenCalledWith({
       repo: { repo: "share-repo" },
+      accessStore: { store: "access-store" },
       token: "plain-token",
-      capability: "signed-capability",
-      preparedAccess,
+      sessionToken: "opaque-session-token",
       recordingSubmissionId: "rec-2",
     });
     expect(createSignedDownloadUrl).toHaveBeenCalledWith({
@@ -122,29 +120,6 @@ describe("public admission recording playback route", () => {
     expect(response.headers.get("location")).toBe(
       "https://video.example/rec-1.mp4",
     );
-    expect(createSignedDownloadUrl).not.toHaveBeenCalled();
-  });
-
-  it("enforces the 30-per-minute token and IP limits before resolving playback", async () => {
-    rpc.mockResolvedValue({
-      data: [{ allowed: false, retry_after_seconds: 18, remaining: 0 }],
-      error: null,
-    });
-
-    const response = await GET(
-      new Request(
-        "http://localhost/api/public/admission-share/plain-token/recordings/rec-2",
-      ),
-      { params },
-    );
-
-    expect(response.status).toBe(429);
-    expect(response.headers.get("retry-after")).toBe("18");
-    expect(rpc).toHaveBeenCalledWith(
-      "consume_admission_share_rate_limit",
-      expect.objectContaining({ p_limit: 30, p_window_seconds: 60 }),
-    );
-    expect(getPublicAdmissionRecordingPlaybackSource).not.toHaveBeenCalled();
     expect(createSignedDownloadUrl).not.toHaveBeenCalled();
   });
 });

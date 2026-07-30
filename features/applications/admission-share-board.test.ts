@@ -1,21 +1,16 @@
-import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
-import { signAdmissionShareCapability } from "@/lib/http/admission-share-capability";
-
 import {
+  authenticatePublicAdmissionShareAccess,
   createAdmissionShareBoard,
   getPublicAdmissionShareBoard,
   getPublicAdmissionRecordingPlaybackSource,
-  hashAccessCode,
+  hashAdmissionShareAccessCode,
   hashShareSecret,
   mapVendorDecisionToSyncPatch,
-  preparePublicAdmissionShareAccess,
   submitVendorAdmissionReviews,
-  verifyPublicAdmissionShareAccessCode,
-  verifyAccessCode,
+  verifyAdmissionShareAccessCode,
   type AdmissionShareBoardRepository,
-  type PublicAdmissionShareBoardSnapshot,
 } from "./admission-share-board";
 
 const actor = {
@@ -24,16 +19,6 @@ const actor = {
   role: "ops_manager" as const,
   organizationId: "org-1",
 };
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((promiseResolve, promiseReject) => {
-    resolve = promiseResolve;
-    reject = promiseReject;
-  });
-  return { promise, resolve, reject };
-}
 
 function createRepo(
   overrides: Partial<AdmissionShareBoardRepository> = {},
@@ -46,7 +31,6 @@ function createRepo(
   return {
     shareBoardInserts,
     shareItemInserts,
-    getProjectStatus: vi.fn().mockResolvedValue("active"),
     listShareableApplications: vi.fn().mockResolvedValue([
       {
         id: "app-1",
@@ -95,17 +79,12 @@ function createRepo(
     }),
     listShareBoards: vi.fn().mockResolvedValue([]),
     revokeShareBoard: vi.fn(),
-    getPublicShareBoardAccess: vi
-      .fn()
-      .mockImplementation(async () => publicAccess()),
     getPublicShareBoardSnapshot: vi.fn(),
     upsertVendorReviews: vi.fn(),
     updateRecordingReviewForVendor: vi.fn(),
     updateApplicationStatusForVendor: vi.fn(),
     markShareBoardSubmitted: vi.fn(),
     markShareBoardViewed: vi.fn().mockResolvedValue(undefined),
-    recordAccessCodeFailure: vi.fn(),
-    resetAccessCodeFailures: vi.fn(),
     ...overrides,
   };
 }
@@ -114,67 +93,6 @@ describe("admission share board service", () => {
   it("hashes share secrets deterministically", () => {
     expect(hashShareSecret("share-token")).toBe(hashShareSecret("share-token"));
     expect(hashShareSecret("share-token")).not.toBe("share-token");
-  });
-
-  it("uses versioned async scrypt for new codes while preserving legacy hash verification", async () => {
-    const firstSalt = "11".repeat(16);
-    const secondSalt = "22".repeat(16);
-    const firstHash = await hashAccessCode("2468", firstSalt);
-    const secondHash = await hashAccessCode("2468", secondSalt);
-
-    expect(firstHash).not.toBe(secondHash);
-    await expect(
-      verifyAccessCode("2468", {
-        hash: firstHash,
-        salt: firstSalt,
-        version: "scrypt_v1",
-        params: { N: 16384, r: 8, p: 1, keyLength: 32 },
-      }),
-    ).resolves.toBe(true);
-    await expect(
-      verifyAccessCode("0000", {
-        hash: firstHash,
-        salt: firstSalt,
-        version: "scrypt_v1",
-        params: { N: 16384, r: 8, p: 1, keyLength: 32 },
-      }),
-    ).resolves.toBe(false);
-    await expect(
-      verifyAccessCode("2468", {
-        hash: hashShareSecret("2468"),
-        salt: null,
-        version: null,
-        params: null,
-      }),
-    ).resolves.toBe(true);
-    const transitionalHash = createHash("sha256")
-      .update(firstSalt)
-      .update("\0")
-      .update("2468")
-      .digest("hex");
-    await expect(
-      verifyAccessCode("2468", {
-        hash: transitionalHash,
-        salt: firstSalt,
-        version: null,
-        params: null,
-      }),
-    ).resolves.toBe(true);
-  });
-
-  it.each([
-    {
-      name: "a non-power-of-two cost",
-      params: { N: 20000, r: 8, p: 1, keyLength: 32 },
-    },
-    {
-      name: "a cost that exceeds the configured memory budget",
-      params: { N: 262144, r: 16, p: 4, keyLength: 64 },
-    },
-  ])("rejects $name with a stable validation error", async ({ params }) => {
-    await expect(
-      hashAccessCode("2468", "11".repeat(16), params),
-    ).rejects.toThrow("Access-code hash parameters are invalid");
   });
 
   it("creates a share board without storing the plain token and locks recording versions", async () => {
@@ -189,17 +107,12 @@ describe("admission share board service", () => {
       input: {
         title: "Vendor review",
         applicationIds: ["app-1", "app-2"],
-        accessCode: "2468",
+        accessCode: "246810",
       },
       now: "2026-06-07T00:00:00.000Z",
       tokenFactory: () => "plain-token",
-      accessCodeSaltFactory: () => "11".repeat(16),
     });
 
-    const expectedAccessCodeHash = await hashAccessCode(
-      "2468",
-      "11".repeat(16),
-    );
     expect(result.token).toBe("plain-token");
     expect(repo.shareBoardInserts[0]).toEqual(
       expect.objectContaining({
@@ -207,16 +120,19 @@ describe("admission share board service", () => {
         projectId: "project-1",
         title: "Vendor review",
         tokenHash: hashShareSecret("plain-token"),
-        accessCodeSalt: "11".repeat(16),
-        accessCodeHash: expectedAccessCodeHash,
-        accessCodeHashVersion: "scrypt_v1",
-        accessCodeHashParams: { N: 16384, r: 8, p: 1, keyLength: 32 },
+        accessCodeHash: expect.stringMatching(/^scrypt\$[a-f0-9]+\$[a-f0-9]+$/),
         expiresAt: "2026-06-14T00:00:00.000Z",
         allowVendorSubmit: true,
         createdBy: "user-ops",
       }),
     );
     expect(JSON.stringify(repo.shareBoardInserts)).not.toContain("plain-token");
+    expect(
+      verifyAdmissionShareAccessCode(
+        "246810",
+        String(repo.shareBoardInserts[0]?.accessCodeHash),
+      ),
+    ).toBe(true);
     expect(repo.shareItemInserts).toEqual([
       expect.objectContaining({
         shareBoardId: "share-1",
@@ -241,49 +157,199 @@ describe("admission share board service", () => {
     );
   });
 
-  it("stores neither an access-code hash nor a salt when no code is configured", async () => {
+  it("salts new access-code hashes and verifies legacy hashes", () => {
+    const first = hashAdmissionShareAccessCode("246810");
+    const second = hashAdmissionShareAccessCode("246810");
+
+    expect(first).toMatch(/^scrypt\$[a-f0-9]+\$[a-f0-9]+$/);
+    expect(first).not.toBe(second);
+    expect(verifyAdmissionShareAccessCode("246810", first)).toBe(true);
+    expect(verifyAdmissionShareAccessCode("wrong", first)).toBe(false);
+    expect(
+      verifyAdmissionShareAccessCode("2468", hashShareSecret("2468")),
+    ).toBe(true);
+  });
+
+  it("authenticates a protected share and creates an opaque session", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("246810"),
+        }),
+      ),
+    });
+    const accessStore = {
+      consumeAttempt: vi.fn().mockResolvedValue({
+        allowed: true,
+        retryAfterSeconds: 0,
+      }),
+      createSession: vi.fn().mockResolvedValue(undefined),
+      hasValidSession: vi.fn().mockResolvedValue(false),
+    };
+
+    await expect(
+      authenticatePublicAdmissionShareAccess({
+        repo,
+        accessStore,
+        token: "plain-token",
+        accessCode: "246810",
+        clientFingerprint: "a".repeat(64),
+        now: "2026-06-07T00:00:00.000Z",
+        sessionTokenFactory: () => "opaque-session-token",
+      }),
+    ).resolves.toEqual({
+      sessionToken: "opaque-session-token",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+    });
+    expect(accessStore.consumeAttempt).toHaveBeenNthCalledWith(1, {
+      shareBoardId: "share-1",
+      clientFingerprint: "a".repeat(64),
+      succeeded: null,
+      now: "2026-06-07T00:00:00.000Z",
+    });
+    expect(accessStore.consumeAttempt).toHaveBeenNthCalledWith(2, {
+      shareBoardId: "share-1",
+      clientFingerprint: "a".repeat(64),
+      succeeded: true,
+      now: "2026-06-07T00:00:00.000Z",
+    });
+    expect(accessStore.createSession).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      sessionToken: "opaque-session-token",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+    });
+  });
+
+  it("blocks access after the limiter rejects a failed code", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("246810"),
+        }),
+      ),
+    });
+    const accessStore = {
+      consumeAttempt: vi
+        .fn()
+        .mockResolvedValueOnce({ allowed: true, retryAfterSeconds: 0 })
+        .mockResolvedValueOnce({ allowed: false, retryAfterSeconds: 900 }),
+      createSession: vi.fn().mockResolvedValue(undefined),
+      hasValidSession: vi.fn().mockResolvedValue(false),
+    };
+
+    await expect(
+      authenticatePublicAdmissionShareAccess({
+        repo,
+        accessStore,
+        token: "plain-token",
+        accessCode: "wrong-code",
+        clientFingerprint: "b".repeat(64),
+        now: "2026-06-07T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACCESS_RATE_LIMITED",
+      statusCode: 429,
+      retryAfterSeconds: 900,
+    });
+    expect(accessStore.createSession).not.toHaveBeenCalled();
+  });
+
+  it("accepts an unexpired opaque session for a protected share", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("246810"),
+        }),
+      ),
+    });
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+
+    await expect(
+      getPublicAdmissionShareBoard({
+        repo,
+        accessStore,
+        token: "plain-token",
+        sessionToken: "opaque-session-token",
+        now: "2026-06-07T00:00:00.000Z",
+      }),
+    ).resolves.toEqual(expect.objectContaining({ id: "share-1" }));
+    expect(accessStore.hasValidSession).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      sessionToken: "opaque-session-token",
+      now: "2026-06-07T00:00:00.000Z",
+    });
+  });
+
+  it("requires a new access code after a protected session expires", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("246810"),
+        }),
+      ),
+    });
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(false),
+    };
+
+    await expect(
+      getPublicAdmissionShareBoard({
+        repo,
+        accessStore,
+        token: "plain-token",
+        sessionToken: "expired-session-token",
+        now: "2026-06-07T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACCESS_CODE_REQUIRED",
+      statusCode: 401,
+    });
+  });
+
+  it("rejects weak access codes before creating a share board", async () => {
     const repo = createRepo();
 
-    await createAdmissionShareBoard({
-      repo,
-      actor,
-      projectId: "project-1",
-      input: {},
-      now: "2026-06-07T00:00:00.000Z",
-      tokenFactory: () => "plain-token",
-    });
-
-    expect(repo.shareBoardInserts[0]).toEqual(
-      expect.objectContaining({
-        accessCodeHash: null,
-        accessCodeSalt: null,
-        accessCodeHashVersion: null,
-        accessCodeHashParams: null,
+    await expect(
+      createAdmissionShareBoard({
+        repo,
+        audit: vi.fn().mockResolvedValue(undefined),
+        actor,
+        projectId: "project-1",
+        input: { accessCode: "12345" },
+        now: "2026-06-07T00:00:00.000Z",
+        tokenFactory: () => "plain-token",
       }),
-    );
+    ).rejects.toThrow("Access code must be between 6 and 64 characters");
+
+    expect(repo.shareBoardInserts).toHaveLength(0);
   });
 
   it.each([
-    ["past", "2026-06-06T23:59:59.999Z"],
-    ["invalid", "not-a-date"],
-    ["more than 30 days", "2026-07-07T00:00:00.001Z"],
-  ])(
-    "rejects a %s expiry before creating the share board",
-    async (_, expiresAt) => {
-      const repo = createRepo();
+    ["2026-06-06T23:59:59.000Z", "future"],
+    ["2026-07-08T00:00:00.000Z", "30 days"],
+  ])("rejects invalid share expiry %s", async (expiresAt, expectedMessage) => {
+    const repo = createRepo();
 
-      await expect(
-        createAdmissionShareBoard({
-          repo,
-          actor,
-          projectId: "project-1",
-          input: { expiresAt },
-          now: "2026-06-07T00:00:00.000Z",
-        }),
-      ).rejects.toThrow("Share board expiry");
-      expect(repo.createShareBoard).not.toHaveBeenCalled();
-    },
-  );
+    await expect(
+      createAdmissionShareBoard({
+        repo,
+        audit: vi.fn().mockResolvedValue(undefined),
+        actor,
+        projectId: "project-1",
+        input: { expiresAt },
+        now: "2026-06-07T00:00:00.000Z",
+        tokenFactory: () => "plain-token",
+      }),
+    ).rejects.toThrow(expectedMessage);
+
+    expect(repo.shareBoardInserts).toHaveLength(0);
+  });
 
   it("rejects share creation when a selected application has no recording", async () => {
     const repo = createRepo({
@@ -311,7 +377,7 @@ describe("admission share board service", () => {
     ).rejects.toThrow("Every shared application must have a recording");
   });
 
-  it("shares explicitly selected recordings before settlement without requiring MCN approval", async () => {
+  it("rejects explicitly selected recordings that are not MCN approved", async () => {
     const repo = createRepo({
       listShareableApplications: vi.fn().mockResolvedValue([
         {
@@ -334,24 +400,19 @@ describe("admission share board service", () => {
       ]),
     });
 
-    await createAdmissionShareBoard({
-      repo,
-      actor,
-      projectId: "project-1",
-      input: { title: "Vendor review", applicationIds: ["app-1"] },
-      now: "2026-06-07T00:00:00.000Z",
-      tokenFactory: () => "plain-token",
-    });
-
-    expect(repo.shareItemInserts).toEqual([
-      expect.objectContaining({
-        applicationId: "app-1",
-        recordingSubmissionId: "rec-1",
+    await expect(
+      createAdmissionShareBoard({
+        repo,
+        actor,
+        projectId: "project-1",
+        input: { title: "Vendor review", applicationIds: ["app-1"] },
+        now: "2026-06-07T00:00:00.000Z",
+        tokenFactory: () => "plain-token",
       }),
-    ]);
+    ).rejects.toThrow("Every shared recording must be approved by MCN");
   });
 
-  it("shares project applications that have recordings before settlement", async () => {
+  it("shares only approved applications with recordings when creating a project-level board", async () => {
     const repo = createRepo({
       listShareableApplications: vi.fn().mockResolvedValue([
         {
@@ -359,7 +420,7 @@ describe("admission share board service", () => {
           organizationId: "org-1",
           projectId: "project-1",
           streamerId: "streamer-1",
-          status: "recording_reviewing",
+          status: "recording_approved",
         },
         {
           id: "app-no-recording",
@@ -376,7 +437,7 @@ describe("admission share board service", () => {
           projectId: "project-1",
           streamerId: "streamer-1",
           version: 1,
-          status: "submitted",
+          status: "approved",
         },
       ]),
     });
@@ -398,7 +459,7 @@ describe("admission share board service", () => {
     ]);
   });
 
-  it("shares all recorded applications before settlement regardless of MCN status", async () => {
+  it("shares only MCN-approved recordings when creating a project-level board", async () => {
     const repo = createRepo({
       listShareableApplications: vi.fn().mockResolvedValue([
         {
@@ -450,35 +511,8 @@ describe("admission share board service", () => {
         applicationId: "app-approved",
         recordingSubmissionId: "rec-approved",
       }),
-      expect.objectContaining({
-        applicationId: "app-reviewing",
-        recordingSubmissionId: "rec-reviewing",
-      }),
     ]);
   });
-
-  it.each(["draft", "settling", "archived"])(
-    "rejects recording shares when project status is %s",
-    async (status) => {
-      const repo = createRepo({
-        getProjectStatus: vi.fn().mockResolvedValue(status),
-      });
-
-      await expect(
-        createAdmissionShareBoard({
-          repo,
-          actor,
-          projectId: "project-1",
-          input: { title: "Vendor review" },
-          now: "2026-06-07T00:00:00.000Z",
-          tokenFactory: () => "plain-token",
-        }),
-      ).rejects.toThrow(
-        "Recording shares are only available before project settlement",
-      );
-      expect(repo.createShareBoard).not.toHaveBeenCalled();
-    },
-  );
 
   it("rejects applications outside the target project", async () => {
     const repo = createRepo({
@@ -535,6 +569,7 @@ describe("admission share board service", () => {
     const dto = await getPublicAdmissionShareBoard({
       repo,
       token: "plain-token",
+      accessCode: "2468",
       now: "2026-06-07T01:00:00.000Z",
     });
 
@@ -549,7 +584,14 @@ describe("admission share board service", () => {
             recordingSubmissionId: "rec-1",
             recordingVersion: 2,
             recordingUrl: "https://video.example/rec-1",
-            playbackUrl: "https://video.example/rec-1",
+            playbackUrl:
+              "/api/public/admission-share/plain-token/recordings/rec-1",
+            hasPrivateStorage: true,
+            vendorReview: {
+              decision: "backup",
+              remark: "可作为备选。",
+              submittedAt: "2026-07-29T10:00:00.000Z",
+            },
           }),
           expect.objectContaining({
             applicationId: "app-2",
@@ -566,37 +608,12 @@ describe("admission share board service", () => {
     expect(JSON.stringify(dto)).not.toContain("tokenHash");
     expect(JSON.stringify(dto)).not.toContain("accessCodeHash");
     expect(JSON.stringify(dto)).not.toContain("private/path/rec-2.mp4");
+    expect(JSON.stringify(dto)).not.toContain("reviewerName");
+    expect(JSON.stringify(dto)).not.toContain("reviewerContact");
     expect(repo.markShareBoardViewed).toHaveBeenCalledWith(
       "share-1",
       "2026-06-07T01:00:00.000Z",
     );
-  });
-
-  it("preserves both private upload and external link playback sources", async () => {
-    const snapshot = publicSnapshot() as PublicAdmissionShareBoardSnapshot;
-    snapshot.items[0] = {
-      ...snapshot.items[0],
-      storagePath: "private/path/rec-1.mp4",
-    };
-    const repo = createRepo({
-      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(snapshot),
-    });
-
-    const dto = await getPublicAdmissionShareBoard({
-      repo,
-      token: "plain-token",
-      now: "2026-06-07T01:00:00.000Z",
-    });
-
-    expect(dto.items[0]).toEqual(
-      expect.objectContaining({
-        recordingUrl: "https://video.example/rec-1",
-        playbackUrl:
-          "/api/public/admission-share/plain-token/recordings/rec-1",
-        hasPrivateStorage: true,
-      }),
-    );
-    expect(JSON.stringify(dto)).not.toContain("private/path/rec-1.mp4");
   });
 
   it("resolves private recording playback sources only after share gating", async () => {
@@ -624,243 +641,7 @@ describe("admission share board service", () => {
     );
   });
 
-  it("waits for the board view audit attempt before returning the DTO", async () => {
-    const auditAttempt = deferred<void>();
-    const markShareBoardViewed = vi.fn().mockReturnValue(auditAttempt.promise);
-    const repo = createRepo({
-      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
-      markShareBoardViewed,
-    });
-    let settled = false;
-
-    const result = getPublicAdmissionShareBoard({
-      repo,
-      token: "plain-token",
-      now: "2026-06-07T01:00:00.000Z",
-    });
-    void result.then(() => {
-      settled = true;
-    });
-    await vi.waitFor(() => expect(markShareBoardViewed).toHaveBeenCalledOnce());
-
-    expect(settled).toBe(false);
-    auditAttempt.resolve();
-    await expect(result).resolves.toEqual(
-      expect.objectContaining({ id: "share-1" }),
-    );
-  });
-
-  it("waits for the playback view audit attempt before returning the source", async () => {
-    const auditAttempt = deferred<void>();
-    const markShareBoardViewed = vi.fn().mockReturnValue(auditAttempt.promise);
-    const repo = createRepo({
-      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
-      markShareBoardViewed,
-    });
-    let settled = false;
-
-    const result = getPublicAdmissionRecordingPlaybackSource({
-      repo,
-      token: "plain-token",
-      recordingSubmissionId: "rec-2",
-      now: "2026-06-07T01:00:00.000Z",
-    });
-    void result.then(() => {
-      settled = true;
-    });
-    await vi.waitFor(() => expect(markShareBoardViewed).toHaveBeenCalledOnce());
-
-    expect(settled).toBe(false);
-    auditAttempt.resolve();
-    await expect(result).resolves.toEqual({
-      recordingUrl: null,
-      storagePath: "private/path/rec-2.mp4",
-    });
-  });
-
-  it("requires a valid capability for code-protected board data", async () => {
-    const access = publicAccess({
-      accessCodeHash: "b".repeat(64),
-      accessCodeSalt: "11".repeat(16),
-      accessCodeHashVersion: "scrypt_v1",
-      accessCodeHashParams: { N: 16384, r: 8, p: 1, keyLength: 32 },
-    });
-    const repo = createRepo({
-      getPublicShareBoardSnapshot: vi
-        .fn()
-        .mockResolvedValue(publicSnapshot(access)),
-    });
-    const preparedAccess = {
-      token: "plain-token",
-      tokenHash: hashShareSecret("plain-token"),
-      access,
-    };
-
-    await expect(
-      getPublicAdmissionShareBoard({
-        repo,
-        token: "plain-token",
-        preparedAccess,
-        now: "2026-06-07T01:00:00.000Z",
-      }),
-    ).rejects.toThrow("Access code is required");
-
-    const capability = signAdmissionShareCapability({
-      boardId: access.id,
-      tokenHash: preparedAccess.tokenHash,
-      accessCodeHash: access.accessCodeHash!,
-      boardExpiresAt: access.expiresAt,
-      now: "2026-06-07T01:00:00.000Z",
-      secret: "s".repeat(64),
-    }).value;
-    await expect(
-      getPublicAdmissionShareBoard({
-        repo,
-        token: "plain-token",
-        preparedAccess,
-        capability,
-        now: "2026-06-07T01:05:00.000Z",
-        capabilitySecret: "s".repeat(64),
-      }),
-    ).resolves.toEqual(expect.objectContaining({ id: "share-1" }));
-  });
-
-  it("locks after five consecutive failures but allows the correct code during lock with CAS reset", async () => {
-    let failureCount = 0;
-    let failureVersion = 0;
-    let lockedUntil: string | null = null;
-    const accessCodeSalt = "11".repeat(16);
-    const accessCodeHash = await hashAccessCode("2468", accessCodeSalt);
-    const getPublicShareBoardAccess = vi.fn().mockImplementation(async () =>
-      publicAccess({
-        accessCodeSalt,
-        accessCodeHash,
-        accessCodeHashVersion: "scrypt_v1",
-        accessCodeHashParams: { N: 16384, r: 8, p: 1, keyLength: 32 },
-        accessCodeFailureCount: failureCount,
-        accessCodeLockedUntil: lockedUntil,
-        accessCodeFailureVersion: failureVersion,
-      }),
-    );
-    const recordAccessCodeFailure = vi
-      .fn()
-      .mockImplementation(async ({ failedAt }: { failedAt: string }) => {
-        failureCount += 1;
-        failureVersion += 1;
-        if (failureCount >= 5) {
-          lockedUntil = new Date(
-            Date.parse(failedAt) + 15 * 60 * 1000,
-          ).toISOString();
-        }
-        return { failureCount, lockedUntil, failureVersion };
-      });
-    const resetAccessCodeFailures = vi
-      .fn()
-      .mockImplementation(async (input) => {
-        if (input.observedFailureVersion !== failureVersion) {
-          return false;
-        }
-        failureCount = 0;
-        lockedUntil = null;
-        return true;
-      });
-    const repo = createRepo({
-      getPublicShareBoardAccess,
-      recordAccessCodeFailure,
-      resetAccessCodeFailures,
-    });
-
-    for (let index = 0; index < 5; index += 1) {
-      await expect(
-        verifyPublicAdmissionShareAccessCode({
-          repo,
-          accessCode: "0000",
-          access: (
-            await preparePublicAdmissionShareAccess({
-              repo,
-              token: "plain-token",
-              now: "2026-06-07T01:00:00.000Z",
-            })
-          ).access,
-          now: "2026-06-07T01:00:00.000Z",
-        }),
-      ).rejects.toThrow(/Access code/);
-    }
-    expect(lockedUntil).toBe("2026-06-07T01:15:00.000Z");
-
-    await verifyPublicAdmissionShareAccessCode({
-      repo,
-      accessCode: "2468",
-      access: (
-        await preparePublicAdmissionShareAccess({
-          repo,
-          token: "plain-token",
-          now: "2026-06-07T01:05:00.000Z",
-        })
-      ).access,
-      now: "2026-06-07T01:05:00.000Z",
-    });
-    expect(resetAccessCodeFailures).toHaveBeenCalledWith({
-      shareBoardId: "share-1",
-      observedFailureVersion: 5,
-    });
-    expect(failureCount).toBe(0);
-    expect(lockedUntil).toBeNull();
-  });
-
-  it("denies a wrong code during lock without mutating failure state", async () => {
-    const accessCodeSalt = "11".repeat(16);
-    const accessCodeHash = await hashAccessCode("2468", accessCodeSalt);
-    const repo = createRepo();
-
-    await expect(
-      verifyPublicAdmissionShareAccessCode({
-        repo,
-        accessCode: "0000",
-        access: publicAccess({
-          accessCodeSalt,
-          accessCodeHash,
-          accessCodeHashVersion: "scrypt_v1",
-          accessCodeHashParams: { N: 16384, r: 8, p: 1, keyLength: 32 },
-          accessCodeFailureCount: 5,
-          accessCodeFailureVersion: 5,
-          accessCodeLockedUntil: "2026-06-07T01:15:00.000Z",
-        }),
-        now: "2026-06-07T01:05:00.000Z",
-      }),
-    ).rejects.toThrow("Access code is temporarily locked");
-    expect(repo.recordAccessCodeFailure).not.toHaveBeenCalled();
-    expect(repo.resetAccessCodeFailures).not.toHaveBeenCalled();
-  });
-
-  it("authorizes a correct code without erasing a newer failure when reset CAS loses", async () => {
-    const accessCodeSalt = "11".repeat(16);
-    const accessCodeHash = await hashAccessCode("2468", accessCodeSalt);
-    const resetAccessCodeFailures = vi.fn().mockResolvedValue(false);
-    const repo = createRepo({ resetAccessCodeFailures });
-
-    await expect(
-      verifyPublicAdmissionShareAccessCode({
-        repo,
-        accessCode: "2468",
-        access: publicAccess({
-          accessCodeSalt,
-          accessCodeHash,
-          accessCodeHashVersion: "scrypt_v1",
-          accessCodeHashParams: { N: 16384, r: 8, p: 1, keyLength: 32 },
-          accessCodeFailureVersion: 7,
-          accessCodeLockedUntil: "2026-06-07T01:15:00.000Z",
-        }),
-        now: "2026-06-07T01:05:00.000Z",
-      }),
-    ).resolves.toBeUndefined();
-    expect(resetAccessCodeFailures).toHaveBeenCalledWith({
-      shareBoardId: "share-1",
-      observedFailureVersion: 7,
-    });
-  });
-
-  it("returns authorized data when monotonic view auditing fails", async () => {
+  it("keeps public reads available when view auditing fails", async () => {
     const auditError = new Error("audit unavailable");
     const onViewAuditError = vi.fn();
     const repo = createRepo({
@@ -871,6 +652,7 @@ describe("admission share board service", () => {
     const dto = await getPublicAdmissionShareBoard({
       repo,
       token: "plain-token",
+      accessCode: "2468",
       now: "2026-06-07T01:00:00.000Z",
       onViewAuditError,
     });
@@ -1199,16 +981,9 @@ function publicSnapshot(overrides: Record<string, unknown> = {}) {
     title: "Vendor review",
     tokenHash: hashShareSecret("plain-token"),
     accessCodeHash: null,
-    accessCodeSalt: null,
-    accessCodeHashVersion: null,
-    accessCodeHashParams: null,
-    accessCodeFailureCount: 0,
-    accessCodeFailureVersion: 0,
-    accessCodeLockedUntil: null,
     status: "active" as const,
     expiresAt: "2026-06-14T00:00:00.000Z",
     allowVendorSubmit: true,
-    createdBy: "user-ops",
     project: {
       id: "project-1",
       code: "P-001",
@@ -1224,13 +999,19 @@ function publicSnapshot(overrides: Record<string, unknown> = {}) {
         recordingVersion: 2,
         recordingStatus: "reviewing" as const,
         recordingUrl: "https://video.example/rec-1",
-        storagePath: null,
+        storagePath: "private/path/rec-1.mp4",
         streamer: {
           id: "streamer-1",
           displayName: "Streamer One",
           accountLabel: "Douyin / one-live",
         },
-        vendorReview: null,
+        vendorReview: {
+          decision: "backup" as const,
+          remark: "可作为备选。",
+          reviewerName: "厂家复核人",
+          reviewerContact: "reviewer@example.com",
+          submittedAt: "2026-07-29T10:00:00.000Z",
+        },
       },
       {
         applicationId: "app-2",
@@ -1250,12 +1031,4 @@ function publicSnapshot(overrides: Record<string, unknown> = {}) {
     ],
     ...overrides,
   };
-}
-
-function publicAccess(overrides: Record<string, unknown> = {}) {
-  const snapshot = publicSnapshot(overrides);
-  const { project: _project, items: _items, ...access } = snapshot;
-  void _project;
-  void _items;
-  return access;
 }

@@ -11,27 +11,21 @@ import {
 } from "@/features/admission-review/evaluation-service";
 import { recordMcnVsVendorSignal } from "@/features/admission-review/signals";
 import {
+  PublicAdmissionShareError,
   submitVendorAdmissionReviews,
-  preparePublicAdmissionShareAccess,
   SupabaseAdmissionShareBoardRepository,
   type SubmitVendorAdmissionReviewsInput,
 } from "@/features/applications/admission-share-board";
+import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import type { VendorAdmissionDecision } from "@/features/applications/admission-board";
 import {
-  jsonError,
   optionalString,
   readJsonBody,
-  RouteError,
 } from "@/features/applications/application-route-utils";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
-import { admissionShareCapabilityFromRequest } from "@/lib/http/admission-share-capability";
-import {
-  ADMISSION_SHARE_RATE_LIMITS,
-  enforceAdmissionShareIpRateLimit,
-  enforceAdmissionShareTokenRateLimit,
-  RateLimitDeniedError,
-  RateLimitUnavailableError,
-} from "@/lib/http/rate-limit";
+import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
+
+import { publicAdmissionShareErrorResponse } from "../../public-route-utils";
 
 export async function POST(
   request: Request,
@@ -44,32 +38,25 @@ export async function POST(
     // and the service-role client stays server-side only.
     const supabase = createSupabaseAdminClient();
     if (!supabase) {
-      throw new RouteError("Public share service is unavailable", 500);
+      throw new PublicAdmissionShareError(
+        "SHARE_SERVICE_UNAVAILABLE",
+        "Public share service is unavailable",
+        503,
+      );
     }
-    const rateLimitInput = {
-      client: supabase,
-      request,
-      token,
-      policy: ADMISSION_SHARE_RATE_LIMITS.review,
-    };
-    await enforceAdmissionShareIpRateLimit(rateLimitInput);
 
-    const repo = new SupabaseAdmissionShareBoardRepository(supabase);
-    const preparedAccess = await preparePublicAdmissionShareAccess({
-      repo,
-      token,
-      now: new Date().toISOString(),
-    });
-    await enforceAdmissionShareTokenRateLimit(rateLimitInput);
     const body = await readJsonBody(request);
+    const repo = new SupabaseAdmissionShareBoardRepository(supabase);
+    const accessStore = new SupabaseAdmissionShareAccessStore(supabase);
     const reviewClient = supabase as unknown as AdmissionReviewClient;
     const rubricCache = new Map<string, AdmissionRubric>();
 
     const result = await submitVendorAdmissionReviews({
       repo,
+      accessStore,
       token,
-      capability: admissionShareCapabilityFromRequest(request),
-      preparedAccess,
+      sessionToken:
+        readAdmissionShareAccessSession(request, token) ?? undefined,
       input: toVendorReviewInput(body),
       // 厂家勾选理由标签时直接落人工评估；非法标签宽容过滤（外部输入）。
       recordEvaluation: async (evaluation) => {
@@ -118,19 +105,7 @@ export async function POST(
 
     return NextResponse.json(result);
   } catch (error) {
-    if (error instanceof RateLimitDeniedError) {
-      return NextResponse.json(
-        { error: "Too many requests" },
-        {
-          status: 429,
-          headers: { "Retry-After": String(error.retryAfterSeconds) },
-        },
-      );
-    }
-    if (error instanceof RateLimitUnavailableError) {
-      return NextResponse.json({ error: error.message }, { status: 503 });
-    }
-    return jsonError(error);
+    return publicAdmissionShareErrorResponse(error);
   }
 }
 

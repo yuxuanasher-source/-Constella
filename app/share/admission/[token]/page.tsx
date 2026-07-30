@@ -6,5 +6,6 @@ export default async function AdmissionSharePage({
   params: Promise<{ token: string }>;
 }) {
   const { token } = await params;
+
   return <AdmissionSharePageClient token={token} />;
 }
