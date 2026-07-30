@@ -526,13 +526,6 @@ export async function reviewRecordingSubmission({
     .map((code) => code.trim())
     .filter(Boolean);
   const note = input.note?.trim() || undefined;
-  // 驳回/需修改必须给出可沉淀的理由：理由码（结构化）或备注（老客户端，
-  // 标记 needs_classification 等待归一化）。
-  if (input.decision !== "approved" && !reasonCodes.length && !note) {
-    throw new Error(
-      "Rejection or change request requires reason codes or a note",
-    );
-  }
 
   const application = await requireApplication(repo, input.applicationId);
   const latest = await repo.getLatestRecordingSubmission(application.id);
@@ -540,24 +533,53 @@ export async function reviewRecordingSubmission({
     throw new Error("Application has no recording to review");
   }
 
-  const nextStatus = mapRecordingDecisionToApplicationStatus(input.decision);
+  const frozenDecision = latest.mcnReviewDecision ?? null;
+  if (frozenDecision && frozenDecision !== input.decision) {
+    throw new Error(
+      `Recording MCN review is already frozen as ${frozenDecision} and cannot change to ${input.decision}`,
+    );
+  }
+
+  // 驳回/需修改必须给出可沉淀的理由：理由码（结构化）或备注（老客户端，
+  // 标记 needs_classification 等待归一化）。已冻结的同决策重试沿用首次事实。
+  if (
+    !frozenDecision &&
+    input.decision !== "approved" &&
+    !reasonCodes.length &&
+    !note
+  ) {
+    throw new Error(
+      "Rejection or change request requires reason codes or a note",
+    );
+  }
+
+  const effectiveDecision = frozenDecision ?? input.decision;
+  const effectiveNote = frozenDecision
+    ? (latest.mcnReviewNote ?? undefined)
+    : note;
+  const nextStatus = mapRecordingDecisionToApplicationStatus(effectiveDecision);
   assertApplicationTransition(application.status, nextStatus);
   const now = new Date().toISOString();
-  const reviewedRecording = await repo.updateRecordingReview(latest.id, {
-    status: input.decision,
-    reviewedBy: actor.userId,
-    reviewedAt: now,
-    reviewNote: note,
-    mcnReviewDecision: input.decision,
-    mcnReviewedBy: actor.userId,
-    mcnReviewedAt: now,
-    mcnReviewNote: note,
-  });
+  const effectiveReviewerId =
+    (frozenDecision && latest.mcnReviewedBy) || actor.userId;
+  const effectiveReviewedAt = (frozenDecision && latest.mcnReviewedAt) || now;
+  const reviewedRecording = frozenDecision
+    ? latest
+    : await repo.updateRecordingReview(latest.id, {
+        status: effectiveDecision,
+        reviewedBy: effectiveReviewerId,
+        reviewedAt: effectiveReviewedAt,
+        reviewNote: effectiveNote,
+        mcnReviewDecision: effectiveDecision,
+        mcnReviewedBy: effectiveReviewerId,
+        mcnReviewedAt: effectiveReviewedAt,
+        mcnReviewNote: effectiveNote,
+      });
   const updated = await repo.updateApplicationStatus(application.id, {
     status: nextStatus,
-    decidedBy: actor.userId,
-    decidedAt: now,
-    decisionReason: note,
+    decidedBy: effectiveReviewerId,
+    decidedAt: effectiveReviewedAt,
+    decisionReason: effectiveNote,
   });
 
   if (recordEvaluation) {
@@ -568,9 +590,9 @@ export async function reviewRecordingSubmission({
         actor.organizationId,
       applicationId: application.id,
       submissionId: latest.id,
-      decision: input.decision,
-      reviewerId: actor.userId,
-      note,
+      decision: effectiveDecision,
+      reviewerId: effectiveReviewerId,
+      note: effectiveNote,
       noteSource: reasonCodes.length ? "human" : "needs_classification",
       reasonCodes,
       checkpointResults: input.checkpointResults,
@@ -582,7 +604,7 @@ export async function reviewRecordingSubmission({
     actorUserId: actor.userId,
     actorName: actor.name,
     actorRole: actor.role,
-    action: input.decision === "approved" ? "approve" : "reject",
+    action: effectiveDecision === "approved" ? "approve" : "reject",
     module: "application",
     objectType: "recording_submission",
     objectId: reviewedRecording.id,
@@ -591,21 +613,21 @@ export async function reviewRecordingSubmission({
     before: latest,
     after: reviewedRecording,
     changedFields: ["status", "reviewed_by", "reviewed_at", "review_note"],
-    reason: input.note,
+    reason: effectiveNote,
   });
 
   await notify({
     organizationId: actor.organizationId,
-    recipientRole: input.decision === "approved" ? "owner" : "streamer",
+    recipientRole: effectiveDecision === "approved" ? "owner" : "streamer",
     type: "review",
     title:
-      input.decision === "approved"
+      effectiveDecision === "approved"
         ? "Screening approved, join confirmation needed"
         : "Screening recording needs attention",
     content:
-      input.decision === "approved"
+      effectiveDecision === "approved"
         ? `Application ${application.id} is ready for final join confirmation.`
-        : `Application ${application.id} was marked ${input.decision}.`,
+        : `Application ${application.id} was marked ${effectiveDecision}.`,
     objectType: "application",
     objectId: application.id,
     source: "application.recording.review",

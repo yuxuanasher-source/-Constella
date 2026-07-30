@@ -9,6 +9,7 @@ import {
   submitRecording,
   type ApplicationRecord,
   type ApplicationRepository,
+  type RecordingSubmissionRecord,
 } from "./application-service";
 
 const staffActor = {
@@ -950,6 +951,143 @@ describe("application service", () => {
       mcnReviewNote: "Recording meets the project gate.",
     });
     expect(repo.createProjectStreamer).not.toHaveBeenCalled();
+  });
+
+  it("resumes an interrupted review from the frozen MCN fact without rewriting it", async () => {
+    let latest: RecordingSubmissionRecord = {
+      id: "recording-1",
+      applicationId: "app-1",
+      version: 1,
+      status: "submitted",
+      uploadedBy: streamerActor.userId,
+      mcnReviewDecision: null,
+      mcnReviewedBy: null,
+      mcnReviewedAt: null,
+      mcnReviewNote: null,
+    };
+    const updateRecordingReview = vi.fn(
+      async (
+        _recordingId: string,
+        patch: Parameters<ApplicationRepository["updateRecordingReview"]>[1],
+      ) => {
+        latest = {
+          ...latest,
+          status: patch.status,
+          mcnReviewDecision: patch.mcnReviewDecision,
+          mcnReviewedBy: patch.mcnReviewedBy,
+          mcnReviewedAt: patch.mcnReviewedAt,
+          mcnReviewNote: patch.mcnReviewNote ?? null,
+        };
+        return latest;
+      },
+    );
+    const updateApplicationStatus = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("application update interrupted"))
+      .mockImplementation(async (applicationId, patch) => ({
+        ...baseApplication,
+        id: applicationId,
+        status: patch.status,
+        decisionReason: patch.decisionReason,
+      }));
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_reviewing",
+      }),
+      getLatestRecordingSubmission: vi.fn(async () => latest),
+      updateRecordingReview,
+      updateApplicationStatus,
+    });
+    const audit = vi.fn().mockResolvedValue(undefined);
+    const recordEvaluation = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      reviewRecordingSubmission({
+        repo,
+        audit,
+        notify: vi.fn().mockResolvedValue(undefined),
+        actor: operatorActor,
+        input: {
+          applicationId: "app-1",
+          decision: "approved",
+          note: "Original frozen note",
+        },
+        recordEvaluation,
+      }),
+    ).rejects.toThrow("application update interrupted");
+    const frozenReviewedAt = latest.mcnReviewedAt;
+
+    await expect(
+      reviewRecordingSubmission({
+        repo,
+        audit,
+        notify: vi.fn().mockResolvedValue(undefined),
+        actor: operatorActor,
+        input: {
+          applicationId: "app-1",
+          decision: "approved",
+          note: "Contradictory retry note",
+        },
+        recordEvaluation,
+      }),
+    ).resolves.toMatchObject({ status: "recording_approved" });
+
+    expect(updateRecordingReview).toHaveBeenCalledTimes(1);
+    expect(updateApplicationStatus).toHaveBeenLastCalledWith("app-1", {
+      status: "recording_approved",
+      decidedBy: operatorActor.userId,
+      decidedAt: frozenReviewedAt,
+      decisionReason: "Original frozen note",
+    });
+    expect(recordEvaluation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: "approved",
+        reviewerId: operatorActor.userId,
+        note: "Original frozen note",
+      }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "Original frozen note" }),
+    );
+  });
+
+  it("rejects a retry that conflicts with an immutable MCN decision", async () => {
+    const repo = makeRepo({
+      getApplicationById: vi.fn().mockResolvedValue({
+        ...baseApplication,
+        status: "recording_reviewing",
+      }),
+      getLatestRecordingSubmission: vi.fn().mockResolvedValue({
+        id: "recording-1",
+        applicationId: "app-1",
+        version: 1,
+        status: "approved",
+        uploadedBy: streamerActor.userId,
+        mcnReviewDecision: "approved",
+        mcnReviewedBy: operatorActor.userId,
+        mcnReviewedAt: "2026-07-30T08:00:00.000Z",
+        mcnReviewNote: "Original frozen note",
+      }),
+    });
+
+    await expect(
+      reviewRecordingSubmission({
+        repo,
+        audit: vi.fn(),
+        notify: vi.fn(),
+        actor: operatorActor,
+        input: {
+          applicationId: "app-1",
+          decision: "needs_changes",
+          note: "Try to reverse the frozen decision",
+        },
+      }),
+    ).rejects.toThrow(
+      "Recording MCN review is already frozen as approved and cannot change to needs_changes",
+    );
+    expect(repo.updateRecordingReview).not.toHaveBeenCalled();
+    expect(repo.updateApplicationStatus).not.toHaveBeenCalled();
   });
 
   it("rejects a review that gives neither reason codes nor a note", async () => {
