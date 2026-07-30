@@ -404,7 +404,7 @@ function RecordingListPane({
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-semibold">
-                    {item.streamer.displayName || "未命名主播"}
+                    {item.streamer.displayName || "主播名称未提供"}
                   </span>
                   <span className="mt-0.5 block truncate text-xs text-[var(--ink-500)]">
                     {item.streamer.accountLabel ||
@@ -542,7 +542,7 @@ function ActiveRecordingPane({
       <header className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 px-4 py-4 text-white sm:px-5">
         <div className="min-w-0">
           <h2 className="truncate text-base font-semibold">
-            {item.streamer.displayName || "未命名主播"}
+            {item.streamer.displayName || "主播名称未提供"}
           </h2>
           <p className="mt-1 truncate text-xs text-[var(--ink-200)]">
             {item.streamer.accountLabel || "账号信息未填写"} · 版本{" "}

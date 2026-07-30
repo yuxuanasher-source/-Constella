@@ -276,7 +276,7 @@ function shareItem(candidate, sortOrder) {
 }
 
 function candidateLabel(candidate) {
-  return `${candidate.streamer?.displayName || "未命名主播"} V${candidate.recordingVersion}`;
+  return `${candidate.streamer?.displayName || "主播名称未提供"} V${candidate.recordingVersion}`;
 }
 
 function formatDate(value) {
@@ -1374,7 +1374,7 @@ function CandidateLibrary({
                 ? group.items
                 : group.items.slice(0, 1);
             const streamerName =
-              group.items[0]?.streamer?.displayName || "未命名主播";
+              group.items[0]?.streamer?.displayName || "主播名称未提供";
             return (
               <section key={group.applicationId} style={panelStyle}>
                 <div
@@ -2604,7 +2604,7 @@ function PlaybackIssues({
                   style={{ borderTop: "1px solid var(--line)" }}
                 >
                   <td style={tableCellStyle}>
-                    {issue.streamerDisplayName || "未命名主播"} · V
+                    {issue.streamerDisplayName || "主播名称未提供"} · V
                     {issue.recordingVersion}
                   </td>
                   <td style={tableCellStyle}>
