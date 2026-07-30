@@ -2,9 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET } from "./route";
 
-import { getAdmissionShareCandidatePlayback } from "@/features/applications/admission-share-candidates";
+import {
+  getAdmissionShareCandidatePlayback,
+  SupabaseAdmissionShareCandidateRepository,
+} from "@/features/applications/admission-share-candidates";
 import { getAdmissionRouteContext } from "@/features/applications/application-route-utils";
 import { createSignedDownloadUrl } from "@/features/storage/private-upload";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/applications/admission-share-candidates", () => ({
   SupabaseAdmissionShareCandidateRepository: vi
@@ -45,6 +49,11 @@ vi.mock("@/lib/config/env", () => ({
   getPrivateStorageBucket: () => "jy-private",
 }));
 
+vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseAdminClient: vi.fn(),
+}));
+
+const adminClient = { client: "admin-supabase" };
 const context = {
   supabase: { client: "supabase" },
   auth: {
@@ -69,12 +78,13 @@ describe("admission share candidate playback route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getAdmissionRouteContext).mockResolvedValue(context as never);
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(adminClient as never);
   });
 
   it("redirects MCN staff to a fresh signed original URL", async () => {
     vi.mocked(getAdmissionShareCandidatePlayback).mockResolvedValue({
       sourceType: "original",
-      storagePath: "org-1/recordings/project-1/original.mp4",
+      storagePath: "org-contributor/recordings/project-1/original.mp4",
     });
     vi.mocked(createSignedDownloadUrl).mockResolvedValue({
       signedUrl: "https://signed.example/original.mp4",
@@ -87,11 +97,14 @@ describe("admission share candidate playback route", () => {
       "https://signed.example/original.mp4",
     );
     expect(createSignedDownloadUrl).toHaveBeenCalledWith({
-      client: context.supabase,
+      client: adminClient,
       bucket: "jy-private",
-      path: "org-1/recordings/project-1/original.mp4",
+      path: "org-contributor/recordings/project-1/original.mp4",
       expiresInSeconds: 3600,
     });
+    expect(SupabaseAdmissionShareCandidateRepository).toHaveBeenCalledWith(
+      adminClient,
+    );
   });
 
   it("falls back to a safe external URL when no original exists", async () => {
@@ -124,6 +137,15 @@ describe("admission share candidate playback route", () => {
     } as never);
 
     expect((await GET(request, routeParams)).status).toBe(403);
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(getAdmissionShareCandidatePlayback).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the admin playback service is unavailable", async () => {
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(null);
+
+    expect((await GET(request, routeParams)).status).toBe(503);
+    expect(getAdmissionShareCandidatePlayback).not.toHaveBeenCalled();
+    expect(createSignedDownloadUrl).not.toHaveBeenCalled();
   });
 });

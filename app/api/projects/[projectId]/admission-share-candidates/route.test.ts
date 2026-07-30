@@ -2,8 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET } from "./route";
 
-import { listAdmissionShareCandidates } from "@/features/applications/admission-share-candidates";
+import {
+  listAdmissionShareCandidates,
+  SupabaseAdmissionShareCandidateRepository,
+} from "@/features/applications/admission-share-candidates";
 import { getAdmissionRouteContext } from "@/features/applications/application-route-utils";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/applications/admission-share-candidates", () => ({
   SupabaseAdmissionShareCandidateRepository: vi
@@ -36,6 +40,11 @@ vi.mock("@/features/applications/application-route-utils", () => ({
   },
 }));
 
+vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseAdminClient: vi.fn(),
+}));
+
+const adminClient = { client: "admin-supabase" };
 const context = {
   supabase: { client: "supabase" },
   auth: {
@@ -54,6 +63,7 @@ describe("admission share candidates route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getAdmissionRouteContext).mockResolvedValue(context as never);
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(adminClient as never);
     vi.mocked(listAdmissionShareCandidates).mockResolvedValue([
       {
         applicationId: "app-1",
@@ -97,6 +107,9 @@ describe("admission share candidates route", () => {
         organizationId: "org-1",
       },
     );
+    expect(SupabaseAdmissionShareCandidateRepository).toHaveBeenCalledWith(
+      adminClient,
+    );
   });
 
   it("blocks streamers before querying candidates", async () => {
@@ -113,6 +126,21 @@ describe("admission share candidates route", () => {
     );
 
     expect(response.status).toBe(403);
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
+    expect(listAdmissionShareCandidates).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the admin candidate service is unavailable", async () => {
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(null);
+
+    const response = await GET(
+      new Request(
+        "https://app.example/api/projects/project-1/admission-share-candidates",
+      ),
+      routeParams,
+    );
+
+    expect(response.status).toBe(503);
     expect(listAdmissionShareCandidates).not.toHaveBeenCalled();
   });
 });

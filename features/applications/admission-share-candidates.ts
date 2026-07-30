@@ -89,6 +89,8 @@ export class SupabaseAdmissionShareCandidateRepository implements AdmissionShare
     organizationId: string;
     projectId: string;
   }): Promise<AdmissionShareCandidateDto[]> {
+    await this.assertProjectOwnership(input);
+
     const { data, error } = await this.supabase
       .from("recording_submissions")
       .select(
@@ -119,7 +121,6 @@ export class SupabaseAdmissionShareCandidateRepository implements AdmissionShare
           )
         `,
       )
-      .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
       .order("application_id", { ascending: true })
       .order("version", { ascending: false });
@@ -139,10 +140,11 @@ export class SupabaseAdmissionShareCandidateRepository implements AdmissionShare
     | { sourceType: "original"; storagePath: string }
     | { sourceType: "external"; url: string }
   > {
+    await this.assertProjectOwnership(input);
+
     const { data, error } = await this.supabase
       .from("recording_submissions")
       .select("storage_path, external_url")
-      .eq("organization_id", input.organizationId)
       .eq("project_id", input.projectId)
       .eq("id", input.recordingSubmissionId)
       .eq("mcn_review_decision", "approved")
@@ -163,6 +165,25 @@ export class SupabaseAdmissionShareCandidateRepository implements AdmissionShare
     }
 
     throw new RouteError("Recording not found", 404);
+  }
+
+  private async assertProjectOwnership(input: {
+    organizationId: string;
+    projectId: string;
+  }) {
+    const { data, error } = await this.supabase
+      .from("projects")
+      .select("id")
+      .eq("id", input.projectId)
+      .eq("organization_id", input.organizationId)
+      .maybeSingle<{ id: string }>();
+
+    if (error) {
+      throw error;
+    }
+    if (!data) {
+      throw new RouteError("Project not found", 404);
+    }
   }
 }
 

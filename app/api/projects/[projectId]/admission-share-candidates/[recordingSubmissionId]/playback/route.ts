@@ -11,6 +11,7 @@ import {
 } from "@/features/applications/application-route-utils";
 import { createSignedDownloadUrl } from "@/features/storage/private-upload";
 import { getPrivateStorageBucket } from "@/lib/config/env";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function GET(
@@ -31,9 +32,11 @@ export async function GET(
       throw new RouteError("Only MCN staff can preview share candidates", 403);
     }
 
-    const repo = new SupabaseAdmissionShareCandidateRepository(
-      context.supabase,
-    );
+    const admin = createSupabaseAdminClient();
+    if (!admin) {
+      throw new RouteError("Share candidate service is unavailable", 503);
+    }
+    const repo = new SupabaseAdmissionShareCandidateRepository(admin);
     const source = await getAdmissionShareCandidatePlayback(repo, {
       organizationId: context.auth.organizationId,
       projectId,
@@ -42,7 +45,7 @@ export async function GET(
 
     if (source.sourceType === "original") {
       const signed = await createSignedDownloadUrl({
-        client: context.supabase,
+        client: admin,
         bucket: getPrivateStorageBucket(),
         path: source.storagePath,
         expiresInSeconds: 3600,

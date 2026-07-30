@@ -9,6 +9,7 @@ import {
   jsonError,
   RouteError,
 } from "@/features/applications/application-route-utils";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function GET(
@@ -22,9 +23,11 @@ export async function GET(
       throw new RouteError("Only MCN staff can view share candidates", 403);
     }
 
-    const repo = new SupabaseAdmissionShareCandidateRepository(
-      context.supabase,
-    );
+    const admin = createSupabaseAdminClient();
+    if (!admin) {
+      throw new RouteError("Share candidate service is unavailable", 503);
+    }
+    const repo = new SupabaseAdmissionShareCandidateRepository(admin);
     const candidates = await listAdmissionShareCandidates(repo, {
       projectId,
       organizationId: context.auth.organizationId,

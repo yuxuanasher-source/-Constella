@@ -7,7 +7,7 @@ import {
 } from "./admission-share-candidates";
 
 describe("admission share candidates", () => {
-  it("lists every historical version using immutable MCN approval and source health", async () => {
+  it("lets the host list every contributor-owned historical version", async () => {
     const rows = [
       {
         id: "recording-v2",
@@ -15,7 +15,7 @@ describe("admission share candidates", () => {
         streamer_id: "streamer-1",
         version: 2,
         status: "rejected",
-        storage_path: "org-1/recordings/original-v2.mp4",
+        storage_path: "org-contributor/recordings/original-v2.mp4",
         external_url: "https://video.example/v2",
         mcn_review_decision: "approved",
         mcn_reviewed_at: "2026-07-30T08:00:00.000Z",
@@ -48,7 +48,7 @@ describe("admission share candidates", () => {
         streamer_id: "streamer-1",
         version: 1,
         status: "needs_changes",
-        storage_path: "org-1/recordings/original-v1.mp4",
+        storage_path: "org-contributor/recordings/original-v1.mp4",
         external_url: null,
         mcn_review_decision: "approved",
         mcn_reviewed_at: "2026-07-29T08:00:00.000Z",
@@ -68,17 +68,30 @@ describe("admission share candidates", () => {
       },
     ];
     const order = vi.fn();
-    const query = {
+    const recordingQuery = {
       select: vi.fn(),
       eq: vi.fn(),
       order,
     };
-    query.select.mockReturnValue(query);
-    query.eq.mockReturnValue(query);
+    recordingQuery.select.mockReturnValue(recordingQuery);
+    recordingQuery.eq.mockReturnValue(recordingQuery);
     order
-      .mockReturnValueOnce(query)
+      .mockReturnValueOnce(recordingQuery)
       .mockResolvedValueOnce({ data: rows, error: null });
-    const from = vi.fn(() => query);
+    const projectMaybeSingle = vi.fn().mockResolvedValue({
+      data: { id: "project-1", organization_id: "org-1" },
+      error: null,
+    });
+    const projectQuery = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      maybeSingle: projectMaybeSingle,
+    };
+    projectQuery.select.mockReturnValue(projectQuery);
+    projectQuery.eq.mockReturnValue(projectQuery);
+    const from = vi.fn((table: string) =>
+      table === "projects" ? projectQuery : recordingQuery,
+    );
     const repo = new SupabaseAdmissionShareCandidateRepository({
       from,
     } as never);
@@ -128,8 +141,15 @@ describe("admission share candidates", () => {
     );
     expect(JSON.stringify(candidates)).not.toContain("storage_path");
     expect(from).toHaveBeenCalledWith("recording_submissions");
-    expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
-    expect(query.eq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(from).toHaveBeenNthCalledWith(1, "projects");
+    expect(from).toHaveBeenNthCalledWith(2, "recording_submissions");
+    expect(projectQuery.eq).toHaveBeenCalledWith("id", "project-1");
+    expect(projectQuery.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(recordingQuery.eq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(recordingQuery.eq).not.toHaveBeenCalledWith(
+      "organization_id",
+      expect.anything(),
+    );
     expect(order).toHaveBeenNthCalledWith(1, "application_id", {
       ascending: true,
     });
@@ -138,22 +158,35 @@ describe("admission share candidates", () => {
     });
   });
 
-  it("chooses the original source without depending on mutable statuses", async () => {
+  it("lets the host play a contributor-owned original without mutable status filters", async () => {
     const maybeSingle = vi.fn().mockResolvedValue({
       data: {
-        storage_path: "org-1/recordings/original.mp4",
+        storage_path: "org-contributor/recordings/original.mp4",
         external_url: "https://video.example/fallback",
       },
       error: null,
     });
-    const query = {
+    const recordingQuery = {
       select: vi.fn(),
       eq: vi.fn(),
       maybeSingle,
     };
-    query.select.mockReturnValue(query);
-    query.eq.mockReturnValue(query);
-    const from = vi.fn(() => query);
+    recordingQuery.select.mockReturnValue(recordingQuery);
+    recordingQuery.eq.mockReturnValue(recordingQuery);
+    const projectMaybeSingle = vi.fn().mockResolvedValue({
+      data: { id: "project-1", organization_id: "org-1" },
+      error: null,
+    });
+    const projectQuery = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      maybeSingle: projectMaybeSingle,
+    };
+    projectQuery.select.mockReturnValue(projectQuery);
+    projectQuery.eq.mockReturnValue(projectQuery);
+    const from = vi.fn((table: string) =>
+      table === "projects" ? projectQuery : recordingQuery,
+    );
     const repo = new SupabaseAdmissionShareCandidateRepository({
       from,
     } as never);
@@ -166,13 +199,24 @@ describe("admission share candidates", () => {
       }),
     ).resolves.toEqual({
       sourceType: "original",
-      storagePath: "org-1/recordings/original.mp4",
+      storagePath: "org-contributor/recordings/original.mp4",
     });
-    expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
-    expect(query.eq).toHaveBeenCalledWith("project_id", "project-1");
-    expect(query.eq).toHaveBeenCalledWith("id", "recording-v1");
-    expect(query.eq).toHaveBeenCalledWith("mcn_review_decision", "approved");
-    expect(query.eq).not.toHaveBeenCalledWith("status", expect.anything());
+    expect(projectQuery.eq).toHaveBeenCalledWith("id", "project-1");
+    expect(projectQuery.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(recordingQuery.eq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(recordingQuery.eq).toHaveBeenCalledWith("id", "recording-v1");
+    expect(recordingQuery.eq).toHaveBeenCalledWith(
+      "mcn_review_decision",
+      "approved",
+    );
+    expect(recordingQuery.eq).not.toHaveBeenCalledWith(
+      "organization_id",
+      expect.anything(),
+    );
+    expect(recordingQuery.eq).not.toHaveBeenCalledWith(
+      "status",
+      expect.anything(),
+    );
   });
 
   it("rejects an unsafe external-only playback source", async () => {
@@ -183,15 +227,28 @@ describe("admission share candidates", () => {
       },
       error: null,
     });
-    const query = {
+    const recordingQuery = {
       select: vi.fn(),
       eq: vi.fn(),
       maybeSingle,
     };
-    query.select.mockReturnValue(query);
-    query.eq.mockReturnValue(query);
+    recordingQuery.select.mockReturnValue(recordingQuery);
+    recordingQuery.eq.mockReturnValue(recordingQuery);
+    const projectMaybeSingle = vi.fn().mockResolvedValue({
+      data: { id: "project-1", organization_id: "org-1" },
+      error: null,
+    });
+    const projectQuery = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      maybeSingle: projectMaybeSingle,
+    };
+    projectQuery.select.mockReturnValue(projectQuery);
+    projectQuery.eq.mockReturnValue(projectQuery);
     const repo = new SupabaseAdmissionShareCandidateRepository({
-      from: vi.fn(() => query),
+      from: vi.fn((table: string) =>
+        table === "projects" ? projectQuery : recordingQuery,
+      ),
     } as never);
 
     await expect(
@@ -201,5 +258,40 @@ describe("admission share candidates", () => {
         recordingSubmissionId: "recording-v1",
       }),
     ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("rejects a collaboration organization before reading host recordings", async () => {
+    const projectMaybeSingle = vi.fn().mockResolvedValue({
+      data: null,
+      error: null,
+    });
+    const projectQuery = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      maybeSingle: projectMaybeSingle,
+    };
+    projectQuery.select.mockReturnValue(projectQuery);
+    projectQuery.eq.mockReturnValue(projectQuery);
+    const from = vi.fn((table: string) => {
+      if (table !== "projects") {
+        throw new Error("recordings must not be queried");
+      }
+      return projectQuery;
+    });
+    const repo = new SupabaseAdmissionShareCandidateRepository({
+      from,
+    } as never);
+
+    await expect(
+      listAdmissionShareCandidates(repo, {
+        organizationId: "org-collaborator",
+        projectId: "project-1",
+      }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(projectQuery.eq).toHaveBeenCalledWith(
+      "organization_id",
+      "org-collaborator",
+    );
+    expect(from).toHaveBeenCalledTimes(1);
   });
 });

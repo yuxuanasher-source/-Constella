@@ -14,6 +14,7 @@ import {
   readJsonBody,
   RouteError,
 } from "@/features/applications/application-route-utils";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function POST(
@@ -32,9 +33,11 @@ export async function POST(
 
     const body = await readJsonBody(request);
     const items = parseSelectionItems(body.items);
-    const repo = new SupabaseAdmissionShareCandidateRepository(
-      context.supabase,
-    );
+    const admin = createSupabaseAdminClient();
+    if (!admin) {
+      throw new RouteError("Share candidate service is unavailable", 503);
+    }
+    const repo = new SupabaseAdmissionShareCandidateRepository(admin);
     const candidates = await listAdmissionShareCandidates(repo, {
       organizationId: context.auth.organizationId,
       projectId,

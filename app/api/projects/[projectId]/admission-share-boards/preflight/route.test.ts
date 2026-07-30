@@ -2,9 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { POST } from "./route";
 
-import { listAdmissionShareCandidates } from "@/features/applications/admission-share-candidates";
+import {
+  listAdmissionShareCandidates,
+  SupabaseAdmissionShareCandidateRepository,
+} from "@/features/applications/admission-share-candidates";
 import { preflightAdmissionShareSelection } from "@/features/applications/admission-share-workflow";
 import { getAdmissionRouteContext } from "@/features/applications/application-route-utils";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/applications/admission-share-candidates", () => ({
   SupabaseAdmissionShareCandidateRepository: vi
@@ -42,6 +46,11 @@ vi.mock("@/features/applications/application-route-utils", () => ({
   },
 }));
 
+vi.mock("@/lib/db/supabase-server", () => ({
+  createSupabaseAdminClient: vi.fn(),
+}));
+
+const adminClient = { client: "admin-supabase" };
 const context = {
   supabase: { client: "supabase" },
   auth: {
@@ -60,6 +69,7 @@ describe("admission share preflight route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getAdmissionRouteContext).mockResolvedValue(context as never);
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(adminClient as never);
     vi.mocked(listAdmissionShareCandidates).mockResolvedValue([]);
     vi.mocked(preflightAdmissionShareSelection).mockReturnValue({
       items: [
@@ -109,6 +119,9 @@ describe("admission share preflight route", () => {
       },
     );
     expect(preflightAdmissionShareSelection).toHaveBeenCalledWith([], items);
+    expect(SupabaseAdmissionShareCandidateRepository).toHaveBeenCalledWith(
+      adminClient,
+    );
   });
 
   it("rejects malformed selection DTOs", async () => {
@@ -154,6 +167,25 @@ describe("admission share preflight route", () => {
     );
 
     expect(response.status).toBe(403);
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
+    expect(listAdmissionShareCandidates).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the admin preflight service is unavailable", async () => {
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(null);
+
+    const response = await POST(
+      new Request(
+        "https://app.example/api/projects/project-1/admission-share-boards/preflight",
+        {
+          method: "POST",
+          body: JSON.stringify({ items: [] }),
+        },
+      ),
+      routeParams,
+    );
+
+    expect(response.status).toBe(503);
     expect(listAdmissionShareCandidates).not.toHaveBeenCalled();
   });
 });
