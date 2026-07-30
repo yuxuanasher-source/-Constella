@@ -125,6 +125,12 @@ export class AdmissionShareSelectionError extends Error {
   }
 }
 
+class AdmissionShareSelectionChangedPersistenceError extends Error {
+  constructor(readonly originalError: unknown) {
+    super("Admission share selection changed during persistence");
+  }
+}
+
 export type AdmissionShareBoardAuditWriter = (
   input: AuditLogInput,
 ) => Promise<void>;
@@ -247,6 +253,9 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       .single<AdmissionShareBoardRow>();
 
     if (error) {
+      if (isAdmissionShareSelectionChangedRpcError(error)) {
+        throw new AdmissionShareSelectionChangedPersistenceError(error);
+      }
       throw error;
     }
 
@@ -661,48 +670,79 @@ export async function createAdmissionShareBoard({
   }
 
   const token = tokenFactory();
-  const shareBoard = await repo.createShareBoardWithItems({
-    organizationId: actor.organizationId,
-    projectId,
-    title: input.title?.trim() || "Admission recording review",
-    purpose: input.purpose?.trim() || "",
-    mode: input.mode,
-    tokenHash: hashShareSecret(token),
-    accessCodeHash: accessCode
-      ? hashAdmissionShareAccessCode(accessCode)
-      : null,
-    expiresAt,
-    allowExternalFallback: input.allowExternalFallback ?? true,
-    createdBy: actor.userId,
-    items: preflight.items.map((item) => ({
-      applicationId: item.applicationId,
-      recordingSubmissionId: item.recordingSubmissionId,
-      recordingVersion: item.recordingVersion,
-      sortOrder: item.sortOrder,
-    })),
-  });
-
-  await audit?.({
-    organizationId: actor.organizationId,
-    actorUserId: actor.userId,
-    actorName: actor.name,
-    actorRole: actor.role,
-    action: "create_share_board",
-    module: "admission",
-    objectType: "project_recording_share_board",
-    objectId: shareBoard.id,
-    objectName: shareBoard.title,
-    projectId,
-    after: {
-      id: shareBoard.id,
+  let shareBoard: AdmissionShareBoardRecord;
+  try {
+    shareBoard = await repo.createShareBoardWithItems({
+      organizationId: actor.organizationId,
       projectId,
-      itemCount: input.items.length,
-      mode: shareBoard.mode,
-      expiresAt: shareBoard.expiresAt,
-      allowExternalFallback: shareBoard.allowExternalFallback,
-    },
-    changedFields: ["share_board", "share_items", "share_event"],
-  });
+      title: input.title?.trim() || "Admission recording review",
+      purpose: input.purpose?.trim() || "",
+      mode: input.mode,
+      tokenHash: hashShareSecret(token),
+      accessCodeHash: accessCode
+        ? hashAdmissionShareAccessCode(accessCode)
+        : null,
+      expiresAt,
+      allowExternalFallback: input.allowExternalFallback ?? true,
+      createdBy: actor.userId,
+      items: preflight.items.map((item) => ({
+        applicationId: item.applicationId,
+        recordingSubmissionId: item.recordingSubmissionId,
+        recordingVersion: item.recordingVersion,
+        sortOrder: item.sortOrder,
+      })),
+    });
+  } catch (error) {
+    if (!(error instanceof AdmissionShareSelectionChangedPersistenceError)) {
+      throw error;
+    }
+
+    const refreshedCandidates = await candidateRepo.listCandidates({
+      organizationId: actor.organizationId,
+      projectId,
+    });
+    const refreshedPreflight = preflightAdmissionShareSelection(
+      refreshedCandidates,
+      input.items,
+    );
+    const refreshedBlockedItems = refreshedPreflight.items.filter(
+      (item) => item.status === "blocked",
+    );
+    if (refreshedBlockedItems.length > 0) {
+      throw new AdmissionShareSelectionError(refreshedBlockedItems);
+    }
+    throw error.originalError;
+  }
+
+  if (audit) {
+    try {
+      await audit({
+        organizationId: actor.organizationId,
+        actorUserId: actor.userId,
+        actorName: actor.name,
+        actorRole: actor.role,
+        action: "create_share_board",
+        module: "admission",
+        objectType: "project_recording_share_board",
+        objectId: shareBoard.id,
+        objectName: shareBoard.title,
+        projectId,
+        after: {
+          id: shareBoard.id,
+          projectId,
+          itemCount: input.items.length,
+          mode: shareBoard.mode,
+          expiresAt: shareBoard.expiresAt,
+          allowExternalFallback: shareBoard.allowExternalFallback,
+        },
+        changedFields: ["share_board", "share_items", "share_event"],
+      });
+    } catch {
+      // The atomic created event is the primary evidence. Losing the only
+      // plaintext credentials after a committed RPC would make the share
+      // permanently inaccessible, so supplemental audit failure is nonfatal.
+    }
+  }
 
   return { shareBoard, token, accessCode };
 }
@@ -1216,6 +1256,17 @@ export function mapVendorDecisionToSyncPatch(
 
 function daysFrom(now: string, days: number) {
   return new Date(Date.parse(now) + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function isAdmissionShareSelectionChangedRpcError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown; message?: unknown };
+  return (
+    candidate.code === "P0001" &&
+    candidate.message === "admission_share_selection_changed"
+  );
 }
 
 async function requirePublicSnapshot({

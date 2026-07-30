@@ -9,10 +9,14 @@ import {
   hashShareSecret,
   mapVendorDecisionToSyncPatch,
   submitVendorAdmissionReviews,
+  SupabaseAdmissionShareBoardRepository,
   verifyAdmissionShareAccessCode,
   type AdmissionShareBoardRepository,
 } from "./admission-share-board";
-import type { AdmissionShareCandidateRepository } from "./admission-share-candidates";
+import type {
+  AdmissionShareCandidateDto,
+  AdmissionShareCandidateRepository,
+} from "./admission-share-candidates";
 
 const actor = {
   userId: "user-ops",
@@ -82,6 +86,32 @@ function createCandidateRepo(
   return {
     listCandidates: vi.fn().mockResolvedValue(candidates),
     getPlaybackSource: vi.fn(),
+  };
+}
+
+function createCandidate(
+  overrides: Partial<AdmissionShareCandidateDto> = {},
+): AdmissionShareCandidateDto {
+  return {
+    applicationId: "app-2",
+    recordingSubmissionId: "recording-2-v1",
+    recordingVersion: 1,
+    isLatestVersion: true,
+    streamer: {
+      id: "streamer-2",
+      displayName: "主播乙",
+      accountLabel: "dy_2",
+    },
+    mcnReviewDecision: "approved",
+    mcnReviewedAt: "2026-07-30T07:00:00.000Z",
+    sourceHealth: "original_ready",
+    hasPrivateStorage: true,
+    externalUrl: null,
+    isShareable: true,
+    blockReason: null,
+    currentVendorDecision: "pending",
+    lastSharedAt: null,
+    ...overrides,
   };
 }
 
@@ -340,6 +370,179 @@ describe("admission share board service", () => {
       ],
     });
     expect(repo.createShareBoardWithItems).not.toHaveBeenCalled();
+  });
+
+  it("rechecks candidates after an atomic RPC selection race and returns itemized conflicts", async () => {
+    const rpcError = {
+      code: "P0001",
+      message: "admission_share_selection_changed",
+    };
+    const single = vi.fn().mockResolvedValue({ data: null, error: rpcError });
+    const rpc = vi.fn().mockReturnValue({ single });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      rpc,
+    } as never);
+    const candidateRepo: AdmissionShareCandidateRepository = {
+      listCandidates: vi
+        .fn()
+        .mockResolvedValueOnce([createCandidate()])
+        .mockResolvedValueOnce([
+          createCandidate({
+            mcnReviewDecision: null,
+            mcnReviewedAt: null,
+            isShareable: false,
+            blockReason: "MCN_APPROVAL_REQUIRED",
+          }),
+        ]),
+      getPlaybackSource: vi.fn(),
+    };
+
+    await expect(
+      createAdmissionShareBoard({
+        repo,
+        candidateRepo,
+        actor,
+        projectId: "project-1",
+        input: {
+          mode: "formal_review",
+          items: [
+            {
+              applicationId: "app-2",
+              recordingSubmissionId: "recording-2-v1",
+              recordingVersion: 1,
+              sortOrder: 0,
+            },
+          ],
+        },
+        now: "2026-07-30T00:00:00.000Z",
+        tokenFactory: () => "plain-token",
+        accessCodeFactory: () => "24681024",
+      }),
+    ).rejects.toMatchObject({
+      name: "AdmissionShareSelectionError",
+      items: [
+        expect.objectContaining({
+          recordingSubmissionId: "recording-2-v1",
+          reasonCode: "MCN_APPROVAL_REQUIRED",
+        }),
+      ],
+    });
+    expect(candidateRepo.listCandidates).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves the RPC error when a fresh race check still has no blocked items", async () => {
+    const rpcError = {
+      code: "P0001",
+      message: "admission_share_selection_changed",
+    };
+    const single = vi.fn().mockResolvedValue({ data: null, error: rpcError });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      rpc: vi.fn().mockReturnValue({ single }),
+    } as never);
+    const candidateRepo = createCandidateRepo([createCandidate()]);
+
+    await expect(
+      createAdmissionShareBoard({
+        repo,
+        candidateRepo,
+        actor,
+        projectId: "project-1",
+        input: {
+          mode: "preview",
+          items: [
+            {
+              applicationId: "app-2",
+              recordingSubmissionId: "recording-2-v1",
+              recordingVersion: 1,
+              sortOrder: 0,
+            },
+          ],
+        },
+        now: "2026-07-30T00:00:00.000Z",
+        tokenFactory: () => "plain-token",
+      }),
+    ).rejects.toBe(rpcError);
+    expect(candidateRepo.listCandidates).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    {
+      code: "XX000",
+      message: "admission_share_selection_changed",
+    },
+    {
+      code: "P0001",
+      message: "another_database_error",
+    },
+  ])(
+    "does not reinterpret a non-matching RPC error $code/$message",
+    async (rpcError) => {
+      const single = vi.fn().mockResolvedValue({ data: null, error: rpcError });
+      const repo = new SupabaseAdmissionShareBoardRepository({
+        rpc: vi.fn().mockReturnValue({ single }),
+      } as never);
+      const candidateRepo = createCandidateRepo([createCandidate()]);
+
+      await expect(
+        createAdmissionShareBoard({
+          repo,
+          candidateRepo,
+          actor,
+          projectId: "project-1",
+          input: {
+            mode: "preview",
+            items: [
+              {
+                applicationId: "app-2",
+                recordingSubmissionId: "recording-2-v1",
+                recordingVersion: 1,
+                sortOrder: 0,
+              },
+            ],
+          },
+          now: "2026-07-30T00:00:00.000Z",
+          tokenFactory: () => "plain-token",
+        }),
+      ).rejects.toBe(rpcError);
+      expect(candidateRepo.listCandidates).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("returns one-time credentials when supplemental audit writing fails", async () => {
+    const repo = createRepo();
+    const audit = vi.fn().mockRejectedValue(new Error("audit unavailable"));
+
+    const result = await createAdmissionShareBoard({
+      repo,
+      candidateRepo: createCandidateRepo([createCandidate()]),
+      audit,
+      actor,
+      projectId: "project-1",
+      input: {
+        mode: "formal_review",
+        items: [
+          {
+            applicationId: "app-2",
+            recordingSubmissionId: "recording-2-v1",
+            recordingVersion: 1,
+            sortOrder: 0,
+          },
+        ],
+      },
+      now: "2026-07-30T00:00:00.000Z",
+      tokenFactory: () => "plain-token",
+      accessCodeFactory: () => "24681024",
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        token: "plain-token",
+        accessCode: "24681024",
+      }),
+    );
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(audit.mock.calls)).not.toContain("plain-token");
+    expect(JSON.stringify(audit.mock.calls)).not.toContain("24681024");
   });
 
   it("generates one eight-digit access code by default for formal review", async () => {

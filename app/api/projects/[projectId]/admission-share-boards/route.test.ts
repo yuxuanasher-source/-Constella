@@ -215,7 +215,7 @@ describe("project admission share-board route", () => {
     );
   });
 
-  it("returns itemized selection conflicts as 409", async () => {
+  it("returns itemized RPC-race selection conflicts as 409", async () => {
     vi.mocked(createAdmissionShareBoard).mockRejectedValue(
       new AdmissionShareSelectionError([
         {
@@ -225,7 +225,7 @@ describe("project admission share-board route", () => {
           sortOrder: 0,
           status: "blocked",
           sourceHealth: "blocked",
-          reasonCode: "SELECTION_STALE",
+          reasonCode: "SOURCE_UNAVAILABLE",
         },
       ]),
     );
@@ -258,7 +258,7 @@ describe("project admission share-board route", () => {
       items: [
         expect.objectContaining({
           recordingSubmissionId: "recording-v2",
-          reasonCode: "SELECTION_STALE",
+          reasonCode: "SOURCE_UNAVAILABLE",
         }),
       ],
     });

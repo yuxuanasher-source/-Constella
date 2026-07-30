@@ -1,3 +1,33 @@
+create policy project_applications_host_mcn_share_read
+on public.project_applications
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.projects as project
+    where project.id = project_applications.project_id
+      and public.is_org_member(project.organization_id)
+      and public.is_mcn_staff(project.organization_id)
+      and public.can_access_project(project.id)
+  )
+);
+
+create policy recording_submissions_host_mcn_share_read
+on public.recording_submissions
+for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.projects as project
+    where project.id = recording_submissions.project_id
+      and public.is_org_member(project.organization_id)
+      and public.is_mcn_staff(project.organization_id)
+      and public.can_access_project(project.id)
+  )
+);
+
 create policy project_recording_share_events_staff_insert
 on public.project_recording_share_events
 for insert

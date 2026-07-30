@@ -50,6 +50,15 @@ describe("admission share atomic create RPC", () => {
     );
   });
 
+  it("grants the project host MCN read-only access to contributor-owned selections", () => {
+    expect(sql).toMatch(
+      /create policy project_applications_host_mcn_share_read[\s\S]+on public\.project_applications[\s\S]+for select[\s\S]+to authenticated[\s\S]+project\.id = project_applications\.project_id[\s\S]+public\.is_org_member\(project\.organization_id\)[\s\S]+public\.is_mcn_staff\(project\.organization_id\)[\s\S]+public\.can_access_project\(project\.id\)/u,
+    );
+    expect(sql).toMatch(
+      /create policy recording_submissions_host_mcn_share_read[\s\S]+on public\.recording_submissions[\s\S]+for select[\s\S]+to authenticated[\s\S]+project\.id = recording_submissions\.project_id[\s\S]+public\.is_org_member\(project\.organization_id\)[\s\S]+public\.is_mcn_staff\(project\.organization_id\)[\s\S]+public\.can_access_project\(project\.id\)/u,
+    );
+  });
+
   it("normalizes expiry, protects formal rounds and grants only authenticated execution", () => {
     expect(sql).toContain("p_expires_at is null");
     expect(sql).toContain("set status = 'expired'");
