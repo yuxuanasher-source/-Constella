@@ -475,7 +475,10 @@ export default function AdmissionSharePageClient({
                     <p className="mt-2 text-sm text-[var(--ink-500)]">
                       {item.streamer.accountLabel || "未填写账号"}
                     </p>
-                    <RecordingPlayer item={item} />
+                    <RecordingPlayer
+                      key={`${item.recordingSubmissionId}:${item.playbackUrl ?? ""}:${item.recordingUrl ?? ""}`}
+                      item={item}
+                    />
                     <div className="mt-4 flex flex-wrap gap-2 text-xs text-[var(--ink-500)]">
                       <span className="rounded-sm bg-[var(--ink-50)] px-2 py-1">
                         版本 {item.recordingVersion}
@@ -612,10 +615,6 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
   const streamerName = item.streamer.displayName || "主播";
   const externalUrl = item.recordingUrl ?? sourceUrl;
   const [playbackFailed, setPlaybackFailed] = useState(false);
-
-  useEffect(() => {
-    setPlaybackFailed(false);
-  }, [sourceUrl]);
 
   if (!sourceUrl) {
     return (
