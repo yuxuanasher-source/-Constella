@@ -59,6 +59,13 @@ describe("admission share business workflow migration", () => {
     );
   });
 
+  it("allows an empty sanitized user-agent family while limiting its length", () => {
+    expect(migration).toContain("check (char_length(user_agent_family) <= 80)");
+    expect(migration).not.toContain(
+      "check (char_length(user_agent_family) between 1 and 80)",
+    );
+  });
+
   it("treats blank storage paths as unavailable during source backfill", () => {
     expect(
       migration.match(
