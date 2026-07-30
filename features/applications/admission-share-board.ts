@@ -52,6 +52,25 @@ export type AdmissionShareBoardRecord = {
   createdAt?: string;
 };
 
+export type AdmissionShareBoardTaskRecord = {
+  id: string;
+  title: string;
+  purpose: string;
+  mode: AdmissionShareMode;
+  status: AdmissionShareBoardRecord["status"];
+  reviewState: AdmissionShareBoardRecord["reviewState"];
+  roundNumber: number;
+  expiresAt: string;
+  itemCount: number;
+  draftCompletedCount: number;
+  lastViewedAt: string | null;
+  lastDraftAt: string | null;
+  lastSubmittedAt: string | null;
+  lockedAt: string | null;
+  createdBy: string;
+  createdAt: string;
+};
+
 export type CreateAdmissionShareBoardPersistenceInput = {
   organizationId: string;
   projectId: string;
@@ -70,7 +89,7 @@ export type AdmissionShareBoardRepository = {
   createShareBoardWithItems(
     input: CreateAdmissionShareBoardPersistenceInput,
   ): Promise<AdmissionShareBoardRecord>;
-  listShareBoards(projectId: string): Promise<AdmissionShareBoardRecord[]>;
+  listShareBoards(projectId: string): Promise<AdmissionShareBoardTaskRecord[]>;
   extendShareBoard(input: {
     shareBoardId: string;
     projectId: string;
@@ -457,11 +476,11 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
 
   async listShareBoards(
     projectId: string,
-  ): Promise<AdmissionShareBoardRecord[]> {
+  ): Promise<AdmissionShareBoardTaskRecord[]> {
     const { data, error } = await this.client
       .from("project_recording_share_boards")
       .select(
-        "id, organization_id, project_id, title, purpose, mode, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, allow_external_fallback, review_state, round_number, created_by, created_at",
+        "id, title, purpose, mode, status, expires_at, review_state, round_number, last_viewed_at, last_draft_at, last_submitted_at, locked_at, created_by, created_at",
       )
       .eq("project_id", projectId)
       .order("created_at", { ascending: false });
@@ -470,7 +489,47 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       throw error;
     }
 
-    return ((data ?? []) as AdmissionShareBoardRow[]).map(toShareBoardRecord);
+    const rows = (data ?? []) as AdmissionShareBoardTaskRow[];
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const shareBoardIds = rows.map((row) => row.id);
+    const [itemResult, draftResult] = await Promise.all([
+      this.client
+        .from("project_recording_share_items")
+        .select("share_board_id")
+        .in("share_board_id", shareBoardIds),
+      this.client
+        .from("project_recording_vendor_review_drafts")
+        .select("share_board_id, decision")
+        .in("share_board_id", shareBoardIds),
+    ]);
+
+    if (itemResult.error) {
+      throw itemResult.error;
+    }
+    if (draftResult.error) {
+      throw draftResult.error;
+    }
+
+    const itemCounts = countShareBoardRows(itemResult.data ?? []);
+    const completedDraftCounts = countShareBoardRows(
+      (draftResult.data ?? []).filter(
+        (draft) =>
+          (draft as { decision?: VendorAdmissionDecision }).decision !==
+          "pending",
+      ),
+    );
+    return rows.map((row) =>
+      toShareBoardTaskRecord(row, {
+        itemCount: itemCounts.get(row.id) ?? 0,
+        draftCompletedCount: Math.min(
+          completedDraftCounts.get(row.id) ?? 0,
+          itemCounts.get(row.id) ?? 0,
+        ),
+      }),
+    );
   }
 
   async extendShareBoard(input: {
@@ -956,6 +1015,23 @@ type AdmissionShareBoardRow = {
   round_number: number;
   created_by: string;
   created_at?: string;
+};
+
+type AdmissionShareBoardTaskRow = {
+  id: string;
+  title: string;
+  purpose: string;
+  mode: AdmissionShareMode;
+  status: AdmissionShareBoardRecord["status"];
+  expires_at: string;
+  review_state: AdmissionShareBoardRecord["reviewState"];
+  round_number: number;
+  last_viewed_at: string | null;
+  last_draft_at: string | null;
+  last_submitted_at: string | null;
+  locked_at: string | null;
+  created_by: string;
+  created_at: string;
 };
 
 type AdmissionReviewDraftRow = {
@@ -2623,6 +2699,45 @@ function toShareBoardRecord(
     createdBy: row.created_by,
     createdAt: row.created_at,
   };
+}
+
+function toShareBoardTaskRecord(
+  row: AdmissionShareBoardTaskRow,
+  progress: Pick<
+    AdmissionShareBoardTaskRecord,
+    "itemCount" | "draftCompletedCount"
+  >,
+): AdmissionShareBoardTaskRecord {
+  return {
+    id: row.id,
+    title: row.title,
+    purpose: row.purpose,
+    mode: row.mode,
+    status: row.status,
+    reviewState: row.review_state,
+    roundNumber: row.round_number,
+    expiresAt: row.expires_at,
+    ...progress,
+    lastViewedAt: row.last_viewed_at,
+    lastDraftAt: row.last_draft_at,
+    lastSubmittedAt: row.last_submitted_at,
+    lockedAt: row.locked_at,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+function countShareBoardRows(
+  rows: ArrayLike<{ share_board_id?: unknown }>,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of Array.from(rows)) {
+    if (typeof row.share_board_id !== "string") {
+      continue;
+    }
+    counts.set(row.share_board_id, (counts.get(row.share_board_id) ?? 0) + 1);
+  }
+  return counts;
 }
 
 function toReviewDraftDto(

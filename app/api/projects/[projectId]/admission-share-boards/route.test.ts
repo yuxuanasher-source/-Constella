@@ -108,20 +108,21 @@ describe("project admission share-board route", () => {
     vi.mocked(listAdmissionShareBoards).mockResolvedValue([
       {
         id: "share-1",
-        organizationId: "org-1",
-        projectId: "project-1",
         title: "Vendor review",
         purpose: "",
         mode: "formal_review",
-        tokenHash: "hash",
-        accessCodeHash: null,
         status: "active",
         expiresAt: "2026-06-14T00:00:00.000Z",
-        allowVendorSubmit: true,
-        allowExternalFallback: true,
         reviewState: "not_started",
         roundNumber: 1,
+        itemCount: 10,
+        draftCompletedCount: 4,
+        lastViewedAt: "2026-07-30T08:00:00.000Z",
+        lastDraftAt: "2026-07-30T08:20:00.000Z",
+        lastSubmittedAt: null,
+        lockedAt: null,
         createdBy: "user-ops",
+        createdAt: "2026-07-30T00:00:00.000Z",
       },
     ]);
     vi.mocked(createAdmissionShareBoard).mockResolvedValue({
@@ -143,11 +144,12 @@ describe("project admission share-board route", () => {
         reviewState: "not_started",
         roundNumber: 1,
         createdBy: "user-ops",
+        createdAt: "2026-07-30T00:00:00.000Z",
       },
     });
   });
 
-  it("lists share boards without token hashes", async () => {
+  it("lists whitelisted share-board task progress without secrets or reviewer data", async () => {
     const response = await GET(new Request("http://localhost/api"), {
       params,
     });
@@ -155,9 +157,32 @@ describe("project admission share-board route", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.shareBoards).toEqual([
-      expect.objectContaining({ id: "share-1", title: "Vendor review" }),
+      {
+        id: "share-1",
+        title: "Vendor review",
+        purpose: "",
+        mode: "formal_review",
+        status: "active",
+        reviewState: "not_started",
+        roundNumber: 1,
+        expiresAt: "2026-06-14T00:00:00.000Z",
+        itemCount: 10,
+        draftCompletedCount: 4,
+        lastViewedAt: "2026-07-30T08:00:00.000Z",
+        lastDraftAt: "2026-07-30T08:20:00.000Z",
+        lastSubmittedAt: null,
+        lockedAt: null,
+        createdBy: "user-ops",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
     ]);
     expect(JSON.stringify(body)).not.toContain("hash");
+    expect(JSON.stringify(body)).not.toContain("organizationId");
+    expect(JSON.stringify(body)).not.toContain("projectId");
+    expect(JSON.stringify(body)).not.toContain("allowVendorSubmit");
+    expect(JSON.stringify(body)).not.toContain("allowExternalFallback");
+    expect(JSON.stringify(body)).not.toContain("storage");
+    expect(JSON.stringify(body)).not.toContain("reviewer");
   });
 
   it("creates a share board and returns one-time share url", async () => {

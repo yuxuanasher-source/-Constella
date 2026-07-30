@@ -2451,6 +2451,90 @@ describe("admission share board service", () => {
     });
     expect(drafts).toEqual([saved]);
   });
+
+  it("aggregates safe operational share-task progress without selecting secrets", async () => {
+    const boardSelect = vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue({
+        order: vi.fn().mockResolvedValue({
+          data: [
+            {
+              id: "share-1",
+              title: "首轮复核",
+              purpose: "确认首批主播",
+              mode: "formal_review",
+              status: "active",
+              review_state: "in_progress",
+              round_number: 1,
+              expires_at: "2026-08-06T00:00:00.000Z",
+              last_viewed_at: "2026-07-30T08:00:00.000Z",
+              last_draft_at: "2026-07-30T08:20:00.000Z",
+              last_submitted_at: null,
+              locked_at: null,
+              created_by: "user-ops",
+              created_at: "2026-07-30T00:00:00.000Z",
+            },
+          ],
+          error: null,
+        }),
+      }),
+    });
+    const itemSelect = vi.fn().mockReturnValue({
+      in: vi.fn().mockResolvedValue({
+        data: [
+          { share_board_id: "share-1" },
+          { share_board_id: "share-1" },
+          { share_board_id: "share-1" },
+        ],
+        error: null,
+      }),
+    });
+    const draftSelect = vi.fn().mockReturnValue({
+      in: vi.fn().mockResolvedValue({
+        data: [
+          { share_board_id: "share-1", decision: "selected" },
+          { share_board_id: "share-1", decision: "pending" },
+        ],
+        error: null,
+      }),
+    });
+    const from = vi.fn().mockImplementation((table: string) => {
+      if (table === "project_recording_share_boards") {
+        return { select: boardSelect };
+      }
+      if (table === "project_recording_share_items") {
+        return { select: itemSelect };
+      }
+      if (table === "project_recording_vendor_review_drafts") {
+        return { select: draftSelect };
+      }
+      throw new Error(`unexpected table: ${table}`);
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({ from } as never);
+
+    await expect(repo.listShareBoards("project-1")).resolves.toEqual([
+      {
+        id: "share-1",
+        title: "首轮复核",
+        purpose: "确认首批主播",
+        mode: "formal_review",
+        status: "active",
+        reviewState: "in_progress",
+        roundNumber: 1,
+        expiresAt: "2026-08-06T00:00:00.000Z",
+        itemCount: 3,
+        draftCompletedCount: 1,
+        lastViewedAt: "2026-07-30T08:00:00.000Z",
+        lastDraftAt: "2026-07-30T08:20:00.000Z",
+        lastSubmittedAt: null,
+        lockedAt: null,
+        createdBy: "user-ops",
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+    ]);
+    const selectedColumns = String(boardSelect.mock.calls[0]?.[0]);
+    expect(selectedColumns).not.toContain("token_hash");
+    expect(selectedColumns).not.toContain("access_code_hash");
+  });
 });
 
 function publicSnapshot(overrides: Record<string, unknown> = {}) {

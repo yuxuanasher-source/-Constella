@@ -71,10 +71,17 @@ describe("admission board route", () => {
         },
         share: {
           id: null,
+          mode: null,
           status: "unshared",
+          reviewState: null,
+          roundNumber: null,
           expiresAt: null,
+          lastViewedAt: null,
+          lastDraftAt: null,
           lastSubmittedAt: null,
+          lockedAt: null,
         },
+        shareProgress: { completed: 0, total: 0 },
         lastActivityAt: "2026-06-07T01:00:00.000Z",
       },
     ]);
@@ -88,6 +95,12 @@ describe("admission board route", () => {
       projects: [
         expect.objectContaining({
           project: expect.objectContaining({ id: "project-1" }),
+          share: expect.objectContaining({
+            mode: null,
+            reviewState: null,
+            roundNumber: null,
+          }),
+          shareProgress: { completed: 0, total: 0 },
         }),
       ],
     });

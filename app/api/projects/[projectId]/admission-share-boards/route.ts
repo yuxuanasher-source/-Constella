@@ -7,6 +7,7 @@ import {
   listAdmissionShareBoards,
   SupabaseAdmissionShareBoardRepository,
   type AdmissionShareBoardRecord,
+  type AdmissionShareBoardTaskRecord,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareCandidateRepository } from "@/features/applications/admission-share-candidates";
 import {
@@ -40,7 +41,7 @@ export async function GET(
     });
 
     return NextResponse.json({
-      shareBoards: shareBoards.map(toSafeShareBoard),
+      shareBoards: shareBoards.map(toSafeShareBoardTask),
     });
   } catch (error) {
     return jsonError(error);
@@ -145,6 +146,27 @@ function toSafeShareBoard(shareBoard: AdmissionShareBoardRecord) {
     allowExternalFallback: shareBoard.allowExternalFallback,
     reviewState: shareBoard.reviewState,
     roundNumber: shareBoard.roundNumber,
+    createdBy: shareBoard.createdBy,
+    createdAt: shareBoard.createdAt,
+  };
+}
+
+function toSafeShareBoardTask(shareBoard: AdmissionShareBoardTaskRecord) {
+  return {
+    id: shareBoard.id,
+    title: shareBoard.title,
+    purpose: shareBoard.purpose,
+    mode: shareBoard.mode,
+    status: shareBoard.status,
+    reviewState: shareBoard.reviewState,
+    roundNumber: shareBoard.roundNumber,
+    expiresAt: shareBoard.expiresAt,
+    itemCount: shareBoard.itemCount,
+    draftCompletedCount: shareBoard.draftCompletedCount,
+    lastViewedAt: shareBoard.lastViewedAt,
+    lastDraftAt: shareBoard.lastDraftAt,
+    lastSubmittedAt: shareBoard.lastSubmittedAt,
+    lockedAt: shareBoard.lockedAt,
     createdBy: shareBoard.createdBy,
     createdAt: shareBoard.createdAt,
   };
