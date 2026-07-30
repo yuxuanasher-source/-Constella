@@ -28,15 +28,50 @@ using (
   )
 );
 
-create policy project_recording_share_events_staff_insert
-on public.project_recording_share_events
-for insert
-to authenticated
-with check (
-  public.is_org_member(organization_id)
-  and public.is_mcn_staff(organization_id)
-  and public.can_access_project(project_id)
-);
+create unique index project_recording_share_events_one_created_idx
+on public.project_recording_share_events (share_board_id)
+where event_type = 'created';
+
+create or replace function public.record_admission_share_board_created_event()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  insert into public.project_recording_share_events (
+    share_board_id,
+    organization_id,
+    project_id,
+    event_type,
+    actor_type,
+    actor_user_id,
+    metadata,
+    created_at
+  ) values (
+    new.id,
+    new.organization_id,
+    new.project_id,
+    'created',
+    'staff',
+    new.created_by,
+    jsonb_build_object(
+      'mode', new.mode,
+      'round_number', new.round_number
+    ),
+    new.created_at
+  );
+
+  return new;
+end;
+$$;
+
+revoke all on function public.record_admission_share_board_created_event() from public, anon, authenticated;
+
+create trigger project_recording_share_boards_record_created_event
+after insert on public.project_recording_share_boards
+for each row
+execute function public.record_admission_share_board_created_event();
 
 create or replace function public.create_admission_share_board(
   p_organization_id uuid,
@@ -94,11 +129,14 @@ begin
       using errcode = '42501';
   end if;
 
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(p_project_id::text, 0)
+  );
+
   perform 1
   from public.projects as project
   where project.id = p_project_id
-    and project.organization_id = p_organization_id
-  for update;
+    and project.organization_id = p_organization_id;
 
   if not found then
     raise exception 'insufficient_privilege'
@@ -267,30 +305,6 @@ begin
   join public.recording_submissions as recording
     on recording.id = selected_item.recording_submission_id
   order by selected_item.sort_order;
-
-  insert into public.project_recording_share_events (
-    share_board_id,
-    organization_id,
-    project_id,
-    event_type,
-    actor_type,
-    actor_user_id,
-    metadata,
-    created_at
-  ) values (
-    v_board.id,
-    p_organization_id,
-    p_project_id,
-    'created',
-    'staff',
-    p_created_by,
-    jsonb_build_object(
-      'mode', p_mode,
-      'round_number', v_round_number,
-      'item_count', v_item_count
-    ),
-    v_now
-  );
 
   return v_board;
 end;

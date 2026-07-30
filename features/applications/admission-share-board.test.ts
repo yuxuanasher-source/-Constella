@@ -771,6 +771,7 @@ describe("admission share board service", () => {
 
   it.each([
     ["2026-06-06T23:59:59.000Z", "future"],
+    ["2026-06-07T23:59:59.000Z", "at least 1 day"],
     ["2026-07-08T00:00:00.000Z", "30 days"],
   ])("rejects invalid share expiry %s", async (expiresAt, expectedMessage) => {
     const repo = createRepo();
@@ -800,6 +801,93 @@ describe("admission share board service", () => {
     ).rejects.toThrow(expectedMessage);
 
     expect(repo.shareBoardInserts).toHaveLength(0);
+  });
+
+  it.each([
+    {
+      code: "P0001",
+      message: "admission_share_formal_round_already_open",
+    },
+    {
+      code: "23505",
+      message:
+        'duplicate key value violates unique constraint "project_recording_share_boards_one_open_formal_idx"',
+    },
+    {
+      code: "23505",
+      message: "duplicate key value violates unique constraint",
+      constraint: "project_recording_share_boards_one_open_formal_idx",
+    },
+  ])(
+    "maps formal-round persistence conflict $code to a domain error",
+    async (rpcError) => {
+      const single = vi.fn().mockResolvedValue({ data: null, error: rpcError });
+      const repo = new SupabaseAdmissionShareBoardRepository({
+        rpc: vi.fn().mockReturnValue({ single }),
+      } as never);
+
+      await expect(
+        createAdmissionShareBoard({
+          repo,
+          candidateRepo: createCandidateRepo([createCandidate()]),
+          actor,
+          projectId: "project-1",
+          input: {
+            mode: "formal_review",
+            items: [
+              {
+                applicationId: "app-2",
+                recordingSubmissionId: "recording-2-v1",
+                recordingVersion: 1,
+                sortOrder: 0,
+              },
+            ],
+          },
+          now: "2026-07-30T00:00:00.000Z",
+          tokenFactory: () => "plain-token",
+          accessCodeFactory: () => "24681024",
+        }),
+      ).rejects.toMatchObject({
+        name: "AdmissionShareFormalRoundConflictError",
+      });
+    },
+  );
+
+  it("preserves unrelated unique violations instead of mislabeling them", async () => {
+    const rpcError = {
+      code: "23505",
+      message:
+        'duplicate key value violates unique constraint "some_other_unique_idx"',
+    };
+    const single = vi.fn().mockResolvedValue({ data: null, error: rpcError });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      rpc: vi.fn().mockReturnValue({ single }),
+    } as never);
+    const candidateRepo = createCandidateRepo([createCandidate()]);
+
+    await expect(
+      createAdmissionShareBoard({
+        repo,
+        candidateRepo,
+        actor,
+        projectId: "project-1",
+        input: {
+          mode: "formal_review",
+          items: [
+            {
+              applicationId: "app-2",
+              recordingSubmissionId: "recording-2-v1",
+              recordingVersion: 1,
+              sortOrder: 0,
+            },
+          ],
+        },
+        now: "2026-07-30T00:00:00.000Z",
+        tokenFactory: () => "plain-token",
+        accessCodeFactory: () => "24681024",
+      }),
+    ).rejects.toBe(rpcError);
+    expect(candidateRepo.listCandidates).toHaveBeenCalledTimes(1);
   });
 
   it("maps vendor decisions to application and recording sync patches", () => {

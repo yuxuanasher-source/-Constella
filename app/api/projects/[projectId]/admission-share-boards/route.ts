@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  AdmissionShareFormalRoundConflictError,
   AdmissionShareSelectionError,
   createAdmissionShareBoard,
   listAdmissionShareBoards,
@@ -98,6 +99,15 @@ export async function POST(
       accessCode: result.accessCode,
     });
   } catch (error) {
+    if (error instanceof AdmissionShareFormalRoundConflictError) {
+      return NextResponse.json(
+        {
+          code: "SHARE_FORMAL_ROUND_CONFLICT",
+          error: "当前已有进行中的正式复核，请先完成、撤销或等待过期。",
+        },
+        { status: 409 },
+      );
+    }
     if (error instanceof AdmissionShareSelectionError) {
       return NextResponse.json(
         {

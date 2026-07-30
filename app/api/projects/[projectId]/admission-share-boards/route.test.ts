@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET, POST } from "./route";
 
 import {
+  AdmissionShareFormalRoundConflictError,
   AdmissionShareSelectionError,
   createAdmissionShareBoard,
   listAdmissionShareBoards,
@@ -32,6 +33,13 @@ vi.mock("@/features/applications/admission-share-board", () => ({
       super("Admission share selection changed");
     }
   },
+  AdmissionShareFormalRoundConflictError: class AdmissionShareFormalRoundConflictError extends Error {
+    readonly name = "AdmissionShareFormalRoundConflictError";
+
+    constructor() {
+      super("Admission share formal round already open");
+    }
+  },
 }));
 
 vi.mock("@/features/applications/admission-share-candidates", () => ({
@@ -56,7 +64,9 @@ vi.mock("@/features/applications/application-route-utils", () => ({
     const status =
       error && typeof error === "object" && "statusCode" in error
         ? Number(error.statusCode)
-        : 500;
+        : error instanceof Error
+          ? 400
+          : 500;
     return Response.json(
       { error: error instanceof Error ? error.message : "Unexpected error" },
       { status },
@@ -261,6 +271,72 @@ describe("project admission share-board route", () => {
           reasonCode: "SOURCE_UNAVAILABLE",
         }),
       ],
+    });
+  });
+
+  it("returns a stable 409 for an open formal-round conflict", async () => {
+    vi.mocked(createAdmissionShareBoard).mockRejectedValue(
+      new AdmissionShareFormalRoundConflictError(),
+    );
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "formal_review",
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      code: "SHARE_FORMAL_ROUND_CONFLICT",
+      error: "当前已有进行中的正式复核，请先完成、撤销或等待过期。",
+    });
+  });
+
+  it("returns 400 when service rejects a share shorter than one day", async () => {
+    vi.mocked(createAdmissionShareBoard).mockRejectedValue(
+      new Error("Share expiry must be at least 1 day"),
+    );
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "preview",
+            expiresAt: "2026-07-30T12:00:00.000Z",
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Share expiry must be at least 1 day",
     });
   });
 

@@ -125,6 +125,14 @@ export class AdmissionShareSelectionError extends Error {
   }
 }
 
+export class AdmissionShareFormalRoundConflictError extends Error {
+  readonly name = "AdmissionShareFormalRoundConflictError";
+
+  constructor() {
+    super("Admission share formal round already open");
+  }
+}
+
 class AdmissionShareSelectionChangedPersistenceError extends Error {
   constructor(readonly originalError: unknown) {
     super("Admission share selection changed during persistence");
@@ -253,6 +261,9 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       .single<AdmissionShareBoardRow>();
 
     if (error) {
+      if (isAdmissionShareFormalRoundConflictRpcError(error)) {
+        throw new AdmissionShareFormalRoundConflictError();
+      }
       if (isAdmissionShareSelectionChangedRpcError(error)) {
         throw new AdmissionShareSelectionChangedPersistenceError(error);
       }
@@ -652,6 +663,9 @@ export async function createAdmissionShareBoard({
   }
   if (expiresAtMs <= nowMs) {
     throw new Error("Share expiry must be in the future");
+  }
+  if (expiresAtMs < nowMs + 24 * 60 * 60 * 1000) {
+    throw new Error("Share expiry must be at least 1 day");
   }
   if (expiresAtMs > nowMs + 30 * 24 * 60 * 60 * 1000) {
     throw new Error("Share expiry cannot exceed 30 days");
@@ -1266,6 +1280,31 @@ function isAdmissionShareSelectionChangedRpcError(error: unknown) {
   return (
     candidate.code === "P0001" &&
     candidate.message === "admission_share_selection_changed"
+  );
+}
+
+function isAdmissionShareFormalRoundConflictRpcError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as {
+    code?: unknown;
+    constraint?: unknown;
+    message?: unknown;
+  };
+  if (
+    candidate.code === "P0001" &&
+    candidate.message === "admission_share_formal_round_already_open"
+  ) {
+    return true;
+  }
+  if (candidate.code !== "23505") {
+    return false;
+  }
+
+  const indexName = "project_recording_share_boards_one_open_formal_idx";
+  return [candidate.constraint, candidate.message].some(
+    (value) => typeof value === "string" && value.includes(indexName),
   );
 }
 

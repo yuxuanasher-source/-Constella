@@ -38,6 +38,17 @@ describe("admission share atomic create RPC", () => {
     expect(sql).toContain("public.can_access_project(p_project_id)");
   });
 
+  it("serializes project creation without requiring project UPDATE RLS", () => {
+    expect(sql).toContain("pg_catalog.pg_advisory_xact_lock");
+    expect(sql).toContain("pg_catalog.hashtextextended(p_project_id::text, 0)");
+    expect(sql).toMatch(
+      /from public\.projects as project[\s\S]+project\.organization_id = p_organization_id/u,
+    );
+    expect(sql).not.toMatch(
+      /from public\.projects as project[\s\S]{0,200}for update/u,
+    );
+  });
+
   it("allows contributor-owned applications and recordings in an MCN-owned project", () => {
     expect(sql).toMatch(
       /recording\.application_id = selected_item\.application_id[\s\S]+recording\.project_id = p_project_id[\s\S]+application\.project_id = p_project_id/u,
@@ -56,6 +67,33 @@ describe("admission share atomic create RPC", () => {
     );
     expect(sql).toMatch(
       /create policy recording_submissions_host_mcn_share_read[\s\S]+on public\.recording_submissions[\s\S]+for select[\s\S]+to authenticated[\s\S]+project\.id = recording_submissions\.project_id[\s\S]+public\.is_org_member\(project\.organization_id\)[\s\S]+public\.is_mcn_staff\(project\.organization_id\)[\s\S]+public\.can_access_project\(project\.id\)/u,
+    );
+  });
+
+  it("writes exactly one unforgeable created event from a board trigger", () => {
+    expect(sql).not.toContain(
+      "create policy project_recording_share_events_staff_insert",
+    );
+    expect(sql).toContain(
+      "create or replace function public.record_admission_share_board_created_event()",
+    );
+    expect(sql).toMatch(
+      /returns trigger[\s\S]+language plpgsql[\s\S]+security definer[\s\S]+set search_path = pg_catalog, public/u,
+    );
+    expect(sql).toContain(
+      "create unique index project_recording_share_events_one_created_idx",
+    );
+    expect(sql).toMatch(
+      /create trigger project_recording_share_boards_record_created_event[\s\S]+after insert on public\.project_recording_share_boards[\s\S]+execute function public\.record_admission_share_board_created_event\(\)/u,
+    );
+    expect(sql).toContain("'created'");
+    expect(sql).toContain("'staff'");
+    expect(sql).toContain("new.created_by");
+    expect(
+      sql.match(/insert into public\.project_recording_share_events/gu),
+    ).toHaveLength(1);
+    expect(sql).toContain(
+      "revoke all on function public.record_admission_share_board_created_event() from public, anon, authenticated",
     );
   });
 
