@@ -1122,7 +1122,12 @@ describe("AdmissionSharePageClient", () => {
     expect(await screen.findAllByText("待判断主播")).toHaveLength(2);
     expect(loadAdmissionShareDrafts).not.toHaveBeenCalled();
     expect(screen.queryByLabelText("当前录屏备注")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("入选")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "查看提交汇总" }),
+    ).not.toBeInTheDocument();
     expect(saveAdmissionShareDraft).not.toHaveBeenCalled();
+    expect(submitAdmissionShareReview).not.toHaveBeenCalled();
   });
 
   it("authenticates an access code in a cookie-backed request and retries", async () => {

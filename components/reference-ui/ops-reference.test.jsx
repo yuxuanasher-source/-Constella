@@ -11,9 +11,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import OpsReferenceApp, {
-  buildOcrManualConfirmation,
-} from "./ops-reference";
+import OpsReferenceApp, { buildOcrManualConfirmation } from "./ops-reference";
 
 const taskProjectCards = [
   {
@@ -590,9 +588,7 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     renderShell();
 
     fireEvent.click(screen.getByRole("button", { name: "账号库" }));
-    expect(
-      screen.getByRole("heading", { name: "账号库" }),
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { name: "账号库" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "项目管理" }));
     expect(screen.getByText("全部项目")).toBeVisible();
@@ -601,9 +597,7 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     ).not.toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "账号库" }));
-    expect(
-      screen.getByRole("heading", { name: "账号库" }),
-    ).toBeVisible();
+    expect(screen.getByRole("heading", { name: "账号库" })).toBeVisible();
   });
 });
 
@@ -2699,9 +2693,7 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.getByText("音画质量")).toBeInTheDocument();
     expect(screen.getByText("话术贴合项目卖点")).toBeInTheDocument();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "生成 AI 项目复盘" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "生成 AI 项目复盘" }));
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
@@ -3329,12 +3321,10 @@ describe("OpsReferenceApp project smoke", () => {
     expect(
       screen.getByRole("heading", { name: "选播准入" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByPlaceholderText("项目 / 主播 / 报名编号"),
-    ).toHaveValue("project-alpha");
-    expect(
-      screen.getByText("Alpha Launch · 录屏明细"),
-    ).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("项目 / 主播 / 报名编号")).toHaveValue(
+      "project-alpha",
+    );
+    expect(screen.getByText("Alpha Launch · 录屏明细")).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([url]) =>
         String(url).startsWith("/api/delivery-packages"),
@@ -4388,9 +4378,12 @@ describe("OpsReferenceApp OCR operations smoke", () => {
     fireEvent.change(screen.getByLabelText("修正观看人数 ocr-job-1"), {
       target: { value: "444" },
     });
-    fireEvent.change(screen.getByLabelText("修正 GMV（整数元） gmv ocr-job-1"), {
-      target: { value: "250" },
-    });
+    fireEvent.change(
+      screen.getByLabelText("修正 GMV（整数元） gmv ocr-job-1"),
+      {
+        target: { value: "250" },
+      },
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "人工确认" }));
     await waitFor(() =>
@@ -4795,9 +4788,9 @@ describe("OpsReferenceApp streamer smoke", () => {
     expect(trend.querySelectorAll('circle[data-observed="true"]')).toHaveLength(
       3,
     );
-    expect(trend.querySelectorAll('path[data-series-segment="true"]')).toHaveLength(
-      0,
-    );
+    expect(
+      trend.querySelectorAll('path[data-series-segment="true"]'),
+    ).toHaveLength(0);
   });
 
   it("creates a streamer profile through the backend API and refreshes the pool", async () => {
@@ -5202,9 +5195,7 @@ describe("OpsReferenceApp streamer smoke", () => {
     expect(screen.getAllByText("能力分").length).toBeGreaterThan(0);
     expect(screen.getAllByText("匹配分").length).toBeGreaterThan(0);
     expect(screen.getByText("录屏能力模型 · 组织校准 v3")).toBeInTheDocument();
-    expect(
-      screen.getByText("项目匹配信号 · 数据覆盖 75%"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("项目匹配信号 · 数据覆盖 75%")).toBeInTheDocument();
     expect(screen.getByText("人工评级 · A")).toBeInTheDocument();
     expect(screen.getByText("场均直播时长")).toBeInTheDocument();
     expect(screen.getByText("实际时薪")).toBeInTheDocument();
@@ -5782,12 +5773,7 @@ describe("OpsReferenceApp admission smoke", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
-      <OpsReferenceApp
-        initialRoute="admission"
-        applicationQueue={[]}
-      />,
-    );
+    render(<OpsReferenceApp initialRoute="admission" applicationQueue={[]} />);
 
     expect(await screen.findByText("组织审核校准")).toBeInTheDocument();
     expect(screen.getByText("AI / MCN 一致率")).toBeInTheDocument();
@@ -5908,10 +5894,7 @@ describe("OpsReferenceApp admission smoke", () => {
         ([url]) => url === "/api/applications/admission-board",
       ).length,
     ).toBeGreaterThanOrEqual(2);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/applications",
-      undefined,
-    );
+    expect(fetchMock).toHaveBeenCalledWith("/api/applications", undefined);
   });
 
   it.each(["owner", "ops_manager", "operator_business"])(
@@ -5950,9 +5933,9 @@ describe("OpsReferenceApp admission smoke", () => {
       );
 
       fireEvent.click(screen.getByRole("button", { name: "展开明细" }));
-      expect(
-        screen.getAllByRole("button", { name: "代传录屏" }),
-      ).toHaveLength(4);
+      expect(screen.getAllByRole("button", { name: "代传录屏" })).toHaveLength(
+        4,
+      );
     },
   );
 
@@ -6011,9 +5994,9 @@ describe("OpsReferenceApp admission smoke", () => {
       />,
     );
 
-    expect(
-      screen.getByPlaceholderText("项目 / 主播 / 报名编号"),
-    ).toHaveValue("project-focus");
+    expect(screen.getByPlaceholderText("项目 / 主播 / 报名编号")).toHaveValue(
+      "project-focus",
+    );
     expect(screen.getByText("Focused Project · 录屏明细")).toBeInTheDocument();
     expect(screen.queryByText("Other Project")).not.toBeInTheDocument();
 
@@ -6024,9 +6007,9 @@ describe("OpsReferenceApp admission smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "选播准入" }));
 
-    expect(
-      screen.getByPlaceholderText("项目 / 主播 / 报名编号"),
-    ).toHaveValue("");
+    expect(screen.getByPlaceholderText("项目 / 主播 / 报名编号")).toHaveValue(
+      "",
+    );
     expect(screen.getByText("Focused Project")).toBeInTheDocument();
     expect(screen.getByText("Other Project")).toBeInTheDocument();
     expect(
@@ -6346,8 +6329,7 @@ describe("OpsReferenceApp admission smoke", () => {
       }
 
       if (
-        String(url) ===
-        "/api/projects/project-1/admission-share-candidates"
+        String(url) === "/api/projects/project-1/admission-share-candidates"
       ) {
         return {
           ok: true,
@@ -6357,7 +6339,7 @@ describe("OpsReferenceApp admission smoke", () => {
                 applicationId: "app-ui-1",
                 recordingSubmissionId: "recording-ui-1",
                 recordingVersion: 1,
-                isLatestVersion: true,
+                isLatestVersion: false,
                 streamer: {
                   id: "streamer-1",
                   displayName: "Streamer One",
@@ -6369,7 +6351,7 @@ describe("OpsReferenceApp admission smoke", () => {
                 externalUrl: null,
                 isShareable: true,
                 blockReason: null,
-                currentVendorDecision: "pending",
+                currentVendorDecision: "rejected",
                 lastSharedAt: null,
               },
             ],
@@ -6518,7 +6500,10 @@ describe("OpsReferenceApp admission smoke", () => {
         expect.objectContaining({ method: "GET" }),
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "播放 Streamer One V1" }));
+    expect(screen.getByText("历史版本")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "播放 Streamer One V1" }),
+    );
     expect(openWindow).toHaveBeenCalledWith(
       "/api/projects/project-1/admission-share-candidates/recording-ui-1/playback",
       "_blank",
@@ -6535,6 +6520,22 @@ describe("OpsReferenceApp admission smoke", () => {
     ).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
     expect(await screen.findByLabelText("正式复核")).toBeChecked();
+    const preflightCall = fetchMock.mock.calls.find(
+      ([url, requestInit]) =>
+        String(url) ===
+          "/api/projects/project-1/admission-share-boards/preflight" &&
+        requestInit?.method === "POST",
+    );
+    expect(JSON.parse(preflightCall[1].body)).toEqual({
+      items: [
+        {
+          applicationId: "app-ui-1",
+          recordingSubmissionId: "recording-ui-1",
+          recordingVersion: 1,
+          sortOrder: 0,
+        },
+      ],
+    });
     fireEvent.click(screen.getByRole("button", { name: "下一步" }));
     fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
     const shareCall = await waitFor(() => {
@@ -6560,9 +6561,7 @@ describe("OpsReferenceApp admission smoke", () => {
         ],
       }),
     );
-    expect(
-      await screen.findByText("24681024"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("24681024")).toBeInTheDocument();
   });
 
   it("shows recording AI details and carries AI guidance into review notes", async () => {
@@ -7009,8 +7008,7 @@ describe("OpsReferenceApp admission smoke", () => {
         };
       }
       if (
-        String(url) ===
-        "/api/projects/project-1/admission-share-candidates"
+        String(url) === "/api/projects/project-1/admission-share-candidates"
       ) {
         return {
           ok: true,
@@ -7144,8 +7142,7 @@ describe("OpsReferenceApp admission smoke", () => {
         };
       }
       if (
-        String(url) ===
-        "/api/projects/project-1/admission-share-candidates"
+        String(url) === "/api/projects/project-1/admission-share-candidates"
       ) {
         return {
           ok: true,
@@ -7565,7 +7562,11 @@ describe("OpsReferenceApp admission smoke", () => {
   const workspaceRubricCheckpoints = [
     { key: "content_quality", label: "内容质量达标", stage: "mcn_first" },
     { key: "duration_ok", label: "时长达标", stage: "mcn_first" },
-    { key: "file_size_ok", label: "技术自动检查 · 文件大小", stage: "mcn_first" },
+    {
+      key: "file_size_ok",
+      label: "技术自动检查 · 文件大小",
+      stage: "mcn_first",
+    },
     {
       key: "stream_clarity",
       label: "技术自动检查 · 音轨 / 时长 / 画面",
@@ -9790,7 +9791,9 @@ describe("OpsReferenceApp settlement smoke", () => {
     expect(screen.getByText("异常队列")).toBeInTheDocument();
     expect(screen.getByText("exception-open")).toBeInTheDocument();
 
-    fireEvent.click(screen.getAllByRole("button", { name: /这是什么意思/u })[0]);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /这是什么意思/u })[0],
+    );
     const note = screen.getByRole("note");
     expect(note).toHaveTextContent("命中的规则版本");
     expect(note).toHaveTextContent("金额由");
@@ -9864,7 +9867,9 @@ describe("OpsReferenceApp settlement smoke", () => {
 
     expect(screen.queryByText("Clean Streamer")).not.toBeInTheDocument();
     expect(screen.getByText("Risk Streamer")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "显示全部" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "显示全部" }),
+    ).toBeInTheDocument();
   });
 
   it("publishes a 720px settlement breakpoint without page-level scrolling", () => {
@@ -10071,7 +10076,9 @@ describe("OpsReferenceApp settlement smoke", () => {
     );
 
     expect(screen.getByText("场观跨来源偏差超阈值")).toBeInTheDocument();
-    expect(screen.getByText("GMV 人工确认与 OCR 偏差超阈值")).toBeInTheDocument();
+    expect(
+      screen.getByText("GMV 人工确认与 OCR 偏差超阈值"),
+    ).toBeInTheDocument();
     expect(screen.getByText("单场 GMV 显著偏离历史")).toBeInTheDocument();
   });
 
@@ -10976,7 +10983,9 @@ describe("OpsReferenceApp settlement smoke", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "这是什么意思" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "这是什么意思" }),
+    );
 
     const note = screen.getByRole("note");
     expect(note).toHaveTextContent("证据等级是 yellow");
@@ -11019,9 +11028,7 @@ describe("OpsReferenceApp settlement smoke", () => {
       />,
     );
 
-    expect(
-      await screen.findByText(/SHA-256 abcdef123456/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/SHA-256 abcdef123456/)).toBeInTheDocument();
   });
 
   it("batch approves visible pending reports through the review API", async () => {
@@ -11497,7 +11504,9 @@ describe("OpsReferenceApp settlement smoke", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "展开候选" }));
 
-    expect(await screen.findByText("report-auto-candidate")).toBeInTheDocument();
+    expect(
+      await screen.findByText("report-auto-candidate"),
+    ).toBeInTheDocument();
   });
 
   it("approves a pending report then refreshes project, M4, M5, and M6 data from the API", async () => {

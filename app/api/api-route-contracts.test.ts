@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PATCH as reviewLiveReportPatch } from "./live-reports/[reportId]/review/route";
@@ -71,6 +74,26 @@ vi.mock("@/features/billing/route-guard", () => ({
 
 const supabase = { client: "supabase" };
 
+const admissionShareRouteManifest = [
+  "app/api/projects/[projectId]/admission-share-candidates/route.ts",
+  "app/api/projects/[projectId]/admission-share-candidates/[recordingSubmissionId]/playback/route.ts",
+  "app/api/projects/[projectId]/admission-share-boards/preflight/route.ts",
+  "app/api/projects/[projectId]/admission-share-boards/route.ts",
+  "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/extend/route.ts",
+  "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/reopen/route.ts",
+  "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/rotate-token/route.ts",
+  "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/submissions/route.ts",
+  "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/revoke/route.ts",
+  "app/api/projects/[projectId]/admission-share-playback-issues/route.ts",
+  "app/api/projects/[projectId]/admission-share-playback-issues/[issueId]/resolve/route.ts",
+  "app/api/public/admission-share/[token]/route.ts",
+  "app/api/public/admission-share/[token]/drafts/route.ts",
+  "app/api/public/admission-share/[token]/drafts/[recordingSubmissionId]/route.ts",
+  "app/api/public/admission-share/[token]/reviews/route.ts",
+  "app/api/public/admission-share/[token]/recordings/[recordingSubmissionId]/route.ts",
+  "app/api/public/admission-share/[token]/recordings/[recordingSubmissionId]/issues/route.ts",
+] as const;
+
 const liveActor = {
   userId: "user-streamer",
   name: "Streamer",
@@ -128,6 +151,16 @@ describe("api route contracts", () => {
       },
     } as never);
     vi.mocked(assertBillingWriteAllowed).mockResolvedValue(undefined);
+  });
+
+  it("keeps every admission share operations and public route in the API manifest", () => {
+    expect(admissionShareRouteManifest).toHaveLength(17);
+    expect(new Set(admissionShareRouteManifest)).toHaveLength(17);
+    expect(
+      admissionShareRouteManifest.filter(
+        (route) => !existsSync(join(process.cwd(), route)),
+      ),
+    ).toEqual([]);
   });
 
   it("returns 403 when the live-task start service rejects a role permission", async () => {
@@ -436,7 +469,10 @@ describe("api route contracts", () => {
 
   it("returns 400 when the confirm payload is missing a reason", async () => {
     const response = await confirmSettlementBatchPost(
-      jsonRequest("http://localhost/api/settlement-batches/batch-1/confirm", {}),
+      jsonRequest(
+        "http://localhost/api/settlement-batches/batch-1/confirm",
+        {},
+      ),
       { params: Promise.resolve({ batchId: "batch-1" }) },
     );
 
