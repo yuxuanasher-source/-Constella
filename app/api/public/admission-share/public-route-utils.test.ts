@@ -55,9 +55,20 @@ describe("public admission share route errors", () => {
   });
 
   it.each([
+    ["SHARE_REVOKED", 410, "分享链接已撤销。"],
+    [
+      "RECORDING_SOURCE_UNAVAILABLE",
+      404,
+      "录屏来源暂时不可用，请重试或打开备用视频。",
+    ],
     ["DRAFT_CONFLICT", 409, "其他复核人刚刚更新了结果，请刷新后查看最新内容。"],
     ["DRAFT_SAVE_FAILED", 503, "草稿暂时无法保存，请保留页面并稍后重试。"],
     ["REVIEW_ALREADY_LOCKED", 409, "本轮结果已经提交并锁定。"],
+    [
+      "REVIEW_REOPEN_REQUIRED",
+      409,
+      "本轮结果已锁定，请由 MCN 重新开启后再修改。",
+    ],
   ] as const)(
     "maps %s to a stable public response",
     async (code, status, error) => {
@@ -69,4 +80,16 @@ describe("public admission share route errors", () => {
       await expect(response.json()).resolves.toEqual({ code, error });
     },
   );
+
+  it("maps legacy source failures to the dedicated source-unavailable code", async () => {
+    const response = publicAdmissionShareErrorResponse(
+      new Error("Recording playback source is unavailable"),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      code: "RECORDING_SOURCE_UNAVAILABLE",
+      error: "录屏来源暂时不可用，请重试或打开备用视频。",
+    });
+  });
 });

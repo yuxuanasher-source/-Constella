@@ -10,7 +10,7 @@ import {
 } from "@/features/admission-review/evaluation-service";
 import {
   ensurePublicAdmissionShareSession,
-  getPublicAdmissionShareBoard,
+  getPublicAdmissionShareBoardContext,
   PublicAdmissionShareError,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
@@ -51,8 +51,8 @@ export async function GET(
       token,
       sessionToken: requestSession,
     });
-    const { organizationId, ...shareBoard } =
-      await getPublicAdmissionShareBoard({
+    const { organizationId, board: shareBoard } =
+      await getPublicAdmissionShareBoardContext({
         repo,
         accessStore,
         token,
@@ -74,7 +74,7 @@ export async function GET(
     );
 
     const response = NextResponse.json({
-      shareBoard: toPublicResponse(shareBoard),
+      shareBoard,
       vendorCheckpoints,
     });
     if (preparedSession?.created) {
@@ -88,25 +88,4 @@ export async function GET(
   } catch (error) {
     return publicAdmissionShareErrorResponse(error);
   }
-}
-
-function toPublicResponse(
-  shareBoard: Omit<
-    Awaited<ReturnType<typeof getPublicAdmissionShareBoard>>,
-    "organizationId"
-  >,
-) {
-  return {
-    ...shareBoard,
-    items: shareBoard.items.map((item) => ({
-      ...item,
-      vendorReview: item.vendorReview
-        ? {
-            decision: item.vendorReview.decision,
-            remark: item.vendorReview.remark,
-            submittedAt: item.vendorReview.submittedAt,
-          }
-        : null,
-    })),
-  };
 }

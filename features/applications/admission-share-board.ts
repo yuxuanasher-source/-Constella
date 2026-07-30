@@ -219,13 +219,16 @@ export class PublicAdmissionShareError extends Error {
       | "ACCESS_RATE_LIMITED"
       | "SHARE_NOT_AVAILABLE"
       | "SHARE_EXPIRED"
+      | "SHARE_REVOKED"
       | "RECORDING_NOT_SHARED"
+      | "RECORDING_SOURCE_UNAVAILABLE"
       | "REVIEW_VALIDATION_FAILED"
       | "REVIEW_INCOMPLETE"
       | "RECORDING_VERSION_STALE"
       | "DRAFT_CONFLICT"
       | "DRAFT_SAVE_FAILED"
       | "REVIEW_ALREADY_LOCKED"
+      | "REVIEW_REOPEN_REQUIRED"
       | "SHARE_SERVICE_UNAVAILABLE",
     message: string,
     public readonly statusCode: number,
@@ -243,7 +246,38 @@ export type PublicAdmissionShareBoardSnapshot = AdmissionShareBoardRecord & {
     vendor: string;
     product: string;
   };
+  progress: PublicAdmissionShareProgress;
+  latestSubmission: PublicAdmissionShareSubmissionSummary | null;
   items: PublicAdmissionShareItemSnapshot[];
+};
+
+export type AdmissionShareSourceHealth =
+  | "original_ready"
+  | "original_with_external_fallback"
+  | "external_only"
+  | "blocked";
+
+export type PublicAdmissionShareProgress = {
+  completed: number;
+  total: number;
+};
+
+export type PublicAdmissionShareSubmissionSummary = {
+  revision: number;
+  submittedAt: string;
+  summary: {
+    selected: number;
+    backup: number;
+    rejected: number;
+    needsChanges: number;
+  };
+};
+
+export type PublicAdmissionShareFinalReview = {
+  decision: Exclude<VendorAdmissionDecision, "pending">;
+  remark: string;
+  reasonCodes: string[];
+  submittedAt: string;
 };
 
 export type PublicAdmissionShareItemSnapshot = {
@@ -254,18 +288,40 @@ export type PublicAdmissionShareItemSnapshot = {
   recordingStatus: RecordingReviewStatus;
   recordingUrl: string | null;
   storagePath: string | null;
+  sourceHealth: AdmissionShareSourceHealth;
   streamer: {
     id: string;
     displayName: string;
     accountLabel: string;
   };
-  vendorReview: {
-    decision: VendorAdmissionDecision;
-    remark: string;
-    reviewerName: string;
-    reviewerContact: string;
-    submittedAt: string;
-  } | null;
+  finalReview: PublicAdmissionShareFinalReview | null;
+};
+
+export type PublicAdmissionShareBoard = {
+  id: string;
+  title: string;
+  purpose: string;
+  mode: AdmissionShareMode;
+  status: AdmissionShareBoardRecord["status"];
+  reviewState: AdmissionShareBoardRecord["reviewState"];
+  roundNumber: number;
+  expiresAt: string;
+  canSubmit: boolean;
+  allowExternalFallback: boolean;
+  project: PublicAdmissionShareBoardSnapshot["project"];
+  progress: PublicAdmissionShareProgress;
+  latestSubmission: PublicAdmissionShareSubmissionSummary | null;
+  items: Array<{
+    applicationId: string;
+    recordingSubmissionId: string;
+    recordingVersion: number;
+    playbackUrl: string;
+    externalUrl: string | null;
+    sourceHealth: AdmissionShareSourceHealth;
+    hasPrivateStorage: boolean;
+    streamer: PublicAdmissionShareItemSnapshot["streamer"];
+    finalReview: PublicAdmissionShareFinalReview | null;
+  }>;
 };
 
 export type VendorReviewUpsertInput = {
@@ -511,7 +567,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     const { data: itemData, error: itemError } = await this.client
       .from("project_recording_share_items")
       .select(
-        "application_id, recording_submission_id, recording_version, project_applications(status, streamer_id, streamers(id, display_name, streamer_accounts(platform, account_handle, is_primary))), recording_submissions(status, external_url, storage_path)",
+        "application_id, recording_submission_id, recording_version, source_health, project_applications(status, streamer_id, streamers(id, display_name, streamer_accounts(platform, account_handle, is_primary))), recording_submissions(status, external_url, storage_path)",
       )
       .eq("share_board_id", boardData.id)
       .order("sort_order", { ascending: true });
@@ -520,22 +576,33 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       throw itemError;
     }
 
-    const recordingIds = ((itemData ?? []) as PublicShareItemRow[]).map(
-      (item) => item.recording_submission_id,
-    );
-    const vendorReviews = await this.listVendorReviewsForShare(
-      boardData.id,
-      recordingIds,
-    );
-    const vendorReviewByRecording = new Map(
-      vendorReviews.map((review) => [review.recording_submission_id, review]),
-    );
+    const itemRows = (itemData ?? []) as PublicShareItemRow[];
+    const workflow =
+      boardData.mode === "formal_review"
+        ? await this.getPublicReviewWorkflow(boardData.id)
+        : {
+            completedDraftCount: 0,
+            latestSubmission: null,
+            finalReviewByRecording: new Map<
+              string,
+              PublicAdmissionShareFinalReview
+            >(),
+          };
+    const completed =
+      boardData.review_state === "submitted_locked" && workflow.latestSubmission
+        ? itemRows.length
+        : Math.min(workflow.completedDraftCount, itemRows.length);
 
     return {
       ...toShareBoardRecord(boardData),
       project: toPublicProject(boardData),
-      items: ((itemData ?? []) as PublicShareItemRow[]).map((item) =>
-        toPublicShareItemSnapshot(item, vendorReviewByRecording),
+      progress: {
+        completed,
+        total: itemRows.length,
+      },
+      latestSubmission: workflow.latestSubmission,
+      items: itemRows.map((item) =>
+        toPublicShareItemSnapshot(item, workflow.finalReviewByRecording),
       ),
     };
   }
@@ -791,27 +858,84 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     }
   }
 
-  private async listVendorReviewsForShare(
-    shareBoardId: string,
-    recordingIds: string[],
-  ): Promise<PublicVendorReviewRow[]> {
-    if (recordingIds.length === 0) {
-      return [];
+  private async getPublicReviewWorkflow(shareBoardId: string): Promise<{
+    completedDraftCount: number;
+    latestSubmission: PublicAdmissionShareSubmissionSummary | null;
+    finalReviewByRecording: Map<string, PublicAdmissionShareFinalReview>;
+  }> {
+    const [draftResult, submissionResult] = await Promise.all([
+      this.client
+        .from("project_recording_vendor_review_drafts")
+        .select("recording_submission_id, decision")
+        .eq("share_board_id", shareBoardId),
+      this.client
+        .from("project_recording_vendor_review_submissions")
+        .select(
+          "id, revision, project_remark, selected_count, backup_count, rejected_count, needs_changes_count, submitted_at",
+        )
+        .eq("share_board_id", shareBoardId)
+        .order("revision", { ascending: false })
+        .limit(1),
+    ]);
+
+    if (draftResult.error) {
+      throw draftResult.error;
+    }
+    if (submissionResult.error) {
+      throw submissionResult.error;
     }
 
-    const { data, error } = await this.client
-      .from("project_recording_vendor_reviews")
-      .select(
-        "recording_submission_id, decision, remark, vendor_reviewer_name, vendor_reviewer_contact, submitted_at",
-      )
-      .eq("share_board_id", shareBoardId)
-      .in("recording_submission_id", recordingIds);
-
-    if (error) {
-      throw error;
+    const completedDraftCount = (
+      (draftResult.data ?? []) as PublicReviewDraftProgressRow[]
+    ).filter((draft) => draft.decision !== "pending").length;
+    const latestRow = (
+      (submissionResult.data ?? []) as AdmissionReviewSubmissionRow[]
+    )[0];
+    if (!latestRow) {
+      return {
+        completedDraftCount,
+        latestSubmission: null,
+        finalReviewByRecording: new Map(),
+      };
     }
 
-    return (data ?? []) as PublicVendorReviewRow[];
+    const { data: itemData, error: itemError } = await this.client
+      .from("project_recording_vendor_review_submission_items")
+      .select("recording_submission_id, decision, remark, reason_codes")
+      .eq("submission_id", latestRow.id);
+
+    if (itemError) {
+      throw itemError;
+    }
+
+    const finalReviewByRecording = new Map<
+      string,
+      PublicAdmissionShareFinalReview
+    >(
+      ((itemData ?? []) as PublicSubmissionReceiptItemRow[]).map((item) => [
+        item.recording_submission_id,
+        {
+          decision: item.decision,
+          remark: item.remark?.trim() || "",
+          reasonCodes: item.reason_codes,
+          submittedAt: latestRow.submitted_at,
+        },
+      ]),
+    );
+    return {
+      completedDraftCount,
+      latestSubmission: {
+        revision: latestRow.revision,
+        submittedAt: latestRow.submitted_at,
+        summary: {
+          selected: latestRow.selected_count,
+          backup: latestRow.backup_count,
+          rejected: latestRow.rejected_count,
+          needsChanges: latestRow.needs_changes_count,
+        },
+      },
+      finalReviewByRecording,
+    };
   }
 }
 
@@ -891,6 +1015,7 @@ type PublicShareItemRow = {
   application_id: string;
   recording_submission_id: string;
   recording_version: number;
+  source_health: AdmissionShareSourceHealth;
   project_applications:
     | {
         status: ApplicationStatus;
@@ -955,13 +1080,16 @@ type PublicShareItemRow = {
     | null;
 };
 
-type PublicVendorReviewRow = {
+type PublicReviewDraftProgressRow = {
   recording_submission_id: string;
   decision: VendorAdmissionDecision;
+};
+
+type PublicSubmissionReceiptItemRow = {
+  recording_submission_id: string;
+  decision: Exclude<VendorAdmissionDecision, "pending">;
   remark: string | null;
-  vendor_reviewer_name: string | null;
-  vendor_reviewer_contact: string | null;
-  submitted_at: string;
+  reason_codes: string[];
 };
 
 export async function createAdmissionShareBoard({
@@ -1302,15 +1430,7 @@ export async function revokeAdmissionShareBoard({
   });
 }
 
-export async function getPublicAdmissionShareBoard({
-  repo,
-  accessStore,
-  token,
-  accessCode,
-  sessionToken,
-  now = new Date().toISOString(),
-  onViewAuditError = observeViewAuditError,
-}: {
+type GetPublicAdmissionShareBoardInput = {
   repo: AdmissionShareBoardRepository;
   accessStore?: AdmissionShareAccessStore;
   token: string;
@@ -1318,7 +1438,20 @@ export async function getPublicAdmissionShareBoard({
   sessionToken?: string;
   now?: string;
   onViewAuditError?: (error: unknown) => void;
-}) {
+};
+
+export async function getPublicAdmissionShareBoardContext({
+  repo,
+  accessStore,
+  token,
+  accessCode,
+  sessionToken,
+  now = new Date().toISOString(),
+  onViewAuditError = observeViewAuditError,
+}: GetPublicAdmissionShareBoardInput): Promise<{
+  organizationId: string;
+  board: PublicAdmissionShareBoard;
+}> {
   const snapshot = await requirePublicSnapshot({
     repo,
     accessStore,
@@ -1334,7 +1467,16 @@ export async function getPublicAdmissionShareBoard({
     onViewAuditError,
   );
 
-  return toPublicShareDto(snapshot, { token });
+  return {
+    organizationId: snapshot.organizationId,
+    board: toPublicShareDto(snapshot, { token }),
+  };
+}
+
+export async function getPublicAdmissionShareBoard(
+  input: GetPublicAdmissionShareBoardInput,
+): Promise<PublicAdmissionShareBoard> {
+  return (await getPublicAdmissionShareBoardContext(input)).board;
 }
 
 export async function ensurePublicAdmissionShareSession({
@@ -2190,10 +2332,17 @@ async function requireAvailablePublicSnapshot({
       404,
     );
   }
+  if (snapshot.status === "revoked") {
+    throw new PublicAdmissionShareError(
+      "SHARE_REVOKED",
+      "Share link is revoked",
+      410,
+    );
+  }
   if (snapshot.status !== "active" || snapshot.expiresAt <= now) {
     throw new PublicAdmissionShareError(
       "SHARE_EXPIRED",
-      "Share link is expired or revoked",
+      "Share link is expired",
       410,
     );
   }
@@ -2207,38 +2356,37 @@ function earlierIsoDate(left: string, right: string) {
 function toPublicShareDto(
   snapshot: PublicAdmissionShareBoardSnapshot,
   input: { token: string },
-) {
+): PublicAdmissionShareBoard {
   return {
     id: snapshot.id,
-    // 供服务端解析 rubric（理由标签）；路由返回前会剥离，不进公开 payload。
-    organizationId: snapshot.organizationId,
     title: snapshot.title,
+    purpose: snapshot.purpose,
+    mode: snapshot.mode,
     status: snapshot.status,
+    reviewState: snapshot.reviewState,
+    roundNumber: snapshot.roundNumber,
     expiresAt: snapshot.expiresAt,
-    allowVendorSubmit: snapshot.allowVendorSubmit,
+    canSubmit:
+      snapshot.mode === "formal_review" &&
+      snapshot.status === "active" &&
+      snapshot.reviewState !== "submitted_locked",
+    allowExternalFallback: snapshot.allowExternalFallback,
     project: snapshot.project,
+    progress: snapshot.progress,
+    latestSubmission: snapshot.latestSubmission,
     items: snapshot.items.map((item) => ({
       applicationId: item.applicationId,
-      applicationStatus: item.applicationStatus,
       recordingSubmissionId: item.recordingSubmissionId,
       recordingVersion: item.recordingVersion,
-      recordingStatus: item.recordingStatus,
-      recordingUrl: item.recordingUrl,
-      playbackUrl: item.storagePath
-        ? publicAdmissionRecordingPlaybackUrl({
-            token: input.token,
-            recordingSubmissionId: item.recordingSubmissionId,
-          })
-        : item.recordingUrl,
+      playbackUrl: publicAdmissionRecordingPlaybackUrl({
+        token: input.token,
+        recordingSubmissionId: item.recordingSubmissionId,
+      }),
+      externalUrl: snapshot.allowExternalFallback ? item.recordingUrl : null,
+      sourceHealth: item.sourceHealth,
       hasPrivateStorage: Boolean(item.storagePath),
       streamer: item.streamer,
-      vendorReview: item.vendorReview
-        ? {
-            decision: item.vendorReview.decision,
-            remark: item.vendorReview.remark,
-            submittedAt: item.vendorReview.submittedAt,
-          }
-        : null,
+      finalReview: item.finalReview,
     })),
   };
 }
@@ -2483,12 +2631,12 @@ function toPublicProject(row: AdmissionShareBoardWithProjectRow) {
 
 function toPublicShareItemSnapshot(
   row: PublicShareItemRow,
-  vendorReviewByRecording: Map<string, PublicVendorReviewRow>,
+  finalReviewByRecording: Map<string, PublicAdmissionShareFinalReview>,
 ): PublicAdmissionShareItemSnapshot {
   const application = first(row.project_applications);
   const recording = first(row.recording_submissions);
   const streamer = first(application?.streamers);
-  const review = vendorReviewByRecording.get(row.recording_submission_id);
+  const finalReview = finalReviewByRecording.get(row.recording_submission_id);
   return {
     applicationId: row.application_id,
     applicationStatus: application?.status ?? "recording_reviewing",
@@ -2497,20 +2645,13 @@ function toPublicShareItemSnapshot(
     recordingStatus: recording?.status ?? "submitted",
     recordingUrl: recording?.external_url?.trim() || null,
     storagePath: recording?.storage_path ?? null,
+    sourceHealth: row.source_health,
     streamer: {
       id: streamer?.id ?? application?.streamer_id ?? "",
       displayName: streamer?.display_name?.trim() || "",
       accountLabel: accountLabel(streamer?.streamer_accounts),
     },
-    vendorReview: review
-      ? {
-          decision: review.decision,
-          remark: review.remark?.trim() || "",
-          reviewerName: review.vendor_reviewer_name?.trim() || "",
-          reviewerContact: review.vendor_reviewer_contact?.trim() || "",
-          submittedAt: review.submitted_at,
-        }
-      : null,
+    finalReview: finalReview ?? null,
   };
 }
 

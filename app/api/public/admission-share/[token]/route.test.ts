@@ -4,7 +4,7 @@ import { GET } from "./route";
 
 import {
   ensurePublicAdmissionShareSession,
-  getPublicAdmissionShareBoard,
+  getPublicAdmissionShareBoardContext,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
@@ -28,7 +28,7 @@ vi.mock(
         .mockImplementation(function () {
           return { repo: "share-repo" };
         }),
-      getPublicAdmissionShareBoard: vi.fn(),
+      getPublicAdmissionShareBoardContext: vi.fn(),
       ensurePublicAdmissionShareSession: vi.fn(),
     };
   },
@@ -69,31 +69,62 @@ describe("public admission share route", () => {
       sessionToken: "opaque-session-token",
       created: false,
     });
-    vi.mocked(getPublicAdmissionShareBoard).mockResolvedValue({
-      id: "share-1",
-      title: "Vendor review",
-      status: "active",
-      expiresAt: "2026-06-14T00:00:00.000Z",
-      allowVendorSubmit: true,
-      project: { id: "project-1", code: "P-001", name: "Alpha" },
-      items: [
-        {
-          applicationId: "app-1",
-          recordingSubmissionId: "rec-1",
-          recordingVersion: 2,
-          recordingUrl: "https://video.example/rec-1",
-          hasPrivateStorage: false,
-          streamer: { id: "streamer-1", displayName: "Streamer One" },
-          vendorReview: {
-            decision: "backup",
-            remark: "Can be backup.",
-            reviewerName: "Vendor Reviewer",
-            reviewerContact: "reviewer@example.com",
-            submittedAt: "2026-06-07T00:00:00.000Z",
+    vi.mocked(getPublicAdmissionShareBoardContext).mockResolvedValue({
+      organizationId: "org-1",
+      board: {
+        id: "share-1",
+        title: "Vendor review",
+        purpose: "品牌方首轮选人",
+        mode: "formal_review",
+        status: "active",
+        reviewState: "submitted_locked",
+        roundNumber: 1,
+        expiresAt: "2026-06-14T00:00:00.000Z",
+        canSubmit: false,
+        allowExternalFallback: true,
+        project: {
+          id: "project-1",
+          code: "P-001",
+          name: "Alpha",
+          vendor: "Vendor",
+          product: "Game",
+        },
+        progress: { completed: 1, total: 1 },
+        latestSubmission: {
+          revision: 1,
+          submittedAt: "2026-06-07T00:00:00.000Z",
+          summary: {
+            selected: 0,
+            backup: 1,
+            rejected: 0,
+            needsChanges: 0,
           },
         },
-      ],
-    } as never);
+        items: [
+          {
+            applicationId: "app-1",
+            recordingSubmissionId: "rec-1",
+            recordingVersion: 2,
+            playbackUrl:
+              "/api/public/admission-share/plain-token/recordings/rec-1",
+            externalUrl: "https://video.example/rec-1",
+            sourceHealth: "external_only",
+            hasPrivateStorage: false,
+            streamer: {
+              id: "streamer-1",
+              displayName: "Streamer One",
+              accountLabel: "",
+            },
+            finalReview: {
+              decision: "backup",
+              remark: "Can be backup.",
+              reasonCodes: [],
+              submittedAt: "2026-06-07T00:00:00.000Z",
+            },
+          },
+        ],
+      },
+    });
   });
 
   it("returns the public share snapshot without requiring auth", async () => {
@@ -116,21 +147,35 @@ describe("public admission share route", () => {
       supabase,
     );
     expect(SupabaseAdmissionShareAccessStore).toHaveBeenCalledWith(supabase);
-    expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith({
+    expect(getPublicAdmissionShareBoardContext).toHaveBeenCalledWith({
       repo: { repo: "share-repo" },
       accessStore: { store: "access-store" },
       token: "plain-token",
       sessionToken: "opaque-session-token",
     });
-    expect(JSON.stringify(body)).not.toContain("tokenHash");
-    expect(JSON.stringify(body)).not.toContain("storagePath");
-    expect(JSON.stringify(body)).not.toContain("reviewerName");
-    expect(JSON.stringify(body)).not.toContain("reviewerContact");
+    expect(body.shareBoard).toEqual(
+      expect.objectContaining({
+        mode: "formal_review",
+        canSubmit: false,
+        progress: { completed: 1, total: 1 },
+      }),
+    );
+    for (const forbidden of [
+      "organizationId",
+      "tokenHash",
+      "storagePath",
+      "applicationStatus",
+      "recordingStatus",
+      "reviewerName",
+      "reviewerContact",
+    ]) {
+      expect(JSON.stringify(body)).not.toContain(forbidden);
+    }
   });
 
   it("maps expired shares to a service error response", async () => {
-    vi.mocked(getPublicAdmissionShareBoard).mockRejectedValue(
-      new Error("Share link is expired or revoked"),
+    vi.mocked(getPublicAdmissionShareBoardContext).mockRejectedValue(
+      new Error("Share link is expired"),
     );
 
     const response = await GET(new Request("http://localhost/api"), {
@@ -140,7 +185,7 @@ describe("public admission share route", () => {
     expect(response.status).toBe(410);
     await expect(response.json()).resolves.toEqual({
       code: "SHARE_EXPIRED",
-      error: "分享链接已过期或已撤销。",
+      error: "分享链接已过期。",
     });
   });
 
@@ -152,7 +197,7 @@ describe("public admission share route", () => {
       { params },
     );
 
-    expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith(
+    expect(getPublicAdmissionShareBoardContext).toHaveBeenCalledWith(
       expect.not.objectContaining({ accessCode: expect.anything() }),
     );
   });
@@ -180,7 +225,7 @@ describe("public admission share route", () => {
       token: "plain-token",
       sessionToken: undefined,
     });
-    expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith(
+    expect(getPublicAdmissionShareBoardContext).toHaveBeenCalledWith(
       expect.objectContaining({ sessionToken: "new-opaque-session" }),
     );
     expect(cookie).toContain("new-opaque-session");
@@ -201,7 +246,7 @@ describe("public admission share route", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("set-cookie")).toBeNull();
-    expect(getPublicAdmissionShareBoard).toHaveBeenCalledWith(
+    expect(getPublicAdmissionShareBoardContext).toHaveBeenCalledWith(
       expect.objectContaining({ sessionToken: undefined }),
     );
   });

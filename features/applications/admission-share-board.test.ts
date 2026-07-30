@@ -926,9 +926,29 @@ describe("admission share board service", () => {
     });
   });
 
-  it("returns a public share DTO without token hashes or private storage paths", async () => {
+  it("returns the formal-review workflow receipt through an explicit public whitelist", async () => {
     const repo = createRepo({
-      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          purpose: "品牌方首轮选人",
+          reviewState: "submitted_locked",
+          roundNumber: 2,
+          progress: {
+            completed: 2,
+            total: 2,
+          },
+          latestSubmission: {
+            revision: 2,
+            submittedAt: "2026-07-30T10:00:00.000Z",
+            summary: {
+              selected: 1,
+              backup: 1,
+              rejected: 0,
+              needsChanges: 0,
+            },
+          },
+        }),
+      ),
     });
 
     const dto = await getPublicAdmissionShareBoard({
@@ -938,47 +958,125 @@ describe("admission share board service", () => {
       now: "2026-06-07T01:00:00.000Z",
     });
 
-    expect(dto).toEqual(
-      expect.objectContaining({
-        id: "share-1",
-        title: "Vendor review",
-        project: expect.objectContaining({ id: "project-1" }),
-        items: [
-          expect.objectContaining({
-            applicationId: "app-1",
-            recordingSubmissionId: "rec-1",
-            recordingVersion: 2,
-            recordingUrl: "https://video.example/rec-1",
-            playbackUrl:
-              "/api/public/admission-share/plain-token/recordings/rec-1",
-            hasPrivateStorage: true,
-            vendorReview: {
-              decision: "backup",
-              remark: "可作为备选。",
-              submittedAt: "2026-07-29T10:00:00.000Z",
-            },
-          }),
-          expect.objectContaining({
-            applicationId: "app-2",
-            recordingSubmissionId: "rec-2",
-            recordingVersion: 1,
-            recordingUrl: null,
-            playbackUrl:
-              "/api/public/admission-share/plain-token/recordings/rec-2",
-            hasPrivateStorage: true,
-          }),
-        ],
-      }),
-    );
-    expect(JSON.stringify(dto)).not.toContain("tokenHash");
-    expect(JSON.stringify(dto)).not.toContain("accessCodeHash");
-    expect(JSON.stringify(dto)).not.toContain("private/path/rec-2.mp4");
-    expect(JSON.stringify(dto)).not.toContain("reviewerName");
-    expect(JSON.stringify(dto)).not.toContain("reviewerContact");
+    expect(dto).toEqual({
+      id: "share-1",
+      title: "Vendor review",
+      purpose: "品牌方首轮选人",
+      mode: "formal_review",
+      status: "active",
+      reviewState: "submitted_locked",
+      roundNumber: 2,
+      expiresAt: "2026-06-14T00:00:00.000Z",
+      canSubmit: false,
+      allowExternalFallback: true,
+      project: {
+        id: "project-1",
+        code: "P-001",
+        name: "Alpha",
+        vendor: "Vendor",
+        product: "Game",
+      },
+      progress: {
+        completed: 2,
+        total: 2,
+      },
+      latestSubmission: {
+        revision: 2,
+        submittedAt: "2026-07-30T10:00:00.000Z",
+        summary: {
+          selected: 1,
+          backup: 1,
+          rejected: 0,
+          needsChanges: 0,
+        },
+      },
+      items: [
+        {
+          applicationId: "app-1",
+          recordingSubmissionId: "rec-1",
+          recordingVersion: 2,
+          playbackUrl:
+            "/api/public/admission-share/plain-token/recordings/rec-1",
+          externalUrl: "https://video.example/rec-1",
+          sourceHealth: "original_with_external_fallback",
+          hasPrivateStorage: true,
+          streamer: {
+            id: "streamer-1",
+            displayName: "Streamer One",
+            accountLabel: "Douyin / one-live",
+          },
+          finalReview: {
+            decision: "backup",
+            remark: "可作为备选。",
+            reasonCodes: ["capacity_fit"],
+            submittedAt: "2026-07-29T10:00:00.000Z",
+          },
+        },
+        {
+          applicationId: "app-2",
+          recordingSubmissionId: "rec-2",
+          recordingVersion: 1,
+          playbackUrl:
+            "/api/public/admission-share/plain-token/recordings/rec-2",
+          externalUrl: null,
+          sourceHealth: "original_ready",
+          hasPrivateStorage: true,
+          streamer: {
+            id: "streamer-2",
+            displayName: "Streamer Two",
+            accountLabel: "Bilibili / two-live",
+          },
+          finalReview: null,
+        },
+      ],
+    });
+    const serialized = JSON.stringify(dto);
+    for (const forbidden of [
+      "organizationId",
+      "tokenHash",
+      "accessCodeHash",
+      "storagePath",
+      "draft",
+      "applicationStatus",
+      "recordingStatus",
+      "reviewerName",
+      "reviewerContact",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
     expect(repo.markShareBoardViewed).toHaveBeenCalledWith(
       "share-1",
       "2026-06-07T01:00:00.000Z",
     );
+  });
+
+  it("returns preview mode as read-only without drafts or a submission receipt", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          mode: "preview",
+          allowVendorSubmit: false,
+          reviewState: "viewed",
+          roundNumber: 0,
+          progress: { completed: 0, total: 2 },
+          latestSubmission: null,
+        }),
+      ),
+    });
+
+    const dto = await getPublicAdmissionShareBoard({
+      repo,
+      token: "preview-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(dto).toMatchObject({
+      mode: "preview",
+      canSubmit: false,
+      progress: { completed: 0, total: 2 },
+      latestSubmission: null,
+    });
+    expect(dto.items.every((item) => !("draft" in item))).toBe(true);
   });
 
   it("resolves private recording playback sources only after share gating", async () => {
@@ -1380,7 +1478,12 @@ describe("admission share board service", () => {
     expect(onViewAuditError).toHaveBeenCalledWith(auditError);
   });
 
-  it("rejects expired public share links", async () => {
+  it("distinguishes revoked and expired public share links", async () => {
+    const revokedRepo = createRepo({
+      getPublicShareBoardSnapshot: vi
+        .fn()
+        .mockResolvedValue(publicSnapshot({ status: "revoked" })),
+    });
     const repo = createRepo({
       getPublicShareBoardSnapshot: vi
         .fn()
@@ -1395,7 +1498,20 @@ describe("admission share board service", () => {
         token: "plain-token",
         now: "2026-06-07T01:00:00.000Z",
       }),
-    ).rejects.toThrow("Share link is expired or revoked");
+    ).rejects.toMatchObject({
+      code: "SHARE_EXPIRED",
+      statusCode: 410,
+    });
+    await expect(
+      getPublicAdmissionShareBoard({
+        repo: revokedRepo,
+        token: "plain-token",
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "SHARE_REVOKED",
+      statusCode: 410,
+    });
   });
 
   it("rejects an incomplete formal review before mutating business state", async () => {
@@ -1986,6 +2102,210 @@ describe("admission share board service", () => {
     ]);
   });
 
+  it("hydrates progress and the immutable latest submission receipt for the public snapshot", async () => {
+    const boardRow = {
+      id: "share-1",
+      organization_id: "org-1",
+      project_id: "project-1",
+      title: "Vendor review",
+      purpose: "品牌方首轮选人",
+      mode: "formal_review",
+      token_hash: hashShareSecret("plain-token"),
+      access_code_hash: null,
+      status: "active",
+      expires_at: "2026-08-06T00:00:00.000Z",
+      allow_vendor_submit: true,
+      allow_external_fallback: true,
+      review_state: "submitted_locked",
+      round_number: 2,
+      created_by: "user-ops",
+      created_at: "2026-07-30T07:00:00.000Z",
+      projects: {
+        id: "project-1",
+        code: "P-001",
+        name: "Alpha",
+        vendor_name: "Vendor",
+        product_name: "Game",
+      },
+    };
+    const itemRows = [
+      {
+        application_id: "app-1",
+        recording_submission_id: "rec-1",
+        recording_version: 2,
+        source_health: "original_with_external_fallback",
+        project_applications: {
+          status: "recording_approved",
+          streamer_id: "streamer-1",
+          streamers: {
+            id: "streamer-1",
+            display_name: "Streamer One",
+            streamer_accounts: [],
+          },
+        },
+        recording_submissions: {
+          status: "approved",
+          external_url: "https://video.example/rec-1",
+          storage_path: "private/rec-1.mp4",
+        },
+      },
+      {
+        application_id: "app-2",
+        recording_submission_id: "rec-2",
+        recording_version: 1,
+        source_health: "external_only",
+        project_applications: {
+          status: "recording_reviewing",
+          streamer_id: "streamer-2",
+          streamers: {
+            id: "streamer-2",
+            display_name: "Streamer Two",
+            streamer_accounts: [],
+          },
+        },
+        recording_submissions: {
+          status: "reviewing",
+          external_url: "https://video.example/rec-2",
+          storage_path: null,
+        },
+      },
+    ];
+    const submissionRow = {
+      id: "submission-2",
+      revision: 2,
+      project_remark: "",
+      selected_count: 1,
+      backup_count: 1,
+      rejected_count: 0,
+      needs_changes_count: 0,
+      submitted_at: "2026-07-30T10:00:00.000Z",
+    };
+    const queriedTables: string[] = [];
+    const itemSelect = vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue({
+        order: vi.fn().mockResolvedValue({ data: itemRows, error: null }),
+      }),
+    });
+    const from = vi.fn().mockImplementation((table: string) => {
+      queriedTables.push(table);
+      if (table === "project_recording_share_boards") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              maybeSingle: vi
+                .fn()
+                .mockResolvedValue({ data: boardRow, error: null }),
+            }),
+          }),
+        };
+      }
+      if (table === "project_recording_share_items") {
+        return { select: itemSelect };
+      }
+      if (table === "project_recording_vendor_review_drafts") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({
+              data: [
+                {
+                  recording_submission_id: "rec-1",
+                  decision: "selected",
+                },
+                {
+                  recording_submission_id: "rec-2",
+                  decision: "backup",
+                },
+              ],
+              error: null,
+            }),
+          }),
+        };
+      }
+      if (table === "project_recording_vendor_review_submissions") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockReturnValue({
+              order: vi.fn().mockReturnValue({
+                limit: vi
+                  .fn()
+                  .mockResolvedValue({ data: [submissionRow], error: null }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === "project_recording_vendor_review_submission_items") {
+        return {
+          select: vi.fn().mockReturnValue({
+            eq: vi.fn().mockResolvedValue({
+              data: [
+                {
+                  recording_submission_id: "rec-1",
+                  decision: "selected",
+                  remark: "优先选择",
+                  reason_codes: ["script_fit"],
+                },
+                {
+                  recording_submission_id: "rec-2",
+                  decision: "backup",
+                  remark: "",
+                  reason_codes: [],
+                },
+              ],
+              error: null,
+            }),
+          }),
+        };
+      }
+      throw new Error(`unexpected public snapshot table: ${table}`);
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({ from } as never);
+
+    const snapshot = await repo.getPublicShareBoardSnapshot(
+      hashShareSecret("plain-token"),
+    );
+
+    expect(itemSelect).toHaveBeenCalledWith(
+      expect.stringContaining("source_health"),
+    );
+    expect(queriedTables).not.toContain("project_recording_vendor_reviews");
+    expect(snapshot).toMatchObject({
+      progress: { completed: 2, total: 2 },
+      latestSubmission: {
+        revision: 2,
+        submittedAt: "2026-07-30T10:00:00.000Z",
+        summary: {
+          selected: 1,
+          backup: 1,
+          rejected: 0,
+          needsChanges: 0,
+        },
+      },
+      items: [
+        {
+          recordingSubmissionId: "rec-1",
+          sourceHealth: "original_with_external_fallback",
+          finalReview: {
+            decision: "selected",
+            remark: "优先选择",
+            reasonCodes: ["script_fit"],
+            submittedAt: "2026-07-30T10:00:00.000Z",
+          },
+        },
+        {
+          recordingSubmissionId: "rec-2",
+          sourceHealth: "external_only",
+          finalReview: {
+            decision: "backup",
+            remark: "",
+            reasonCodes: [],
+            submittedAt: "2026-07-30T10:00:00.000Z",
+          },
+        },
+      ],
+    });
+  });
+
   it("persists and reads draft DTOs through the constrained repository methods", async () => {
     const draftRow = {
       recording_submission_id: "rec-1",
@@ -2074,16 +2394,16 @@ function publicSnapshot(overrides: Record<string, unknown> = {}) {
         recordingStatus: "reviewing" as const,
         recordingUrl: "https://video.example/rec-1",
         storagePath: "private/path/rec-1.mp4",
+        sourceHealth: "original_with_external_fallback" as const,
         streamer: {
           id: "streamer-1",
           displayName: "Streamer One",
           accountLabel: "Douyin / one-live",
         },
-        vendorReview: {
+        finalReview: {
           decision: "backup" as const,
           remark: "可作为备选。",
-          reviewerName: "厂家复核人",
-          reviewerContact: "reviewer@example.com",
+          reasonCodes: ["capacity_fit"],
           submittedAt: "2026-07-29T10:00:00.000Z",
         },
       },
@@ -2095,14 +2415,20 @@ function publicSnapshot(overrides: Record<string, unknown> = {}) {
         recordingStatus: "approved" as const,
         recordingUrl: null,
         storagePath: "private/path/rec-2.mp4",
+        sourceHealth: "original_ready" as const,
         streamer: {
           id: "streamer-2",
           displayName: "Streamer Two",
           accountLabel: "Bilibili / two-live",
         },
-        vendorReview: null,
+        finalReview: null,
       },
     ],
+    progress: {
+      completed: 1,
+      total: 2,
+    },
+    latestSubmission: null,
     ...overrides,
   };
 }
