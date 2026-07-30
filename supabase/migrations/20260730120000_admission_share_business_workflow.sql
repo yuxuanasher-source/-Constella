@@ -128,10 +128,11 @@ update public.project_recording_share_items as share_item
 set
   mcn_review_decision = recording.mcn_review_decision,
   source_health = case
-    when recording.storage_path is not null
+    when nullif(btrim(recording.storage_path), '') is not null
       and recording.external_url ~* '^https?://'
       then 'original_with_external_fallback'
-    when recording.storage_path is not null then 'original_ready'
+    when nullif(btrim(recording.storage_path), '') is not null
+      then 'original_ready'
     when recording.external_url ~* '^https?://' then 'external_only'
     else 'blocked'
   end
@@ -227,7 +228,7 @@ create table public.project_recording_vendor_review_submissions (
 
 create table public.project_recording_vendor_review_submission_items (
   id uuid primary key default extensions.gen_random_uuid(),
-  vendor_review_submission_id uuid not null
+  submission_id uuid not null
     references public.project_recording_vendor_review_submissions(id)
     on delete cascade,
   share_board_id uuid not null
@@ -246,7 +247,7 @@ create table public.project_recording_vendor_review_submission_items (
   sync_status text not null default 'synced',
   sync_error text,
   created_at timestamptz not null default now(),
-  unique (vendor_review_submission_id, recording_submission_id),
+  unique (submission_id, recording_submission_id),
   constraint project_recording_vendor_review_submission_items_decision_check
   check (decision in ('selected', 'backup', 'rejected', 'needs_changes')),
   constraint project_recording_vendor_review_submission_items_version_positive_check
@@ -295,7 +296,7 @@ create table public.project_recording_share_playback_issues (
   project_id uuid not null references public.projects(id) on delete cascade,
   recording_submission_id uuid not null
     references public.recording_submissions(id) on delete cascade,
-  source text not null,
+  source_type text not null,
   error_code text not null,
   user_agent_family text not null default 'unknown',
   status text not null default 'open',
@@ -305,9 +306,9 @@ create table public.project_recording_share_playback_issues (
   resolved_at timestamptz,
   resolution_note text,
   constraint project_recording_share_playback_issues_source_check
-  check (source in ('original', 'external', 'none')),
+  check (source_type in ('original', 'external', 'none')),
   constraint project_recording_share_playback_issues_user_agent_family_check
-  check (char_length(user_agent_family) between 1 and 80),
+  check (char_length(user_agent_family) <= 80),
   constraint project_recording_share_playback_issues_status_check
   check (status in ('open', 'resolved'))
 );

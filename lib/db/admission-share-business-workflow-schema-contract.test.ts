@@ -43,6 +43,30 @@ describe("admission share business workflow migration", () => {
     }
   });
 
+  it("uses the downstream submission item foreign-key name", () => {
+    expect(migration).toMatch(
+      /create table public\.project_recording_vendor_review_submission_items \([\s\S]+submission_id uuid not null\s+references public\.project_recording_vendor_review_submissions\(id\)/u,
+    );
+    expect(migration).toContain(
+      "unique (submission_id, recording_submission_id)",
+    );
+    expect(migration).not.toContain("vendor_review_submission_id");
+  });
+
+  it("uses source_type for playback issue source classification", () => {
+    expect(migration).toMatch(
+      /create table public\.project_recording_share_playback_issues \([\s\S]+source_type text not null[\s\S]+check \(source_type in \('original', 'external', 'none'\)\)/u,
+    );
+  });
+
+  it("treats blank storage paths as unavailable during source backfill", () => {
+    expect(
+      migration.match(
+        /nullif\(btrim\(recording\.storage_path\), ''\) is not null/gu,
+      ),
+    ).toHaveLength(2);
+  });
+
   it("adds RLS-protected events and playback issue reporting", () => {
     for (const table of [
       "project_recording_share_events",
