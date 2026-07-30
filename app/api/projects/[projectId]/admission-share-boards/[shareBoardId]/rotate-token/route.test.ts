@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { POST } from "./route";
 
-import { revokeAdmissionShareBoard } from "@/features/applications/admission-share-board";
+import { rotateAdmissionShareBoardToken } from "@/features/applications/admission-share-board";
 import {
   actorFromContext,
   getAdmissionRouteContext,
@@ -14,7 +14,7 @@ vi.mock("@/features/applications/admission-share-board", () => ({
     .mockImplementation(function () {
       return { repo: "share-repo" };
     }),
-  revokeAdmissionShareBoard: vi.fn(),
+  rotateAdmissionShareBoardToken: vi.fn(),
 }));
 
 vi.mock("@/features/applications/application-route-utils", () => ({
@@ -46,54 +46,64 @@ const auth = {
   role: "ops_manager" as const,
   organizationId: "org-1",
 };
-
 const context = {
   supabase: { client: "supabase" },
   auth,
   audit: vi.fn(),
 };
-
 const params = Promise.resolve({
   projectId: "project-1",
   shareBoardId: "share-1",
 });
 
-describe("revoke admission share-board route", () => {
+describe("rotate admission share-board token route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getAdmissionRouteContext).mockResolvedValue(context as never);
     vi.mocked(actorFromContext).mockReturnValue(auth);
-    vi.mocked(revokeAdmissionShareBoard).mockResolvedValue(undefined);
+    vi.mocked(rotateAdmissionShareBoardToken).mockResolvedValue({
+      token: "new-plain-token",
+    });
+    delete process.env.NEXT_PUBLIC_APP_URL;
   });
 
-  it("revokes a share board for MCN staff", async () => {
-    const response = await POST(new Request("http://localhost/api"), {
-      params,
-    });
+  afterEach(() => {
+    delete process.env.NEXT_PUBLIC_APP_URL;
+  });
+
+  it("returns the new public URL once without a separate plaintext token field", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.example";
+
+    const response = await POST(
+      new Request("http://localhost/api", { method: "POST" }),
+      { params },
+    );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true });
-    expect(revokeAdmissionShareBoard).toHaveBeenCalledWith(
+    await expect(response.json()).resolves.toEqual({
+      shareUrl: "https://app.example/share/admission/new-plain-token",
+    });
+    expect(rotateAdmissionShareBoardToken).toHaveBeenCalledWith(
       expect.objectContaining({
         actor: auth,
-        audit: expect.any(Function),
         projectId: "project-1",
         shareBoardId: "share-1",
       }),
     );
   });
 
-  it("blocks streamers", async () => {
+  it("blocks non-MCN roles before generating a replacement token", async () => {
     vi.mocked(getAdmissionRouteContext).mockResolvedValue({
       ...context,
       auth: { ...auth, role: "streamer" },
     } as never);
 
-    const response = await POST(new Request("http://localhost/api"), {
-      params,
-    });
+    const response = await POST(
+      new Request("http://localhost/api", { method: "POST" }),
+      { params },
+    );
 
     expect(response.status).toBe(403);
-    expect(revokeAdmissionShareBoard).not.toHaveBeenCalled();
+    expect(rotateAdmissionShareBoardToken).not.toHaveBeenCalled();
   });
 });

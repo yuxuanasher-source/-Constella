@@ -3,11 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import {
   authenticatePublicAdmissionShareAccess,
   createAdmissionShareBoard,
+  extendAdmissionShareBoard,
   getPublicAdmissionShareBoard,
   getPublicAdmissionRecordingPlaybackSource,
   hashAdmissionShareAccessCode,
   hashShareSecret,
   mapVendorDecisionToSyncPatch,
+  reopenAdmissionShareBoard,
+  revokeAdmissionShareBoard,
+  rotateAdmissionShareBoardToken,
   submitVendorAdmissionReviews,
   SupabaseAdmissionShareBoardRepository,
   verifyAdmissionShareAccessCode,
@@ -46,6 +50,9 @@ function createRepo(
       };
     }),
     listShareBoards: vi.fn().mockResolvedValue([]),
+    extendShareBoard: vi.fn(),
+    reopenShareBoard: vi.fn(),
+    rotateShareBoardToken: vi.fn(),
     revokeShareBoard: vi.fn(),
     getPublicShareBoardSnapshot: vi.fn(),
     upsertVendorReviews: vi.fn(),
@@ -1321,6 +1328,217 @@ describe("admission share board service", () => {
         now: "2026-06-07T05:00:00.000Z",
       }),
     ).rejects.toThrow("Recording version is stale");
+  });
+
+  it("extends a share board through the lifecycle repository and audits the new expiry", async () => {
+    const repo = createRepo();
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await extendAdmissionShareBoard({
+      repo,
+      audit,
+      actor,
+      projectId: "project-1",
+      shareBoardId: "share-1",
+      expiresAt: "2026-08-10T00:00:00.000Z",
+    });
+
+    expect(repo.extendShareBoard).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      projectId: "project-1",
+      expiresAt: "2026-08-10T00:00:00.000Z",
+      actorUserId: "user-ops",
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "extend_share_board",
+        projectId: "project-1",
+        after: { expiresAt: "2026-08-10T00:00:00.000Z" },
+      }),
+    );
+  });
+
+  it("reopens a locked formal review with a trimmed high-risk reason", async () => {
+    const repo = createRepo();
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await reopenAdmissionShareBoard({
+      repo,
+      audit,
+      actor,
+      projectId: "project-1",
+      shareBoardId: "share-1",
+      reason: "  甲方误选一条录屏  ",
+    });
+
+    expect(repo.reopenShareBoard).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      projectId: "project-1",
+      reason: "甲方误选一条录屏",
+      actorUserId: "user-ops",
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "reopen_share_board",
+        isHighRisk: true,
+        reason: "甲方误选一条录屏",
+      }),
+    );
+  });
+
+  it("rejects a reopen reason shorter than two trimmed characters before persistence", async () => {
+    const repo = createRepo();
+
+    await expect(
+      reopenAdmissionShareBoard({
+        repo,
+        audit: vi.fn(),
+        actor,
+        projectId: "project-1",
+        shareBoardId: "share-1",
+        reason: " A ",
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(repo.reopenShareBoard).not.toHaveBeenCalled();
+  });
+
+  it("rotates the token, returns plaintext once, and never records it in audit", async () => {
+    const repo = createRepo();
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    const result = await rotateAdmissionShareBoardToken({
+      repo,
+      audit,
+      actor,
+      projectId: "project-1",
+      shareBoardId: "share-1",
+      tokenFactory: () => "new-plain-token",
+    });
+
+    expect(repo.rotateShareBoardToken).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      projectId: "project-1",
+      tokenHash: hashShareSecret("new-plain-token"),
+      actorUserId: "user-ops",
+    });
+    expect(result).toEqual({ token: "new-plain-token" });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "rotate_share_board_token",
+        isHighRisk: true,
+      }),
+    );
+    expect(JSON.stringify(audit.mock.calls)).not.toContain("new-plain-token");
+    expect(JSON.stringify(audit.mock.calls)).not.toContain(
+      hashShareSecret("new-plain-token"),
+    );
+  });
+
+  it("does not lose the one-time token after rotation when supplemental audit fails", async () => {
+    const repo = createRepo();
+
+    await expect(
+      rotateAdmissionShareBoardToken({
+        repo,
+        audit: vi.fn().mockRejectedValue(new Error("audit unavailable")),
+        actor,
+        projectId: "project-1",
+        shareBoardId: "share-1",
+        tokenFactory: () => "new-plain-token",
+      }),
+    ).resolves.toEqual({ token: "new-plain-token" });
+  });
+
+  it("revokes through the atomic lifecycle repository before auditing", async () => {
+    const repo = createRepo();
+    const audit = vi.fn().mockResolvedValue(undefined);
+
+    await revokeAdmissionShareBoard({
+      repo,
+      audit,
+      actor,
+      projectId: "project-1",
+      shareBoardId: "share-1",
+    });
+
+    expect(repo.revokeShareBoard).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      projectId: "project-1",
+      actorUserId: "user-ops",
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "revoke_share_board",
+        projectId: "project-1",
+      }),
+    );
+  });
+
+  it("calls each lifecycle RPC with the authenticated actor and project scope", async () => {
+    const rpc = vi.fn().mockResolvedValue({ error: null });
+    const repo = new SupabaseAdmissionShareBoardRepository({ rpc } as never);
+
+    await repo.extendShareBoard({
+      shareBoardId: "share-1",
+      projectId: "project-1",
+      expiresAt: "2026-08-10T00:00:00.000Z",
+      actorUserId: "user-ops",
+    });
+    await repo.reopenShareBoard({
+      shareBoardId: "share-1",
+      projectId: "project-1",
+      reason: "甲方误选",
+      actorUserId: "user-ops",
+    });
+    await repo.rotateShareBoardToken({
+      shareBoardId: "share-1",
+      projectId: "project-1",
+      tokenHash: "a".repeat(64),
+      actorUserId: "user-ops",
+    });
+    await repo.revokeShareBoard({
+      shareBoardId: "share-1",
+      projectId: "project-1",
+      actorUserId: "user-ops",
+    });
+
+    expect(rpc.mock.calls).toEqual([
+      [
+        "extend_admission_share_board",
+        {
+          p_share_board_id: "share-1",
+          p_project_id: "project-1",
+          p_expires_at: "2026-08-10T00:00:00.000Z",
+          p_actor_user_id: "user-ops",
+        },
+      ],
+      [
+        "reopen_admission_share_board",
+        {
+          p_share_board_id: "share-1",
+          p_project_id: "project-1",
+          p_reason: "甲方误选",
+          p_actor_user_id: "user-ops",
+        },
+      ],
+      [
+        "rotate_admission_share_board_token",
+        {
+          p_share_board_id: "share-1",
+          p_project_id: "project-1",
+          p_token_hash: "a".repeat(64),
+          p_actor_user_id: "user-ops",
+        },
+      ],
+      [
+        "revoke_admission_share_board",
+        {
+          p_share_board_id: "share-1",
+          p_project_id: "project-1",
+          p_actor_user_id: "user-ops",
+        },
+      ],
+    ]);
   });
 });
 

@@ -71,11 +71,28 @@ export type AdmissionShareBoardRepository = {
     input: CreateAdmissionShareBoardPersistenceInput,
   ): Promise<AdmissionShareBoardRecord>;
   listShareBoards(projectId: string): Promise<AdmissionShareBoardRecord[]>;
+  extendShareBoard(input: {
+    shareBoardId: string;
+    projectId: string;
+    expiresAt: string;
+    actorUserId: string;
+  }): Promise<void>;
+  reopenShareBoard(input: {
+    shareBoardId: string;
+    projectId: string;
+    reason: string;
+    actorUserId: string;
+  }): Promise<void>;
+  rotateShareBoardToken(input: {
+    shareBoardId: string;
+    projectId: string;
+    tokenHash: string;
+    actorUserId: string;
+  }): Promise<void>;
   revokeShareBoard(input: {
     shareBoardId: string;
     projectId: string;
-    revokedBy: string;
-    revokedAt: string;
+    actorUserId: string;
   }): Promise<void>;
   getPublicShareBoardSnapshot(
     tokenHash: string,
@@ -130,6 +147,27 @@ export class AdmissionShareFormalRoundConflictError extends Error {
 
   constructor() {
     super("Admission share formal round already open");
+  }
+}
+
+export class AdmissionShareLifecycleError extends Error {
+  readonly name = "AdmissionShareLifecycleError";
+
+  constructor(
+    public readonly code:
+      | "SHARE_EXPIRY_INVALID"
+      | "SHARE_NOT_ACTIVE"
+      | "SHARE_REOPEN_NOT_ALLOWED"
+      | "SHARE_REOPEN_REASON_REQUIRED"
+      | "SHARE_SUBMISSION_MISSING"
+      | "SHARE_FORMAL_ROUND_CONFLICT"
+      | "SHARE_TOKEN_INVALID"
+      | "SHARE_FORBIDDEN"
+      | "SHARE_NOT_FOUND",
+    message: string,
+    public readonly statusCode: 400 | 403 | 404 | 409,
+  ) {
+    super(message);
   }
 }
 
@@ -291,24 +329,76 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     return ((data ?? []) as AdmissionShareBoardRow[]).map(toShareBoardRecord);
   }
 
+  async extendShareBoard(input: {
+    shareBoardId: string;
+    projectId: string;
+    expiresAt: string;
+    actorUserId: string;
+  }): Promise<void> {
+    const { error } = await this.client.rpc("extend_admission_share_board", {
+      p_share_board_id: input.shareBoardId,
+      p_project_id: input.projectId,
+      p_expires_at: input.expiresAt,
+      p_actor_user_id: input.actorUserId,
+    });
+
+    if (error) {
+      throw mapAdmissionShareLifecycleRpcError(error);
+    }
+  }
+
+  async reopenShareBoard(input: {
+    shareBoardId: string;
+    projectId: string;
+    reason: string;
+    actorUserId: string;
+  }): Promise<void> {
+    const { error } = await this.client.rpc("reopen_admission_share_board", {
+      p_share_board_id: input.shareBoardId,
+      p_project_id: input.projectId,
+      p_reason: input.reason,
+      p_actor_user_id: input.actorUserId,
+    });
+
+    if (error) {
+      throw mapAdmissionShareLifecycleRpcError(error);
+    }
+  }
+
+  async rotateShareBoardToken(input: {
+    shareBoardId: string;
+    projectId: string;
+    tokenHash: string;
+    actorUserId: string;
+  }): Promise<void> {
+    const { error } = await this.client.rpc(
+      "rotate_admission_share_board_token",
+      {
+        p_share_board_id: input.shareBoardId,
+        p_project_id: input.projectId,
+        p_token_hash: input.tokenHash,
+        p_actor_user_id: input.actorUserId,
+      },
+    );
+
+    if (error) {
+      throw mapAdmissionShareLifecycleRpcError(error);
+    }
+  }
+
   async revokeShareBoard(input: {
     shareBoardId: string;
     projectId: string;
-    revokedBy: string;
-    revokedAt: string;
+    actorUserId: string;
   }): Promise<void> {
-    const { error } = await this.client
-      .from("project_recording_share_boards")
-      .update({
-        status: "revoked",
-        revoked_by: input.revokedBy,
-        revoked_at: input.revokedAt,
-      })
-      .eq("id", input.shareBoardId)
-      .eq("project_id", input.projectId);
+    const { error } = await this.client.rpc("revoke_admission_share_board", {
+      p_share_board_id: input.shareBoardId,
+      p_project_id: input.projectId,
+      p_actor_user_id: input.actorUserId,
+    });
 
     if (error) {
-      throw error;
+      throw mapAdmissionShareLifecycleRpcError(error);
     }
   }
 
@@ -772,28 +862,168 @@ export async function listAdmissionShareBoards({
   return repo.listShareBoards(projectId);
 }
 
+export async function extendAdmissionShareBoard({
+  repo,
+  audit,
+  actor,
+  projectId,
+  shareBoardId,
+  expiresAt,
+}: {
+  repo: AdmissionShareBoardRepository;
+  audit: AdmissionShareBoardAuditWriter;
+  actor: AdmissionShareBoardActor;
+  projectId: string;
+  shareBoardId: string;
+  expiresAt: string;
+}): Promise<void> {
+  if (!Number.isFinite(Date.parse(expiresAt))) {
+    throw new AdmissionShareLifecycleError(
+      "SHARE_EXPIRY_INVALID",
+      "Share expiry must be a valid date",
+      400,
+    );
+  }
+
+  await repo.extendShareBoard({
+    shareBoardId,
+    projectId,
+    expiresAt,
+    actorUserId: actor.userId,
+  });
+  await writeLifecycleAuditBestEffort(audit, {
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "extend_share_board",
+    module: "admission",
+    objectType: "project_recording_share_board",
+    objectId: shareBoardId,
+    projectId,
+    after: { expiresAt },
+    changedFields: ["expires_at", "share_event"],
+  });
+}
+
+export async function reopenAdmissionShareBoard({
+  repo,
+  audit,
+  actor,
+  projectId,
+  shareBoardId,
+  reason,
+}: {
+  repo: AdmissionShareBoardRepository;
+  audit: AdmissionShareBoardAuditWriter;
+  actor: AdmissionShareBoardActor;
+  projectId: string;
+  shareBoardId: string;
+  reason: string;
+}): Promise<void> {
+  const normalizedReason = reason.trim();
+  if (normalizedReason.length < 2) {
+    throw new AdmissionShareLifecycleError(
+      "SHARE_REOPEN_REASON_REQUIRED",
+      "Reopen reason must contain at least two characters",
+      400,
+    );
+  }
+
+  await repo.reopenShareBoard({
+    shareBoardId,
+    projectId,
+    reason: normalizedReason,
+    actorUserId: actor.userId,
+  });
+  await writeLifecycleAuditBestEffort(audit, {
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "reopen_share_board",
+    module: "admission",
+    objectType: "project_recording_share_board",
+    objectId: shareBoardId,
+    projectId,
+    changedFields: [
+      "review_state",
+      "locked_at",
+      "reopened_by",
+      "reopened_at",
+      "reopen_reason",
+      "review_drafts",
+      "share_event",
+    ],
+    reason: normalizedReason,
+    isHighRisk: true,
+  });
+}
+
+export async function rotateAdmissionShareBoardToken({
+  repo,
+  audit,
+  actor,
+  projectId,
+  shareBoardId,
+  tokenFactory = createShareToken,
+}: {
+  repo: AdmissionShareBoardRepository;
+  audit: AdmissionShareBoardAuditWriter;
+  actor: AdmissionShareBoardActor;
+  projectId: string;
+  shareBoardId: string;
+  tokenFactory?: () => string;
+}): Promise<{ token: string }> {
+  const token = tokenFactory();
+  await repo.rotateShareBoardToken({
+    shareBoardId,
+    projectId,
+    tokenHash: hashShareSecret(token),
+    actorUserId: actor.userId,
+  });
+  await writeLifecycleAuditBestEffort(audit, {
+    organizationId: actor.organizationId,
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    actorRole: actor.role,
+    action: "rotate_share_board_token",
+    module: "admission",
+    objectType: "project_recording_share_board",
+    objectId: shareBoardId,
+    projectId,
+    changedFields: [
+      "token_hash",
+      "access_sessions",
+      "access_attempts",
+      "share_event",
+    ],
+    reason: "Manual admission share token rotation",
+    isHighRisk: true,
+  });
+
+  return { token };
+}
+
 export async function revokeAdmissionShareBoard({
   repo,
   audit,
   actor,
   projectId,
   shareBoardId,
-  now = new Date().toISOString(),
 }: {
   repo: AdmissionShareBoardRepository;
-  audit?: AdmissionShareBoardAuditWriter;
+  audit: AdmissionShareBoardAuditWriter;
   actor: AdmissionShareBoardActor;
   projectId: string;
   shareBoardId: string;
-  now?: string;
-}) {
+}): Promise<void> {
   await repo.revokeShareBoard({
     shareBoardId,
     projectId,
-    revokedBy: actor.userId,
-    revokedAt: now,
+    actorUserId: actor.userId,
   });
-  await audit?.({
+  await writeLifecycleAuditBestEffort(audit, {
     organizationId: actor.organizationId,
     actorUserId: actor.userId,
     actorName: actor.name,
@@ -803,7 +1033,17 @@ export async function revokeAdmissionShareBoard({
     objectType: "project_recording_share_board",
     objectId: shareBoardId,
     projectId,
-    changedFields: ["status", "revoked_by", "revoked_at"],
+    changedFields: [
+      "status",
+      "token_hash",
+      "revoked_by",
+      "revoked_at",
+      "access_sessions",
+      "access_attempts",
+      "share_event",
+    ],
+    reason: "Admission share board revoked",
+    isHighRisk: true,
   });
 }
 
@@ -1306,6 +1546,97 @@ function isAdmissionShareFormalRoundConflictRpcError(error: unknown) {
   return [candidate.constraint, candidate.message].some(
     (value) => typeof value === "string" && value.includes(indexName),
   );
+}
+
+function mapAdmissionShareLifecycleRpcError(error: unknown): unknown {
+  if (!error || typeof error !== "object") {
+    return error;
+  }
+  const candidate = error as { code?: unknown; message?: unknown };
+  const message =
+    typeof candidate.message === "string" ? candidate.message : undefined;
+
+  if (candidate.code === "42501" || message === "insufficient_privilege") {
+    return new AdmissionShareLifecycleError(
+      "SHARE_FORBIDDEN",
+      "You do not have permission to manage this share board",
+      403,
+    );
+  }
+  if (candidate.code === "P0002") {
+    return new AdmissionShareLifecycleError(
+      "SHARE_NOT_FOUND",
+      "Share board was not found in this project",
+      404,
+    );
+  }
+
+  const mapped = lifecycleErrorByRpcMessage[message ?? ""];
+  return mapped
+    ? new AdmissionShareLifecycleError(
+        mapped.code,
+        mapped.message,
+        mapped.status,
+      )
+    : error;
+}
+
+const lifecycleErrorByRpcMessage: Record<
+  string,
+  {
+    code: AdmissionShareLifecycleError["code"];
+    message: string;
+    status: AdmissionShareLifecycleError["statusCode"];
+  }
+> = {
+  invalid_admission_share_expiry: {
+    code: "SHARE_EXPIRY_INVALID",
+    message: "Share expiry must be in the future and within 30 days",
+    status: 400,
+  },
+  admission_share_board_not_active: {
+    code: "SHARE_NOT_ACTIVE",
+    message: "Share board is not active",
+    status: 409,
+  },
+  admission_share_reopen_not_allowed: {
+    code: "SHARE_REOPEN_NOT_ALLOWED",
+    message: "Only a locked formal review can be reopened",
+    status: 409,
+  },
+  admission_share_reopen_reason_required: {
+    code: "SHARE_REOPEN_REASON_REQUIRED",
+    message: "Reopen reason must contain at least two characters",
+    status: 400,
+  },
+  admission_share_submission_missing: {
+    code: "SHARE_SUBMISSION_MISSING",
+    message: "The locked review has no submission to reopen",
+    status: 409,
+  },
+  admission_share_formal_round_already_open: {
+    code: "SHARE_FORMAL_ROUND_CONFLICT",
+    message: "Another formal review round is already open",
+    status: 409,
+  },
+  invalid_admission_share_token: {
+    code: "SHARE_TOKEN_INVALID",
+    message: "Replacement share token is invalid",
+    status: 400,
+  },
+};
+
+async function writeLifecycleAuditBestEffort(
+  audit: AdmissionShareBoardAuditWriter,
+  input: AuditLogInput,
+) {
+  try {
+    await audit(input);
+  } catch {
+    // Every lifecycle RPC writes its event in the same database transaction.
+    // Supplemental audit outages must not turn a committed mutation into a
+    // retry or discard one-time plaintext credentials after token rotation.
+  }
 }
 
 async function requirePublicSnapshot({
