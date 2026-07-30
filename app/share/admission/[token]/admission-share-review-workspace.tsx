@@ -1,0 +1,982 @@
+"use client";
+
+import {
+  AlertTriangle,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  FileVideo,
+  ListFilter,
+  LoaderCircle,
+  Menu,
+  RotateCcw,
+  X,
+} from "lucide-react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
+
+import type {
+  AdmissionSharePlaybackSource,
+  PublicAdmissionShareBoard,
+  ReviewDraft,
+  ReviewDraftSaveState,
+  VendorCheckpointOption,
+} from "./admission-share-types";
+
+export type AdmissionShareReviewWorkspaceProps = {
+  board: PublicAdmissionShareBoard;
+  drafts: Record<string, ReviewDraft>;
+  saveState: Record<string, ReviewDraftSaveState>;
+  activeRecordingId: string;
+  onActiveRecordingChange: (recordingSubmissionId: string) => void;
+  onDraftChange: (
+    recordingSubmissionId: string,
+    patch: Partial<ReviewDraft>,
+  ) => void;
+  onRetryDraft: (recordingSubmissionId: string) => void;
+  onOpenSubmissionSummary: () => void;
+  onReportPlaybackIssue: (
+    recordingSubmissionId: string,
+    sourceType: AdmissionSharePlaybackSource,
+  ) => void;
+  reasonOptions?: VendorCheckpointOption[];
+};
+
+const decisionOptions = [
+  { value: "selected", label: "入选" },
+  { value: "backup", label: "备选" },
+  { value: "needs_changes", label: "需修改" },
+  { value: "rejected", label: "拒绝" },
+] as const;
+
+const decisionLabels = {
+  pending: "待判断",
+  selected: "入选",
+  backup: "备选",
+  needs_changes: "需修改",
+  rejected: "拒绝",
+} as const;
+
+const saveLabels: Record<ReviewDraftSaveState, string> = {
+  idle: "尚未保存",
+  saving: "保存中",
+  saved: "已保存",
+  failed: "保存失败",
+};
+
+export function AdmissionShareReviewWorkspace({
+  board,
+  drafts,
+  saveState,
+  activeRecordingId,
+  onActiveRecordingChange,
+  onDraftChange,
+  onRetryDraft,
+  onOpenSubmissionSummary,
+  onReportPlaybackIssue,
+  reasonOptions = [],
+}: AdmissionShareReviewWorkspaceProps) {
+  const [pendingOnly, setPendingOnly] = useState(false);
+  const [isListOpen, setIsListOpen] = useState(false);
+  const listTriggerRef = useRef<HTMLButtonElement>(null);
+  const activeIndex = Math.max(
+    0,
+    board.items.findIndex(
+      (item) => item.recordingSubmissionId === activeRecordingId,
+    ),
+  );
+  const activeItem = board.items[activeIndex] ?? board.items[0];
+  const isFormal = board.mode === "formal_review";
+  const isLocked = board.reviewState === "submitted_locked";
+  const isEditable = isFormal && board.canSubmit && !isLocked;
+  const activeDraft = activeItem
+    ? drafts[activeItem.recordingSubmissionId]
+    : undefined;
+  const canOpenSummary = useMemo(
+    () =>
+      isEditable &&
+      board.items.every((item) =>
+        isDraftComplete(drafts[item.recordingSubmissionId]),
+      ),
+    [board.items, drafts, isEditable],
+  );
+
+  const activate = (recordingSubmissionId: string) => {
+    onActiveRecordingChange(recordingSubmissionId);
+    setIsListOpen(false);
+  };
+
+  const move = (offset: number) => {
+    const nextItem = board.items[activeIndex + offset];
+    if (nextItem) {
+      onActiveRecordingChange(nextItem.recordingSubmissionId);
+    }
+  };
+
+  return (
+    <section
+      aria-label="录屏复核工作台"
+      className="grid min-h-[680px] overflow-hidden rounded-lg border border-[var(--line)] bg-white lg:grid-cols-[280px_minmax(0,1fr)_340px]"
+    >
+      <div className="hidden min-h-0 border-r border-[var(--line)] bg-[var(--bg-soft)] lg:flex">
+        <RecordingListPane
+          board={board}
+          drafts={drafts}
+          activeRecordingId={activeRecordingId}
+          pendingOnly={pendingOnly}
+          onPendingOnlyChange={setPendingOnly}
+          onActivate={activate}
+        />
+      </div>
+
+      <div className="min-w-0">
+        <div className="flex min-h-12 items-center justify-between border-b border-[var(--line)] px-4 lg:hidden">
+          <button
+            ref={listTriggerRef}
+            type="button"
+            className={secondaryButtonClass}
+            aria-expanded={isListOpen}
+            onClick={() => setIsListOpen(true)}
+          >
+            <Menu className="h-4 w-4" aria-hidden="true" />
+            打开录屏列表
+          </button>
+          <span className="text-xs font-medium text-[var(--ink-500)]">
+            {Math.min(activeIndex + 1, board.items.length)} /{" "}
+            {board.items.length}
+          </span>
+        </div>
+
+        {activeItem ? (
+          <ActiveRecordingPane
+            key={activeItem.recordingSubmissionId}
+            item={activeItem}
+            onReportPlaybackIssue={onReportPlaybackIssue}
+          />
+        ) : (
+          <EmptyRecordingPane />
+        )}
+      </div>
+
+      <aside className="min-w-0 border-t border-[var(--line)] bg-white lg:border-l lg:border-t-0">
+        {activeItem ? (
+          <DecisionPane
+            item={activeItem}
+            draft={activeDraft}
+            saveState={saveState[activeItem.recordingSubmissionId] ?? "idle"}
+            isFormal={isFormal}
+            isEditable={isEditable}
+            reasonOptions={reasonOptions}
+            canOpenSummary={canOpenSummary}
+            onDraftChange={onDraftChange}
+            onRetryDraft={onRetryDraft}
+            onOpenSubmissionSummary={onOpenSubmissionSummary}
+          />
+        ) : null}
+      </aside>
+
+      {board.items.length > 0 ? (
+        <div className="sticky bottom-0 z-10 col-span-full flex items-center justify-between gap-3 border-t border-[var(--line)] bg-white px-4 py-3 lg:hidden">
+          <button
+            type="button"
+            className={secondaryButtonClass}
+            disabled={activeIndex <= 0}
+            onClick={() => move(-1)}
+          >
+            <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+            上一条
+          </button>
+          <button
+            type="button"
+            className={secondaryButtonClass}
+            disabled={activeIndex >= board.items.length - 1}
+            onClick={() => move(1)}
+          >
+            下一条
+            <ChevronRight className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
+
+      {isListOpen ? (
+        <MobileRecordingListDialog
+          board={board}
+          drafts={drafts}
+          activeRecordingId={activeRecordingId}
+          pendingOnly={pendingOnly}
+          onPendingOnlyChange={setPendingOnly}
+          onActivate={activate}
+          onClose={() => {
+            setIsListOpen(false);
+            requestAnimationFrame(() => listTriggerRef.current?.focus());
+          }}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function RecordingListPane({
+  board,
+  drafts,
+  activeRecordingId,
+  pendingOnly,
+  onPendingOnlyChange,
+  onActivate,
+}: Pick<
+  AdmissionShareReviewWorkspaceProps,
+  "board" | "drafts" | "activeRecordingId"
+> & {
+  pendingOnly: boolean;
+  onPendingOnlyChange: (value: boolean) => void;
+  onActivate: (recordingSubmissionId: string) => void;
+}) {
+  const filteredItems = pendingOnly
+    ? board.items.filter(
+        (item) =>
+          (drafts[item.recordingSubmissionId]?.decision ?? "pending") ===
+          "pending",
+      )
+    : board.items;
+
+  return (
+    <nav aria-label="录屏列表" className="flex min-h-0 w-full flex-col">
+      <div className="border-b border-[var(--line)] px-4 py-4">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-[var(--ink-900)]">
+            录屏列表
+          </h2>
+          <span className="text-xs tabular-nums text-[var(--ink-500)]">
+            {board.progress.completed}/{board.progress.total}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-xs font-medium text-[var(--ink-700)] outline-none hover:border-[var(--blue-300)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-offset-2"
+          aria-pressed={pendingOnly}
+          onClick={() => onPendingOnlyChange(!pendingOnly)}
+        >
+          <ListFilter className="h-4 w-4" aria-hidden="true" />
+          {pendingOnly ? "显示全部录屏" : "只看待判断"}
+        </button>
+      </div>
+      <ol className="min-h-0 flex-1 overflow-y-auto p-2">
+        {filteredItems.map((item, index) => {
+          const draft = drafts[item.recordingSubmissionId];
+          const decision = draft?.decision ?? "pending";
+          const active = item.recordingSubmissionId === activeRecordingId;
+          return (
+            <li key={item.recordingSubmissionId}>
+              <button
+                type="button"
+                aria-current={active ? "true" : undefined}
+                className={`mb-1 flex min-h-14 w-full items-start gap-3 rounded-md px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-inset ${
+                  active
+                    ? "bg-[var(--blue-50)] text-[var(--blue-800)]"
+                    : "text-[var(--ink-700)] hover:bg-[var(--ink-50)]"
+                }`}
+                onClick={() => onActivate(item.recordingSubmissionId)}
+              >
+                <span
+                  className={`mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded text-[11px] font-semibold ${
+                    active
+                      ? "bg-[var(--blue-600)] text-white"
+                      : "bg-white text-[var(--ink-500)]"
+                  }`}
+                >
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold">
+                    {item.streamer.displayName || "未命名主播"}
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs text-[var(--ink-500)]">
+                    {item.streamer.accountLabel ||
+                      `版本 ${item.recordingVersion}`}
+                  </span>
+                </span>
+                <span
+                  className={`mt-0.5 shrink-0 text-[11px] font-medium ${
+                    decision === "pending"
+                      ? "text-[var(--warn-600)]"
+                      : "text-[var(--ok-600)]"
+                  }`}
+                >
+                  {decisionLabels[decision]}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+      {filteredItems.length === 0 ? (
+        <p className="px-4 py-6 text-center text-xs leading-5 text-[var(--ink-500)]">
+          当前没有待判断录屏，可切换为显示全部。
+        </p>
+      ) : null}
+    </nav>
+  );
+}
+
+function MobileRecordingListDialog({
+  onClose,
+  ...listProps
+}: Parameters<typeof RecordingListPane>[0] & { onClose: () => void }) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    closeRef.current?.focus();
+  }, []);
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") {
+      return;
+    }
+    const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (!focusable?.length) {
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-40 bg-[rgba(11,23,51,0.4)] lg:hidden"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="选择录屏"
+        className="h-full w-[min(88vw,340px)] bg-white shadow-[var(--shadow-pop)]"
+        onKeyDown={handleKeyDown}
+      >
+        <div className="flex min-h-12 items-center justify-between border-b border-[var(--line)] px-4">
+          <span className="text-sm font-semibold">选择录屏</span>
+          <button
+            ref={closeRef}
+            type="button"
+            className="grid h-10 w-10 place-items-center rounded-md outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)]"
+            aria-label="关闭录屏列表"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+        <div className="h-[calc(100%-3rem)]">
+          <RecordingListPane {...listProps} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActiveRecordingPane({
+  item,
+  onReportPlaybackIssue,
+}: {
+  item: PublicAdmissionShareBoard["items"][number];
+  onReportPlaybackIssue: AdmissionShareReviewWorkspaceProps["onReportPlaybackIssue"];
+}) {
+  const [playbackFailed, setPlaybackFailed] = useState(false);
+  const sourceType = sourceTypeFor(item);
+  const embedUrl =
+    sourceType === "external" && item.externalUrl
+      ? platformEmbedSource(item.externalUrl)
+      : null;
+  const externalOnly = sourceType === "external";
+
+  return (
+    <section
+      aria-label="录屏播放器"
+      className="flex min-h-full flex-col bg-[var(--ink-900)]"
+    >
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-white/10 px-4 py-4 text-white sm:px-5">
+        <div className="min-w-0">
+          <h2 className="truncate text-base font-semibold">
+            {item.streamer.displayName || "未命名主播"}
+          </h2>
+          <p className="mt-1 truncate text-xs text-[var(--ink-200)]">
+            {item.streamer.accountLabel || "账号信息未填写"} · 版本{" "}
+            {item.recordingVersion}
+          </p>
+        </div>
+        <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs text-white">
+          {sourceHealthLabel(item.sourceHealth)}
+        </span>
+      </header>
+
+      <div className="grid flex-1 place-items-center p-3 sm:p-5">
+        <div className="w-full max-w-5xl">
+          {playbackFailed ? (
+            <PlaybackFallback item={item} />
+          ) : embedUrl ? (
+            <iframe
+              className="aspect-video w-full rounded-md border-0 bg-black"
+              title={`${item.streamer.displayName || "主播"} 外部录屏播放器`}
+              src={embedUrl}
+              allow="autoplay; fullscreen; picture-in-picture"
+              allowFullScreen
+              onError={() => setPlaybackFailed(true)}
+            />
+          ) : sourceType === "original" ? (
+            <video
+              key={item.recordingSubmissionId}
+              aria-label={`${item.streamer.displayName || "主播"} 原始录屏播放器`}
+              className="aspect-video w-full rounded-md bg-black"
+              src={item.playbackUrl}
+              controls
+              preload="metadata"
+              onError={() => setPlaybackFailed(true)}
+            />
+          ) : externalOnly &&
+            item.externalUrl &&
+            isDirectVideoSource(item.externalUrl) ? (
+            <video
+              key={item.recordingSubmissionId}
+              aria-label={`${item.streamer.displayName || "主播"} 外部录屏播放器`}
+              className="aspect-video w-full rounded-md bg-black"
+              src={item.playbackUrl}
+              controls
+              preload="metadata"
+              onError={() => setPlaybackFailed(true)}
+            />
+          ) : externalOnly && item.externalUrl ? (
+            <ExternalRecordingLink item={item} />
+          ) : (
+            <NoPlayableSource />
+          )}
+        </div>
+      </div>
+
+      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 px-4 py-3 text-xs text-[var(--ink-200)] sm:px-5">
+        <span>若播放异常，请反馈当前录屏，运营会跟进来源。</span>
+        <button
+          type="button"
+          className="inline-flex min-h-9 items-center gap-2 rounded-md border border-white/30 px-3 font-medium text-white outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50"
+          disabled={sourceType === "none"}
+          onClick={() =>
+            onReportPlaybackIssue(item.recordingSubmissionId, sourceType)
+          }
+        >
+          <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+          反馈播放问题
+        </button>
+      </footer>
+    </section>
+  );
+}
+
+function DecisionPane({
+  item,
+  draft,
+  saveState,
+  isFormal,
+  isEditable,
+  reasonOptions,
+  canOpenSummary,
+  onDraftChange,
+  onRetryDraft,
+  onOpenSubmissionSummary,
+}: {
+  item: PublicAdmissionShareBoard["items"][number];
+  draft: ReviewDraft | undefined;
+  saveState: ReviewDraftSaveState;
+  isFormal: boolean;
+  isEditable: boolean;
+  reasonOptions: VendorCheckpointOption[];
+  canOpenSummary: boolean;
+  onDraftChange: AdmissionShareReviewWorkspaceProps["onDraftChange"];
+  onRetryDraft: AdmissionShareReviewWorkspaceProps["onRetryDraft"];
+  onOpenSubmissionSummary: () => void;
+}) {
+  const reasonHelpId = useId();
+  const remarkId = useId();
+  const currentDraft =
+    draft ??
+    ({
+      decision: "pending",
+      remark: "",
+      reasonCodes: [],
+      revision: 0,
+      updatedAt: null,
+    } satisfies ReviewDraft);
+  const isNegative =
+    currentDraft.decision === "rejected" ||
+    currentDraft.decision === "needs_changes";
+
+  if (!isFormal) {
+    return (
+      <section aria-label="录屏信息" className="p-4 sm:p-5">
+        <h2 className="text-sm font-semibold text-[var(--ink-900)]">
+          预览信息
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-[var(--ink-500)]">
+          当前链接仅用于预览录屏，不会读取或保存复核草稿。
+        </p>
+        {item.finalReview ? <FinalReviewReceipt item={item} /> : null}
+      </section>
+    );
+  }
+
+  if (!isEditable) {
+    return (
+      <section aria-label="复核回执" className="p-4 sm:p-5">
+        <h2 className="text-sm font-semibold text-[var(--ink-900)]">
+          本轮复核已锁定
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-[var(--ink-500)]">
+          已提交的结果不可继续修改。如需调整，请联系 MCN 重新开启本轮。
+        </p>
+        {item.finalReview ? <FinalReviewReceipt item={item} /> : null}
+      </section>
+    );
+  }
+
+  return (
+    <form
+      aria-label="当前录屏判断"
+      className="flex min-h-full flex-col"
+      onSubmit={(event) => event.preventDefault()}
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--line)] px-4 py-4 sm:px-5">
+        <h2 className="text-sm font-semibold text-[var(--ink-900)]">
+          当前录屏判断
+        </h2>
+        <SaveStateIndicator
+          state={saveState}
+          onRetry={() => onRetryDraft(item.recordingSubmissionId)}
+        />
+      </div>
+
+      <div className="grid flex-1 content-start gap-5 overflow-y-auto p-4 sm:p-5">
+        <fieldset>
+          <legend className="text-xs font-semibold text-[var(--ink-700)]">
+            复核结论
+          </legend>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {decisionOptions.map((option) => (
+              <label
+                key={option.value}
+                className={`flex min-h-11 cursor-pointer items-center gap-2 rounded-md border px-3 text-sm font-medium outline-none focus-within:ring-2 focus-within:ring-[var(--blue-500)] focus-within:ring-offset-2 ${
+                  currentDraft.decision === option.value
+                    ? "border-[var(--blue-500)] bg-[var(--blue-50)] text-[var(--blue-700)]"
+                    : "border-[var(--line)] bg-white text-[var(--ink-700)] hover:border-[var(--blue-300)]"
+                }`}
+              >
+                <input
+                  className="h-4 w-4 accent-[var(--blue-600)]"
+                  type="radio"
+                  name={`decision-${item.recordingSubmissionId}`}
+                  value={option.value}
+                  checked={currentDraft.decision === option.value}
+                  onChange={() =>
+                    onDraftChange(item.recordingSubmissionId, {
+                      decision: option.value,
+                    })
+                  }
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        {isNegative ? (
+          <fieldset aria-describedby={reasonHelpId}>
+            <legend className="text-xs font-semibold text-[var(--ink-700)]">
+              问题原因
+            </legend>
+            <p
+              id={reasonHelpId}
+              className="mt-1 text-xs leading-5 text-[var(--ink-500)]"
+            >
+              负向结论至少选择一项，便于主播针对性修改。
+            </p>
+            <div className="mt-2 grid gap-2">
+              {reasonOptions.length > 0 ? (
+                reasonOptions.map((option) => (
+                  <label
+                    key={option.key}
+                    title={option.description}
+                    className="flex min-h-10 cursor-pointer items-center gap-2 rounded-md border border-[var(--line)] px-3 text-sm text-[var(--ink-700)] outline-none hover:border-[var(--blue-300)] focus-within:ring-2 focus-within:ring-[var(--blue-500)]"
+                  >
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-[var(--blue-600)]"
+                      checked={currentDraft.reasonCodes.includes(option.key)}
+                      onChange={() =>
+                        onDraftChange(item.recordingSubmissionId, {
+                          reasonCodes: currentDraft.reasonCodes.includes(
+                            option.key,
+                          )
+                            ? currentDraft.reasonCodes.filter(
+                                (code) => code !== option.key,
+                              )
+                            : [...currentDraft.reasonCodes, option.key],
+                        })
+                      }
+                    />
+                    {option.label}
+                  </label>
+                ))
+              ) : (
+                <p className="rounded-md bg-[var(--warn-50)] px-3 py-2 text-xs leading-5 text-[var(--warn-600)]">
+                  原因选项暂未加载，请刷新后再试。
+                </p>
+              )}
+            </div>
+          </fieldset>
+        ) : null}
+
+        <div className="grid gap-1.5">
+          <label
+            htmlFor={remarkId}
+            className="text-xs font-semibold text-[var(--ink-700)]"
+          >
+            当前录屏备注
+          </label>
+          <textarea
+            id={remarkId}
+            className="min-h-28 resize-y rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm font-normal leading-6 text-[var(--ink-900)] outline-none placeholder:text-[var(--ink-500)] focus:border-[var(--blue-500)] focus:ring-2 focus:ring-[var(--blue-100)]"
+            value={currentDraft.remark}
+            maxLength={2000}
+            required={isNegative}
+            placeholder={
+              isNegative
+                ? "请说明拒绝原因或需要修改的具体内容"
+                : "可补充选入依据或其他说明"
+            }
+            onChange={(event) =>
+              onDraftChange(item.recordingSubmissionId, {
+                remark: event.target.value,
+              })
+            }
+          />
+          <span className="text-right text-[11px] font-normal tabular-nums text-[var(--ink-500)]">
+            {currentDraft.remark.length}/2000
+          </span>
+        </div>
+      </div>
+
+      <div className="border-t border-[var(--line)] p-4 sm:p-5">
+        <button
+          type="button"
+          data-submission-summary-trigger
+          className="inline-flex min-h-11 w-full items-center justify-center rounded-md bg-[var(--blue-600)] px-4 text-sm font-semibold text-white outline-none hover:bg-[var(--blue-700)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-[var(--ink-200)]"
+          disabled={!canOpenSummary}
+          onClick={onOpenSubmissionSummary}
+        >
+          查看提交汇总
+        </button>
+        {!canOpenSummary ? (
+          <p className="mt-2 text-xs leading-5 text-[var(--ink-500)]">
+            完成全部录屏判断；拒绝或需修改时还需填写备注并选择原因。
+          </p>
+        ) : null}
+      </div>
+    </form>
+  );
+}
+
+function SaveStateIndicator({
+  state,
+  onRetry,
+}: {
+  state: ReviewDraftSaveState;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      className={`flex items-center gap-1.5 text-xs font-medium ${
+        state === "failed"
+          ? "text-[var(--danger-600)]"
+          : state === "saved"
+            ? "text-[var(--ok-600)]"
+            : "text-[var(--ink-500)]"
+      }`}
+      role="status"
+      aria-live="polite"
+    >
+      {state === "saving" ? (
+        <LoaderCircle
+          className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none"
+          aria-hidden="true"
+        />
+      ) : state === "saved" ? (
+        <Check className="h-3.5 w-3.5" aria-hidden="true" />
+      ) : state === "failed" ? (
+        <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+      ) : null}
+      <span>{saveLabels[state]}</span>
+      {state === "failed" ? (
+        <button
+          type="button"
+          className="ml-1 inline-flex min-h-8 items-center gap-1 rounded px-2 font-semibold outline-none hover:bg-[var(--danger-50)] focus-visible:ring-2 focus-visible:ring-[var(--danger-600)]"
+          onClick={onRetry}
+        >
+          <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+          重试保存
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function PlaybackFallback({
+  item,
+}: {
+  item: PublicAdmissionShareBoard["items"][number];
+}) {
+  return (
+    <div className="grid aspect-video place-items-center rounded-md bg-black p-6 text-center text-white">
+      <div>
+        <AlertTriangle
+          className="mx-auto h-7 w-7 text-[var(--warn-600)]"
+          aria-hidden="true"
+        />
+        <p className="mt-3 text-sm font-semibold">视频加载失败</p>
+        <p className="mx-auto mt-1 max-w-md text-xs leading-5 text-[var(--ink-200)]">
+          请尝试重新加载；若仍无法播放，可打开允许的外部来源并反馈问题。
+        </p>
+        {item.externalUrl ? (
+          <a
+            className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md border border-white/30 px-3 text-xs font-semibold outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white"
+            href={item.externalUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            打开外部录屏
+            <ExternalLink className="h-4 w-4" aria-hidden="true" />
+          </a>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ExternalRecordingLink({
+  item,
+}: {
+  item: PublicAdmissionShareBoard["items"][number];
+}) {
+  return (
+    <div className="grid aspect-video place-items-center rounded-md bg-black p-6 text-center text-white">
+      <div>
+        <ExternalLink
+          className="mx-auto h-7 w-7 text-[var(--blue-300)]"
+          aria-hidden="true"
+        />
+        <p className="mt-3 text-sm font-semibold">外部平台录屏</p>
+        <p className="mx-auto mt-1 max-w-md text-xs leading-5 text-[var(--ink-200)]">
+          此来源不支持站内播放，请在新窗口查看原始录屏。
+        </p>
+        <a
+          className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md bg-white px-3 text-xs font-semibold text-[var(--ink-900)] outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-white"
+          href={item.externalUrl ?? item.playbackUrl}
+          target="_blank"
+          rel="noreferrer"
+        >
+          打开外部录屏
+          <ExternalLink className="h-4 w-4" aria-hidden="true" />
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function NoPlayableSource() {
+  return (
+    <div className="grid aspect-video place-items-center rounded-md bg-black p-6 text-center text-white">
+      <div>
+        <FileVideo
+          className="mx-auto h-7 w-7 text-[var(--ink-300)]"
+          aria-hidden="true"
+        />
+        <p className="mt-3 text-sm font-semibold">当前没有可播放来源</p>
+        <p className="mt-1 text-xs text-[var(--ink-200)]">
+          请联系分享方补充原始录屏或可访问的外部链接。
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function EmptyRecordingPane() {
+  return (
+    <section
+      aria-label="录屏播放器"
+      className="grid min-h-[420px] place-items-center bg-[var(--ink-900)] p-6 text-center text-white"
+    >
+      <div>
+        <FileVideo
+          className="mx-auto h-8 w-8 text-[var(--ink-300)]"
+          aria-hidden="true"
+        />
+        <p className="mt-3 text-sm font-semibold">本轮暂无录屏</p>
+        <p className="mt-1 text-xs text-[var(--ink-200)]">
+          分享方尚未添加可供查看的录屏。
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function FinalReviewReceipt({
+  item,
+}: {
+  item: PublicAdmissionShareBoard["items"][number];
+}) {
+  if (!item.finalReview) {
+    return null;
+  }
+  return (
+    <dl className="mt-4 grid gap-3 border-t border-[var(--line)] pt-4 text-sm">
+      <div>
+        <dt className="text-xs text-[var(--ink-500)]">已提交结论</dt>
+        <dd className="mt-1 font-semibold text-[var(--ink-900)]">
+          {decisionLabels[item.finalReview.decision]}
+        </dd>
+      </div>
+      {item.finalReview.remark ? (
+        <div>
+          <dt className="text-xs text-[var(--ink-500)]">备注</dt>
+          <dd className="mt-1 whitespace-pre-wrap leading-6 text-[var(--ink-700)]">
+            {item.finalReview.remark}
+          </dd>
+        </div>
+      ) : null}
+    </dl>
+  );
+}
+
+function isDraftComplete(draft: ReviewDraft | undefined) {
+  if (!draft || draft.decision === "pending") {
+    return false;
+  }
+  if (draft.decision === "rejected" || draft.decision === "needs_changes") {
+    return Boolean(draft.remark.trim() && draft.reasonCodes.length > 0);
+  }
+  return true;
+}
+
+function sourceTypeFor(
+  item: PublicAdmissionShareBoard["items"][number],
+): AdmissionSharePlaybackSource {
+  if (
+    item.hasPrivateStorage &&
+    (item.sourceHealth === "original_ready" ||
+      item.sourceHealth === "original_with_external_fallback")
+  ) {
+    return "original";
+  }
+  if (item.sourceHealth === "external_only" && item.externalUrl) {
+    return "external";
+  }
+  return "none";
+}
+
+function sourceHealthLabel(
+  sourceHealth: PublicAdmissionShareBoard["items"][number]["sourceHealth"],
+) {
+  switch (sourceHealth) {
+    case "original_ready":
+      return "原始录屏";
+    case "original_with_external_fallback":
+      return "原始录屏 · 含备用链接";
+    case "external_only":
+      return "外部链接";
+    case "blocked":
+      return "来源不可用";
+  }
+}
+
+function platformEmbedSource(sourceUrl: string) {
+  return bilibiliEmbedSource(sourceUrl) ?? youtubeEmbedSource(sourceUrl);
+}
+
+function bilibiliEmbedSource(sourceUrl: string) {
+  const url = parseUrl(sourceUrl);
+  if (!url || !url.hostname.includes("bilibili.com")) {
+    return null;
+  }
+  const videoId = url.pathname.match(/\/video\/([^/?#]+)/)?.[1];
+  if (!videoId) {
+    return null;
+  }
+  const params = new URLSearchParams();
+  if (videoId.toUpperCase().startsWith("BV")) {
+    params.set("bvid", videoId);
+  } else {
+    params.set("aid", videoId.replace(/^av/i, ""));
+  }
+  return `https://player.bilibili.com/player.html?${params.toString()}`;
+}
+
+export function youtubeEmbedSource(sourceUrl: string) {
+  const url = parseUrl(sourceUrl);
+  if (!url) {
+    return null;
+  }
+  let videoId: string | null = null;
+  if (url.hostname === "youtu.be" || url.hostname.endsWith(".youtu.be")) {
+    videoId = url.pathname.split("/").filter(Boolean)[0] ?? null;
+  }
+  if (url.hostname === "youtube.com" || url.hostname.endsWith(".youtube.com")) {
+    videoId =
+      url.searchParams.get("v") ??
+      url.pathname.match(/^\/(?:shorts|live|embed)\/([^/?#]+)/)?.[1] ??
+      null;
+  }
+  return videoId
+    ? `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`
+    : null;
+}
+
+function parseUrl(sourceUrl: string) {
+  try {
+    return new URL(sourceUrl, "https://delivery.local");
+  } catch {
+    return null;
+  }
+}
+
+function isDirectVideoSource(sourceUrl: string) {
+  const url = parseUrl(sourceUrl);
+  const pathname = (url?.pathname ?? sourceUrl).toLowerCase();
+  return [".mp4", ".webm", ".mov", ".m4v", ".ogg"].some((extension) =>
+    pathname.endsWith(extension),
+  );
+}
+
+const secondaryButtonClass =
+  "inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold text-[var(--ink-700)] outline-none hover:border-[var(--blue-300)] hover:bg-[var(--blue-50)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50";
