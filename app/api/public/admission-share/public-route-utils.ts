@@ -17,6 +17,7 @@ const PUBLIC_ERROR_MESSAGES: Record<PublicAdmissionShareErrorCode, string> = {
   SHARE_EXPIRED: "分享链接已过期或已撤销。",
   RECORDING_NOT_SHARED: "该录屏不在当前分享范围内。",
   REVIEW_VALIDATION_FAILED: "提交内容不完整，请检查后重试。",
+  REVIEW_INCOMPLETE: "复核尚未完成，请补全所有录屏结论和必填备注。",
   RECORDING_VERSION_STALE: "录屏版本已更新，请刷新页面后重新提交。",
   DRAFT_CONFLICT: "其他复核人刚刚更新了结果，请刷新后查看最新内容。",
   DRAFT_SAVE_FAILED: "草稿暂时无法保存，请保留页面并稍后重试。",

@@ -101,6 +101,13 @@ export type AdmissionShareBoardRepository = {
   saveReviewDraft(
     input: SaveAdmissionReviewDraftPersistenceInput,
   ): Promise<AdmissionReviewDraftDto>;
+  submitReview(
+    input: SubmitAdmissionReviewPersistenceInput,
+  ): Promise<SubmitAdmissionReviewResult>;
+  listReviewSubmissions(
+    projectId: string,
+    shareBoardId: string,
+  ): Promise<AdmissionReviewSubmissionDto[]>;
   upsertVendorReviews(
     rows: VendorReviewUpsertInput[],
   ): Promise<Array<{ id: string; recordingSubmissionId: string }>>;
@@ -214,6 +221,7 @@ export class PublicAdmissionShareError extends Error {
       | "SHARE_EXPIRED"
       | "RECORDING_NOT_SHARED"
       | "REVIEW_VALIDATION_FAILED"
+      | "REVIEW_INCOMPLETE"
       | "RECORDING_VERSION_STALE"
       | "DRAFT_CONFLICT"
       | "DRAFT_SAVE_FAILED"
@@ -301,6 +309,55 @@ export type SaveAdmissionReviewDraftPersistenceInput =
     recordingSubmissionId: string;
     savedAt: string;
   };
+
+export type SubmitAdmissionReviewPersistenceInput = {
+  shareBoardId: string;
+  projectRemark: string;
+  submittedAt: string;
+};
+
+export type AdmissionReviewSubmissionResultItem = {
+  vendorReviewId: string;
+  applicationId: string;
+  recordingSubmissionId: string;
+  recordingVersion: number;
+  decision: Exclude<VendorAdmissionDecision, "pending">;
+  remark: string;
+  reasonCodes: string[];
+  syncStatus: "synced" | "skipped";
+  syncError: string | null;
+};
+
+export type SubmitAdmissionReviewResult = {
+  submissionRevision: number;
+  submittedCount: number;
+  syncedCount: number;
+  skippedCount: number;
+  items: AdmissionReviewSubmissionResultItem[];
+};
+
+export type AdmissionReviewSubmissionDto = {
+  id: string;
+  revision: number;
+  projectRemark: string;
+  submittedAt: string;
+  summary: {
+    selected: number;
+    backup: number;
+    rejected: number;
+    needsChanges: number;
+  };
+  items: Array<{
+    applicationId: string;
+    recordingSubmissionId: string;
+    recordingVersion: number;
+    decision: Exclude<VendorAdmissionDecision, "pending">;
+    remark: string;
+    reasonCodes: string[];
+    syncStatus: "synced" | "skipped" | "failed";
+    syncError: string | null;
+  }>;
+};
 
 export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoardRepository {
   constructor(private readonly client: SupabaseClient) {}
@@ -523,6 +580,99 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     return toReviewDraftDto(data);
   }
 
+  async submitReview(
+    input: SubmitAdmissionReviewPersistenceInput,
+  ): Promise<SubmitAdmissionReviewResult> {
+    const { data, error } = await this.client.rpc(
+      "submit_admission_share_review",
+      {
+        p_share_board_id: input.shareBoardId,
+        p_project_remark: input.projectRemark,
+        p_submitted_at: input.submittedAt,
+      },
+    );
+
+    if (error) {
+      throw mapAdmissionShareSubmitRpcError(error);
+    }
+
+    return toSubmitAdmissionReviewResult(data);
+  }
+
+  async listReviewSubmissions(
+    projectId: string,
+    shareBoardId: string,
+  ): Promise<AdmissionReviewSubmissionDto[]> {
+    const { data: submissionData, error: submissionError } = await this.client
+      .from("project_recording_vendor_review_submissions")
+      .select(
+        "id, revision, project_remark, selected_count, backup_count, rejected_count, needs_changes_count, submitted_at",
+      )
+      .eq("project_id", projectId)
+      .eq("share_board_id", shareBoardId)
+      .order("revision", { ascending: false });
+
+    if (submissionError) {
+      throw submissionError;
+    }
+
+    const submissions = (submissionData ??
+      []) as AdmissionReviewSubmissionRow[];
+    if (submissions.length === 0) {
+      return [];
+    }
+
+    const { data: itemData, error: itemError } = await this.client
+      .from("project_recording_vendor_review_submission_items")
+      .select(
+        "submission_id, application_id, recording_submission_id, recording_version, decision, remark, reason_codes, sync_status, sync_error, created_at",
+      )
+      .eq("project_id", projectId)
+      .eq("share_board_id", shareBoardId)
+      .in(
+        "submission_id",
+        submissions.map((submission) => submission.id),
+      )
+      .order("created_at", { ascending: true });
+
+    if (itemError) {
+      throw itemError;
+    }
+
+    const itemsBySubmission = new Map<
+      string,
+      AdmissionReviewSubmissionItemRow[]
+    >();
+    for (const item of (itemData ?? []) as AdmissionReviewSubmissionItemRow[]) {
+      const items = itemsBySubmission.get(item.submission_id) ?? [];
+      items.push(item);
+      itemsBySubmission.set(item.submission_id, items);
+    }
+
+    return submissions.map((submission) => ({
+      id: submission.id,
+      revision: submission.revision,
+      projectRemark: submission.project_remark,
+      submittedAt: submission.submitted_at,
+      summary: {
+        selected: submission.selected_count,
+        backup: submission.backup_count,
+        rejected: submission.rejected_count,
+        needsChanges: submission.needs_changes_count,
+      },
+      items: (itemsBySubmission.get(submission.id) ?? []).map((item) => ({
+        applicationId: item.application_id,
+        recordingSubmissionId: item.recording_submission_id,
+        recordingVersion: item.recording_version,
+        decision: item.decision,
+        remark: item.remark,
+        reasonCodes: item.reason_codes,
+        syncStatus: item.sync_status,
+        syncError: item.sync_error,
+      })),
+    }));
+  }
+
   async upsertVendorReviews(
     rows: VendorReviewUpsertInput[],
   ): Promise<Array<{ id: string; recordingSubmissionId: string }>> {
@@ -692,6 +842,30 @@ type AdmissionReviewDraftRow = {
   reason_codes: string[];
   revision: number;
   updated_at: string;
+};
+
+type AdmissionReviewSubmissionRow = {
+  id: string;
+  revision: number;
+  project_remark: string;
+  selected_count: number;
+  backup_count: number;
+  rejected_count: number;
+  needs_changes_count: number;
+  submitted_at: string;
+};
+
+type AdmissionReviewSubmissionItemRow = {
+  submission_id: string;
+  application_id: string;
+  recording_submission_id: string;
+  recording_version: number;
+  decision: Exclude<VendorAdmissionDecision, "pending">;
+  remark: string;
+  reason_codes: string[];
+  sync_status: "synced" | "skipped" | "failed";
+  sync_error: string | null;
+  created_at: string;
 };
 
 type AdmissionShareBoardWithProjectRow = AdmissionShareBoardRow & {
@@ -1479,17 +1653,7 @@ export async function getPublicAdmissionRecordingPlaybackSource({
 }
 
 export type SubmitVendorAdmissionReviewsInput = {
-  reviewerName?: string;
-  reviewerContact?: string;
   projectRemark?: string;
-  items: Array<{
-    recordingSubmissionId: string;
-    recordingVersion: number;
-    decision: VendorAdmissionDecision;
-    remark?: string;
-    /** 可选理由标签（卡点 key）。厂家不选时由 LLM 归一化兜底。 */
-    reasonCodes?: string[];
-  }>;
 };
 
 /** 厂家带理由标签提交时的评估回写钩子（features/admission-review）。 */
@@ -1537,131 +1701,34 @@ export async function submitVendorAdmissionReviews({
       400,
     );
   }
-  if (!Array.isArray(input.items) || input.items.length === 0) {
-    throw new PublicAdmissionShareError(
-      "REVIEW_VALIDATION_FAILED",
-      "Vendor review submission requires at least one item",
-      400,
-    );
-  }
 
-  const itemsByRecording = new Map(
-    snapshot.items.map((item) => [item.recordingSubmissionId, item]),
-  );
-  const reviewRows: VendorReviewUpsertInput[] = [];
-  let syncedCount = 0;
-  let skippedCount = 0;
-
-  for (const item of input.items) {
-    const snapshotItem = itemsByRecording.get(item.recordingSubmissionId);
-    if (!snapshotItem) {
-      throw new PublicAdmissionShareError(
-        "RECORDING_NOT_SHARED",
-        "Recording is not part of this share board",
-        404,
-      );
-    }
-    if (snapshotItem.recordingVersion !== item.recordingVersion) {
-      throw new PublicAdmissionShareError(
-        "RECORDING_VERSION_STALE",
-        "Recording version is stale",
-        409,
-      );
-    }
-    assertVendorDecision(item.decision);
-
-    const remark = item.remark?.trim() || "";
-    if (
-      (item.decision === "rejected" || item.decision === "needs_changes") &&
-      !remark
-    ) {
-      throw new PublicAdmissionShareError(
-        "REVIEW_VALIDATION_FAILED",
-        "Vendor rejection or change request requires a remark",
-        400,
-      );
-    }
-    const syncPatch = mapVendorDecisionToSyncPatch(
-      item.decision,
-      snapshotItem.applicationStatus,
-    );
-    if (syncPatch.syncStatus === "synced") {
-      syncedCount += 1;
-      if (syncPatch.recordingStatus) {
-        await repo.updateRecordingReviewForVendor(
-          snapshotItem.recordingSubmissionId,
-          {
-            status: syncPatch.recordingStatus,
-            reviewNote: remark,
-            reviewedAt: now,
-          },
-        );
-      }
-      if (syncPatch.applicationStatus) {
-        await repo.updateApplicationStatusForVendor(
-          snapshotItem.applicationId,
-          {
-            status: syncPatch.applicationStatus,
-            decisionReason: remark,
-            decidedAt: now,
-          },
-        );
-      }
-    } else {
-      skippedCount += 1;
-    }
-
-    reviewRows.push({
-      organizationId: snapshot.organizationId,
-      projectId: snapshot.projectId,
+  let result: SubmitAdmissionReviewResult;
+  try {
+    result = await repo.submitReview({
       shareBoardId: snapshot.id,
-      applicationId: snapshotItem.applicationId,
-      recordingSubmissionId: snapshotItem.recordingSubmissionId,
-      recordingVersion: snapshotItem.recordingVersion,
-      decision: item.decision,
-      remark,
-      vendorReviewerName: input.reviewerName?.trim() || "",
-      vendorReviewerContact: input.reviewerContact?.trim() || "",
+      projectRemark: input.projectRemark?.trim() || "",
       submittedAt: now,
-      syncedApplicationStatus: syncPatch.applicationStatus,
-      syncedRecordingStatus: syncPatch.recordingStatus,
-      syncStatus: syncPatch.syncStatus,
-      syncError: null,
     });
+  } catch (error) {
+    throw mapAdmissionShareSubmitRpcError(error);
   }
-
-  const upserted = await repo.upsertVendorReviews(reviewRows);
-  await repo.markShareBoardSubmitted(snapshot.id, now);
 
   // 厂家勾选了理由标签的项，直接落人工评估（无需 LLM 归一化）。
   // 评估失败不影响厂家提交结果——信号沉淀永不阻塞外部方操作。
   if (recordEvaluation) {
-    const vendorReviewIdBySubmission = new Map(
-      upserted.map((row) => [row.recordingSubmissionId, row.id]),
-    );
-    for (const item of input.items) {
-      const reasonCodes = (item.reasonCodes ?? [])
-        .map((code) => code.trim())
-        .filter(Boolean);
-      const vendorReviewId = vendorReviewIdBySubmission.get(
-        item.recordingSubmissionId,
-      );
-      if (!reasonCodes.length || !vendorReviewId) {
-        continue;
-      }
-      const snapshotItem = itemsByRecording.get(item.recordingSubmissionId);
-      if (!snapshotItem) {
+    for (const item of result.items) {
+      if (!item.reasonCodes.length) {
         continue;
       }
       try {
         await recordEvaluation({
           organizationId: snapshot.organizationId,
-          applicationId: snapshotItem.applicationId,
+          applicationId: item.applicationId,
           recordingSubmissionId: item.recordingSubmissionId,
-          vendorReviewId,
+          vendorReviewId: item.vendorReviewId,
           decision: item.decision,
-          remark: item.remark?.trim() || "",
-          reasonCodes,
+          remark: item.remark,
+          reasonCodes: item.reasonCodes,
         });
       } catch {
         // 忽略评估失败；归一化 runner 会兜底。
@@ -1669,11 +1736,7 @@ export async function submitVendorAdmissionReviews({
     }
   }
 
-  return {
-    submittedCount: reviewRows.length,
-    syncedCount,
-    skippedCount,
-  };
+  return result;
 }
 
 export function createShareToken() {
@@ -1812,6 +1875,57 @@ function isAdmissionShareFormalRoundConflictRpcError(error: unknown) {
   return [candidate.constraint, candidate.message].some(
     (value) => typeof value === "string" && value.includes(indexName),
   );
+}
+
+function mapAdmissionShareSubmitRpcError(error: unknown): unknown {
+  if (error instanceof PublicAdmissionShareError) {
+    return error;
+  }
+
+  const message = admissionShareErrorMessage(error);
+  if (message === "admission_share_review_incomplete") {
+    return new PublicAdmissionShareError(
+      "REVIEW_INCOMPLETE",
+      "Admission review is incomplete",
+      400,
+    );
+  }
+  if (message === "admission_share_review_already_locked") {
+    return new PublicAdmissionShareError(
+      "REVIEW_ALREADY_LOCKED",
+      "Admission review is already locked",
+      409,
+    );
+  }
+  if (message === "admission_share_board_not_found") {
+    return new PublicAdmissionShareError(
+      "SHARE_NOT_AVAILABLE",
+      "Share link is not available",
+      404,
+    );
+  }
+  if (message === "admission_share_board_not_active") {
+    return new PublicAdmissionShareError(
+      "SHARE_EXPIRED",
+      "Share link is expired or revoked",
+      410,
+    );
+  }
+  if (message === "admission_share_selection_changed") {
+    return new PublicAdmissionShareError(
+      "RECORDING_VERSION_STALE",
+      "Recording version is stale",
+      409,
+    );
+  }
+  if (message === "admission_share_submit_invalid") {
+    return new PublicAdmissionShareError(
+      "REVIEW_VALIDATION_FAILED",
+      "Vendor review submission is invalid",
+      400,
+    );
+  }
+  return error;
 }
 
 function mapAdmissionShareLifecycleRpcError(error: unknown): unknown {
@@ -2214,6 +2328,82 @@ function toReviewDraftDto(
     revision: row.revision,
     updatedAt: row.updated_at,
   };
+}
+
+function toSubmitAdmissionReviewResult(
+  value: unknown,
+): SubmitAdmissionReviewResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("admission_share_submit_invalid_result");
+  }
+
+  const row = value as Record<string, unknown>;
+  const items = Array.isArray(row.items) ? row.items : [];
+  return {
+    submissionRevision: requiredNonnegativeInteger(
+      row.submissionRevision,
+      "submissionRevision",
+    ),
+    submittedCount: requiredNonnegativeInteger(
+      row.submittedCount,
+      "submittedCount",
+    ),
+    syncedCount: requiredNonnegativeInteger(row.syncedCount, "syncedCount"),
+    skippedCount: requiredNonnegativeInteger(row.skippedCount, "skippedCount"),
+    items: items.map(toSubmitAdmissionReviewResultItem),
+  };
+}
+
+function toSubmitAdmissionReviewResultItem(
+  value: unknown,
+): AdmissionReviewSubmissionResultItem {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("admission_share_submit_invalid_result");
+  }
+  const row = value as Record<string, unknown>;
+  const decision = row.decision;
+  const syncStatus = row.syncStatus;
+  if (
+    (decision !== "selected" &&
+      decision !== "backup" &&
+      decision !== "rejected" &&
+      decision !== "needs_changes") ||
+    (syncStatus !== "synced" && syncStatus !== "skipped")
+  ) {
+    throw new Error("admission_share_submit_invalid_result");
+  }
+  return {
+    vendorReviewId: requiredResultString(row.vendorReviewId),
+    applicationId: requiredResultString(row.applicationId),
+    recordingSubmissionId: requiredResultString(row.recordingSubmissionId),
+    recordingVersion: requiredNonnegativeInteger(
+      row.recordingVersion,
+      "recordingVersion",
+    ),
+    decision,
+    remark: typeof row.remark === "string" ? row.remark : "",
+    reasonCodes: Array.isArray(row.reasonCodes)
+      ? row.reasonCodes.filter(
+          (reasonCode): reasonCode is string => typeof reasonCode === "string",
+        )
+      : [],
+    syncStatus,
+    syncError: typeof row.syncError === "string" ? row.syncError : null,
+  };
+}
+
+function requiredNonnegativeInteger(value: unknown, field: string) {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new Error(`admission_share_submit_invalid_result:${field}`);
+  }
+  return Number(value);
+}
+
+function requiredResultString(value: unknown) {
+  if (typeof value !== "string" || !value) {
+    throw new Error("admission_share_submit_invalid_result");
+  }
+  return value;
 }
 
 function toPublicProject(row: AdmissionShareBoardWithProjectRow) {

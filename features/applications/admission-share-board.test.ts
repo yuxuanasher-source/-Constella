@@ -58,6 +58,8 @@ function createRepo(
     rotateShareBoardToken: vi.fn(),
     revokeShareBoard: vi.fn(),
     getPublicShareBoardSnapshot: vi.fn(),
+    submitReview: vi.fn(),
+    listReviewSubmissions: vi.fn().mockResolvedValue([]),
     upsertVendorReviews: vi.fn(),
     updateRecordingReviewForVendor: vi.fn(),
     updateApplicationStatusForVendor: vi.fn(),
@@ -1396,41 +1398,168 @@ describe("admission share board service", () => {
     ).rejects.toThrow("Share link is expired or revoked");
   });
 
-  it("records human-tagged evaluations when vendors pick reason codes", async () => {
+  it("rejects an incomplete formal review before mutating business state", async () => {
     const repo = createRepo({
       getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
-      upsertVendorReviews: vi.fn().mockResolvedValue([
-        { id: "vendor-review-1", recordingSubmissionId: "rec-1" },
-        { id: "vendor-review-2", recordingSubmissionId: "rec-2" },
-      ]),
+      submitReview: vi
+        .fn()
+        .mockRejectedValue(new Error("admission_share_review_incomplete")),
     });
-    const recordEvaluation = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      submitVendorAdmissionReviews({
+        repo,
+        token: "plain-token",
+        input: { projectRemark: "首轮复核完成" },
+        now: "2026-06-07T05:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "REVIEW_INCOMPLETE",
+      statusCode: 400,
+    });
+    expect(repo.updateRecordingReviewForVendor).not.toHaveBeenCalled();
+    expect(repo.updateApplicationStatusForVendor).not.toHaveBeenCalled();
+  });
+
+  it("locks one atomic submission and never auto-joins selected streamers", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      submitReview: vi.fn().mockResolvedValue({
+        submissionRevision: 2,
+        submittedCount: 4,
+        syncedCount: 3,
+        skippedCount: 1,
+        items: [
+          {
+            vendorReviewId: "review-selected",
+            applicationId: "app-1",
+            recordingSubmissionId: "rec-1",
+            recordingVersion: 2,
+            decision: "selected",
+            remark: "适合本次合作",
+            reasonCodes: [],
+            syncStatus: "synced",
+            syncError: null,
+          },
+        ],
+      }),
+    });
+
+    const result = await submitVendorAdmissionReviews({
+      repo,
+      token: "plain-token",
+      input: { projectRemark: "首轮复核完成" },
+      now: "2026-06-07T05:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      submissionRevision: 2,
+      submittedCount: 4,
+      syncedCount: 3,
+      skippedCount: 1,
+    });
+    expect(repo.submitReview).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      projectRemark: "首轮复核完成",
+      submittedAt: "2026-06-07T05:00:00.000Z",
+    });
+    expect(repo.updateRecordingReviewForVendor).not.toHaveBeenCalled();
+    expect(repo.updateApplicationStatusForVendor).not.toHaveBeenCalled();
+    expect(repo.upsertVendorReviews).not.toHaveBeenCalled();
+    expect(repo.markShareBoardSubmitted).not.toHaveBeenCalled();
+    expect(
+      (repo as unknown as { createProjectStreamer?: unknown })
+        .createProjectStreamer,
+    ).toBeUndefined();
+  });
+
+  it("records but does not sync a historical recording result", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      submitReview: vi.fn().mockResolvedValue({
+        submissionRevision: 1,
+        submittedCount: 1,
+        syncedCount: 0,
+        skippedCount: 1,
+        items: [
+          {
+            vendorReviewId: "review-old",
+            applicationId: "app-1",
+            recordingSubmissionId: "recording-v1",
+            recordingVersion: 1,
+            decision: "rejected",
+            remark: "旧版不采用",
+            reasonCodes: ["script_fit"],
+            syncStatus: "skipped",
+            syncError: "superseded_recording_version",
+          },
+        ],
+      }),
+    });
+
+    const result = await submitVendorAdmissionReviews({
+      repo,
+      token: "plain-token",
+      input: { projectRemark: "复核完成" },
+      now: "2026-06-07T05:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      skippedCount: 1,
+    });
+  });
+
+  it("records human-tagged evaluations only after the atomic submission", async () => {
+    const callOrder: string[] = [];
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      submitReview: vi.fn().mockImplementation(async () => {
+        callOrder.push("submit");
+        return {
+          submissionRevision: 1,
+          submittedCount: 2,
+          syncedCount: 1,
+          skippedCount: 1,
+          items: [
+            {
+              vendorReviewId: "vendor-review-1",
+              applicationId: "app-1",
+              recordingSubmissionId: "rec-1",
+              recordingVersion: 2,
+              decision: "rejected",
+              remark: "话术不贴卖点",
+              reasonCodes: ["script_fit"],
+              syncStatus: "synced",
+              syncError: null,
+            },
+            {
+              vendorReviewId: "vendor-review-2",
+              applicationId: "app-2",
+              recordingSubmissionId: "rec-2",
+              recordingVersion: 1,
+              decision: "backup",
+              remark: "备选",
+              reasonCodes: [],
+              syncStatus: "skipped",
+              syncError: "application_already_joined",
+            },
+          ],
+        };
+      }),
+    });
+    const recordEvaluation = vi.fn().mockImplementation(async () => {
+      callOrder.push("evaluate");
+    });
 
     await submitVendorAdmissionReviews({
       repo,
       token: "plain-token",
-      input: {
-        items: [
-          {
-            recordingSubmissionId: "rec-1",
-            recordingVersion: 2,
-            decision: "rejected",
-            remark: "话术不贴卖点",
-            reasonCodes: ["script_fit"],
-          },
-          {
-            recordingSubmissionId: "rec-2",
-            recordingVersion: 1,
-            decision: "backup",
-            remark: "备选",
-          },
-        ],
-      },
+      input: { projectRemark: "完成" },
       now: "2026-06-07T05:00:00.000Z",
       recordEvaluation,
     });
 
-    // 只有带理由标签的项触发评估；无标签项交给 LLM 归一化 runner 兜底。
+    expect(callOrder).toEqual(["submit", "evaluate"]);
     expect(recordEvaluation).toHaveBeenCalledTimes(1);
     expect(recordEvaluation).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1445,248 +1574,64 @@ describe("admission share board service", () => {
     );
   });
 
-  it("never fails a vendor submission because evaluation recording failed", async () => {
+  it("never rolls back a successful submission when evaluation recording fails", async () => {
     const repo = createRepo({
       getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
-      upsertVendorReviews: vi
-        .fn()
-        .mockResolvedValue([
-          { id: "vendor-review-1", recordingSubmissionId: "rec-1" },
-        ]),
-    });
-
-    const result = await submitVendorAdmissionReviews({
-      repo,
-      token: "plain-token",
-      input: {
+      submitReview: vi.fn().mockResolvedValue({
+        submissionRevision: 1,
+        submittedCount: 1,
+        syncedCount: 1,
+        skippedCount: 0,
         items: [
           {
+            vendorReviewId: "vendor-review-1",
+            applicationId: "app-1",
             recordingSubmissionId: "rec-1",
             recordingVersion: 2,
             decision: "rejected",
             remark: "违规承诺",
             reasonCodes: ["compliance_violation"],
+            syncStatus: "synced",
+            syncError: null,
           },
         ],
-      },
-      now: "2026-06-07T05:00:00.000Z",
-      recordEvaluation: vi.fn().mockRejectedValue(new Error("boom")),
-    });
-
-    expect(result.submittedCount).toBe(1);
-  });
-
-  it("submits vendor reviews and syncs selected decisions", async () => {
-    const repo = createRepo({
-      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      }),
     });
 
     const result = await submitVendorAdmissionReviews({
       repo,
       token: "plain-token",
-      input: {
-        reviewerName: "Vendor Reviewer",
-        reviewerContact: "reviewer@example.com",
-        items: [
-          {
-            recordingSubmissionId: "rec-1",
-            recordingVersion: 2,
-            decision: "selected",
-            remark: "Good fit.",
-          },
-          {
-            recordingSubmissionId: "rec-2",
-            recordingVersion: 1,
-            decision: "backup",
-            remark: "Backup only.",
-          },
-        ],
-      },
+      input: {},
       now: "2026-06-07T05:00:00.000Z",
+      recordEvaluation: vi.fn().mockRejectedValue(new Error("boom")),
     });
 
-    expect(result).toEqual({
-      submittedCount: 2,
-      syncedCount: 1,
-      skippedCount: 1,
+    expect(result).toMatchObject({
+      submissionRevision: 1,
+      submittedCount: 1,
     });
-    expect(repo.upsertVendorReviews).toHaveBeenCalledWith([
-      expect.objectContaining({
-        decision: "selected",
-        syncedApplicationStatus: "recording_approved",
-        syncedRecordingStatus: "approved",
-        syncStatus: "synced",
-      }),
-      expect.objectContaining({
-        decision: "backup",
-        syncedApplicationStatus: null,
-        syncedRecordingStatus: null,
-        syncStatus: "skipped",
-      }),
-    ]);
-    expect(repo.updateRecordingReviewForVendor).toHaveBeenCalledWith(
-      "rec-1",
-      expect.objectContaining({ status: "approved", reviewNote: "Good fit." }),
-    );
-    expect(repo.updateApplicationStatusForVendor).toHaveBeenCalledWith(
-      "app-1",
-      expect.objectContaining({
-        status: "recording_approved",
-        decisionReason: "Good fit.",
-      }),
-    );
-    expect(repo.markShareBoardSubmitted).toHaveBeenCalledWith(
-      "share-1",
-      "2026-06-07T05:00:00.000Z",
-    );
+    expect(repo.submitReview).toHaveBeenCalledTimes(1);
   });
 
-  it("persists vendor backup decisions without changing MCN-approved statuses", async () => {
+  it("maps locked retry races to one stable public conflict", async () => {
     const repo = createRepo({
       getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
-    });
-
-    await submitVendorAdmissionReviews({
-      repo,
-      token: "plain-token",
-      input: {
-        reviewerName: "Vendor",
-        items: [
-          {
-            recordingSubmissionId: "rec-1",
-            recordingVersion: 2,
-            decision: "backup",
-            remark: "Keep as backup.",
-          },
-        ],
-      },
-      now: "2026-06-07T08:00:00.000Z",
-    });
-
-    expect(repo.updateRecordingReviewForVendor).not.toHaveBeenCalled();
-    expect(repo.updateApplicationStatusForVendor).not.toHaveBeenCalled();
-    expect(repo.upsertVendorReviews).toHaveBeenCalledWith([
-      expect.objectContaining({
-        decision: "backup",
-        remark: "Keep as backup.",
-        syncedApplicationStatus: null,
-        syncedRecordingStatus: null,
-        syncStatus: "synced",
-      }),
-    ]);
-  });
-
-  it.each([
-    {
-      decision: "rejected",
-      expectedApplicationStatus: "recording_rejected",
-      expectedRecordingStatus: "rejected",
-      remark: "Quality is not enough.",
-    },
-    {
-      decision: "needs_changes",
-      expectedApplicationStatus: "recording_required",
-      expectedRecordingStatus: "needs_changes",
-      remark: "Please add gameplay intro.",
-    },
-  ] as const)(
-    "syncs vendor $decision to recording and application details",
-    async ({
-      decision,
-      expectedApplicationStatus,
-      expectedRecordingStatus,
-      remark,
-    }) => {
-      const repo = createRepo({
-        getPublicShareBoardSnapshot: vi
-          .fn()
-          .mockResolvedValue(publicSnapshot()),
-      });
-
-      await submitVendorAdmissionReviews({
-        repo,
-        token: "plain-token",
-        input: {
-          items: [
-            {
-              recordingSubmissionId: "rec-1",
-              recordingVersion: 2,
-              decision,
-              remark,
-            },
-          ],
-        },
-        now: "2026-06-07T08:00:00.000Z",
-      });
-
-      expect(repo.updateRecordingReviewForVendor).toHaveBeenCalledWith(
-        "rec-1",
-        expect.objectContaining({
-          status: expectedRecordingStatus,
-          reviewNote: remark,
-        }),
-      );
-      expect(repo.updateApplicationStatusForVendor).toHaveBeenCalledWith(
-        "app-1",
-        expect.objectContaining({
-          status: expectedApplicationStatus,
-          decisionReason: remark,
-        }),
-      );
-    },
-  );
-
-  it.each(["rejected", "needs_changes"] as const)(
-    "requires a remark for vendor %s decisions",
-    async (decision) => {
-      const repo = createRepo({
-        getPublicShareBoardSnapshot: vi
-          .fn()
-          .mockResolvedValue(publicSnapshot()),
-      });
-
-      await expect(
-        submitVendorAdmissionReviews({
-          repo,
-          token: "plain-token",
-          input: {
-            items: [
-              {
-                recordingSubmissionId: "rec-1",
-                recordingVersion: 2,
-                decision,
-                remark: " ",
-              },
-            ],
-          },
-          now: "2026-06-07T08:00:00.000Z",
-        }),
-      ).rejects.toThrow("Vendor rejection or change request requires a remark");
-    },
-  );
-
-  it("rejects stale recording versions on vendor submit", async () => {
-    const repo = createRepo({
-      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      submitReview: vi
+        .fn()
+        .mockRejectedValue(new Error("admission_share_review_already_locked")),
     });
 
     await expect(
       submitVendorAdmissionReviews({
         repo,
         token: "plain-token",
-        input: {
-          reviewerName: "Vendor Reviewer",
-          items: [
-            {
-              recordingSubmissionId: "rec-1",
-              recordingVersion: 1,
-              decision: "selected",
-            },
-          ],
-        },
+        input: {},
         now: "2026-06-07T05:00:00.000Z",
       }),
-    ).rejects.toThrow("Recording version is stale");
+    ).rejects.toMatchObject({
+      code: "REVIEW_ALREADY_LOCKED",
+      statusCode: 409,
+    });
   });
 
   it("extends a share board through the lifecycle repository and audits the new expiry", async () => {

@@ -17,7 +17,6 @@ import {
   type SubmitVendorAdmissionReviewsInput,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
-import type { VendorAdmissionDecision } from "@/features/applications/admission-board";
 import {
   optionalString,
   readJsonBody,
@@ -113,39 +112,6 @@ function toVendorReviewInput(
   body: Record<string, unknown>,
 ): SubmitVendorAdmissionReviewsInput {
   return {
-    reviewerName: optionalString(body, "reviewerName"),
-    reviewerContact: optionalString(body, "reviewerContact"),
     projectRemark: optionalString(body, "projectRemark"),
-    items: Array.isArray(body.items) ? body.items.map(toReviewItem) : [],
   };
-}
-
-function toReviewItem(value: unknown) {
-  const item = isRecord(value) ? value : {};
-  return {
-    recordingSubmissionId: optionalString(item, "recordingSubmissionId") ?? "",
-    recordingVersion: numberValue(item.recordingVersion),
-    decision: (optionalString(item, "decision") ??
-      "pending") as VendorAdmissionDecision,
-    remark: optionalString(item, "remark"),
-    reasonCodes: stringArrayValue(item.reasonCodes),
-  };
-}
-
-function stringArrayValue(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function numberValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
