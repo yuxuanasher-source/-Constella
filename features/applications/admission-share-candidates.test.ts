@@ -6,6 +6,33 @@ import {
   SupabaseAdmissionShareCandidateRepository,
 } from "./admission-share-candidates";
 
+function candidateRow(index: number) {
+  return {
+    id: `recording-${index}`,
+    application_id: `app-${index}`,
+    streamer_id: `streamer-${index}`,
+    version: 1,
+    status: "rejected",
+    storage_path: `org-contributor/recordings/original-${index}.mp4`,
+    external_url: null,
+    mcn_review_decision: "approved",
+    mcn_reviewed_at: "2026-07-30T08:00:00.000Z",
+    streamer: {
+      id: `streamer-${index}`,
+      display_name: `主播${index}`,
+      streamer_accounts: [
+        {
+          account_handle: `dy_${index}`,
+          is_primary: true,
+          created_at: "2026-07-01T00:00:00.000Z",
+        },
+      ],
+    },
+    vendor_reviews: [],
+    share_items: [],
+  };
+}
+
 describe("admission share candidates", () => {
   it("lets the host list every contributor-owned historical version", async () => {
     const rows = [
@@ -68,16 +95,16 @@ describe("admission share candidates", () => {
       },
     ];
     const order = vi.fn();
+    const range = vi.fn().mockResolvedValue({ data: rows, error: null });
     const recordingQuery = {
       select: vi.fn(),
       eq: vi.fn(),
       order,
+      range,
     };
     recordingQuery.select.mockReturnValue(recordingQuery);
     recordingQuery.eq.mockReturnValue(recordingQuery);
-    order
-      .mockReturnValueOnce(recordingQuery)
-      .mockResolvedValueOnce({ data: rows, error: null });
+    order.mockReturnValue(recordingQuery);
     const projectMaybeSingle = vi.fn().mockResolvedValue({
       data: { id: "project-1", organization_id: "org-1" },
       error: null,
@@ -156,6 +183,127 @@ describe("admission share candidates", () => {
     expect(order).toHaveBeenNthCalledWith(2, "version", {
       ascending: false,
     });
+  });
+
+  it("paginates beyond the PostgREST max rows without omissions or duplicates", async () => {
+    const rows = Array.from({ length: 1001 }, (_, index) =>
+      candidateRow(index),
+    );
+    rows[999] = {
+      ...rows[999],
+      application_id: "app-page-boundary",
+      version: 2,
+    };
+    rows[1000] = {
+      ...rows[1000],
+      application_id: "app-page-boundary",
+      version: 1,
+    };
+    const range = vi
+      .fn()
+      .mockResolvedValueOnce({ data: rows.slice(0, 1000), error: null })
+      .mockResolvedValueOnce({ data: rows.slice(1000), error: null });
+    const recordingQuery = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      order: vi.fn(),
+      range,
+    };
+    recordingQuery.select.mockReturnValue(recordingQuery);
+    recordingQuery.eq.mockReturnValue(recordingQuery);
+    recordingQuery.order.mockReturnValue(recordingQuery);
+    const projectMaybeSingle = vi.fn().mockResolvedValue({
+      data: { id: "project-1" },
+      error: null,
+    });
+    const projectQuery = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      maybeSingle: projectMaybeSingle,
+    };
+    projectQuery.select.mockReturnValue(projectQuery);
+    projectQuery.eq.mockReturnValue(projectQuery);
+    const from = vi.fn((table: string) =>
+      table === "projects" ? projectQuery : recordingQuery,
+    );
+    const repo = new SupabaseAdmissionShareCandidateRepository({
+      from,
+    } as never);
+
+    const candidates = await listAdmissionShareCandidates(repo, {
+      organizationId: "org-1",
+      projectId: "project-1",
+    });
+
+    expect(candidates).toHaveLength(1001);
+    expect(
+      new Set(candidates.map((item) => item.recordingSubmissionId)).size,
+    ).toBe(1001);
+    expect(candidates[999].isLatestVersion).toBe(true);
+    expect(candidates[1000].isLatestVersion).toBe(false);
+    expect(range).toHaveBeenNthCalledWith(1, 0, 999);
+    expect(range).toHaveBeenNthCalledWith(2, 1000, 1999);
+    expect(recordingQuery.order).toHaveBeenNthCalledWith(1, "application_id", {
+      ascending: true,
+    });
+    expect(recordingQuery.order).toHaveBeenNthCalledWith(2, "version", {
+      ascending: false,
+    });
+    expect(recordingQuery.order).toHaveBeenNthCalledWith(3, "application_id", {
+      ascending: true,
+    });
+    expect(recordingQuery.order).toHaveBeenNthCalledWith(4, "version", {
+      ascending: false,
+    });
+    expect(
+      from.mock.calls.filter(([table]) => table === "projects"),
+    ).toHaveLength(1);
+    expect(
+      from.mock.calls.filter(([table]) => table === "recording_submissions"),
+    ).toHaveLength(2);
+  });
+
+  it("aborts candidate pagination when a later page fails", async () => {
+    const rows = Array.from({ length: 1000 }, (_, index) =>
+      candidateRow(index),
+    );
+    const pageError = new Error("candidate page failed");
+    const range = vi
+      .fn()
+      .mockResolvedValueOnce({ data: rows, error: null })
+      .mockResolvedValueOnce({ data: null, error: pageError });
+    const recordingQuery = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      order: vi.fn(),
+      range,
+    };
+    recordingQuery.select.mockReturnValue(recordingQuery);
+    recordingQuery.eq.mockReturnValue(recordingQuery);
+    recordingQuery.order.mockReturnValue(recordingQuery);
+    const projectQuery = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      maybeSingle: vi.fn().mockResolvedValue({
+        data: { id: "project-1" },
+        error: null,
+      }),
+    };
+    projectQuery.select.mockReturnValue(projectQuery);
+    projectQuery.eq.mockReturnValue(projectQuery);
+    const repo = new SupabaseAdmissionShareCandidateRepository({
+      from: vi.fn((table: string) =>
+        table === "projects" ? projectQuery : recordingQuery,
+      ),
+    } as never);
+
+    await expect(
+      listAdmissionShareCandidates(repo, {
+        organizationId: "org-1",
+        projectId: "project-1",
+      }),
+    ).rejects.toBe(pageError);
+    expect(range).toHaveBeenCalledTimes(2);
   });
 
   it("lets the host play a contributor-owned original without mutable status filters", async () => {

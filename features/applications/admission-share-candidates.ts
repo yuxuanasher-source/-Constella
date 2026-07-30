@@ -46,6 +46,8 @@ type PlaybackRow = {
   external_url: string | null;
 };
 
+const candidatePageSize = 1000;
+
 export type AdmissionShareCandidateDto = {
   applicationId: string;
   recordingSubmissionId: string;
@@ -91,45 +93,55 @@ export class SupabaseAdmissionShareCandidateRepository implements AdmissionShare
   }): Promise<AdmissionShareCandidateDto[]> {
     await this.assertProjectOwnership(input);
 
-    const { data, error } = await this.supabase
-      .from("recording_submissions")
-      .select(
-        `
-          id,
-          application_id,
-          streamer_id,
-          version,
-          storage_path,
-          external_url,
-          mcn_review_decision,
-          mcn_reviewed_at,
-          streamer:streamers (
+    const rows: CandidateRow[] = [];
+    for (let from = 0; ; from += candidatePageSize) {
+      const { data, error } = await this.supabase
+        .from("recording_submissions")
+        .select(
+          `
             id,
-            display_name,
-            streamer_accounts (
-              account_handle,
-              is_primary,
+            application_id,
+            streamer_id,
+            version,
+            storage_path,
+            external_url,
+            mcn_review_decision,
+            mcn_reviewed_at,
+            streamer:streamers (
+              id,
+              display_name,
+              streamer_accounts (
+                account_handle,
+                is_primary,
+                created_at
+              )
+            ),
+            vendor_reviews:project_recording_vendor_reviews (
+              decision,
+              submitted_at
+            ),
+            share_items:project_recording_share_items (
               created_at
             )
-          ),
-          vendor_reviews:project_recording_vendor_reviews (
-            decision,
-            submitted_at
-          ),
-          share_items:project_recording_share_items (
-            created_at
-          )
-        `,
-      )
-      .eq("project_id", input.projectId)
-      .order("application_id", { ascending: true })
-      .order("version", { ascending: false });
+          `,
+        )
+        .eq("project_id", input.projectId)
+        .order("application_id", { ascending: true })
+        .order("version", { ascending: false })
+        .range(from, from + candidatePageSize - 1);
 
-    if (error) {
-      throw error;
+      if (error) {
+        throw error;
+      }
+
+      const page = (data ?? []) as unknown as CandidateRow[];
+      rows.push(...page);
+      if (page.length < candidatePageSize) {
+        break;
+      }
     }
 
-    return toCandidateDtos((data ?? []) as unknown as CandidateRow[]);
+    return toCandidateDtos(rows);
   }
 
   async getPlaybackSource(input: {
