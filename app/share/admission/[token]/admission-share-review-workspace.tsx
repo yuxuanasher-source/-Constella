@@ -87,11 +87,19 @@ export function AdmissionShareReviewWorkspace({
 }: AdmissionShareReviewWorkspaceProps) {
   const [pendingOnly, setPendingOnly] = useState(false);
   const [isListOpen, setIsListOpen] = useState(false);
-  const [playbackReportState, setPlaybackReportState] = useState<
-    Record<string, "idle" | "reporting" | "reported" | "failed">
-  >({});
+  const [playbackReportState, setPlaybackReportState] = useState<{
+    boardId: string;
+    reports: Record<string, "idle" | "reporting" | "reported" | "failed">;
+  }>(() => ({ boardId: board.id, reports: {} }));
   const listTriggerRef = useRef<HTMLButtonElement>(null);
   const playbackReportLocksRef = useRef(new Set<string>());
+  const playbackReportGenerationRef = useRef(new Map<string, number>());
+  const mountedRef = useRef(false);
+  const currentBoardIdRef = useRef(board.id);
+  const currentRecordingIdRef = useRef(activeRecordingId);
+  const previousRecordingIdRef = useRef(activeRecordingId);
+  const currentPlaybackReports =
+    playbackReportState.boardId === board.id ? playbackReportState.reports : {};
   const activeIndex = Math.max(
     0,
     board.items.findIndex(
@@ -113,6 +121,42 @@ export function AdmissionShareReviewWorkspace({
       ),
     [board.items, drafts, isEditable],
   );
+
+  useEffect(() => {
+    const playbackReportLocks = playbackReportLocksRef.current;
+    const playbackReportGenerations = playbackReportGenerationRef.current;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      playbackReportLocks.clear();
+      playbackReportGenerations.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    currentBoardIdRef.current = board.id;
+    playbackReportLocksRef.current.clear();
+    playbackReportGenerationRef.current.clear();
+  }, [board.id]);
+
+  useEffect(() => {
+    currentRecordingIdRef.current = activeRecordingId;
+    const previousRecordingId = previousRecordingIdRef.current;
+    previousRecordingIdRef.current = activeRecordingId;
+    if (previousRecordingId === activeRecordingId) {
+      return;
+    }
+    playbackReportLocksRef.current.delete(previousRecordingId);
+    playbackReportGenerationRef.current.delete(previousRecordingId);
+    setPlaybackReportState((current) => {
+      if (current.reports[previousRecordingId] !== "reporting") {
+        return current;
+      }
+      const reports = { ...current.reports };
+      delete reports[previousRecordingId];
+      return { ...current, reports };
+    });
+  }, [activeRecordingId]);
 
   const closeListAndRestoreFocus = () => {
     setIsListOpen(false);
@@ -141,21 +185,46 @@ export function AdmissionShareReviewWorkspace({
       return;
     }
     playbackReportLocksRef.current.add(recordingSubmissionId);
-    setPlaybackReportState((current) => ({
-      ...current,
-      [recordingSubmissionId]: "reporting",
-    }));
-    const reported = await onReportPlaybackIssue(
+    const requestGeneration =
+      (playbackReportGenerationRef.current.get(recordingSubmissionId) ?? 0) + 1;
+    playbackReportGenerationRef.current.set(
       recordingSubmissionId,
-      sourceType,
+      requestGeneration,
     );
-    if (!reported) {
-      playbackReportLocksRef.current.delete(recordingSubmissionId);
-    }
+    const requestBoardId = board.id;
     setPlaybackReportState((current) => ({
-      ...current,
-      [recordingSubmissionId]: reported ? "reported" : "failed",
+      boardId: requestBoardId,
+      reports: {
+        ...(current.boardId === requestBoardId ? current.reports : {}),
+        [recordingSubmissionId]: "reporting",
+      },
     }));
+    let reported = false;
+    try {
+      reported = await onReportPlaybackIssue(recordingSubmissionId, sourceType);
+    } catch {
+      reported = false;
+    } finally {
+      const isCurrentRequest =
+        mountedRef.current &&
+        currentBoardIdRef.current === requestBoardId &&
+        currentRecordingIdRef.current === recordingSubmissionId &&
+        playbackReportGenerationRef.current.get(recordingSubmissionId) ===
+          requestGeneration;
+      if (!reported || !isCurrentRequest) {
+        playbackReportLocksRef.current.delete(recordingSubmissionId);
+      }
+      if (!isCurrentRequest) {
+        return;
+      }
+      setPlaybackReportState((current) => ({
+        boardId: requestBoardId,
+        reports: {
+          ...(current.boardId === requestBoardId ? current.reports : {}),
+          [recordingSubmissionId]: reported ? "reported" : "failed",
+        },
+      }));
+    }
   };
 
   return (
@@ -197,7 +266,7 @@ export function AdmissionShareReviewWorkspace({
             key={activeItem.recordingSubmissionId}
             item={activeItem}
             reportState={
-              playbackReportState[activeItem.recordingSubmissionId] ?? "idle"
+              currentPlaybackReports[activeItem.recordingSubmissionId] ?? "idle"
             }
             onReportPlaybackIssue={reportPlaybackIssue}
           />
@@ -493,7 +562,8 @@ function ActiveRecordingPane({
           {playbackFailed ? (
             <PlaybackFallback
               item={safeItem}
-              onRetryOriginal={() => {
+              sourceType={sourceType}
+              onRetryPlayback={() => {
                 setPlaybackAttempt((current) => current + 1);
                 setPlaybackFailed(false);
               }}
@@ -838,11 +908,14 @@ function SaveStateIndicator({
 
 function PlaybackFallback({
   item,
-  onRetryOriginal,
+  sourceType,
+  onRetryPlayback,
 }: {
   item: PublicAdmissionShareBoard["items"][number];
-  onRetryOriginal: () => void;
+  sourceType: AdmissionSharePlaybackSource;
+  onRetryPlayback: () => void;
 }) {
+  const externalOnly = sourceType === "external" && !item.hasPrivateStorage;
   return (
     <div className="grid aspect-video place-items-center rounded-md bg-black p-6 text-center text-white">
       <div>
@@ -858,10 +931,10 @@ function PlaybackFallback({
           <button
             type="button"
             className="inline-flex min-h-11 items-center gap-2 rounded-md bg-white px-3 text-xs font-semibold text-[var(--ink-900)] outline-none hover:bg-[var(--ink-50)] focus-visible:ring-2 focus-visible:ring-white"
-            onClick={onRetryOriginal}
+            onClick={onRetryPlayback}
           >
             <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            重试原始视频
+            {externalOnly ? "重试外部视频" : "重试原始视频"}
           </button>
           {item.externalUrl ? (
             <a
@@ -870,7 +943,7 @@ function PlaybackFallback({
               target="_blank"
               rel="noreferrer"
             >
-              打开备用视频
+              {externalOnly ? "打开外部视频" : "打开备用视频"}
               <ExternalLink className="h-4 w-4" aria-hidden="true" />
             </a>
           ) : null}

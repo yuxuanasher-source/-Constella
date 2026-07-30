@@ -10,6 +10,10 @@ import {
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareAccessStore } from "@/features/applications/admission-share-access-store";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import {
+  BoundedJsonBodyError,
+  readBoundedJsonBody,
+} from "@/lib/http/bounded-json-body";
 import { readAdmissionShareAccessSession } from "@/lib/http/admission-share-access-session";
 
 import { publicAdmissionShareErrorResponse } from "../../../../public-route-utils";
@@ -60,6 +64,12 @@ export async function POST(
 
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
+    if (error instanceof BoundedJsonBodyError) {
+      return NextResponse.json(
+        { code: error.code, error: error.message },
+        { status: error.statusCode },
+      );
+    }
     return publicAdmissionShareErrorResponse(error);
   }
 }
@@ -68,12 +78,7 @@ async function readPlaybackIssueBody(request: Request): Promise<{
   sourceType: AdmissionSharePlaybackSource;
   errorCode: AdmissionSharePlaybackErrorCode;
 }> {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    body = null;
-  }
+  const body = await readBoundedJsonBody(request);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw invalidPlaybackIssue();
   }

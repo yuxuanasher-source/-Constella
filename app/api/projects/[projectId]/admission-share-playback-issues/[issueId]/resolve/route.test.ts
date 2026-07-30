@@ -11,42 +11,38 @@ import {
   type AdmissionRouteContext,
 } from "@/features/applications/application-route-utils";
 
-vi.mock("@/features/applications/admission-share-board", () => ({
-  SupabaseAdmissionShareBoardRepository: vi
-    .fn()
-    .mockImplementation(function () {
-      return { repo: "share-repo" };
-    }),
-  resolveAdmissionSharePlaybackIssue: vi.fn(),
-}));
-
-vi.mock("@/features/applications/application-route-utils", () => ({
-  actorFromContext: (context: AdmissionRouteContext) => ({
-    userId: context.auth.userId,
-    name: context.auth.name,
-    role: context.auth.role,
-    organizationId: context.auth.organizationId,
-  }),
-  getAdmissionRouteContext: vi.fn(),
-  jsonError: (error: unknown) =>
-    Response.json(
-      { error: error instanceof Error ? error.message : "Unexpected error" },
-      {
-        status:
-          error && typeof error === "object" && "statusCode" in error
-            ? Number(error.statusCode)
-            : 500,
-      },
-    ),
-  RouteError: class RouteError extends Error {
-    constructor(
-      message: string,
-      public readonly statusCode: number,
-    ) {
-      super(message);
-    }
+vi.mock(
+  "@/features/applications/admission-share-board",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/features/applications/admission-share-board")
+      >();
+    return {
+      ...actual,
+      SupabaseAdmissionShareBoardRepository: vi
+        .fn()
+        .mockImplementation(function () {
+          return { repo: "share-repo" };
+        }),
+      resolveAdmissionSharePlaybackIssue: vi.fn(),
+    };
   },
-}));
+);
+
+vi.mock(
+  "@/features/applications/application-route-utils",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/features/applications/application-route-utils")
+      >();
+    return {
+      ...actual,
+      getAdmissionRouteContext: vi.fn(),
+    };
+  },
+);
 
 const context = {
   supabase: { client: "authenticated" },
@@ -113,4 +109,30 @@ describe("resolve admission share playback issue route", () => {
     expect(SupabaseAdmissionShareBoardRepository).not.toHaveBeenCalled();
     expect(resolveAdmissionSharePlaybackIssue).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["PLAYBACK_ISSUE_FORBIDDEN", "Playback issue access is forbidden", 403],
+    ["PLAYBACK_ISSUE_NOT_FOUND", "Playback issue was not found", 404],
+  ])(
+    "uses the real route error serializer for %s",
+    async (code, message, status) => {
+      vi.mocked(resolveAdmissionSharePlaybackIssue).mockRejectedValueOnce(
+        Object.assign(new Error(message), { code, statusCode: status }),
+      );
+
+      const response = await POST(
+        new Request(
+          "https://app.example/api/projects/project-1/admission-share-playback-issues/issue-1/resolve",
+          { method: "POST" },
+        ),
+        resolveRouteParams,
+      );
+
+      expect(response.status).toBe(status);
+      await expect(response.json()).resolves.toEqual({
+        code,
+        error: message,
+      });
+    },
+  );
 });

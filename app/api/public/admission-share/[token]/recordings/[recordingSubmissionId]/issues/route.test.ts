@@ -124,4 +124,73 @@ describe("public admission recording issue route", () => {
     expect(response.status).toBe(400);
     expect(recordPublicAdmissionPlaybackIssue).not.toHaveBeenCalled();
   });
+
+  it("rejects an oversized declared body before reading it", async () => {
+    const response = await POST(
+      new Request(issueUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": "4097",
+        },
+        body: "{}",
+      }),
+      routeParams,
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "REQUEST_BODY_TOO_LARGE",
+    });
+    expect(recordPublicAdmissionPlaybackIssue).not.toHaveBeenCalled();
+  });
+
+  it("cancels and rejects an oversized chunked body without Content-Length", async () => {
+    const cancel = vi.fn();
+    let closeTimer: ReturnType<typeof setTimeout> | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(3_000));
+        controller.enqueue(new Uint8Array(1_097));
+        closeTimer = setTimeout(() => controller.close(), 10);
+      },
+      cancel(reason) {
+        if (closeTimer) clearTimeout(closeTimer);
+        cancel(reason);
+      },
+    });
+    const response = await POST(
+      new Request(issueUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        duplex: "half",
+      } as RequestInit & { duplex: "half" }),
+      routeParams,
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "REQUEST_BODY_TOO_LARGE",
+    });
+    expect(cancel).toHaveBeenCalled();
+    expect(recordPublicAdmissionPlaybackIssue).not.toHaveBeenCalled();
+  });
+
+  it("returns a stable 400 for invalid JSON", async () => {
+    const response = await POST(
+      new Request(issueUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{",
+      }),
+      routeParams,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "INVALID_JSON_BODY",
+    });
+    expect(recordPublicAdmissionPlaybackIssue).not.toHaveBeenCalled();
+  });
 });

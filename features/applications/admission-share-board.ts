@@ -224,6 +224,22 @@ export class AdmissionShareLifecycleError extends Error {
   }
 }
 
+export class AdmissionSharePlaybackIssueError extends Error {
+  readonly name = "AdmissionSharePlaybackIssueError";
+
+  constructor(
+    public readonly code:
+      | "PLAYBACK_ISSUE_FORBIDDEN"
+      | "PLAYBACK_ISSUE_NOT_FOUND"
+      | "PLAYBACK_ISSUE_DATABASE_ERROR"
+      | "PLAYBACK_ISSUE_INVALID_RESPONSE",
+    message: string,
+    public readonly statusCode: 403 | 404 | 500,
+  ) {
+    super(message);
+  }
+}
+
 class AdmissionShareSelectionChangedPersistenceError extends Error {
   constructor(readonly originalError: unknown) {
     super("Admission share selection changed during persistence");
@@ -687,7 +703,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       ascending: false,
     });
     if (error) {
-      throw error;
+      throw mapAdmissionSharePlaybackIssueDbError(error);
     }
 
     return ((data ?? []) as AdmissionSharePlaybackIssueRow[]).map(
@@ -713,10 +729,14 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       .single<{ resolved_now: boolean }>();
 
     if (error) {
-      throw error;
+      throw mapAdmissionSharePlaybackIssueDbError(error);
     }
     if (!data || typeof data.resolved_now !== "boolean") {
-      throw new Error("Invalid playback issue resolution result");
+      throw new AdmissionSharePlaybackIssueError(
+        "PLAYBACK_ISSUE_INVALID_RESPONSE",
+        "Playback issue resolution response was invalid",
+        500,
+      );
     }
 
     return { resolvedNow: data.resolved_now };
@@ -2264,9 +2284,9 @@ function assertAdmissionSharePlaybackIssueActor(
   organizationId: string,
 ) {
   if (actor.organizationId !== organizationId || !isMcnStaff(actor.role)) {
-    throw new AdmissionShareLifecycleError(
-      "SHARE_FORBIDDEN",
-      "Cross-organization access is not allowed",
+    throw new AdmissionSharePlaybackIssueError(
+      "PLAYBACK_ISSUE_FORBIDDEN",
+      "Playback issue access is forbidden",
       403,
     );
   }
@@ -2651,6 +2671,43 @@ function mapAdmissionShareLifecycleRpcError(error: unknown): unknown {
         mapped.status,
       )
     : error;
+}
+
+function mapAdmissionSharePlaybackIssueDbError(
+  error: unknown,
+): AdmissionSharePlaybackIssueError {
+  if (error instanceof AdmissionSharePlaybackIssueError) {
+    return error;
+  }
+  const candidate =
+    error && typeof error === "object"
+      ? (error as { code?: unknown; message?: unknown })
+      : {};
+  const message =
+    typeof candidate.message === "string" ? candidate.message : "";
+
+  if (candidate.code === "42501" || message === "insufficient_privilege") {
+    return new AdmissionSharePlaybackIssueError(
+      "PLAYBACK_ISSUE_FORBIDDEN",
+      "Playback issue access is forbidden",
+      403,
+    );
+  }
+  if (
+    candidate.code === "P0002" ||
+    message === "admission_share_playback_issue_not_found"
+  ) {
+    return new AdmissionSharePlaybackIssueError(
+      "PLAYBACK_ISSUE_NOT_FOUND",
+      "Playback issue was not found",
+      404,
+    );
+  }
+  return new AdmissionSharePlaybackIssueError(
+    "PLAYBACK_ISSUE_DATABASE_ERROR",
+    "Playback issue database request failed",
+    500,
+  );
 }
 
 const lifecycleErrorByRpcMessage: Record<

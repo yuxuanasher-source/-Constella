@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -457,5 +458,132 @@ describe("AdmissionShareReviewWorkspace", () => {
     expect(
       screen.getByLabelText("待判断主播 原始录屏播放器"),
     ).toBeInTheDocument();
+  });
+
+  it("releases the report lock after a rejected request and lets the reviewer retry", async () => {
+    const reportIssue = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(true);
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "反馈播放问题" }));
+    expect(
+      await screen.findByRole("status", { name: "播放问题反馈状态" }),
+    ).toHaveTextContent("反馈失败，可重试");
+
+    fireEvent.click(screen.getByRole("button", { name: "重试反馈无法播放" }));
+    await waitFor(() => expect(reportIssue).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByRole("status", { name: "播放问题反馈状态" }),
+    ).toHaveTextContent("已反馈");
+  });
+
+  it("drops a stale report completion after the share board changes", async () => {
+    let finishFirstReport: (reported: boolean) => void = () => {};
+    const reportIssue = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finishFirstReport = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(true);
+    const { rerender } = render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "反馈播放问题" }));
+
+    rerender(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={{ ...formalBoard, id: "share-2" }}
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+    await act(async () => finishFirstReport(true));
+
+    const freshButton = await screen.findByRole("button", {
+      name: "反馈播放问题",
+    });
+    expect(freshButton).toBeEnabled();
+    fireEvent.click(freshButton);
+    await waitFor(() => expect(reportIssue).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByRole("status", { name: "播放问题反馈状态" }),
+    ).toHaveTextContent("已反馈");
+  });
+
+  it("drops a stale report completion after the active recording changes", async () => {
+    let finishReport: (reported: boolean) => void = () => {};
+    const reportIssue = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishReport = resolve;
+        }),
+    );
+    const { rerender } = render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "反馈播放问题" }));
+
+    rerender(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        activeRecordingId="recording-2"
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+    await act(async () => finishReport(true));
+    rerender(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        activeRecordingId="recording-1"
+        onReportPlaybackIssue={reportIssue}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "反馈播放问题" })).toBeEnabled();
+    expect(
+      screen.queryByRole("status", { name: "播放问题反馈状态" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("uses external-source actions after an external-only video fails", () => {
+    const externalItem = {
+      ...formalBoard.items[1],
+      externalUrl: "https://video.example/recording-2.mp4",
+    };
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={{ ...formalBoard, items: [externalItem] }}
+        activeRecordingId="recording-2"
+      />,
+    );
+
+    fireEvent.error(screen.getByLabelText("已完成主播 外部录屏播放器"));
+    expect(
+      screen.getByRole("button", { name: "重试外部视频" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "打开外部视频" })).toHaveAttribute(
+      "href",
+      "https://video.example/recording-2.mp4",
+    );
+    expect(
+      screen.queryByRole("button", { name: "重试原始视频" }),
+    ).not.toBeInTheDocument();
   });
 });

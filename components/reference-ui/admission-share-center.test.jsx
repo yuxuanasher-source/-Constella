@@ -1075,6 +1075,130 @@ describe("AdmissionShareCenter", () => {
     );
   });
 
+  it("discards a stale issue list after the center switches projects", async () => {
+    let resolveOldList;
+    actions.listAdmissionSharePlaybackIssues
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOldList = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([
+        {
+          id: "issue-new",
+          shareBoardId: "share-new",
+          recordingSubmissionId: "recording-new",
+          recordingVersion: 2,
+          streamerDisplayName: "新项目主播",
+          sourceType: "original",
+          errorCode: "MEDIA_DECODE_FAILED",
+          status: "open",
+          reportedAt: "2026-07-30T10:00:00.000Z",
+          resolvedAt: null,
+        },
+      ]);
+    const view = renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+
+    view.rerender(
+      <AdmissionShareCenter
+        project={{ ...project, id: "project-2", name: "Beta Project" }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "结果待办" }));
+    await waitFor(() =>
+      expect(actions.listAdmissionSharePlaybackIssues).toHaveBeenNthCalledWith(
+        2,
+        "project-2",
+        "open",
+      ),
+    );
+    expect(await screen.findByText(/新项目主播/)).toBeInTheDocument();
+
+    resolveOldList([
+      {
+        id: "issue-old",
+        shareBoardId: "share-old",
+        recordingSubmissionId: "recording-old",
+        recordingVersion: 1,
+        streamerDisplayName: "旧项目主播",
+        sourceType: "original",
+        errorCode: "MEDIA_LOAD_FAILED",
+        status: "open",
+        reportedAt: "2026-07-30T09:00:00.000Z",
+        resolvedAt: null,
+      },
+    ]);
+
+    await waitFor(() =>
+      expect(actions.listAdmissionSharePlaybackIssues).toHaveBeenCalledTimes(2),
+    );
+    expect(screen.getByText(/新项目主播/)).toBeInTheDocument();
+    expect(screen.queryByText(/旧项目主播/)).not.toBeInTheDocument();
+  });
+
+  it("clears stale resolve pending without mutating the next project", async () => {
+    let resolveOldIssue;
+    const sharedIssue = {
+      id: "issue-shared",
+      shareBoardId: "share-1",
+      recordingSubmissionId: "recording-v1",
+      recordingVersion: 1,
+      streamerDisplayName: "旧项目主播",
+      sourceType: "original",
+      errorCode: "MEDIA_LOAD_FAILED",
+      status: "open",
+      reportedAt: "2026-07-30T09:00:00.000Z",
+      resolvedAt: null,
+    };
+    actions.listAdmissionSharePlaybackIssues
+      .mockResolvedValueOnce([sharedIssue])
+      .mockResolvedValueOnce([
+        {
+          ...sharedIssue,
+          shareBoardId: "share-2",
+          streamerDisplayName: "新项目主播",
+          errorCode: "MEDIA_DECODE_FAILED",
+        },
+      ]);
+    actions.resolveAdmissionSharePlaybackIssue.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOldIssue = resolve;
+        }),
+    );
+    const view = renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+    fireEvent.click(await screen.findByRole("button", { name: "标记已解决" }));
+
+    view.rerender(
+      <AdmissionShareCenter
+        project={{ ...project, id: "project-2", name: "Beta Project" }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "结果待办" }));
+    await waitFor(() =>
+      expect(actions.listAdmissionSharePlaybackIssues).toHaveBeenNthCalledWith(
+        2,
+        "project-2",
+        "open",
+      ),
+    );
+    expect(await screen.findByText(/新项目主播/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "标记已解决" })).toBeEnabled();
+
+    resolveOldIssue({ ok: true });
+    await waitFor(() =>
+      expect(screen.getByText(/新项目主播/)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("播放问题已标记为解决")).not.toBeInTheDocument();
+  });
+
   it("uses a fixed, accessible selection bar with 44px critical actions", async () => {
     renderShareCenter(actions);
     fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));

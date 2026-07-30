@@ -319,7 +319,12 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [tab, setTab] = React.useState("library");
   const [candidates, setCandidates] = React.useState([]);
   const [tasks, setTasks] = React.useState([]);
-  const [issues, setIssues] = React.useState([]);
+  const [issueListState, setIssueListState] = React.useState(() => ({
+    projectId: project.id,
+    issues: [],
+    error: "",
+    loading: false,
+  }));
   const [selected, setSelected] = React.useState(new Map());
   const [expandedVersions, setExpandedVersions] = React.useState(new Set());
   const [search, setSearch] = React.useState("");
@@ -329,7 +334,6 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [tasksLoading, setTasksLoading] = React.useState(true);
   const [candidateError, setCandidateError] = React.useState("");
   const [taskError, setTaskError] = React.useState("");
-  const [issueError, setIssueError] = React.useState("");
   const [issueResolveErrors, setIssueResolveErrors] = React.useState({});
   const [resolvingIssueIds, setResolvingIssueIds] = React.useState(new Set());
   const [busy, setBusy] = React.useState("");
@@ -353,6 +357,15 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [reopenReasons, setReopenReasons] = React.useState({});
   const [submissions, setSubmissions] = React.useState({});
   const resolvingIssueIdsRef = React.useRef(new Set());
+  const mountedRef = React.useRef(false);
+  const currentProjectIdRef = React.useRef(project.id);
+  const issueListGenerationRef = React.useRef(0);
+  const issueResolveGenerationRef = React.useRef(new Map());
+  const nextIssueResolveGenerationRef = React.useRef(0);
+  const currentIssueList =
+    issueListState.projectId === project.id
+      ? issueListState
+      : { issues: [], error: "", loading: false };
   const canCreateShare = canShareAdmissionRecordingsForProject(project.status);
   const projectGateMessage =
     project.status === "settling"
@@ -360,12 +373,27 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       : "当前项目阶段不能新建录屏分享";
 
   React.useEffect(() => {
+    const issueResolveGenerations = issueResolveGenerationRef.current;
+    const resolvingIssueIds = resolvingIssueIdsRef.current;
+    mountedRef.current = true;
     openerRef.current = document.activeElement;
     firstTabRef.current?.focus();
     return () => {
+      mountedRef.current = false;
+      issueListGenerationRef.current += 1;
+      issueResolveGenerations.clear();
+      resolvingIssueIds.clear();
       openerRef.current?.focus?.();
     };
   }, []);
+
+  React.useLayoutEffect(() => {
+    currentProjectIdRef.current = project.id;
+    issueResolveGenerationRef.current.clear();
+    resolvingIssueIdsRef.current.clear();
+    setIssueResolveErrors({});
+    setResolvingIssueIds(new Set());
+  }, [project.id]);
 
   const loadTasks = React.useCallback(async () => {
     setTasksLoading(true);
@@ -413,7 +441,19 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   }, [actions, project.id]);
 
   const loadIssues = React.useCallback(async () => {
-    setIssueError("");
+    const requestProjectId = project.id;
+    const requestGeneration = issueListGenerationRef.current + 1;
+    issueListGenerationRef.current = requestGeneration;
+    const isCurrentRequest = () =>
+      mountedRef.current &&
+      currentProjectIdRef.current === requestProjectId &&
+      issueListGenerationRef.current === requestGeneration;
+    setIssueListState((current) => ({
+      projectId: requestProjectId,
+      issues: current.projectId === requestProjectId ? current.issues : [],
+      error: "",
+      loading: true,
+    }));
     try {
       if (!actions.listAdmissionSharePlaybackIssues) {
         throw new Error("播放问题接口暂未接入");
@@ -423,10 +463,26 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
         "open",
       );
       const next = Array.isArray(result) ? result : [];
-      setIssues(next);
+      if (!isCurrentRequest()) {
+        return [];
+      }
+      setIssueListState({
+        projectId: requestProjectId,
+        issues: next,
+        error: "",
+        loading: false,
+      });
       return next;
     } catch (error) {
-      setIssueError(error?.message || "播放问题待办加载失败");
+      if (!isCurrentRequest()) {
+        return [];
+      }
+      setIssueListState((current) => ({
+        projectId: requestProjectId,
+        issues: current.projectId === requestProjectId ? current.issues : [],
+        error: error?.message || "播放问题待办加载失败",
+        loading: false,
+      }));
       throw error;
     }
   }, [actions, project.id]);
@@ -747,10 +803,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     setTab(nextTab);
     setMessage("");
     if (nextTab === "results") {
-      setBusy("issues");
-      loadIssues()
-        .catch(() => {})
-        .finally(() => setBusy(""));
+      void loadIssues().catch(() => {});
     }
   };
 
@@ -761,6 +814,10 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     ) {
       return;
     }
+    const requestProjectId = project.id;
+    const requestGeneration = nextIssueResolveGenerationRef.current + 1;
+    nextIssueResolveGenerationRef.current = requestGeneration;
+    issueResolveGenerationRef.current.set(issue.id, requestGeneration);
     resolvingIssueIdsRef.current.add(issue.id);
     setIssueResolveErrors((current) => {
       const next = { ...current };
@@ -773,21 +830,56 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       return next;
     });
     try {
-      await actions.resolveAdmissionSharePlaybackIssue(project.id, issue.id);
-      setIssues((current) => current.filter((item) => item.id !== issue.id));
+      await actions.resolveAdmissionSharePlaybackIssue(
+        requestProjectId,
+        issue.id,
+      );
+      if (
+        !mountedRef.current ||
+        currentProjectIdRef.current !== requestProjectId ||
+        issueResolveGenerationRef.current.get(issue.id) !== requestGeneration
+      ) {
+        return;
+      }
+      setIssueListState((current) =>
+        current.projectId === requestProjectId
+          ? {
+              ...current,
+              issues: current.issues.filter((item) => item.id !== issue.id),
+            }
+          : current,
+      );
       setMessage("播放问题已标记为解决");
     } catch (error) {
+      if (
+        !mountedRef.current ||
+        currentProjectIdRef.current !== requestProjectId ||
+        issueResolveGenerationRef.current.get(issue.id) !== requestGeneration
+      ) {
+        return;
+      }
       setIssueResolveErrors((current) => ({
         ...current,
         [issue.id]: error?.message || "播放问题处理失败",
       }));
     } finally {
-      resolvingIssueIdsRef.current.delete(issue.id);
-      setResolvingIssueIds((current) => {
-        const next = new Set(current);
-        next.delete(issue.id);
-        return next;
-      });
+      const isLatestRequest =
+        issueResolveGenerationRef.current.get(issue.id) === requestGeneration;
+      const canUpdateState =
+        mountedRef.current &&
+        currentProjectIdRef.current === requestProjectId &&
+        isLatestRequest;
+      if (isLatestRequest) {
+        issueResolveGenerationRef.current.delete(issue.id);
+        resolvingIssueIdsRef.current.delete(issue.id);
+      }
+      if (canUpdateState) {
+        setResolvingIssueIds((current) => {
+          const next = new Set(current);
+          next.delete(issue.id);
+          return next;
+        });
+      }
     }
   };
 
@@ -1101,16 +1193,13 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
                   onViewSubmissions={viewSubmissions}
                 />
                 <PlaybackIssues
-                  issues={issues}
-                  loading={busy === "issues"}
-                  error={issueError}
+                  issues={currentIssueList.issues}
+                  loading={currentIssueList.loading}
+                  error={currentIssueList.error}
                   resolveErrors={issueResolveErrors}
                   resolvingIssueIds={resolvingIssueIds}
                   onRetry={() => {
-                    setBusy("issues");
-                    loadIssues()
-                      .catch(() => {})
-                      .finally(() => setBusy(""));
+                    void loadIssues().catch(() => {});
                   }}
                   onResolve={resolveIssue}
                 />

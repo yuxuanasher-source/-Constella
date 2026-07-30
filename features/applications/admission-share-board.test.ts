@@ -2872,7 +2872,10 @@ describe("admission share playback issue service", () => {
           projectId: "project-1",
           status: "open",
         }),
-      ).rejects.toMatchObject({ statusCode: 403 });
+      ).rejects.toMatchObject({
+        code: "PLAYBACK_ISSUE_FORBIDDEN",
+        statusCode: 403,
+      });
     }
   });
 
@@ -2944,6 +2947,85 @@ describe("admission share playback issue service", () => {
     expect(JSON.stringify(result)).not.toMatch(
       /userAgent|resolutionNote|organizationId|projectId/iu,
     );
+  });
+
+  it("maps list database failures to a sanitized dedicated 500 error", async () => {
+    const order = vi.fn().mockResolvedValue({
+      data: null,
+      error: { code: "XX000", message: "private database detail" },
+    });
+    const statusEq = vi.fn().mockReturnValue({ order });
+    const projectEq = vi.fn().mockReturnValue({ eq: statusEq });
+    const organizationEq = vi.fn().mockReturnValue({ eq: projectEq });
+    const select = vi.fn().mockReturnValue({ eq: organizationEq });
+    const from = vi.fn().mockReturnValue({ select });
+    const repo = new SupabaseAdmissionShareBoardRepository({ from } as never);
+
+    await expect(
+      repo.listPlaybackIssues({
+        organizationId: "org-1",
+        projectId: "project-1",
+        status: "open",
+      }),
+    ).rejects.toMatchObject({
+      code: "PLAYBACK_ISSUE_DATABASE_ERROR",
+      statusCode: 500,
+      message: "Playback issue database request failed",
+    });
+  });
+
+  it.each([
+    [
+      { code: "42501", message: "row level security rejected request" },
+      { code: "PLAYBACK_ISSUE_FORBIDDEN", statusCode: 403 },
+    ],
+    [
+      { code: "P0001", message: "admission_share_playback_issue_not_found" },
+      { code: "PLAYBACK_ISSUE_NOT_FOUND", statusCode: 404 },
+    ],
+    [
+      { code: "XX000", message: "private database detail" },
+      { code: "PLAYBACK_ISSUE_DATABASE_ERROR", statusCode: 500 },
+    ],
+  ])(
+    "maps resolve database error %# to a stable service error",
+    async (error, expected) => {
+      const single = vi.fn().mockResolvedValue({ data: null, error });
+      const rpc = vi.fn().mockReturnValue({ single });
+      const repo = new SupabaseAdmissionShareBoardRepository({ rpc } as never);
+
+      await expect(
+        repo.resolvePlaybackIssue({
+          organizationId: "org-1",
+          projectId: "project-1",
+          issueId: "issue-1",
+          actorUserId: "user-ops",
+          resolvedAt: "2026-07-30T10:00:00.000Z",
+        }),
+      ).rejects.toMatchObject(expected);
+    },
+  );
+
+  it("maps an invalid resolve RPC payload to a dedicated 500 error", async () => {
+    const single = vi.fn().mockResolvedValue({
+      data: { issue_id: "issue-1", resolved_now: "yes" },
+      error: null,
+    });
+    const rpc = vi.fn().mockReturnValue({ single });
+    const repo = new SupabaseAdmissionShareBoardRepository({ rpc } as never);
+
+    await expect(
+      repo.resolvePlaybackIssue({
+        organizationId: "org-1",
+        projectId: "project-1",
+        issueId: "issue-1",
+        actorUserId: "user-ops",
+        resolvedAt: "2026-07-30T10:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "PLAYBACK_ISSUE_INVALID_RESPONSE",
+      statusCode: 500,
+    });
   });
 
   it("uses only the atomic report and resolve RPCs for issue mutations", async () => {
