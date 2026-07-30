@@ -29,8 +29,9 @@ const scenarios = [
     expectedSubmissionWrites: 0,
   },
   {
-    name: "atomic RPC incomplete boundary maps REVIEW_INCOMPLETE and never legacy-mutates",
+    name: "formal selected+pending orchestration maps RPC incomplete boundary; live SQL completeness separately",
     mode: "formal_review",
+    decisions: ["selected", "pending"],
     expectedError: "REVIEW_INCOMPLETE",
   },
   {
@@ -40,8 +41,9 @@ const scenarios = [
     expectedShareable: true,
   },
   {
-    name: "atomic RPC skipped outcome preserves latest by avoiding legacy writes",
+    name: "historical v1 selection and skipped RPC orchestration; live latest-state preservation separately",
     selectedVersion: 1,
+    latestVersion: 2,
     expectedSyncStatus: "skipped",
     expectedSyncError: "superseded_recording_version",
   },
@@ -223,9 +225,8 @@ function createWorkflowHarness(candidates: BusinessCandidate[]) {
       };
     }),
     submitReview: vi.fn(async (input) => {
-      const result = await submitBehavior(input);
       submissionWrites.push(input);
-      return result;
+      return submitBehavior(input);
     }),
     listReviewSubmissions: vi.fn().mockResolvedValue([]),
     upsertVendorReviews: vi.fn(),
@@ -338,12 +339,34 @@ describe("admission share business workflow regression", () => {
 
     if (
       scenario.name ===
-      "atomic RPC incomplete boundary maps REVIEW_INCOMPLETE and never legacy-mutates"
+      "formal selected+pending orchestration maps RPC incomplete boundary; live SQL completeness separately"
     ) {
-      const source = candidate();
-      const harness = createWorkflowHarness([source]);
+      const sources = [
+        candidate(),
+        candidate({
+          applicationId: "application-2",
+          recordingSubmissionId: "recording-2-v1",
+          streamer: {
+            id: "streamer-2",
+            displayName: "主播乙",
+            accountLabel: "douyin / streamer-2",
+          },
+        }),
+      ];
+      const harness = createWorkflowHarness(sources);
       const token = "formal-incomplete-token";
-      await createShare(harness, scenario.mode, [selection(source)], token);
+      await createShare(
+        harness,
+        scenario.mode,
+        sources.map((source, index) => selection(source, index)),
+        token,
+      );
+      for (const [index, decision] of scenario.decisions.entries()) {
+        await saveDraft(harness, token, sources[index], decision);
+      }
+
+      // The fake persistence boundary does not decide completeness. The SQL
+      // contract and live DB own that rule; this layer maps its stable error.
       harness.setSubmitBehavior(async () => {
         throw new Error("admission_share_review_incomplete");
       });
@@ -362,7 +385,33 @@ describe("admission share business workflow regression", () => {
         projectRemark: "仍有一条待判断",
         submittedAt: now,
       });
-      expect(harness.submissionWrites).toHaveLength(0);
+      expect(harness.draftWrites).toEqual([
+        {
+          shareBoardId: "share-board-1",
+          recordingSubmissionId: "recording-1-v1",
+          expectedRevision: 0,
+          decision: "selected",
+          remark: "",
+          reasonCodes: [],
+          savedAt: now,
+        },
+        {
+          shareBoardId: "share-board-1",
+          recordingSubmissionId: "recording-2-v1",
+          expectedRevision: 0,
+          decision: "pending",
+          remark: "",
+          reasonCodes: [],
+          savedAt: now,
+        },
+      ]);
+      expect(harness.submissionWrites).toEqual([
+        {
+          shareBoardId: "share-board-1",
+          projectRemark: "仍有一条待判断",
+          submittedAt: now,
+        },
+      ]);
       expect(harness.repo.upsertVendorReviews).not.toHaveBeenCalled();
       expect(
         harness.repo.updateRecordingReviewForVendor,
@@ -403,15 +452,35 @@ describe("admission share business workflow regression", () => {
 
     if (
       scenario.name ===
-      "atomic RPC skipped outcome preserves latest by avoiding legacy writes"
+      "historical v1 selection and skipped RPC orchestration; live latest-state preservation separately"
     ) {
-      const source = candidate({
+      const historical = candidate({
         recordingVersion: scenario.selectedVersion,
         isLatestVersion: false,
       });
-      const harness = createWorkflowHarness([source]);
+      const latest = candidate({
+        recordingSubmissionId: "recording-1-v2",
+        recordingVersion: scenario.latestVersion,
+        isLatestVersion: true,
+      });
+      const sources = [historical, latest];
+      const selected = selection(historical);
+      const preflight = preflightAdmissionShareSelection(sources, [selected]);
+      expect(preflight.items).toEqual([
+        {
+          ...selected,
+          status: "ready",
+          sourceHealth: "original_ready",
+          reasonCode: null,
+        },
+      ]);
+
+      const harness = createWorkflowHarness(sources);
       const token = "historical-result-token";
-      await createShare(harness, "formal_review", [selection(source)], token);
+      await createShare(harness, "formal_review", [selected], token);
+      expect(harness.repo.createShareBoardWithItems).toHaveBeenCalledWith(
+        expect.objectContaining({ items: [selected] }),
+      );
       const rpcOutcome: SubmitAdmissionReviewResult = {
         submissionRevision: 1,
         submittedCount: 1,
@@ -420,8 +489,8 @@ describe("admission share business workflow regression", () => {
         items: [
           {
             vendorReviewId: "vendor-review-old-version",
-            applicationId: source.applicationId,
-            recordingSubmissionId: source.recordingSubmissionId,
+            applicationId: historical.applicationId,
+            recordingSubmissionId: historical.recordingSubmissionId,
             recordingVersion: scenario.selectedVersion,
             decision: "rejected",
             remark: "旧版不采用",
@@ -446,6 +515,13 @@ describe("admission share business workflow regression", () => {
         projectRemark: "历史版本复核",
         submittedAt: now,
       });
+      expect(harness.submissionWrites).toEqual([
+        {
+          shareBoardId: "share-board-1",
+          projectRemark: "历史版本复核",
+          submittedAt: now,
+        },
+      ]);
       expect(result).toBe(rpcOutcome);
       expect(result).toMatchObject({
         submissionRevision: 1,
@@ -461,6 +537,8 @@ describe("admission share business workflow regression", () => {
           },
         ],
       });
+      expect(historical.recordingVersion).toBe(scenario.selectedVersion);
+      expect(latest.recordingVersion).toBe(scenario.latestVersion);
       expect(harness.repo.upsertVendorReviews).not.toHaveBeenCalled();
       expect(
         harness.repo.updateRecordingReviewForVendor,

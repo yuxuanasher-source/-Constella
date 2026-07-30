@@ -865,7 +865,7 @@ stateDiagram-v2
 - **主动选片**：运营端不会从项目隐式加入全部录屏。候选池按不可变的 `mcn_review_decision = approved` 事实保留历史已通过版本；预检和原子创建只接收运营明确勾选的 `applicationId + recordingSubmissionId + recordingVersion + sortOrder`。单条失效只返回该条冲突，其他选择和顺序可以保留。
 - **一次性 token**：数据库只保存 token 哈希。创建成功后，明文 token 仅在当次响应返回；历史任务没有读取旧明文 token 的接口。补充审计失败不会丢弃已经原子创建成功后的唯一一次凭据响应。
 - **token 轮换**：遗失链接时只能调用轮换操作生成新 token。轮换事务替换 token 哈希，并删除旧访问会话和访问尝试；明文新 token 同样只在当次成功响应返回，且不会进入审计内容。
-- **结果边界**：预览模式不读取或写入草稿和正式结果。服务回归只验证原子 RPC 的 `REVIEW_INCOMPLETE` 错误映射、跳过结果透传，以及不会回退到旧的逐表写接口；`lib/db/admission-share-submit-schema-contract.test.ts` 负责 SQL 静态防退化。正式提交的完整性阻断、原子事务，以及历史版本以 `superseded_recording_version` 跳过当前业务状态同步的真实回流，仍待 Task 14/live DB 验证。
+- **结果边界**：预览模式不读取或写入草稿和正式结果。服务回归会用真实领域函数编排两条 `selected + pending` 草稿保存、历史 V1 预检和正式提交调用，但只验证原子 RPC 的 `REVIEW_INCOMPLETE` 错误映射、`superseded_recording_version` 跳过结果透传，以及不会回退到旧的逐表写接口；`lib/db/admission-share-submit-schema-contract.test.ts` 负责 SQL 静态防退化。正式提交的完整性阻断、原子事务，以及最新 V2 状态确实不被历史 V1 结果覆盖的真实回流，仍待 Task 14/live DB 验证。
 - **人工控制**：`selected` 只进入待 MCN 最终确认，不自动创建项目主播；`backup` 不修改录屏或申请状态；负向结论保留原因并形成明确后续动作。
 
 ### 22.3 尚未完成的运行时验证
