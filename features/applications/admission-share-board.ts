@@ -1139,18 +1139,22 @@ function toPublicShareDto(
       recordingVersion: item.recordingVersion,
       recordingStatus: item.recordingStatus,
       recordingUrl: item.recordingUrl,
-      playbackUrl:
-        item.recordingUrl ??
-        (item.storagePath
-          ? publicAdmissionRecordingPlaybackUrl({
-              token: input.token,
-              accessCode: input.accessCode,
-              recordingSubmissionId: item.recordingSubmissionId,
-            })
-          : null),
-      hasPrivateStorage: Boolean(item.storagePath && !item.recordingUrl),
+      playbackUrl: item.storagePath
+        ? publicAdmissionRecordingPlaybackUrl({
+            token: input.token,
+            accessCode: input.accessCode,
+            recordingSubmissionId: item.recordingSubmissionId,
+          })
+        : item.recordingUrl,
+      hasPrivateStorage: Boolean(item.storagePath),
       streamer: item.streamer,
-      vendorReview: item.vendorReview,
+      vendorReview: item.vendorReview
+        ? {
+            decision: item.vendorReview.decision,
+            remark: item.vendorReview.remark,
+            submittedAt: item.vendorReview.submittedAt,
+          }
+        : null,
     })),
   };
 }

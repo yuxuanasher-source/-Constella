@@ -43,7 +43,13 @@ describe("public admission share route", () => {
           recordingUrl: "https://video.example/rec-1",
           hasPrivateStorage: false,
           streamer: { id: "streamer-1", displayName: "Streamer One" },
-          vendorReview: null,
+          vendorReview: {
+            decision: "backup",
+            remark: "Can be backup.",
+            reviewerName: "Vendor Reviewer",
+            reviewerContact: "reviewer@example.com",
+            submittedAt: "2026-06-07T00:00:00.000Z",
+          },
         },
       ],
     } as never);
@@ -75,6 +81,8 @@ describe("public admission share route", () => {
     });
     expect(JSON.stringify(body)).not.toContain("tokenHash");
     expect(JSON.stringify(body)).not.toContain("storagePath");
+    expect(JSON.stringify(body)).not.toContain("reviewerName");
+    expect(JSON.stringify(body)).not.toContain("reviewerContact");
   });
 
   it("maps expired shares to a service error response", async () => {

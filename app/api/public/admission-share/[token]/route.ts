@@ -54,7 +54,10 @@ export async function GET(
       }),
     );
 
-    return NextResponse.json({ shareBoard, vendorCheckpoints });
+    return NextResponse.json({
+      shareBoard: toPublicResponse(shareBoard),
+      vendorCheckpoints,
+    });
   } catch (error) {
     return jsonError(error);
   }
@@ -63,4 +66,22 @@ export async function GET(
 function optionalSearchParam(request: Request, key: string) {
   const value = new URL(request.url).searchParams.get(key);
   return value?.trim() || undefined;
+}
+
+function toPublicResponse(
+  shareBoard: Awaited<ReturnType<typeof getPublicAdmissionShareBoard>>,
+) {
+  return {
+    ...shareBoard,
+    items: shareBoard.items.map((item) => ({
+      ...item,
+      vendorReview: item.vendorReview
+        ? {
+            decision: item.vendorReview.decision,
+            remark: item.vendorReview.remark,
+            submittedAt: item.vendorReview.submittedAt,
+          }
+        : null,
+    })),
+  };
 }

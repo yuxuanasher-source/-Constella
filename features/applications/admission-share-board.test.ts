@@ -380,7 +380,14 @@ describe("admission share board service", () => {
             recordingSubmissionId: "rec-1",
             recordingVersion: 2,
             recordingUrl: "https://video.example/rec-1",
-            playbackUrl: "https://video.example/rec-1",
+            playbackUrl:
+              "/api/public/admission-share/plain-token/recordings/rec-1?accessCode=2468",
+            hasPrivateStorage: true,
+            vendorReview: {
+              decision: "backup",
+              remark: "可作为备选。",
+              submittedAt: "2026-07-29T10:00:00.000Z",
+            },
           }),
           expect.objectContaining({
             applicationId: "app-2",
@@ -397,6 +404,8 @@ describe("admission share board service", () => {
     expect(JSON.stringify(dto)).not.toContain("tokenHash");
     expect(JSON.stringify(dto)).not.toContain("accessCodeHash");
     expect(JSON.stringify(dto)).not.toContain("private/path/rec-2.mp4");
+    expect(JSON.stringify(dto)).not.toContain("reviewerName");
+    expect(JSON.stringify(dto)).not.toContain("reviewerContact");
   });
 
   it("resolves private recording playback sources only after share gating", async () => {
@@ -758,13 +767,19 @@ function publicSnapshot(overrides: Record<string, unknown> = {}) {
         recordingVersion: 2,
         recordingStatus: "reviewing" as const,
         recordingUrl: "https://video.example/rec-1",
-        storagePath: null,
+        storagePath: "private/path/rec-1.mp4",
         streamer: {
           id: "streamer-1",
           displayName: "Streamer One",
           accountLabel: "Douyin / one-live",
         },
-        vendorReview: null,
+        vendorReview: {
+          decision: "backup" as const,
+          remark: "可作为备选。",
+          reviewerName: "厂家复核人",
+          reviewerContact: "reviewer@example.com",
+          submittedAt: "2026-07-29T10:00:00.000Z",
+        },
       },
       {
         applicationId: "app-2",

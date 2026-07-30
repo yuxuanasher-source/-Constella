@@ -38,7 +38,7 @@ Add a snapshot item with both sources and assert:
 expect(dto.items[0]).toMatchObject({
   recordingUrl: "https://video.example/external.mp4",
   playbackUrl:
-    "/api/public/admission-share/plain-token/recordings/rec-both",
+    "/api/public/admission-share/plain-token/recordings/rec-both?accessCode=2468",
   hasPrivateStorage: true,
 });
 expect(dto.items[0].vendorReview).toEqual({
@@ -68,6 +68,7 @@ Use private storage as the playback authority:
 playbackUrl: item.storagePath
   ? publicAdmissionRecordingPlaybackUrl({
       token: input.token,
+      accessCode: input.accessCode,
       recordingSubmissionId: item.recordingSubmissionId,
     })
   : item.recordingUrl,
