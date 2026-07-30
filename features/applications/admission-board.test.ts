@@ -617,10 +617,29 @@ describe("admission result task DTO", () => {
           vendorReview: {
             ...resultDetail().vendorReview!,
             syncStatus: "skipped",
-            syncError: "joined_application",
+            syncError: "application_already_joined",
           },
         }),
       ),
     ).toBeNull();
   });
+
+  it.each(["rejected", "needs_changes"] as const)(
+    "does not create a %s follow-up task after a joined application is skipped",
+    (decision) => {
+      expect(
+        toAdmissionResultTask(
+          resultDetail({
+            status: "joined",
+            vendorReview: {
+              ...resultDetail().vendorReview!,
+              decision,
+              syncStatus: "skipped",
+              syncError: "application_already_joined",
+            },
+          }),
+        ),
+      ).toBeNull();
+    },
+  );
 });

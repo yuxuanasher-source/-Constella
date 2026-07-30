@@ -348,6 +348,12 @@ export function toAdmissionResultTask(
   const reviewTargetsCurrentVersion =
     review.recordingSubmissionId === recording.id &&
     review.recordingVersion === recording.version;
+  if (
+    review.syncStatus === "skipped" &&
+    review.syncError === "application_already_joined"
+  ) {
+    return null;
+  }
   if (review.syncStatus === "skipped" && !reviewTargetsCurrentVersion) {
     return resultTask(
       "historical_result_manual_review",
