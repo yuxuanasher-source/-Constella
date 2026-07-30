@@ -1,46 +1,30 @@
-import { AccountLibraryPanel } from "@/components/account-library/account-library-panel";
-import { AccountLibraryShell } from "@/components/account-library/account-library-shell";
+import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import { listPlatformAccounts } from "@/features/account-library/account-library-queries";
-import {
-  canManageAccounts,
-  type AccountLibraryActor,
-} from "@/features/account-library/account-library-service";
 import { toPlatformAccountDtos } from "@/features/account-library/account-library-ui-adapters";
-import { getAuthContext } from "@/lib/auth/context";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
-import { getUnreadNotificationCount } from "@/lib/notify/unread-count";
-import { isMcnStaff } from "@/lib/rbac/roles";
+
+import {
+  currentUserFromAuth,
+  loadConsoleDashboardHome,
+  organizationSettingsFromAuth,
+  requireConsoleStaffAuth,
+} from "../console-auth";
 
 export default async function AccountLibraryPage() {
-  const supabase = await createSupabaseServerClient();
-  const auth = supabase ? await getAuthContext(supabase) : null;
-
-  const canView = Boolean(auth && isMcnStaff(auth.role));
-  const [unreadCount, accounts] = await Promise.all([
-    getUnreadNotificationCount(supabase, auth),
-    supabase && canView
-      ? listPlatformAccounts(supabase)
-      : Promise.resolve([]),
+  const { supabase, auth } = await requireConsoleStaffAuth();
+  const [accounts, dashboardHome] = await Promise.all([
+    listPlatformAccounts(supabase),
+    loadConsoleDashboardHome(supabase, auth),
   ]);
-  const dtos = auth ? toPlatformAccountDtos(accounts, auth.role) : [];
-  const canManage = Boolean(
-    auth && canManageAccounts((auth as AccountLibraryActor).role),
-  );
+  const dtos = toPlatformAccountDtos(accounts, auth.role);
 
   return (
-    <AccountLibraryShell
-      orgName={auth?.organizationName ?? "未连接组织"}
-      userName={auth?.name ?? "访客"}
-      role={auth?.role ?? "guest"}
-      unreadCount={unreadCount}
-    >
-      {canView ? (
-        <AccountLibraryPanel accounts={dtos} canManage={canManage} />
-      ) : (
-        <div className="rounded-lg border border-[var(--line)] bg-white p-10 text-center text-[var(--ink-300)]">
-          需要经营端角色才能访问账号库。
-        </div>
-      )}
-    </AccountLibraryShell>
+    <OpsReferenceApp
+      initialRoute="account-library"
+      accountLibraryAccounts={dtos}
+      dashboardHome={dashboardHome}
+      dashboardHomeError={dashboardHome ? null : "角色看板暂不可用"}
+      currentUser={currentUserFromAuth(auth)}
+      organizationSettings={organizationSettingsFromAuth(auth)}
+    />
   );
 }

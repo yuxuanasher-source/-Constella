@@ -4,11 +4,13 @@ import React from "react";
 import { createPortal } from "react-dom";
 import { Menu as MenuIcon, X as XIcon } from "lucide-react";
 
+import { AccountLibraryScreen } from "@/components/account-library/account-library-screen";
 import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
 import HermesSkillCenter from "@/components/ai/hermes-skill-center";
 import { MarketplaceBoard } from "@/components/marketplace/marketplace-board";
 import { USAGE_TUTORIAL_MD } from "./usage-tutorial-md";
+import { canManageAccounts } from "@/features/account-library/account-library-service";
 import { rankReportQueue } from "@/features/ai/bounded-actions";
 import { canShareAdmissionRecordingsForProject } from "@/features/applications/admission-share-policy";
 import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
@@ -2085,12 +2087,7 @@ const NAV = [
   { key: "audit", label: "操作日志", icon: "Audit" },
   { key: "org", label: "组织与权限", icon: "Settings" },
   { divider: true },
-  {
-    key: "ext-account-library",
-    label: "账号库",
-    icon: "Settings",
-    href: "/console/account-library",
-  },
+  { key: "account-library", label: "账号库", icon: "Settings" },
 ];
 
 const OPS_MOBILE_NAVIGATION_QUERY = "(max-width: 720px)";
@@ -2772,9 +2769,7 @@ export function Sidebar({
               key={it.key}
               title={badgeLabel}
               aria-label={badgeLabel}
-              onClick={() =>
-                it.href ? window.location.assign(it.href) : onNav(it.key)
-              }
+              onClick={() => onNav(it.key)}
               style={{
                 width: "100%",
                 padding: "0 10px",
@@ -35704,8 +35699,9 @@ function OpsReferenceInner({
   streamerCards,
   applicationQueue,
   currentUser,
+  accountLibraryAccounts,
 }) {
-  // route can be: 'home' | 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org'
+  // route can be: 'home' | 'warroom' | 'projects' | 'project' | 'streamers' | 'tasks' | 'reports' | 'settle' | 'billing' | 'export' | 'audit' | 'org' | 'account-library'
   const [route, setRoute] = React.useState(initialRoute);
   const [mobileNavigationOpen, setMobileNavigationOpen] = React.useState(false);
   const mobileNavigationButtonRef = React.useRef(null);
@@ -37442,6 +37438,8 @@ function OpsReferenceInner({
         return ["治理", "通知待办"];
       case "org":
         return ["设置", "组织与权限"];
+      case "account-library":
+        return ["资源", "账号库"];
       default:
         return ["工作台"];
     }
@@ -37679,6 +37677,11 @@ function OpsReferenceInner({
               />
             )}
             {route === "export" && <ScreenExport go={go} />}
+            <AccountLibraryScreen
+              active={route === "account-library"}
+              initialAccounts={accountLibraryAccounts}
+              canManage={canManageAccounts(currentUserState?.role)}
+            />
           </div>
         </main>
         {organizationSettingsOpen ? (
@@ -37888,7 +37891,7 @@ function modulePreview(route) {
 // Mount
 
 /**
- * @param {{ initialRoute?: string; admissionFocusRequest?: { projectId?: string; requestId: number } | null; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; dashboardHomeError?: string | null; currentUser?: any }} props
+ * @param {{ initialRoute?: string; admissionFocusRequest?: { projectId?: string; requestId: number } | null; projectCards?: any[]; collaborationProjectCards?: any[]; streamerCards?: any[]; applicationQueue?: any[]; liveTasks?: any[]; liveReports?: any[]; liveBatches?: any[]; liveBatchDetails?: Record<string, any[]>; liveSettlementPool?: any[]; settlementScope?: any; auditEntries?: any[]; notificationItems?: any[]; organizationMembers?: any[]; organizationMemberPermissions?: any; organizationSettings?: any; billingStatus?: any; complexCost?: any; dashboardHome?: any; dashboardHomeError?: string | null; currentUser?: any; accountLibraryAccounts?: any[] }} props
  */
 export default function OpsReferenceApp({
   initialRoute = "warroom",
@@ -37913,6 +37916,7 @@ export default function OpsReferenceApp({
   streamerCards,
   applicationQueue,
   currentUser,
+  accountLibraryAccounts,
 }) {
   return (
     <OpsReferenceInner
@@ -37938,6 +37942,7 @@ export default function OpsReferenceApp({
       streamerCards={streamerCards}
       applicationQueue={applicationQueue}
       currentUser={currentUser}
+      accountLibraryAccounts={accountLibraryAccounts}
     />
   );
 }
