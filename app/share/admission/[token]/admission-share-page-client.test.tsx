@@ -114,7 +114,7 @@ const serverDrafts = [
 
 describe("AdmissionSharePageClient", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     vi.mocked(loadAdmissionShareBoard).mockResolvedValue({
       shareBoard: formalBoard,
       vendorCheckpoints: [
@@ -404,6 +404,229 @@ describe("AdmissionSharePageClient", () => {
     });
     expect(screen.getByRole("status")).toHaveTextContent("保存失败");
     expect(saveAdmissionShareDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a non-conflict save from the item without rehydrating or losing local values", async () => {
+    vi.mocked(loadAdmissionShareDrafts).mockResolvedValue([
+      {
+        ...serverDrafts[0],
+        decision: "needs_changes",
+        remark: "服务器旧备注",
+        reasonCodes: ["product_fit"],
+      },
+      serverDrafts[1],
+    ]);
+    vi.mocked(saveAdmissionShareDraft).mockRejectedValueOnce(
+      new PublicAdmissionShareApiError(
+        "草稿暂时无法保存，请保留页面并稍后重试。",
+        "SHARE_SERVICE_UNAVAILABLE",
+        503,
+      ),
+    );
+
+    render(<AdmissionSharePageClient token="public-token" />);
+    await screen.findAllByText("待判断主播");
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("当前录屏备注"), {
+      target: { value: "保留本地决定、原因和备注" },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("保存失败");
+    expect(
+      screen.queryByRole("button", { name: "重试" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("需修改")).toBeChecked();
+    expect(screen.getByLabelText("产品匹配")).toBeChecked();
+    expect(screen.getByLabelText("当前录屏备注")).toHaveValue(
+      "保留本地决定、原因和备注",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "重试保存" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(saveAdmissionShareDraft).toHaveBeenCalledTimes(2);
+    expect(saveAdmissionShareDraft).toHaveBeenLastCalledWith(
+      "public-token",
+      "recording-1",
+      {
+        expectedRevision: 2,
+        decision: "needs_changes",
+        remark: "保留本地决定、原因和备注",
+        reasonCodes: ["product_fit"],
+      },
+    );
+    expect(loadAdmissionShareBoard).toHaveBeenCalledTimes(1);
+    expect(loadAdmissionShareDrafts).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides a protected workspace after session loss and restores dirty values on reauthentication", async () => {
+    vi.mocked(loadAdmissionShareDrafts)
+      .mockResolvedValueOnce([
+        {
+          ...serverDrafts[0],
+          decision: "needs_changes",
+          remark: "服务器旧备注",
+          reasonCodes: ["product_fit"],
+        },
+        serverDrafts[1],
+      ])
+      .mockResolvedValueOnce([
+        {
+          ...serverDrafts[0],
+          decision: "backup",
+          remark: "其他复核人更新的远端备注",
+          reasonCodes: [],
+          revision: 7,
+          updatedAt: "2026-07-30T09:00:00.000Z",
+        },
+        serverDrafts[1],
+      ]);
+    vi.mocked(saveAdmissionShareDraft).mockRejectedValueOnce(
+      new PublicAdmissionShareApiError(
+        "安全会话已失效，请重新输入访问码。",
+        "ACCESS_CODE_REQUIRED",
+        401,
+      ),
+    );
+
+    render(<AdmissionSharePageClient token="public-token" />);
+    await screen.findAllByText("待判断主播");
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("当前录屏备注"), {
+      target: { value: "会话失效前的本地备注" },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    vi.useRealTimers();
+
+    expect(
+      screen.queryByRole("region", { name: "录屏复核工作台" }),
+    ).not.toBeInTheDocument();
+    const accessCode = await screen.findByLabelText("访问码");
+    expect(accessCode).toHaveFocus();
+
+    fireEvent.change(accessCode, { target: { value: "246810" } });
+    fireEvent.click(screen.getByRole("button", { name: "验证访问码" }));
+
+    expect(await screen.findAllByText("待判断主播")).toHaveLength(2);
+    expect(screen.getByLabelText("需修改")).toBeChecked();
+    expect(screen.getByLabelText("产品匹配")).toBeChecked();
+    expect(screen.getByLabelText("当前录屏备注")).toHaveValue(
+      "会话失效前的本地备注",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("保存失败");
+
+    fireEvent.click(screen.getByRole("button", { name: "重试保存" }));
+    await waitFor(() =>
+      expect(saveAdmissionShareDraft).toHaveBeenCalledTimes(2),
+    );
+    expect(saveAdmissionShareDraft).toHaveBeenLastCalledWith(
+      "public-token",
+      "recording-1",
+      {
+        expectedRevision: 7,
+        decision: "needs_changes",
+        remark: "会话失效前的本地备注",
+        reasonCodes: ["product_fit"],
+      },
+    );
+  });
+
+  it("does not let stale hydration reopen protected content after session loss", async () => {
+    const staleBoardLoad = deferred<{
+      shareBoard: PublicAdmissionShareBoard;
+      vendorCheckpoints: [];
+    }>();
+    const expiredSave = deferred<{
+      decision: "selected";
+      remark: string;
+      reasonCodes: string[];
+      revision: number;
+      updatedAt: string;
+    }>();
+    vi.mocked(loadAdmissionShareBoard)
+      .mockResolvedValueOnce({
+        shareBoard: formalBoard,
+        vendorCheckpoints: [],
+      })
+      .mockReturnValueOnce(staleBoardLoad.promise);
+    vi.mocked(saveAdmissionShareDraft).mockReturnValueOnce(expiredSave.promise);
+    vi.mocked(reportAdmissionSharePlaybackIssue).mockRejectedValueOnce(
+      new PublicAdmissionShareApiError(
+        "播放问题反馈失败，请稍后重试。",
+        "SHARE_SERVICE_UNAVAILABLE",
+        503,
+      ),
+    );
+
+    render(<AdmissionSharePageClient token="public-token" />);
+    await screen.findAllByText("待判断主播");
+    fireEvent.click(screen.getByLabelText("入选"));
+    fireEvent.click(screen.getByRole("button", { name: "反馈播放问题" }));
+    expect(
+      await screen.findByText("播放问题反馈失败，请稍后重试。"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(loadAdmissionShareBoard).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      expiredSave.reject(
+        new PublicAdmissionShareApiError(
+          "安全会话已失效，请重新输入访问码。",
+          "UNAUTHORIZED",
+          401,
+        ),
+      );
+      await Promise.resolve();
+    });
+    expect(await screen.findByLabelText("访问码")).toBeInTheDocument();
+
+    await act(async () => {
+      staleBoardLoad.resolve({
+        shareBoard: formalBoard,
+        vendorCheckpoints: [],
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(
+      screen.queryByRole("region", { name: "录屏复核工作台" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("访问码")).toBeInTheDocument();
+  });
+
+  it("announces access-code errors and returns focus to the input", async () => {
+    vi.mocked(loadAdmissionShareBoard).mockRejectedValueOnce(
+      new PublicAdmissionShareApiError(
+        "请输入访问码后继续。",
+        "ACCESS_CODE_REQUIRED",
+        401,
+      ),
+    );
+    vi.mocked(authenticateAdmissionShareAccess).mockRejectedValueOnce(
+      new PublicAdmissionShareApiError(
+        "访问码错误，请重新输入。",
+        "ACCESS_CODE_INVALID",
+        401,
+      ),
+    );
+
+    render(<AdmissionSharePageClient token="public-token" />);
+    const accessCode = await screen.findByLabelText("访问码");
+    expect(accessCode).toHaveFocus();
+    fireEvent.change(accessCode, { target: { value: "wrong-code" } });
+    fireEvent.click(screen.getByRole("button", { name: "验证访问码" }));
+
+    expect(
+      await screen.findByRole("alert", { name: "访问码验证错误" }),
+    ).toHaveTextContent("访问码错误，请重新输入。");
+    expect(accessCode).toHaveFocus();
   });
 
   it("opens an accessible summary only after every draft is complete", async () => {

@@ -10,6 +10,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -42,6 +43,7 @@ type AdmissionSharePageClientProps = {
 type PageError = {
   code: string;
   message: string;
+  recovery: "none" | "reload" | "refresh_conflict";
 };
 
 const emptyDraft = (): ReviewDraft => ({
@@ -87,9 +89,59 @@ export default function AdmissionSharePageClient({
   );
   const conflictIdsRef = useRef(new Set<string>());
   const failedIdsRef = useRef(new Set<string>());
+  const preservedDraftIdsRef = useRef(new Set<string>());
+  const preservedDraftVersionsRef = useRef(new Map<string, number>());
   const loadEpochRef = useRef(0);
   const hydrationGenerationRef = useRef(0);
   const submittingRef = useRef(false);
+  const accessLockedRef = useRef(false);
+
+  const lockProtectedWorkspaceForAccess = useCallback(
+    (requestError: PageError) => {
+      const currentBoard = boardRef.current;
+      if (currentBoard?.mode === "formal_review") {
+        for (const item of currentBoard.items) {
+          const recordingSubmissionId = item.recordingSubmissionId;
+          const editEpoch =
+            editEpochRef.current.get(recordingSubmissionId) ?? 0;
+          const savedEpoch =
+            savedEpochRef.current.get(recordingSubmissionId) ?? 0;
+          const state = saveStateRef.current[recordingSubmissionId];
+          if (
+            editEpoch > savedEpoch ||
+            failedIdsRef.current.has(recordingSubmissionId) ||
+            conflictIdsRef.current.has(recordingSubmissionId) ||
+            state === "saving"
+          ) {
+            preservedDraftIdsRef.current.add(recordingSubmissionId);
+            preservedDraftVersionsRef.current.set(
+              recordingSubmissionId,
+              item.recordingVersion,
+            );
+          }
+        }
+      }
+
+      hydrationGenerationRef.current += 1;
+      loadEpochRef.current += 1;
+      for (const timer of remarkTimersRef.current.values()) {
+        clearTimeout(timer);
+      }
+      remarkTimersRef.current.clear();
+      saveChainsRef.current.clear();
+      boardRef.current = null;
+      accessLockedRef.current = true;
+
+      if (mountedRef.current) {
+        setBoard(null);
+        setNeedsAccessCode(true);
+        setIsSummaryOpen(false);
+        setPageError({ ...requestError, recovery: "none" });
+        setIsLoading(false);
+      }
+    },
+    [],
+  );
 
   const updateSaveState = useCallback(
     (recordingSubmissionId: string, state: ReviewDraftSaveState) => {
@@ -189,16 +241,28 @@ export default function AdmissionSharePageClient({
           error,
           "草稿暂时无法保存，请保留页面并稍后重试。",
         );
+        if (isAccessSessionError(requestError)) {
+          lockProtectedWorkspaceForAccess(requestError);
+          return;
+        }
         if (requestError.code === "DRAFT_CONFLICT") {
           conflictIdsRef.current.add(recordingSubmissionId);
           clearRemarkTimer(recordingSubmissionId, remarkTimersRef.current);
-        }
-        if (mountedRef.current) {
-          setPageError(requestError);
+          if (mountedRef.current) {
+            setPageError({
+              ...requestError,
+              recovery: "refresh_conflict",
+            });
+          }
         }
       }
     },
-    [token, updateDraftFromRef, updateSaveState],
+    [
+      lockProtectedWorkspaceForAccess,
+      token,
+      updateDraftFromRef,
+      updateSaveState,
+    ],
   );
 
   const queueDraftSave = useCallback(
@@ -256,6 +320,13 @@ export default function AdmissionSharePageClient({
       nextReasons: VendorCheckpointOption[],
       remoteDrafts: Awaited<ReturnType<typeof loadAdmissionShareDrafts>>,
     ) => {
+      const preservedDrafts = new Map(
+        [...preservedDraftIdsRef.current].map((recordingSubmissionId) => [
+          recordingSubmissionId,
+          draftsRef.current[recordingSubmissionId],
+        ]),
+      );
+      const preservedVersions = new Map(preservedDraftVersionsRef.current);
       hydrationGenerationRef.current += 1;
       for (const timer of remarkTimersRef.current.values()) {
         clearTimeout(timer);
@@ -277,7 +348,7 @@ export default function AdmissionSharePageClient({
                 const remote = remoteByRecording.get(
                   item.recordingSubmissionId,
                 );
-                const draft =
+                const remoteDraft =
                   remote && remote.recordingVersion === item.recordingVersion
                     ? {
                         decision: remote.decision,
@@ -287,6 +358,21 @@ export default function AdmissionSharePageClient({
                         updatedAt: remote.updatedAt,
                       }
                     : emptyDraft();
+                const preservedDraft = preservedDrafts.get(
+                  item.recordingSubmissionId,
+                );
+                const canRestoreLocal =
+                  preservedDraft &&
+                  preservedVersions.get(item.recordingSubmissionId) ===
+                    item.recordingVersion;
+                const draft = canRestoreLocal
+                  ? {
+                      ...remoteDraft,
+                      decision: preservedDraft.decision,
+                      remark: preservedDraft.remark,
+                      reasonCodes: preservedDraft.reasonCodes,
+                    }
+                  : remoteDraft;
                 return [item.recordingSubmissionId, draft];
               }),
             )
@@ -296,19 +382,37 @@ export default function AdmissionSharePageClient({
           ? Object.fromEntries(
               nextBoard.items.map((item) => [
                 item.recordingSubmissionId,
-                remoteByRecording.has(item.recordingSubmissionId)
-                  ? "saved"
-                  : "idle",
+                preservedDrafts.has(item.recordingSubmissionId) &&
+                preservedVersions.get(item.recordingSubmissionId) ===
+                  item.recordingVersion
+                  ? "failed"
+                  : remoteByRecording.has(item.recordingSubmissionId)
+                    ? "saved"
+                    : "idle",
               ]),
             )
           : {};
 
       boardRef.current = nextBoard;
+      accessLockedRef.current = false;
       draftsRef.current = nextDrafts;
       saveStateRef.current = nextSaveState as Record<
         string,
         ReviewDraftSaveState
       >;
+      for (const item of nextBoard.items) {
+        if (
+          preservedDrafts.has(item.recordingSubmissionId) &&
+          preservedVersions.get(item.recordingSubmissionId) ===
+            item.recordingVersion
+        ) {
+          failedIdsRef.current.add(item.recordingSubmissionId);
+          editEpochRef.current.set(item.recordingSubmissionId, 1);
+          savedEpochRef.current.set(item.recordingSubmissionId, 0);
+        }
+      }
+      preservedDraftIdsRef.current.clear();
+      preservedDraftVersionsRef.current.clear();
       if (!mountedRef.current) {
         return;
       }
@@ -372,8 +476,12 @@ export default function AdmissionSharePageClient({
           error,
           "无法读取复核链接，请稍后重试。",
         );
-        setPageError(requestError);
-        setNeedsAccessCode(isAccessCodeError(requestError));
+        if (isAccessSessionError(requestError)) {
+          lockProtectedWorkspaceForAccess(requestError);
+          return;
+        }
+        setPageError({ ...requestError, recovery: "reload" });
+        setNeedsAccessCode(false);
         if (!boardRef.current) {
           setBoard(null);
           setDrafts({});
@@ -384,7 +492,7 @@ export default function AdmissionSharePageClient({
         }
       }
     },
-    [applyHydratedBoard, token],
+    [applyHydratedBoard, lockProtectedWorkspaceForAccess, token],
   );
 
   useEffect(() => {
@@ -405,7 +513,7 @@ export default function AdmissionSharePageClient({
               "访问码验证失败，请重新输入。",
             );
             setNeedsAccessCode(true);
-            setPageError(requestError);
+            setPageError({ ...requestError, recovery: "none" });
             setIsLoading(false);
           }
           return;
@@ -509,6 +617,7 @@ export default function AdmissionSharePageClient({
       setPageError({
         code: "REVIEW_INCOMPLETE",
         message: "复核尚未完成，请补全所有录屏结论、负向备注和问题原因。",
+        recovery: "none",
       });
       return;
     }
@@ -527,6 +636,9 @@ export default function AdmissionSharePageClient({
     }
     try {
       await flushAllDrafts();
+      if (accessLockedRef.current) {
+        return;
+      }
       if (failedIdsRef.current.size > 0) {
         throw new PublicAdmissionShareApiError(
           "仍有草稿未保存，请重试保存后再提交。",
@@ -543,8 +655,14 @@ export default function AdmissionSharePageClient({
         setSuccessMessage("本轮复核已提交并锁定");
       }
     } catch (error) {
-      if (mountedRef.current) {
-        setPageError(normalizePageError(error, "提交复核失败，请稍后重试。"));
+      const requestError = normalizePageError(
+        error,
+        "提交复核失败，请稍后重试。",
+      );
+      if (isAccessSessionError(requestError)) {
+        lockProtectedWorkspaceForAccess(requestError);
+      } else if (mountedRef.current) {
+        setPageError(requestError);
       }
     } finally {
       submittingRef.current = false;
@@ -552,7 +670,13 @@ export default function AdmissionSharePageClient({
         setIsSubmitting(false);
       }
     }
-  }, [flushAllDrafts, hydrate, projectRemark, token]);
+  }, [
+    flushAllDrafts,
+    hydrate,
+    lockProtectedWorkspaceForAccess,
+    projectRemark,
+    token,
+  ]);
 
   const reportPlaybackIssue = useCallback(
     async (
@@ -574,14 +698,18 @@ export default function AdmissionSharePageClient({
           setPageError(null);
         }
       } catch (error) {
-        if (mountedRef.current) {
-          setPageError(
-            normalizePageError(error, "播放问题反馈失败，请稍后重试。"),
-          );
+        const requestError = normalizePageError(
+          error,
+          "播放问题反馈失败，请稍后重试。",
+        );
+        if (isAccessSessionError(requestError)) {
+          lockProtectedWorkspaceForAccess(requestError);
+        } else if (mountedRef.current) {
+          setPageError({ ...requestError, recovery: "reload" });
         }
       }
     },
-    [token],
+    [lockProtectedWorkspaceForAccess, token],
   );
 
   const submitAccessCode = useCallback(async () => {
@@ -590,6 +718,7 @@ export default function AdmissionSharePageClient({
       setPageError({
         code: "ACCESS_CODE_REQUIRED",
         message: "请输入访问码后继续。",
+        recovery: "none",
       });
       return;
     }
@@ -601,7 +730,10 @@ export default function AdmissionSharePageClient({
       await hydrate();
     } catch (error) {
       setNeedsAccessCode(true);
-      setPageError(normalizePageError(error, "访问码验证失败，请重新输入。"));
+      setPageError({
+        ...normalizePageError(error, "访问码验证失败，请重新输入。"),
+        recovery: "none",
+      });
     } finally {
       if (mountedRef.current) {
         setIsAuthenticating(false);
@@ -660,13 +792,13 @@ export default function AdmissionSharePageClient({
           ) : null}
         </header>
 
-        {pageError ? (
+        {pageError && !needsAccessCode ? (
           <div
             role="alert"
             className="flex flex-col gap-3 rounded-md border border-[var(--danger-600)] bg-[var(--danger-50)] px-4 py-3 text-sm text-[var(--danger-600)] sm:flex-row sm:items-center sm:justify-between"
           >
             <span>{pageError.message}</span>
-            {pageError.code === "DRAFT_CONFLICT" ? (
+            {pageError.recovery === "refresh_conflict" ? (
               <button
                 type="button"
                 className={dangerButtonClass}
@@ -675,7 +807,7 @@ export default function AdmissionSharePageClient({
                 <RefreshCw className="h-4 w-4" aria-hidden="true" />
                 刷新最新结果
               </button>
-            ) : !needsAccessCode && !isLoading ? (
+            ) : pageError.recovery === "reload" && !isLoading ? (
               <button
                 type="button"
                 className={dangerButtonClass}
@@ -705,16 +837,21 @@ export default function AdmissionSharePageClient({
           <AccessCodePanel
             value={accessCodeInput}
             isAuthenticating={isAuthenticating}
+            error={
+              pageError && isAccessSessionError(pageError) ? pageError : null
+            }
             onChange={setAccessCodeInput}
             onSubmit={() => void submitAccessCode()}
           />
         ) : null}
 
-        {!isLoading && board?.reviewState === "submitted_locked" ? (
+        {!isLoading &&
+        !needsAccessCode &&
+        board?.reviewState === "submitted_locked" ? (
           <LockedReviewReceipt board={board} />
         ) : null}
 
-        {!isLoading && board ? (
+        {!isLoading && !needsAccessCode && board ? (
           <AdmissionShareReviewWorkspace
             board={board}
             drafts={drafts}
@@ -734,7 +871,7 @@ export default function AdmissionSharePageClient({
         ) : null}
       </div>
 
-      {isSummaryOpen && board ? (
+      {isSummaryOpen && !needsAccessCode && board ? (
         <SubmissionSummaryDialog
           counts={reviewCounts}
           projectRemark={projectRemark}
@@ -899,14 +1036,23 @@ function SubmissionSummaryDialog({
 function AccessCodePanel({
   value,
   isAuthenticating,
+  error,
   onChange,
   onSubmit,
 }: {
   value: string;
   isAuthenticating: boolean;
+  error: PageError | null;
   onChange: (value: string) => void;
   onSubmit: () => void;
 }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const errorId = useId();
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, [error]);
+
   return (
     <section className="mx-auto w-full max-w-md rounded-lg border border-[var(--line)] bg-white p-5">
       <h2 className="text-base font-semibold">此分享需要访问码</h2>
@@ -916,9 +1062,12 @@ function AccessCodePanel({
       <label className="mt-4 grid gap-1.5 text-sm font-medium">
         访问码
         <input
+          ref={inputRef}
           className="min-h-11 rounded-md border border-[var(--line)] px-3 text-base outline-none focus:border-[var(--blue-500)] focus:ring-2 focus:ring-[var(--blue-100)]"
           type="password"
           autoComplete="one-time-code"
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? errorId : undefined}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
@@ -929,6 +1078,16 @@ function AccessCodePanel({
           }}
         />
       </label>
+      {error ? (
+        <p
+          id={errorId}
+          role="alert"
+          aria-label="访问码验证错误"
+          className="mt-3 rounded-md bg-[var(--danger-50)] px-3 py-2 text-sm leading-5 text-[var(--danger-600)]"
+        >
+          {error.message}
+        </p>
+      ) : null}
       <button
         type="button"
         className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-md bg-[var(--blue-600)] px-4 text-sm font-semibold text-white outline-none hover:bg-[var(--blue-700)] focus-visible:ring-2 focus-visible:ring-[var(--blue-500)] focus-visible:ring-offset-2 disabled:opacity-60"
@@ -1042,7 +1201,7 @@ function clearRemarkTimer(
 
 function normalizePageError(error: unknown, fallback: string): PageError {
   if (error instanceof PublicAdmissionShareApiError) {
-    return { code: error.code, message: error.message };
+    return { code: error.code, message: error.message, recovery: "none" };
   }
   if (error && typeof error === "object") {
     const candidate = error as { code?: unknown; message?: unknown };
@@ -1052,16 +1211,22 @@ function normalizePageError(error: unknown, fallback: string): PageError {
         typeof candidate.message === "string" && candidate.message.trim()
           ? candidate.message
           : fallback,
+      recovery: "none",
     };
   }
-  return { code: "UNKNOWN", message: fallback };
+  return { code: "UNKNOWN", message: fallback, recovery: "none" };
 }
 
-function isAccessCodeError(error: PageError) {
-  return (
-    error.code === "ACCESS_CODE_REQUIRED" ||
-    error.code === "ACCESS_CODE_INVALID"
-  );
+function isAccessSessionError(error: PageError) {
+  return new Set([
+    "ACCESS_CODE_REQUIRED",
+    "ACCESS_CODE_INVALID",
+    "ACCESS_REQUIRED",
+    "ADMISSION_SHARE_ACCESS_REQUIRED",
+    "UNAUTHORIZED",
+    "UNAUTHENTICATED",
+    "SESSION_EXPIRED",
+  ]).has(error.code);
 }
 
 function clearLegacyAccessCodeFromUrl(token: string) {
