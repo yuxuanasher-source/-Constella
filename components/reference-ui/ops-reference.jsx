@@ -12,7 +12,6 @@ import { MarketplaceBoard } from "@/components/marketplace/marketplace-board";
 import { USAGE_TUTORIAL_MD } from "./usage-tutorial-md";
 import { canManageAccounts } from "@/features/account-library/account-library-service";
 import { rankReportQueue } from "@/features/ai/bounded-actions";
-import { canShareAdmissionRecordingsForProject } from "@/features/applications/admission-share-policy";
 import { getAllowedProjectStatusTransitions } from "@/features/projects/project-state";
 import {
   toCollaborationApplicationProjectCardDtos,
@@ -39,6 +38,7 @@ import {
 } from "@/lib/markdown/render-markdown";
 
 import AiUsageDashboard from "./ai-usage-dashboard";
+import { AdmissionShareCenter } from "./admission-share-center";
 import CustomSettlementRuleWorkspace from "./custom-settlement-rule-workspace";
 import SettlementRuleBuilder, {
   builderRuleFromStored,
@@ -17164,7 +17164,7 @@ function ScreenAdmission({ focusRequest = null }) {
   const [admissionMessage, setAdmissionMessage] = React.useState("");
   const [busyAction, setBusyAction] = React.useState("");
   const [selectedAiAnalysis, setSelectedAiAnalysis] = React.useState(null);
-  const [shareResult, setShareResult] = React.useState(null);
+  const [shareCenterProject, setShareCenterProject] = React.useState(null);
   // 私有录屏内嵌播放弹层：存 { assetId, streamerName }，null 表示关闭。
   const [playbackRecording, setPlaybackRecording] = React.useState(null);
   // 录屏审核工作台：非空时主体切换为「左队列 + 右播放审核」双栏视图（页头保持）。
@@ -17469,67 +17469,6 @@ function ScreenAdmission({ focusRequest = null }) {
       );
     } catch (error) {
       setAdmissionMessage(error?.message || "录屏表导出失败，请稍后重试");
-    } finally {
-      setBusyAction("");
-    }
-  };
-
-  const createShareBoard = async (board) => {
-    if (!actions.createAdmissionShareBoard) {
-      setAdmissionMessage("分享链接后台暂未接入。");
-      return;
-    }
-    if (
-      board.project.status &&
-      !canShareAdmissionRecordingsForProject(board.project.status)
-    ) {
-      setAdmissionMessage("项目已进入结算或归档阶段，不能再创建录屏分享");
-      return;
-    }
-    const projectApplications = applications.filter(
-      (application) => admissionProjectId(application) === board.project.id,
-    );
-    const shareableApplications = projectApplications.filter(
-      (application) => application.latestRecording,
-    );
-    const applicationIds = shareableApplications
-      .map((application) => application.id)
-      .filter(Boolean);
-    if (applicationIds.length === 0 && board.counts.recordingCount === 0) {
-      setAdmissionMessage("当前项目暂无可分享录屏");
-      return;
-    }
-    const skippedUnavailable = applicationIds.length
-      ? projectApplications.length - shareableApplications.length
-      : 0;
-    const skippedMessage =
-      skippedUnavailable > 0
-        ? `（已跳过 ${skippedUnavailable} 条暂无录屏的报名记录）`
-        : "";
-    setBusyAction(`share:${board.project.id}`);
-    setAdmissionMessage("");
-    try {
-      const result = await actions.createAdmissionShareBoard(board.project.id, {
-        title: `${board.project.name || board.project.code || "项目"} 录屏复核`,
-        ...(applicationIds.length ? { applicationIds } : {}),
-        allowVendorSubmit: true,
-      });
-      if (result?.shareUrl) {
-        // 弹窗直达 + 可复制，避免链接淹没在页面消息里。
-        setShareResult({
-          projectName: board.project.name || board.project.code || "项目",
-          shareUrl: result.shareUrl,
-          skippedUnavailable,
-        });
-      } else {
-        setAdmissionMessage(`分享链接已生成${skippedMessage}`);
-      }
-      // 分享状态徽标（未分享 → 已分享）依赖看板数据，成功后刷新一次。
-      await syncAdmissionProjectBoards().catch((error) =>
-        warnBackgroundRefreshFailure("admission project board", error),
-      );
-    } catch (error) {
-      setAdmissionMessage(error?.message || "分享链接创建失败，请稍后重试");
     } finally {
       setBusyAction("");
     }
@@ -18031,13 +17970,9 @@ function ScreenAdmission({ focusRequest = null }) {
                       <Button
                         size="sm"
                         kind="default"
-                        onClick={() => createShareBoard(board)}
-                        disabled={
-                          busyAction === `share:${board.project.id}` ||
-                          board.counts.recordingCount === 0
-                        }
+                        onClick={() => setShareCenterProject(board.project)}
                       >
-                        创建分享链接
+                        录屏分享中心
                       </Button>
                     </div>
                   ),
@@ -18047,10 +17982,11 @@ function ScreenAdmission({ focusRequest = null }) {
             </Card>
           </div>
         )}
-        {shareResult ? (
-          <AdmissionShareLinkDialog
-            share={shareResult}
-            onClose={() => setShareResult(null)}
+        {shareCenterProject ? (
+          <AdmissionShareCenter
+            project={shareCenterProject}
+            actions={actions}
+            onClose={() => setShareCenterProject(null)}
           />
         ) : null}
         {playbackRecording ? (
@@ -18076,108 +18012,8 @@ function ScreenAdmission({ focusRequest = null }) {
   );
 }
 
-// 分享链接结果弹窗：链接生成后直接呈现在屏幕中央并支持一键复制，
-// 不再只写进页面底部的消息文字里。
-function AdmissionShareLinkDialog({ share, onClose }) {
-  const [copied, setCopied] = React.useState(false);
-  const copyShareUrl = async () => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(share.shareUrl);
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = share.shareUrl;
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textarea);
-      }
-      setCopied(true);
-    } catch {
-      setCopied(false);
-    }
-  };
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="分享链接已生成"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 100,
-        background: "rgba(15,23,42,0.28)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-      }}
-      onClick={onClose}
-    >
-      <div
-        onClick={(event) => event.stopPropagation()}
-        style={{
-          width: "min(560px, 100%)",
-          background: "#fff",
-          borderRadius: 12,
-          border: "1px solid var(--line)",
-          boxShadow: "0 24px 70px rgba(15,23,42,0.22)",
-        }}
-      >
-        <div
-          style={{
-            padding: "18px 20px",
-            borderBottom: "1px solid var(--line)",
-          }}
-        >
-          <div style={{ fontSize: 16, fontWeight: 700 }}>分享链接已生成</div>
-          <div style={{ marginTop: 4, fontSize: 12, color: "var(--ink-500)" }}>
-            {share.projectName} · 厂家可通过该链接复核项目录屏并提交反馈
-          </div>
-        </div>
-        <div style={{ padding: 20, display: "grid", gap: 12 }}>
-          <div
-            className="mono"
-            style={{
-              padding: "10px 12px",
-              border: "1px solid var(--line-strong)",
-              borderRadius: 8,
-              background: "var(--bg-soft)",
-              fontSize: 12,
-              color: "var(--ink-700)",
-              wordBreak: "break-all",
-              userSelect: "all",
-            }}
-          >
-            {share.shareUrl}
-          </div>
-          {share.skippedUnavailable > 0 ? (
-            <div style={{ fontSize: 12, color: "var(--ink-500)" }}>
-              已跳过 {share.skippedUnavailable} 条暂无录屏的报名记录。
-            </div>
-          ) : null}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "flex-end",
-              gap: 8,
-            }}
-          >
-            <Button size="sm" kind="default" onClick={onClose}>
-              关闭
-            </Button>
-            <Button size="sm" kind="primary" onClick={copyShareUrl}>
-              {copied ? "已复制" : "复制链接"}
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // 私有录屏内嵌播放弹层：video 直接指向签名播放端点（服务端 302 到 1h 签名 URL，
-// video 会自动跟随重定向），外壳与 AdmissionShareLinkDialog 同构。
+// video 会自动跟随重定向）。
 // 播放窗旁挂载直播逐字稿面板（RecordingTranscriptPanel）：宽屏侧栏、窄屏折行。
 function RecordingPlaybackDialog({ recording, onClose }) {
   const [videoError, setVideoError] = React.useState(false);
@@ -36456,15 +36292,163 @@ function OpsReferenceInner({
       return body.insight ?? null;
     };
 
+    const listAdmissionShareCandidates = async (projectId) => {
+      const body = await fetchJson(
+        `/api/projects/${encodeURIComponent(projectId)}/admission-share-candidates`,
+        "list admission share candidates failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.candidates) ? body.candidates : [];
+    };
+
+    const openAdmissionShareCandidatePlayback = (
+      projectId,
+      recordingSubmissionId,
+    ) => {
+      const url = `/api/projects/${encodeURIComponent(
+        projectId,
+      )}/admission-share-candidates/${encodeURIComponent(
+        recordingSubmissionId,
+      )}/playback`;
+      window.open(url, "_blank", "noopener,noreferrer");
+    };
+
+    const preflightAdmissionShareBoard = async (projectId, items) => {
+      return fetchJson(
+        `/api/projects/${encodeURIComponent(
+          projectId,
+        )}/admission-share-boards/preflight`,
+        "preflight admission share board failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        },
+      );
+    };
+
+    const listAdmissionShareBoards = async (projectId) => {
+      const body = await fetchJson(
+        `/api/projects/${encodeURIComponent(projectId)}/admission-share-boards`,
+        "list admission share boards failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.shareBoards) ? body.shareBoards : [];
+    };
+
     const createAdmissionShareBoard = async (projectId, input) => {
       return fetchJson(
-        `/api/projects/${projectId}/admission-share-boards`,
+        `/api/projects/${encodeURIComponent(projectId)}/admission-share-boards`,
         "create admission share board failed",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(input),
         },
+      );
+    };
+
+    const extendAdmissionShareBoard = async (
+      projectId,
+      shareBoardId,
+      expiresAt,
+    ) => {
+      return fetchJson(
+        `/api/projects/${encodeURIComponent(
+          projectId,
+        )}/admission-share-boards/${encodeURIComponent(shareBoardId)}/extend`,
+        "extend admission share board failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expiresAt }),
+        },
+      );
+    };
+
+    const reopenAdmissionShareBoard = async (
+      projectId,
+      shareBoardId,
+      reason,
+    ) => {
+      return fetchJson(
+        `/api/projects/${encodeURIComponent(
+          projectId,
+        )}/admission-share-boards/${encodeURIComponent(shareBoardId)}/reopen`,
+        "reopen admission share board failed",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason }),
+        },
+      );
+    };
+
+    const rotateAdmissionShareBoardToken = async (
+      projectId,
+      shareBoardId,
+    ) => {
+      return fetchJson(
+        `/api/projects/${encodeURIComponent(
+          projectId,
+        )}/admission-share-boards/${encodeURIComponent(
+          shareBoardId,
+        )}/rotate-token`,
+        "rotate admission share board token failed",
+        { method: "POST" },
+      );
+    };
+
+    const revokeAdmissionShareBoard = async (projectId, shareBoardId) => {
+      return fetchJson(
+        `/api/projects/${encodeURIComponent(
+          projectId,
+        )}/admission-share-boards/${encodeURIComponent(shareBoardId)}/revoke`,
+        "revoke admission share board failed",
+        { method: "POST" },
+      );
+    };
+
+    const listAdmissionShareSubmissions = async (
+      projectId,
+      shareBoardId,
+    ) => {
+      const body = await fetchJson(
+        `/api/projects/${encodeURIComponent(
+          projectId,
+        )}/admission-share-boards/${encodeURIComponent(
+          shareBoardId,
+        )}/submissions`,
+        "list admission share submissions failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.submissions) ? body.submissions : [];
+    };
+
+    const listAdmissionSharePlaybackIssues = async (
+      projectId,
+      status = "open",
+    ) => {
+      const params = new URLSearchParams({ status });
+      const body = await fetchJson(
+        `/api/projects/${encodeURIComponent(
+          projectId,
+        )}/admission-share-playback-issues?${params.toString()}`,
+        "list admission share playback issues failed",
+        { method: "GET" },
+      );
+      return Array.isArray(body.issues) ? body.issues : [];
+    };
+
+    const resolveAdmissionSharePlaybackIssue = async (projectId, issueId) => {
+      return fetchJson(
+        `/api/projects/${encodeURIComponent(
+          projectId,
+        )}/admission-share-playback-issues/${encodeURIComponent(
+          issueId,
+        )}/resolve`,
+        "resolve admission share playback issue failed",
+        { method: "POST" },
       );
     };
 
@@ -36548,7 +36532,18 @@ function OpsReferenceInner({
       exportAdmissionRecordings,
       requestRecordingAiAnalysis,
       confirmRecordingProfileInsight,
+      listAdmissionShareCandidates,
+      openAdmissionShareCandidatePlayback,
+      preflightAdmissionShareBoard,
+      listAdmissionShareBoards,
       createAdmissionShareBoard,
+      extendAdmissionShareBoard,
+      reopenAdmissionShareBoard,
+      rotateAdmissionShareBoardToken,
+      revokeAdmissionShareBoard,
+      listAdmissionShareSubmissions,
+      listAdmissionSharePlaybackIssues,
+      resolveAdmissionSharePlaybackIssue,
       createProjectCollaborationShare,
       listProjectCollaborationApplications,
       reviewProjectCollaborationApplication,
