@@ -29,6 +29,16 @@ describe("admission share playback issue RPC schema", () => {
     expect(reportGrants).toHaveLength(1);
     expect(reportGrants[0]).toContain("to service_role");
     expect(reportGrants[0]).not.toMatch(/\b(?:anon|authenticated)\b/u);
+    const reportFunction = sql.slice(
+      sql.indexOf(
+        "create or replace function public.report_admission_share_playback_issue",
+      ),
+      sql.indexOf(
+        "create or replace function public.resolve_admission_share_playback_issue",
+      ),
+    );
+    expect(reportFunction).toContain("v_now timestamptz := clock_timestamp()");
+    expect(reportFunction).not.toMatch(/,\s*p_reported_at\s*\)/u);
   });
 
   it("keeps public payloads bounded to issue enums and browser families", () => {
@@ -60,16 +70,33 @@ describe("admission share playback issue RPC schema", () => {
       /where id = p_issue_id[\s\S]+organization_id = p_organization_id[\s\S]+project_id = p_project_id[\s\S]+for update/u,
     );
     expect(sql).toMatch(
-      /if v_issue\.status = 'resolved' then[\s\S]+return v_issue/u,
+      /if v_issue\.status = 'resolved' then[\s\S]+select v_issue\.id, false, v_issue\.resolved_at;[\s\S]+return;/u,
     );
     expect(sql).toMatch(
-      /set\s+status = 'resolved',\s+resolved_by = p_actor_user_id,\s+resolved_at = p_resolved_at/u,
+      /set\s+status = 'resolved',\s+resolved_by = p_actor_user_id,\s+resolved_at = v_now/u,
     );
     expect(sql).toContain("'playback_issue_resolved'");
+    expect(sql).toMatch(
+      /returns table\s*\(\s*issue_id uuid,\s*resolved_now boolean,\s*resolved_at timestamptz\s*\)/u,
+    );
+    expect(sql).toMatch(
+      /if v_issue\.status = 'resolved' then[\s\S]+false[\s\S]+return/u,
+    );
     expect(sql).toMatch(
       /grant execute on function public\.resolve_admission_share_playback_issue\([\s\S]+to authenticated/u,
     );
     expect(sql).toContain("if p_resolved_at is null then");
+    const resolveFunction = sql.slice(
+      sql.indexOf(
+        "create or replace function public.resolve_admission_share_playback_issue",
+      ),
+      sql.indexOf(
+        "revoke all on function public.report_admission_share_playback_issue",
+      ),
+    );
+    expect(resolveFunction).toContain("v_now := clock_timestamp()");
+    expect(resolveFunction).not.toContain("resolved_at = p_resolved_at");
+    expect(resolveFunction).not.toMatch(/,\s*p_resolved_at\s*\)/u);
   });
 
   it("does not create a general playback-issue update policy", () => {

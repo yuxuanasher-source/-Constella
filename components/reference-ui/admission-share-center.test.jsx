@@ -860,6 +860,30 @@ describe("AdmissionShareCenter", () => {
         resolvedAt: null,
       },
     ]);
+    actions.listAdmissionShareSubmissions.mockResolvedValue([
+      {
+        id: "submission-3",
+        revision: 3,
+        projectRemark: "本轮优先确认通过主播",
+        submittedAt: "2026-07-30T09:00:00.000Z",
+        summary: {
+          selected: 1,
+          backup: 1,
+          rejected: 0,
+          needsChanges: 1,
+        },
+        items: [
+          {
+            recordingVersion: 2,
+            decision: "selected",
+            remark: "节奏稳定",
+            reasonCodes: [],
+            syncStatus: "synced",
+            syncError: null,
+          },
+        ],
+      },
+    ]);
     renderShareCenter(actions);
 
     fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
@@ -872,6 +896,28 @@ describe("AdmissionShareCenter", () => {
       screen.getByRole("heading", { name: "播放问题" }),
     ).toBeInTheDocument();
     expect(screen.getByText("MEDIA_DECODE_FAILED")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "查看复核结果" }));
+    expect(actions.listAdmissionShareSubmissions).toHaveBeenCalledWith(
+      "project-1",
+      "share-submitted",
+    );
+    const resultPending = screen.getByRole("region", {
+      name: "复核结果待办",
+    });
+    expect(
+      await within(resultPending).findByText("第 3 次提交"),
+    ).toBeInTheDocument();
+    expect(
+      within(resultPending).getByText("通过 1 · 备选 1 · 拒绝 0 · 需修改 1"),
+    ).toBeInTheDocument();
+    expect(
+      within(resultPending).getByText("本轮优先确认通过主播"),
+    ).toBeInTheDocument();
+    expect(
+      within(resultPending).getByText("录屏 V2 · 通过"),
+    ).toBeInTheDocument();
+    expect(within(resultPending).getByText("节奏稳定")).toBeInTheDocument();
   });
 
   it("shows a scoped retry when playback issue loading fails", async () => {
@@ -945,6 +991,88 @@ describe("AdmissionShareCenter", () => {
       screen.getByRole("button", { name: "重试标记已解决" }),
     ).toBeEnabled();
     expect(screen.getByText("MEDIA_DECODE_FAILED")).toBeInTheDocument();
+  });
+
+  it("keeps independent pending state for two concurrent issue resolutions", async () => {
+    let resolveFirst;
+    let resolveSecond;
+    actions.listAdmissionSharePlaybackIssues.mockResolvedValue([
+      {
+        id: "issue-1",
+        shareBoardId: "share-1",
+        recordingSubmissionId: "recording-v1",
+        recordingVersion: 1,
+        streamerDisplayName: "主播甲",
+        sourceType: "original",
+        errorCode: "MEDIA_LOAD_FAILED",
+        status: "open",
+        reportedAt: "2026-07-30T09:00:00.000Z",
+        resolvedAt: null,
+      },
+      {
+        id: "issue-2",
+        shareBoardId: "share-1",
+        recordingSubmissionId: "recording-v2",
+        recordingVersion: 2,
+        streamerDisplayName: "主播乙",
+        sourceType: "external",
+        errorCode: "EXTERNAL_LINK_FAILED",
+        status: "open",
+        reportedAt: "2026-07-30T09:01:00.000Z",
+        resolvedAt: null,
+      },
+    ]);
+    actions.resolveAdmissionSharePlaybackIssue
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+
+    const firstRow = (await screen.findByText("MEDIA_LOAD_FAILED")).closest(
+      "tr",
+    );
+    const secondRow = screen.getByText("EXTERNAL_LINK_FAILED").closest("tr");
+    const firstButton = within(firstRow).getByRole("button", {
+      name: "标记已解决",
+    });
+    const secondButton = within(secondRow).getByRole("button", {
+      name: "标记已解决",
+    });
+    fireEvent.click(firstButton);
+    fireEvent.click(secondButton);
+
+    expect(firstButton).toBeDisabled();
+    expect(secondButton).toBeDisabled();
+    expect(firstButton).toHaveTextContent("处理中");
+    expect(secondButton).toHaveTextContent("处理中");
+
+    resolveFirst({ ok: true });
+    await waitFor(() =>
+      expect(screen.queryByText("MEDIA_LOAD_FAILED")).not.toBeInTheDocument(),
+    );
+    const stillPendingSecondRow = screen
+      .getByText("EXTERNAL_LINK_FAILED")
+      .closest("tr");
+    expect(
+      within(stillPendingSecondRow).getByRole("button", { name: "处理中…" }),
+    ).toBeDisabled();
+
+    resolveSecond({ ok: true });
+    await waitFor(() =>
+      expect(
+        screen.queryByText("EXTERNAL_LINK_FAILED"),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("uses a fixed, accessible selection bar with 44px critical actions", async () => {

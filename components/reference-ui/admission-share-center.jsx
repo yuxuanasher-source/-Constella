@@ -40,6 +40,13 @@ const taskStatusLabels = {
   completed: "已完成",
 };
 
+const vendorDecisionLabels = {
+  selected: "通过",
+  backup: "备选",
+  rejected: "拒绝",
+  needs_changes: "需修改",
+};
+
 const buttonBase = {
   minHeight: 44,
   padding: "0 14px",
@@ -324,6 +331,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [taskError, setTaskError] = React.useState("");
   const [issueError, setIssueError] = React.useState("");
   const [issueResolveErrors, setIssueResolveErrors] = React.useState({});
+  const [resolvingIssueIds, setResolvingIssueIds] = React.useState(new Set());
   const [busy, setBusy] = React.useState("");
   const [pendingTasks, setPendingTasks] = React.useState(new Set());
   const [message, setMessage] = React.useState("");
@@ -759,7 +767,11 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       delete next[issue.id];
       return next;
     });
-    setBusy(`issue:${issue.id}`);
+    setResolvingIssueIds((current) => {
+      const next = new Set(current);
+      next.add(issue.id);
+      return next;
+    });
     try {
       await actions.resolveAdmissionSharePlaybackIssue(project.id, issue.id);
       setIssues((current) => current.filter((item) => item.id !== issue.id));
@@ -771,7 +783,11 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       }));
     } finally {
       resolvingIssueIdsRef.current.delete(issue.id);
-      setBusy("");
+      setResolvingIssueIds((current) => {
+        const next = new Set(current);
+        next.delete(issue.id);
+        return next;
+      });
     }
   };
 
@@ -1080,6 +1096,8 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
               <div style={{ display: "grid", gap: 20 }}>
                 <ResultPendingTasks
                   tasks={tasks}
+                  submissions={submissions}
+                  pendingTasks={pendingTasks}
                   onViewSubmissions={viewSubmissions}
                 />
                 <PlaybackIssues
@@ -1087,7 +1105,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
                   loading={busy === "issues"}
                   error={issueError}
                   resolveErrors={issueResolveErrors}
-                  busy={busy}
+                  resolvingIssueIds={resolvingIssueIds}
                   onRetry={() => {
                     setBusy("issues");
                     loadIssues()
@@ -2212,7 +2230,12 @@ function ShareTasks({
   );
 }
 
-function ResultPendingTasks({ tasks, onViewSubmissions }) {
+function ResultPendingTasks({
+  tasks,
+  submissions,
+  pendingTasks,
+  onViewSubmissions,
+}) {
   const pendingResults = tasks.filter(
     (task) => task.reviewState === "submitted_locked",
   );
@@ -2249,49 +2272,157 @@ function ResultPendingTasks({ tasks, onViewSubmissions }) {
       ) : (
         <div style={panelStyle}>
           {pendingResults.map((task, index) => (
-            <div
+            <article
               key={task.id}
               style={{
-                display: "flex",
-                flexWrap: "wrap",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
                 padding: "12px 14px",
                 borderTop: index ? "1px solid var(--line)" : 0,
               }}
             >
-              <div style={{ minWidth: 0 }}>
-                <div
-                  style={{
-                    overflowWrap: "anywhere",
-                    fontSize: 13,
-                    fontWeight: 650,
-                  }}
-                >
-                  {task.title || "未命名复核任务"}
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      overflowWrap: "anywhere",
+                      fontSize: 13,
+                      fontWeight: 650,
+                    }}
+                  >
+                    {task.title || "未命名复核任务"}
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 4,
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                    }}
+                  >
+                    第 {task.roundNumber || 1} 轮 · {task.itemCount || 0} 条录屏
+                    {task.lastSubmittedAt
+                      ? ` · ${formatDate(task.lastSubmittedAt)} 提交`
+                      : ""}
+                  </div>
                 </div>
-                <div
-                  style={{
-                    marginTop: 4,
-                    fontSize: 12,
-                    color: "var(--ink-500)",
-                  }}
+                <ActionButton
+                  disabled={pendingTasks.has(task.id)}
+                  onClick={() => onViewSubmissions(task)}
                 >
-                  第 {task.roundNumber || 1} 轮 · {task.itemCount || 0} 条录屏
-                  {task.lastSubmittedAt
-                    ? ` · ${formatDate(task.lastSubmittedAt)} 提交`
-                    : ""}
-                </div>
+                  {pendingTasks.has(task.id)
+                    ? "加载中…"
+                    : Object.hasOwn(submissions, task.id)
+                      ? "刷新复核结果"
+                      : "查看复核结果"}
+                </ActionButton>
               </div>
-              <ActionButton onClick={() => onViewSubmissions(task)}>
-                查看复核结果
-              </ActionButton>
-            </div>
+              {Object.hasOwn(submissions, task.id) ? (
+                <ResultSubmissionDetails
+                  task={task}
+                  submissions={submissions[task.id]}
+                />
+              ) : null}
+            </article>
           ))}
         </div>
       )}
     </section>
+  );
+}
+
+function ResultSubmissionDetails({ task, submissions }) {
+  return (
+    <div
+      aria-label={`${task.title || "未命名复核任务"} 复核提交详情`}
+      style={{
+        display: "grid",
+        gap: 10,
+        marginTop: 12,
+        paddingTop: 12,
+        borderTop: "1px solid var(--line)",
+      }}
+    >
+      {submissions.length === 0 ? (
+        <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+          暂无提交记录
+        </span>
+      ) : (
+        submissions.map((submission, index) => (
+          <article
+            key={submission.id || index}
+            style={{
+              display: "grid",
+              gap: 8,
+              padding: 12,
+              border: "1px solid var(--line)",
+              borderRadius: 6,
+              background: "var(--bg-soft, #f8fafc)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                justifyContent: "space-between",
+                gap: 8,
+                fontSize: 12,
+              }}
+            >
+              <strong>第 {submission.revision || index + 1} 次提交</strong>
+              <span style={{ color: "var(--ink-500)" }}>
+                {formatDate(submission.submittedAt)}
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--ink-600)" }}>
+              {`通过 ${submission.summary?.selected ?? 0} · 备选 ${
+                submission.summary?.backup ?? 0
+              } · 拒绝 ${submission.summary?.rejected ?? 0} · 需修改 ${
+                submission.summary?.needsChanges ?? 0
+              }`}
+            </div>
+            {submission.projectRemark ? (
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 6,
+                  fontSize: 12,
+                }}
+              >
+                <strong>总体说明</strong>
+                <span>{submission.projectRemark}</span>
+              </div>
+            ) : null}
+            <div style={{ display: "grid", gap: 6 }}>
+              {(submission.items || []).map((item, itemIndex) => (
+                <div
+                  key={`${item.recordingSubmissionId || "recording"}:${itemIndex}`}
+                  style={{
+                    display: "grid",
+                    gap: 3,
+                    padding: "8px 10px",
+                    borderLeft: "3px solid var(--line-strong, var(--line))",
+                    fontSize: 12,
+                  }}
+                >
+                  <strong>
+                    录屏 V{item.recordingVersion || "-"} ·{" "}
+                    {vendorDecisionLabels[item.decision] || "未知决定"}
+                  </strong>
+                  {item.remark ? <span>{item.remark}</span> : null}
+                </div>
+              ))}
+            </div>
+          </article>
+        ))
+      )}
+    </div>
   );
 }
 
@@ -2300,7 +2431,7 @@ function PlaybackIssues({
   loading,
   error,
   resolveErrors,
-  busy,
+  resolvingIssueIds,
   onRetry,
   onResolve,
 }) {
@@ -2408,9 +2539,9 @@ function PlaybackIssues({
                     ) : null}
                     <ActionButton
                       onClick={() => onResolve(issue)}
-                      disabled={busy === `issue:${issue.id}`}
+                      disabled={resolvingIssueIds.has(issue.id)}
                     >
-                      {busy === `issue:${issue.id}`
+                      {resolvingIssueIds.has(issue.id)
                         ? "处理中…"
                         : resolveErrors[issue.id]
                           ? "重试标记已解决"

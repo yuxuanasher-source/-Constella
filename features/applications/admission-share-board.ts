@@ -135,7 +135,7 @@ export type AdmissionShareBoardRepository = {
     issueId: string;
     actorUserId: string;
     resolvedAt: string;
-  }): Promise<void>;
+  }): Promise<{ resolvedNow: boolean }>;
   getPublicShareBoardSnapshot(
     tokenHash: string,
   ): Promise<PublicAdmissionShareBoardSnapshot | null>;
@@ -701,21 +701,25 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     issueId: string;
     actorUserId: string;
     resolvedAt: string;
-  }): Promise<void> {
-    const { error } = await this.client.rpc(
-      "resolve_admission_share_playback_issue",
-      {
+  }): Promise<{ resolvedNow: boolean }> {
+    const { data, error } = await this.client
+      .rpc("resolve_admission_share_playback_issue", {
         p_organization_id: input.organizationId,
         p_project_id: input.projectId,
         p_issue_id: input.issueId,
         p_actor_user_id: input.actorUserId,
         p_resolved_at: input.resolvedAt,
-      },
-    );
+      })
+      .single<{ resolved_now: boolean }>();
 
     if (error) {
       throw error;
     }
+    if (!data || typeof data.resolved_now !== "boolean") {
+      throw new Error("Invalid playback issue resolution result");
+    }
+
+    return { resolvedNow: data.resolved_now };
   }
 
   async getPublicShareBoardSnapshot(
@@ -2230,13 +2234,16 @@ export async function resolveAdmissionSharePlaybackIssue({
   now?: string;
 }): Promise<void> {
   assertAdmissionSharePlaybackIssueActor(actor, organizationId);
-  await repo.resolvePlaybackIssue({
+  const result = await repo.resolvePlaybackIssue({
     organizationId,
     projectId,
     issueId,
     actorUserId: actor.userId,
     resolvedAt: now,
   });
+  if (!result.resolvedNow) {
+    return;
+  }
   await writeLifecycleAuditBestEffort(audit, {
     organizationId,
     actorUserId: actor.userId,

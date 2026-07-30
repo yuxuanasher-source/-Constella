@@ -2814,7 +2814,7 @@ describe("admission share playback issue service", () => {
   it("checks MCN role and organization again before listing or resolving", async () => {
     const repo = createRepo({
       listPlaybackIssues: vi.fn().mockResolvedValue([issue]),
-      resolvePlaybackIssue: vi.fn(),
+      resolvePlaybackIssue: vi.fn().mockResolvedValue({ resolvedNow: true }),
     });
     const audit = vi.fn().mockRejectedValue(new Error("audit unavailable"));
 
@@ -2876,6 +2876,36 @@ describe("admission share playback issue service", () => {
     }
   });
 
+  it("writes the supplemental resolution audit only for the atomic winning RPC", async () => {
+    const resolvePlaybackIssue = vi
+      .fn()
+      .mockResolvedValueOnce({ resolvedNow: true })
+      .mockResolvedValueOnce({ resolvedNow: false });
+    const repo = createRepo({ resolvePlaybackIssue });
+    const audit = vi.fn().mockResolvedValue(undefined);
+    const input = {
+      repo,
+      audit,
+      actor,
+      organizationId: "org-1",
+      projectId: "project-1",
+      issueId: "issue-1",
+      now: "2026-07-30T10:00:00.000Z",
+    };
+
+    await resolveAdmissionSharePlaybackIssue(input);
+    await resolveAdmissionSharePlaybackIssue(input);
+
+    expect(resolvePlaybackIssue).toHaveBeenCalledTimes(2);
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "resolve_share_playback_issue",
+        objectId: "issue-1",
+      }),
+    );
+  });
+
   it("maps staff issue rows to the strict DTO without persistence-only fields", async () => {
     const row = {
       id: "issue-1",
@@ -2921,10 +2951,14 @@ describe("admission share playback issue service", () => {
       data: { id: "issue-1" },
       error: null,
     });
+    const resolveSingle = vi.fn().mockResolvedValue({
+      data: { issue_id: "issue-1", resolved_now: true },
+      error: null,
+    });
     const rpc = vi
       .fn()
       .mockReturnValueOnce({ single })
-      .mockResolvedValueOnce({ error: null });
+      .mockReturnValueOnce({ single: resolveSingle });
     const from = vi.fn();
     const repo = new SupabaseAdmissionShareBoardRepository({
       rpc,
@@ -2941,13 +2975,15 @@ describe("admission share playback issue service", () => {
         reportedAt: "2026-07-30T09:00:00.000Z",
       }),
     ).resolves.toEqual({ issueId: "issue-1" });
-    await repo.resolvePlaybackIssue({
-      organizationId: "org-1",
-      projectId: "project-1",
-      issueId: "issue-1",
-      actorUserId: "user-ops",
-      resolvedAt: "2026-07-30T10:00:00.000Z",
-    });
+    await expect(
+      repo.resolvePlaybackIssue({
+        organizationId: "org-1",
+        projectId: "project-1",
+        issueId: "issue-1",
+        actorUserId: "user-ops",
+        resolvedAt: "2026-07-30T10:00:00.000Z",
+      }),
+    ).resolves.toEqual({ resolvedNow: true });
 
     expect(rpc).toHaveBeenNthCalledWith(
       1,

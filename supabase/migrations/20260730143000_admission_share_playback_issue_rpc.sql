@@ -104,7 +104,7 @@ begin
     p_source_type,
     p_error_code,
     p_user_agent_family,
-    p_reported_at
+    v_now
   )
   returning * into v_issue;
 
@@ -128,7 +128,7 @@ begin
       'source_type', p_source_type,
       'error_code', p_error_code
     ),
-    p_reported_at
+    v_now
   );
 
   return v_issue;
@@ -142,13 +142,18 @@ create or replace function public.resolve_admission_share_playback_issue(
   p_actor_user_id uuid,
   p_resolved_at timestamptz
 )
-returns public.project_recording_share_playback_issues
+returns table (
+  issue_id uuid,
+  resolved_now boolean,
+  resolved_at timestamptz
+)
 language plpgsql
 security definer
 set search_path = pg_catalog, public
 as $$
 declare
   v_issue public.project_recording_share_playback_issues%rowtype;
+  v_now timestamptz;
 begin
   if p_resolved_at is null then
     raise exception 'invalid_playback_issue_resolution';
@@ -186,14 +191,18 @@ begin
   end if;
 
   if v_issue.status = 'resolved' then
-    return v_issue;
+    return query
+    select v_issue.id, false, v_issue.resolved_at;
+    return;
   end if;
+
+  v_now := clock_timestamp();
 
   update public.project_recording_share_playback_issues
   set
     status = 'resolved',
     resolved_by = p_actor_user_id,
-    resolved_at = p_resolved_at
+    resolved_at = v_now
   where id = v_issue.id
   returning * into v_issue;
 
@@ -214,10 +223,11 @@ begin
     'staff',
     p_actor_user_id,
     jsonb_build_object('issue_id', v_issue.id),
-    p_resolved_at
+    v_now
   );
 
-  return v_issue;
+  return query
+  select v_issue.id, true, v_issue.resolved_at;
 end;
 $$;
 
