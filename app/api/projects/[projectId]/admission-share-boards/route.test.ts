@@ -448,4 +448,42 @@ describe("project admission share-board route", () => {
     expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(createAdmissionShareBoard).not.toHaveBeenCalled();
   });
+
+  it("returns the stable lifecycle conflict when the database guard wins a create race", async () => {
+    vi.mocked(createAdmissionShareBoard).mockRejectedValueOnce(
+      new AdmissionShareProjectStatusError(
+        "Project status changed before share creation",
+        409,
+      ),
+    );
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "preview",
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      code: "ADMISSION_SHARE_PROJECT_STATUS_BLOCKED",
+      error: "Project status changed before share creation",
+    });
+    expect(assertCanCreateAdmissionShareForProject).toHaveBeenCalled();
+    expect(createAdmissionShareBoard).toHaveBeenCalled();
+  });
 });

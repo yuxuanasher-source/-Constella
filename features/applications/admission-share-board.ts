@@ -16,6 +16,7 @@ import type {
 } from "./application-state";
 import type { VendorAdmissionDecision } from "./admission-board";
 import type { AdmissionShareCandidateRepository } from "./admission-share-candidates";
+import { AdmissionShareProjectStatusError } from "./admission-share-policy";
 import { listAdmissionShareBoardProgress } from "./admission-share-progress";
 import {
   preflightAdmissionShareSelection,
@@ -463,6 +464,12 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       .single<AdmissionShareBoardRow>();
 
     if (error) {
+      if (isAdmissionShareProjectStatusRpcError(error)) {
+        throw new AdmissionShareProjectStatusError(
+          "Project status changed before share creation",
+          409,
+        );
+      }
       if (isAdmissionShareFormalRoundConflictRpcError(error)) {
         throw new AdmissionShareFormalRoundConflictError();
       }
@@ -2034,8 +2041,7 @@ async function recordVendorEvaluationWithTimeout(
   timeoutMs: number,
 ) {
   const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  timer = setTimeout(() => {
+  const timer = setTimeout(() => {
     controller.abort(
       new Error(`Vendor admission evaluation timed out after ${timeoutMs}ms`),
     );
@@ -2046,9 +2052,7 @@ async function recordVendorEvaluationWithTimeout(
     // after abort so no detached PostgREST promise survives the HTTP receipt.
     await evaluation(controller.signal);
   } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
+    clearTimeout(timer);
   }
 }
 
@@ -2162,6 +2166,17 @@ function isAdmissionShareSelectionChangedRpcError(error: unknown) {
   return (
     candidate.code === "P0001" &&
     candidate.message === "admission_share_selection_changed"
+  );
+}
+
+function isAdmissionShareProjectStatusRpcError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown; message?: unknown };
+  return (
+    candidate.code === "P0001" &&
+    candidate.message === "admission_share_project_status_blocked"
   );
 }
 

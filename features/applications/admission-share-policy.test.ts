@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { basename, resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -78,13 +78,14 @@ describe("admission share project policy", () => {
   });
 
   it("keeps a database lifecycle guard on the final share-board insert", () => {
-    const sql = readFileSync(
-      resolve(
-        process.cwd(),
-        "supabase/migrations/20260730150000_admission_share_project_status_guard.sql",
-      ),
-      "utf8",
+    const migrationPath = resolve(
+      process.cwd(),
+      "supabase/migrations/20260730151000_admission_share_project_status_guard.sql",
     );
+    expect(existsSync(migrationPath)).toBe(true);
+    const sql = existsSync(migrationPath)
+      ? readFileSync(migrationPath, "utf8")
+      : "";
 
     expect(sql).toContain("before insert");
     expect(sql).toContain("project_recording_share_boards");
@@ -92,5 +93,24 @@ describe("admission share project policy", () => {
     expect(sql).toMatch(
       /project\.status::text\s+in\s+\(\s*'recruiting'[\s\S]*'ended'/,
     );
+  });
+
+  it("uses a unique timestamp basename for every migration", () => {
+    const migrationNames = readdirSync(
+      resolve(process.cwd(), "supabase/migrations"),
+    ).filter((name) => /^\d{14}_.+\.sql$/.test(name));
+    const timestampCounts = new Map<string, string[]>();
+
+    for (const name of migrationNames) {
+      const timestamp = basename(name).slice(0, 14);
+      timestampCounts.set(timestamp, [
+        ...(timestampCounts.get(timestamp) || []),
+        name,
+      ]);
+    }
+
+    expect(
+      Array.from(timestampCounts.values()).filter((names) => names.length > 1),
+    ).toEqual([]);
   });
 });

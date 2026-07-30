@@ -168,17 +168,18 @@ function trapDialogKeyDown(event, dialog, onEscape) {
   }
 }
 
-function useDialogFocus(initialFocusRef) {
+function useDialogFocus(initialFocusRef, restoreFocusRef) {
   const dialogRef = React.useRef(null);
   const openerRef = React.useRef(null);
 
   React.useLayoutEffect(() => {
-    openerRef.current = document.activeElement;
+    const restoreTarget = restoreFocusRef?.current;
+    openerRef.current = restoreTarget || document.activeElement;
     const initial =
       initialFocusRef?.current || focusableElements(dialogRef.current)[0];
     initial?.focus?.();
-    return () => openerRef.current?.focus?.();
-  }, [initialFocusRef]);
+    return () => (restoreTarget || openerRef.current)?.focus?.();
+  }, [initialFocusRef, restoreFocusRef]);
 
   return { dialogRef, openerRef };
 }
@@ -304,8 +305,10 @@ async function copyText(text) {
 
 export function AdmissionShareCenter({ project, actions, onClose }) {
   const firstTabRef = React.useRef(null);
+  const taskTabRef = React.useRef(null);
   const centerDialogRef = React.useRef(null);
   const openerRef = React.useRef(null);
+  const restoreTaskFocusAfterDeliveryRef = React.useRef(false);
   const [tab, setTab] = React.useState("library");
   const [candidates, setCandidates] = React.useState([]);
   const [tasks, setTasks] = React.useState([]);
@@ -371,6 +374,13 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       setTasksLoading(false);
     }
   }, [actions, project.id]);
+
+  React.useLayoutEffect(() => {
+    if (!delivery && restoreTaskFocusAfterDeliveryRef.current) {
+      restoreTaskFocusAfterDeliveryRef.current = false;
+      taskTabRef.current?.focus();
+    }
+  }, [delivery]);
 
   const loadCandidates = React.useCallback(async () => {
     setCandidatesLoading(true);
@@ -748,6 +758,8 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   };
 
   const closeDelivery = () => {
+    restoreTaskFocusAfterDeliveryRef.current = true;
+    setTab("tasks");
     setDelivery(null);
     setDraft((current) => ({ ...current, accessCode: "" }));
   };
@@ -814,10 +826,16 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
               background: "#fff",
             }}
           >
-            <div>
+            <div style={{ minWidth: 0, flex: 1 }}>
               <div style={{ fontSize: 16, fontWeight: 700 }}>录屏分享中心</div>
               <div
-                style={{ marginTop: 3, fontSize: 12, color: "var(--ink-500)" }}
+                style={{
+                  minWidth: 0,
+                  marginTop: 3,
+                  overflowWrap: "anywhere",
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                }}
               >
                 {project.name} · 由你明确选择本轮分享的录屏和版本
               </div>
@@ -849,7 +867,13 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
                 aria-selected={tab === item.id}
                 tabIndex={tab === item.id ? 0 : -1}
                 className="admission-share-tab"
-                ref={item.id === "library" ? firstTabRef : undefined}
+                ref={
+                  item.id === "library"
+                    ? firstTabRef
+                    : item.id === "tasks"
+                      ? taskTabRef
+                      : undefined
+                }
                 onClick={() => changeTab(item.id)}
                 onKeyDown={(event) => {
                   if (
@@ -1061,7 +1085,11 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       ) : null}
 
       {delivery ? (
-        <DeliveryDialog delivery={delivery} onClose={closeDelivery} />
+        <DeliveryDialog
+          delivery={delivery}
+          restoreFocusRef={taskTabRef}
+          onClose={closeDelivery}
+        />
       ) : null}
     </>
   );
@@ -1212,11 +1240,21 @@ function CandidateLibrary({
                     borderBottom: "1px solid var(--line)",
                   }}
                 >
-                  <div>
-                    <strong style={{ fontSize: 13 }}>{streamerName}</strong>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <strong
+                      style={{
+                        minWidth: 0,
+                        overflowWrap: "anywhere",
+                        fontSize: 13,
+                      }}
+                    >
+                      {streamerName}
+                    </strong>
                     <span
                       style={{
+                        minWidth: 0,
                         marginLeft: 8,
+                        overflowWrap: "anywhere",
                         fontSize: 12,
                         color: "var(--ink-400)",
                       }}
@@ -1313,7 +1351,15 @@ function CandidateLibrary({
                 <span style={{ width: 20, textAlign: "right" }}>
                   {index + 1}.
                 </span>
-                <span style={{ flex: 1 }}>{candidateLabel(candidate)}</span>
+                <span
+                  style={{
+                    minWidth: 0,
+                    flex: 1,
+                    overflowWrap: "anywhere",
+                  }}
+                >
+                  {candidateLabel(candidate)}
+                </span>
                 <ActionButton
                   kind="quiet"
                   aria-label={`上移 ${candidateLabel(candidate)}`}
@@ -1366,7 +1412,9 @@ function CandidateRow({
           display: "flex",
           alignItems: "center",
           gap: 9,
+          minWidth: 0,
           minHeight: 44,
+          overflowWrap: "anywhere",
           fontSize: 13,
           fontWeight: 600,
         }}
@@ -2219,8 +2267,8 @@ function PlaybackIssues({ issues, loading, busy, onResolve }) {
   );
 }
 
-function DeliveryDialog({ delivery, onClose }) {
-  const { dialogRef } = useDialogFocus();
+function DeliveryDialog({ delivery, restoreFocusRef, onClose }) {
+  const { dialogRef } = useDialogFocus(undefined, restoreFocusRef);
   const [copying, setCopying] = React.useState(false);
   const [copyStatus, setCopyStatus] = React.useState("");
   const deliveryText = [

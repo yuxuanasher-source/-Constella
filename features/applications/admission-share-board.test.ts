@@ -445,6 +445,44 @@ describe("admission share board service", () => {
     expect(candidateRepo.listCandidates).toHaveBeenCalledTimes(2);
   });
 
+  it("maps a database project-status race to the stable domain conflict", async () => {
+    const rpcError = {
+      code: "P0001",
+      message: "admission_share_project_status_blocked",
+    };
+    const single = vi.fn().mockResolvedValue({ data: null, error: rpcError });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      rpc: vi.fn().mockReturnValue({ single }),
+    } as never);
+
+    await expect(
+      repo.createShareBoardWithItems({
+        organizationId: "org-1",
+        projectId: "project-1",
+        title: "Vendor review",
+        purpose: "",
+        mode: "formal_review",
+        tokenHash: "a".repeat(64),
+        accessCodeHash: null,
+        expiresAt: "2026-08-06T00:00:00.000Z",
+        allowExternalFallback: true,
+        createdBy: "user-ops",
+        items: [
+          {
+            applicationId: "app-2",
+            recordingSubmissionId: "recording-2-v1",
+            recordingVersion: 1,
+            sortOrder: 0,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      name: "AdmissionShareProjectStatusError",
+      code: "ADMISSION_SHARE_PROJECT_STATUS_BLOCKED",
+      statusCode: 409,
+    });
+  });
+
   it("preserves the RPC error when a fresh race check still has no blocked items", async () => {
     const rpcError = {
       code: "P0001",

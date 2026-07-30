@@ -375,6 +375,66 @@ describe("AdmissionShareCenter", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("returns focus to the stable share-task tab after closing created delivery", async () => {
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    fireEvent.click(
+      within(delivery).getByRole("button", { name: "关闭交付信息" }),
+    );
+
+    expect(screen.getByRole("tab", { name: "分享任务" })).toHaveFocus();
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it("contains very long project, streamer, and selection text on narrow layouts", async () => {
+    const longProjectName = `超长项目${"名称".repeat(40)}`;
+    const longStreamerName = `超长主播${"账号".repeat(40)}`;
+    actions.listAdmissionShareCandidates.mockResolvedValue([
+      {
+        ...latestCandidate,
+        streamer: {
+          ...latestCandidate.streamer,
+          displayName: longStreamerName,
+        },
+      },
+    ]);
+    render(
+      <AdmissionShareCenter
+        project={{ ...project, name: longProjectName }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const projectSummary = await screen.findByText(
+      `${longProjectName} · 由你明确选择本轮分享的录屏和版本`,
+    );
+    expect(projectSummary).toHaveStyle({
+      minWidth: "0",
+      overflowWrap: "anywhere",
+    });
+    expect(screen.getByText(longStreamerName)).toHaveStyle({
+      minWidth: "0",
+      overflowWrap: "anywhere",
+    });
+
+    fireEvent.click(screen.getByLabelText(`选择 ${longStreamerName} V2`));
+    const selection = within(
+      screen.getByRole("region", { name: "已选择录屏" }),
+    ).getByText(`${longStreamerName} V2`);
+    expect(selection).toHaveStyle({
+      minWidth: "0",
+      overflowWrap: "anywhere",
+    });
+  });
+
   it("defaults preview mode to no access code", async () => {
     renderShareCenter(actions);
     fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
@@ -606,6 +666,7 @@ describe("AdmissionShareCenter", () => {
       await screen.findByRole("button", { name: "关闭交付信息" }),
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: "录屏库" }));
     fireEvent.click(screen.getByLabelText("选择 主播甲 V2"));
     fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
     expect(await screen.findByLabelText("自定义访问码")).toHaveValue("");
