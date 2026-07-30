@@ -120,6 +120,39 @@ export type AdmissionShareBoardAuditWriter = (
   input: AuditLogInput,
 ) => Promise<void>;
 
+export type AdmissionShareAccessStore = {
+  consumeAttempt(input: {
+    shareBoardId: string;
+    clientFingerprint: string;
+    succeeded: boolean | null;
+    now: string;
+  }): Promise<{ allowed: boolean; retryAfterSeconds: number }>;
+  createSession(input: {
+    shareBoardId: string;
+    sessionToken: string;
+    expiresAt: string;
+  }): Promise<void>;
+  hasValidSession(input: {
+    shareBoardId: string;
+    sessionToken: string;
+    now: string;
+  }): Promise<boolean>;
+};
+
+export class PublicAdmissionShareError extends Error {
+  constructor(
+    public readonly code:
+      | "ACCESS_CODE_REQUIRED"
+      | "ACCESS_CODE_INVALID"
+      | "ACCESS_RATE_LIMITED",
+    message: string,
+    public readonly statusCode: number,
+    public readonly retryAfterSeconds?: number,
+  ) {
+    super(message);
+  }
+}
+
 export type PublicAdmissionShareBoardSnapshot = AdmissionShareBoardRecord & {
   project: {
     id: string;
@@ -817,42 +850,135 @@ export async function revokeAdmissionShareBoard({
 
 export async function getPublicAdmissionShareBoard({
   repo,
+  accessStore,
   token,
   accessCode,
+  sessionToken,
   now = new Date().toISOString(),
 }: {
   repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
   token: string;
   accessCode?: string;
+  sessionToken?: string;
   now?: string;
 }) {
   const snapshot = await requirePublicSnapshot({
     repo,
+    accessStore,
     token,
     accessCode,
+    sessionToken,
     now,
   });
 
   return toPublicShareDto(snapshot, { token, accessCode });
 }
 
-export async function getPublicAdmissionRecordingPlaybackSource({
+export async function authenticatePublicAdmissionShareAccess({
   repo,
+  accessStore,
   token,
   accessCode,
+  clientFingerprint,
+  now = new Date().toISOString(),
+  sessionTokenFactory = createShareToken,
+}: {
+  repo: AdmissionShareBoardRepository;
+  accessStore: AdmissionShareAccessStore;
+  token: string;
+  accessCode: string;
+  clientFingerprint: string;
+  now?: string;
+  sessionTokenFactory?: () => string;
+}) {
+  const snapshot = await requireAvailablePublicSnapshot({
+    repo,
+    token,
+    now,
+  });
+  if (!snapshot.accessCodeHash) {
+    throw new PublicAdmissionShareError(
+      "ACCESS_CODE_INVALID",
+      "This share link does not require an access code",
+      400,
+    );
+  }
+
+  const check = await accessStore.consumeAttempt({
+    shareBoardId: snapshot.id,
+    clientFingerprint,
+    succeeded: null,
+    now,
+  });
+  if (!check.allowed) {
+    throw new PublicAdmissionShareError(
+      "ACCESS_RATE_LIMITED",
+      "Too many invalid access-code attempts",
+      429,
+      check.retryAfterSeconds,
+    );
+  }
+
+  const succeeded = verifyAdmissionShareAccessCode(
+    accessCode.trim(),
+    snapshot.accessCodeHash,
+  );
+  const recorded = await accessStore.consumeAttempt({
+    shareBoardId: snapshot.id,
+    clientFingerprint,
+    succeeded,
+    now,
+  });
+  if (!recorded.allowed) {
+    throw new PublicAdmissionShareError(
+      "ACCESS_RATE_LIMITED",
+      "Too many invalid access-code attempts",
+      429,
+      recorded.retryAfterSeconds,
+    );
+  }
+  if (!succeeded) {
+    throw new PublicAdmissionShareError(
+      "ACCESS_CODE_INVALID",
+      "Access code is invalid",
+      401,
+    );
+  }
+
+  const sessionToken = sessionTokenFactory();
+  const expiresAt = earlierIsoDate(snapshot.expiresAt, daysFrom(now, 7));
+  await accessStore.createSession({
+    shareBoardId: snapshot.id,
+    sessionToken,
+    expiresAt,
+  });
+  return { sessionToken, expiresAt };
+}
+
+export async function getPublicAdmissionRecordingPlaybackSource({
+  repo,
+  accessStore,
+  token,
+  accessCode,
+  sessionToken,
   recordingSubmissionId,
   now = new Date().toISOString(),
 }: {
   repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
   token: string;
   accessCode?: string;
+  sessionToken?: string;
   recordingSubmissionId: string;
   now?: string;
 }) {
   const snapshot = await requirePublicSnapshot({
     repo,
+    accessStore,
     token,
     accessCode,
+    sessionToken,
     now,
   });
   const item = snapshot.items.find(
@@ -894,23 +1020,29 @@ export type VendorEvaluationRecorder = (input: {
 
 export async function submitVendorAdmissionReviews({
   repo,
+  accessStore,
   token,
   accessCode,
+  sessionToken,
   input,
   now = new Date().toISOString(),
   recordEvaluation,
 }: {
   repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
   token: string;
   accessCode?: string;
+  sessionToken?: string;
   input: SubmitVendorAdmissionReviewsInput;
   now?: string;
   recordEvaluation?: VendorEvaluationRecorder;
 }) {
   const snapshot = await requirePublicSnapshot({
     repo,
+    accessStore,
     token,
     accessCode,
+    sessionToken,
     now,
   });
   if (!snapshot.allowVendorSubmit) {
@@ -1067,7 +1199,9 @@ export function verifyAdmissionShareAccessCode(
   ) {
     const actual = scryptSync(value, salt, 32);
     const expected = Buffer.from(expectedHex, "hex");
-    return actual.length === expected.length && timingSafeEqual(actual, expected);
+    return (
+      actual.length === expected.length && timingSafeEqual(actual, expected)
+    );
   }
 
   if (/^[a-f0-9]{64}$/i.test(storedHash)) {
@@ -1147,13 +1281,64 @@ function daysFrom(now: string, days: number) {
 
 async function requirePublicSnapshot({
   repo,
+  accessStore,
   token,
   accessCode,
+  sessionToken,
+  now,
+}: {
+  repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
+  token: string;
+  accessCode?: string;
+  sessionToken?: string;
+  now: string;
+}) {
+  const snapshot = await requireAvailablePublicSnapshot({ repo, token, now });
+  if (!snapshot.accessCodeHash) {
+    return snapshot;
+  }
+
+  const normalizedAccessCode = accessCode?.trim() || "";
+  if (
+    normalizedAccessCode &&
+    verifyAdmissionShareAccessCode(
+      normalizedAccessCode,
+      snapshot.accessCodeHash,
+    )
+  ) {
+    return snapshot;
+  }
+
+  if (
+    sessionToken &&
+    accessStore &&
+    (await accessStore.hasValidSession({
+      shareBoardId: snapshot.id,
+      sessionToken,
+      now,
+    }))
+  ) {
+    return snapshot;
+  }
+
+  const accessCodeWasProvided = Boolean(normalizedAccessCode);
+  throw new PublicAdmissionShareError(
+    accessCodeWasProvided ? "ACCESS_CODE_INVALID" : "ACCESS_CODE_REQUIRED",
+    accessCodeWasProvided
+      ? "Access code is invalid"
+      : "Access code is required",
+    401,
+  );
+}
+
+async function requireAvailablePublicSnapshot({
+  repo,
+  token,
   now,
 }: {
   repo: AdmissionShareBoardRepository;
   token: string;
-  accessCode?: string;
   now: string;
 }) {
   const tokenHash = hashShareSecret(token.trim());
@@ -1164,16 +1349,11 @@ async function requirePublicSnapshot({
   if (snapshot.status !== "active" || snapshot.expiresAt <= now) {
     throw new Error("Share link is expired or revoked");
   }
-  if (
-    snapshot.accessCodeHash &&
-    !verifyAdmissionShareAccessCode(
-      accessCode?.trim() || "",
-      snapshot.accessCodeHash,
-    )
-  ) {
-    throw new Error("Access code is invalid");
-  }
   return snapshot;
+}
+
+function earlierIsoDate(left: string, right: string) {
+  return Date.parse(left) <= Date.parse(right) ? left : right;
 }
 
 function toPublicShareDto(

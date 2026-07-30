@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  authenticatePublicAdmissionShareAccess,
   createAdmissionShareBoard,
   getPublicAdmissionShareBoard,
   getPublicAdmissionRecordingPlaybackSource,
@@ -168,6 +169,148 @@ describe("admission share board service", () => {
     ).toBe(true);
   });
 
+  it("authenticates a protected share and creates an opaque session", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("246810"),
+        }),
+      ),
+    });
+    const accessStore = {
+      consumeAttempt: vi.fn().mockResolvedValue({
+        allowed: true,
+        retryAfterSeconds: 0,
+      }),
+      createSession: vi.fn().mockResolvedValue(undefined),
+      hasValidSession: vi.fn().mockResolvedValue(false),
+    };
+
+    await expect(
+      authenticatePublicAdmissionShareAccess({
+        repo,
+        accessStore,
+        token: "plain-token",
+        accessCode: "246810",
+        clientFingerprint: "a".repeat(64),
+        now: "2026-06-07T00:00:00.000Z",
+        sessionTokenFactory: () => "opaque-session-token",
+      }),
+    ).resolves.toEqual({
+      sessionToken: "opaque-session-token",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+    });
+    expect(accessStore.consumeAttempt).toHaveBeenNthCalledWith(1, {
+      shareBoardId: "share-1",
+      clientFingerprint: "a".repeat(64),
+      succeeded: null,
+      now: "2026-06-07T00:00:00.000Z",
+    });
+    expect(accessStore.consumeAttempt).toHaveBeenNthCalledWith(2, {
+      shareBoardId: "share-1",
+      clientFingerprint: "a".repeat(64),
+      succeeded: true,
+      now: "2026-06-07T00:00:00.000Z",
+    });
+    expect(accessStore.createSession).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      sessionToken: "opaque-session-token",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+    });
+  });
+
+  it("blocks access after the limiter rejects a failed code", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("246810"),
+        }),
+      ),
+    });
+    const accessStore = {
+      consumeAttempt: vi
+        .fn()
+        .mockResolvedValueOnce({ allowed: true, retryAfterSeconds: 0 })
+        .mockResolvedValueOnce({ allowed: false, retryAfterSeconds: 900 }),
+      createSession: vi.fn().mockResolvedValue(undefined),
+      hasValidSession: vi.fn().mockResolvedValue(false),
+    };
+
+    await expect(
+      authenticatePublicAdmissionShareAccess({
+        repo,
+        accessStore,
+        token: "plain-token",
+        accessCode: "wrong-code",
+        clientFingerprint: "b".repeat(64),
+        now: "2026-06-07T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACCESS_RATE_LIMITED",
+      statusCode: 429,
+      retryAfterSeconds: 900,
+    });
+    expect(accessStore.createSession).not.toHaveBeenCalled();
+  });
+
+  it("accepts an unexpired opaque session for a protected share", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("246810"),
+        }),
+      ),
+    });
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+
+    await expect(
+      getPublicAdmissionShareBoard({
+        repo,
+        accessStore,
+        token: "plain-token",
+        sessionToken: "opaque-session-token",
+        now: "2026-06-07T00:00:00.000Z",
+      }),
+    ).resolves.toEqual(expect.objectContaining({ id: "share-1" }));
+    expect(accessStore.hasValidSession).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      sessionToken: "opaque-session-token",
+      now: "2026-06-07T00:00:00.000Z",
+    });
+  });
+
+  it("requires a new access code after a protected session expires", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("246810"),
+        }),
+      ),
+    });
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(false),
+    };
+
+    await expect(
+      getPublicAdmissionShareBoard({
+        repo,
+        accessStore,
+        token: "plain-token",
+        sessionToken: "expired-session-token",
+        now: "2026-06-07T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACCESS_CODE_REQUIRED",
+      statusCode: 401,
+    });
+  });
+
   it("rejects weak access codes before creating a share board", async () => {
     const repo = createRepo();
 
@@ -189,26 +332,23 @@ describe("admission share board service", () => {
   it.each([
     ["2026-06-06T23:59:59.000Z", "future"],
     ["2026-07-08T00:00:00.000Z", "30 days"],
-  ])(
-    "rejects invalid share expiry %s",
-    async (expiresAt, expectedMessage) => {
-      const repo = createRepo();
+  ])("rejects invalid share expiry %s", async (expiresAt, expectedMessage) => {
+    const repo = createRepo();
 
-      await expect(
-        createAdmissionShareBoard({
-          repo,
-          audit: vi.fn().mockResolvedValue(undefined),
-          actor,
-          projectId: "project-1",
-          input: { expiresAt },
-          now: "2026-06-07T00:00:00.000Z",
-          tokenFactory: () => "plain-token",
-        }),
-      ).rejects.toThrow(expectedMessage);
+    await expect(
+      createAdmissionShareBoard({
+        repo,
+        audit: vi.fn().mockResolvedValue(undefined),
+        actor,
+        projectId: "project-1",
+        input: { expiresAt },
+        now: "2026-06-07T00:00:00.000Z",
+        tokenFactory: () => "plain-token",
+      }),
+    ).rejects.toThrow(expectedMessage);
 
-      expect(repo.shareBoardInserts).toHaveLength(0);
-    },
-  );
+    expect(repo.shareBoardInserts).toHaveLength(0);
+  });
 
   it("rejects share creation when a selected application has no recording", async () => {
     const repo = createRepo({
