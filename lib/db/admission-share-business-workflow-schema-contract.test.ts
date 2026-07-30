@@ -34,7 +34,11 @@ describe("admission share business workflow migration", () => {
   });
 
   it("adds board workflow state and versioned vendor review tables", () => {
-    expect(migration).toContain("mode text not null default 'formal_review'");
+    expect(migration).toContain("add column mode text,");
+    expect(migration).toContain("alter column mode set not null");
+    expect(migration).not.toContain(
+      "mode text not null default 'formal_review'",
+    );
     expect(migration).toContain(
       "review_state text not null default 'not_started'",
     );
@@ -54,7 +58,10 @@ describe("admission share business workflow migration", () => {
       "create or replace function public.derive_recording_share_board_workflow()",
     );
     expect(migration).toMatch(
-      /new\.mode := case[\s\S]+new\.allow_vendor_submit[\s\S]+'formal_review'[\s\S]+'preview'[\s\S]+new\.round_number := case[\s\S]+new\.allow_vendor_submit[\s\S]+greatest\(coalesce\(new\.round_number, 1\), 1\)[\s\S]+else 0/u,
+      /if new\.mode is null then[\s\S]+new\.mode := case[\s\S]+new\.allow_vendor_submit[\s\S]+'formal_review'[\s\S]+'preview'[\s\S]+end if;[\s\S]+new\.round_number := case[\s\S]+when new\.mode = 'preview' then 0[\s\S]+greatest\(coalesce\(new\.round_number, 1\), 1\)/u,
+    );
+    expect(migration).toContain(
+      "new.allow_vendor_submit := new.mode = 'formal_review'",
     );
     expect(migration).toMatch(
       /create trigger project_recording_share_boards_derive_workflow\s+before insert on public\.project_recording_share_boards[\s\S]+derive_recording_share_board_workflow/u,
@@ -88,6 +95,24 @@ describe("admission share business workflow migration", () => {
     );
     expect(migration).toMatch(
       /create trigger project_recording_share_items_prepare\s+before insert on public\.project_recording_share_items[\s\S]+prepare_recording_share_item/u,
+    );
+  });
+
+  it("keeps MCN share scope separate from contributor recording scope", () => {
+    expect(migration).toContain(
+      "v_board.organization_id is distinct from new.organization_id",
+    );
+    expect(migration).toMatch(
+      /v_recording\.organization_id is distinct from\s+v_application\.organization_id/u,
+    );
+    expect(migration).not.toContain(
+      "v_recording.organization_id is distinct from new.organization_id",
+    );
+    expect(migration).not.toContain(
+      "v_application.organization_id is distinct from new.organization_id",
+    );
+    expect(migration).toMatch(
+      /v_recording\.application_id is distinct from new\.application_id[\s\S]+v_recording\.version is distinct from new\.recording_version[\s\S]+v_application\.project_id is distinct from new\.project_id/u,
     );
   });
 

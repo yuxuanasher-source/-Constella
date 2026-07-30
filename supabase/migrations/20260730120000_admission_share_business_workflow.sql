@@ -61,7 +61,7 @@ before update on public.recording_submissions
 for each row execute function public.guard_recording_mcn_review_fact();
 
 alter table public.project_recording_share_boards
-  add column mode text not null default 'formal_review',
+  add column mode text,
   add column purpose text not null default '',
   add column review_state text not null default 'not_started',
   add column round_number integer not null default 1,
@@ -96,6 +96,7 @@ set
   end;
 
 alter table public.project_recording_share_boards
+  alter column mode set not null,
   add constraint project_recording_share_boards_mode_check
   check (mode in ('preview', 'formal_review')),
   add constraint project_recording_share_boards_review_state_check
@@ -121,14 +122,18 @@ language plpgsql
 set search_path = pg_catalog, public
 as $$
 begin
-  new.mode := case
-    when new.allow_vendor_submit then 'formal_review'
-    else 'preview'
-  end;
+  if new.mode is null then
+    new.mode := case
+      when new.allow_vendor_submit then 'formal_review'
+      else 'preview'
+    end;
+  else
+    new.allow_vendor_submit := new.mode = 'formal_review';
+  end if;
+
   new.round_number := case
-    when new.allow_vendor_submit
-      then greatest(coalesce(new.round_number, 1), 1)
-    else 0
+    when new.mode = 'preview' then 0
+    else greatest(coalesce(new.round_number, 1), 1)
   end;
 
   return new;
@@ -226,11 +231,11 @@ begin
   if not found
      or v_board.organization_id is distinct from new.organization_id
      or v_board.project_id is distinct from new.project_id
-     or v_recording.organization_id is distinct from new.organization_id
      or v_recording.project_id is distinct from new.project_id
      or v_recording.application_id is distinct from new.application_id
      or v_recording.version is distinct from new.recording_version
-     or v_application.organization_id is distinct from new.organization_id
+     or v_recording.organization_id is distinct from
+       v_application.organization_id
      or v_application.project_id is distinct from new.project_id then
     raise exception 'recording_share_item_scope_mismatch';
   end if;
