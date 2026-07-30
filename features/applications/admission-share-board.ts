@@ -1665,6 +1665,7 @@ export type VendorEvaluationRecorder = (input: {
   decision: VendorAdmissionDecision;
   remark: string;
   reasonCodes: string[];
+  signal: AbortSignal;
 }) => Promise<void>;
 
 export async function submitVendorAdmissionReviews({
@@ -1716,27 +1717,92 @@ export async function submitVendorAdmissionReviews({
   // 厂家勾选了理由标签的项，直接落人工评估（无需 LLM 归一化）。
   // 评估失败不影响厂家提交结果——信号沉淀永不阻塞外部方操作。
   if (recordEvaluation) {
-    for (const item of result.items) {
-      if (!item.reasonCodes.length) {
-        continue;
-      }
-      try {
-        await recordEvaluation({
-          organizationId: snapshot.organizationId,
-          applicationId: item.applicationId,
-          recordingSubmissionId: item.recordingSubmissionId,
-          vendorReviewId: item.vendorReviewId,
-          decision: item.decision,
-          remark: item.remark,
-          reasonCodes: item.reasonCodes,
-        });
-      } catch {
-        // 忽略评估失败；归一化 runner 会兜底。
-      }
-    }
+    await recordVendorEvaluationsBestEffort(
+      result.items
+        .filter((item) => item.reasonCodes.length > 0)
+        .map(
+          (item) => (signal) =>
+            recordEvaluation({
+              organizationId: snapshot.organizationId,
+              applicationId: item.applicationId,
+              recordingSubmissionId: item.recordingSubmissionId,
+              vendorReviewId: item.vendorReviewId,
+              decision: item.decision,
+              remark: item.remark,
+              reasonCodes: item.reasonCodes,
+              signal,
+            }),
+        ),
+    );
   }
 
   return result;
+}
+
+const VENDOR_EVALUATION_CONCURRENCY = 4;
+const VENDOR_EVALUATION_ITEM_TIMEOUT_MS = 1_000;
+const VENDOR_EVALUATION_BATCH_TIMEOUT_MS = 1_500;
+
+async function recordVendorEvaluationsBestEffort(
+  evaluations: Array<(signal: AbortSignal) => Promise<void>>,
+) {
+  if (!evaluations.length) {
+    return;
+  }
+
+  let nextIndex = 0;
+  const deadline = Date.now() + VENDOR_EVALUATION_BATCH_TIMEOUT_MS;
+  const workers = Array.from(
+    {
+      length: Math.min(VENDOR_EVALUATION_CONCURRENCY, evaluations.length),
+    },
+    async () => {
+      while (nextIndex < evaluations.length) {
+        const evaluation = evaluations[nextIndex];
+        nextIndex += 1;
+        const remainingMs = deadline - Date.now();
+        if (!evaluation || remainingMs <= 0) {
+          return;
+        }
+        await recordVendorEvaluationWithTimeout(
+          evaluation,
+          Math.min(VENDOR_EVALUATION_ITEM_TIMEOUT_MS, remainingMs),
+        ).catch(() => {
+          // 评估属于提交后的附加信号，失败或超时均由后续归一化补偿。
+        });
+      }
+    },
+  );
+
+  await Promise.allSettled(workers);
+}
+
+async function recordVendorEvaluationWithTimeout(
+  evaluation: (signal: AbortSignal) => Promise<void>,
+  timeoutMs: number,
+) {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(
+        `Vendor admission evaluation timed out after ${timeoutMs}ms`,
+      );
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => evaluation(controller.signal)),
+      timeout,
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 export function createShareToken() {

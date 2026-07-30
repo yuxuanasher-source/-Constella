@@ -59,6 +59,7 @@ export async function POST(
       input: toVendorReviewInput(body),
       // 厂家勾选理由标签时直接落人工评估；非法标签宽容过滤（外部输入）。
       recordEvaluation: async (evaluation) => {
+        evaluation.signal.throwIfAborted();
         let rubric = rubricCache.get(evaluation.organizationId);
         if (!rubric) {
           rubric = await resolveAdmissionRubric({
@@ -67,6 +68,7 @@ export async function POST(
           });
           rubricCache.set(evaluation.organizationId, rubric);
         }
+        evaluation.signal.throwIfAborted();
         const allowed = new Set(
           checkpointsForStage(rubric, "vendor_second").map(
             (checkpoint) => checkpoint.key,
@@ -78,6 +80,7 @@ export async function POST(
         if (!reasonCodes.length) {
           return;
         }
+        evaluation.signal.throwIfAborted();
         await recordAdmissionEvaluation({
           client: reviewClient,
           rubric,
@@ -93,6 +96,7 @@ export async function POST(
             reasonCodes,
           },
         });
+        evaluation.signal.throwIfAborted();
         // 一审 vs 二审对齐信号（一审漏判监测）；失败不阻塞厂家提交。
         await recordMcnVsVendorSignal({
           client: reviewClient as never,
@@ -102,7 +106,12 @@ export async function POST(
       },
     });
 
-    return NextResponse.json(result);
+    return NextResponse.json({
+      submissionRevision: result.submissionRevision,
+      submittedCount: result.submittedCount,
+      syncedCount: result.syncedCount,
+      skippedCount: result.skippedCount,
+    });
   } catch (error) {
     return publicAdmissionShareErrorResponse(error);
   }

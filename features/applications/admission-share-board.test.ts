@@ -1613,6 +1613,128 @@ describe("admission share board service", () => {
     expect(repo.submitReview).toHaveBeenCalledTimes(1);
   });
 
+  it("records post-submit evaluations with bounded concurrency", async () => {
+    const evaluationItems = Array.from({ length: 5 }, (_, index) => ({
+      vendorReviewId: `vendor-review-${index + 1}`,
+      applicationId: `app-${index + 1}`,
+      recordingSubmissionId: `rec-${index + 1}`,
+      recordingVersion: 1,
+      decision: "rejected" as const,
+      remark: `reason-${index + 1}`,
+      reasonCodes: ["script_fit"],
+      syncStatus: "synced" as const,
+      syncError: null,
+    }));
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+      submitReview: vi.fn().mockResolvedValue({
+        submissionRevision: 1,
+        submittedCount: evaluationItems.length,
+        syncedCount: evaluationItems.length,
+        skippedCount: 0,
+        items: evaluationItems,
+      }),
+    });
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maxActive = 0;
+    const recordEvaluation = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          releases.push(() => {
+            active -= 1;
+            resolve();
+          });
+        }),
+    );
+
+    const submitted = submitVendorAdmissionReviews({
+      repo,
+      token: "plain-token",
+      input: {},
+      now: "2026-06-07T05:00:00.000Z",
+      recordEvaluation,
+    });
+    await vi.waitFor(() => {
+      expect(recordEvaluation).toHaveBeenCalledTimes(4);
+    });
+    expect(maxActive).toBe(4);
+
+    releases.shift()?.();
+    await vi.waitFor(() => {
+      expect(recordEvaluation).toHaveBeenCalledTimes(5);
+    });
+
+    for (const release of releases.splice(0)) {
+      release();
+    }
+    await expect(submitted).resolves.toMatchObject({
+      submissionRevision: 1,
+      submittedCount: 5,
+    });
+  });
+
+  it("returns a successful submission after a post-submit evaluation times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const repo = createRepo({
+        getPublicShareBoardSnapshot: vi
+          .fn()
+          .mockResolvedValue(publicSnapshot()),
+        submitReview: vi.fn().mockResolvedValue({
+          submissionRevision: 1,
+          submittedCount: 1,
+          syncedCount: 1,
+          skippedCount: 0,
+          items: [
+            {
+              vendorReviewId: "vendor-review-hanging",
+              applicationId: "app-1",
+              recordingSubmissionId: "rec-1",
+              recordingVersion: 2,
+              decision: "rejected",
+              remark: "不采用",
+              reasonCodes: ["script_fit"],
+              syncStatus: "synced",
+              syncError: null,
+            },
+          ],
+        }),
+      });
+      let settled = false;
+      let evaluationSignal: AbortSignal | undefined;
+      const submitted = submitVendorAdmissionReviews({
+        repo,
+        token: "plain-token",
+        input: {},
+        now: "2026-06-07T05:00:00.000Z",
+        recordEvaluation: vi.fn((evaluation) => {
+          evaluationSignal = evaluation.signal;
+          return new Promise<void>(() => {
+            // Simulate a downstream write that never settles.
+          });
+        }),
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(settled).toBe(true);
+      expect(evaluationSignal?.aborted).toBe(true);
+      await expect(submitted).resolves.toMatchObject({
+        submissionRevision: 1,
+        submittedCount: 1,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("maps locked retry races to one stable public conflict", async () => {
     const repo = createRepo({
       getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),

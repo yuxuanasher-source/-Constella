@@ -48,7 +48,19 @@ describe("public admission share review route", () => {
       submittedCount: 2,
       syncedCount: 1,
       skippedCount: 1,
-      items: [],
+      items: [
+        {
+          vendorReviewId: "vendor-review-1",
+          applicationId: "application-1",
+          recordingSubmissionId: "recording-1",
+          recordingVersion: 2,
+          decision: "rejected",
+          remark: "内部评价备注",
+          reasonCodes: ["script_fit"],
+          syncStatus: "synced",
+          syncError: null,
+        },
+      ],
     });
   });
 
@@ -87,7 +99,6 @@ describe("public admission share review route", () => {
       submittedCount: 2,
       syncedCount: 1,
       skippedCount: 1,
-      items: [],
     });
     expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
       supabase,
