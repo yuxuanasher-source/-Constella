@@ -8,6 +8,10 @@ import {
 } from "@/features/applications/admission-share-candidates";
 import { preflightAdmissionShareSelection } from "@/features/applications/admission-share-workflow";
 import { getAdmissionRouteContext } from "@/features/applications/application-route-utils";
+import {
+  AdmissionShareProjectStatusError,
+  assertCanCreateAdmissionShareForProject,
+} from "@/features/applications/admission-share-policy";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/applications/admission-share-candidates", () => ({
@@ -21,6 +25,20 @@ vi.mock("@/features/applications/admission-share-candidates", () => ({
 
 vi.mock("@/features/applications/admission-share-workflow", () => ({
   preflightAdmissionShareSelection: vi.fn(),
+}));
+
+vi.mock("@/features/applications/admission-share-policy", () => ({
+  assertCanCreateAdmissionShareForProject: vi.fn(),
+  AdmissionShareProjectStatusError: class AdmissionShareProjectStatusError extends Error {
+    readonly code = "ADMISSION_SHARE_PROJECT_STATUS_BLOCKED";
+
+    constructor(
+      message: string,
+      public readonly statusCode: 404 | 409,
+    ) {
+      super(message);
+    }
+  },
 }));
 
 vi.mock("@/features/applications/application-route-utils", () => ({
@@ -119,6 +137,13 @@ describe("admission share preflight route", () => {
       },
     );
     expect(preflightAdmissionShareSelection).toHaveBeenCalledWith([], items);
+    expect(assertCanCreateAdmissionShareForProject).toHaveBeenCalledWith(
+      context.supabase,
+      {
+        organizationId: "org-1",
+        projectId: "project-1",
+      },
+    );
     expect(SupabaseAdmissionShareCandidateRepository).toHaveBeenCalledWith(
       adminClient,
     );
@@ -167,6 +192,7 @@ describe("admission share preflight route", () => {
     );
 
     expect(response.status).toBe(403);
+    expect(assertCanCreateAdmissionShareForProject).not.toHaveBeenCalled();
     expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(listAdmissionShareCandidates).not.toHaveBeenCalled();
   });
@@ -186,6 +212,33 @@ describe("admission share preflight route", () => {
     );
 
     expect(response.status).toBe(503);
+    expect(listAdmissionShareCandidates).not.toHaveBeenCalled();
+  });
+
+  it("blocks preflight before candidate access after the project lifecycle closes", async () => {
+    vi.mocked(assertCanCreateAdmissionShareForProject).mockRejectedValueOnce(
+      new AdmissionShareProjectStatusError(
+        "Project status does not allow new shares",
+        409,
+      ),
+    );
+
+    const response = await POST(
+      new Request(
+        "https://app.example/api/projects/project-1/admission-share-boards/preflight",
+        {
+          method: "POST",
+          body: JSON.stringify({ items: [] }),
+        },
+      ),
+      routeParams,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "ADMISSION_SHARE_PROJECT_STATUS_BLOCKED",
+    });
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(listAdmissionShareCandidates).not.toHaveBeenCalled();
   });
 });

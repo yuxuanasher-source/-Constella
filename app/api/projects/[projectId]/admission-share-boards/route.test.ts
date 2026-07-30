@@ -14,6 +14,10 @@ import {
   actorFromContext,
   getAdmissionRouteContext,
 } from "@/features/applications/application-route-utils";
+import {
+  AdmissionShareProjectStatusError,
+  assertCanCreateAdmissionShareForProject,
+} from "@/features/applications/admission-share-policy";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 
 vi.mock("@/features/applications/admission-share-board", () => ({
@@ -50,6 +54,20 @@ vi.mock("@/features/applications/admission-share-candidates", () => ({
         repo: "candidate-repo",
       };
     }),
+}));
+
+vi.mock("@/features/applications/admission-share-policy", () => ({
+  assertCanCreateAdmissionShareForProject: vi.fn(),
+  AdmissionShareProjectStatusError: class AdmissionShareProjectStatusError extends Error {
+    readonly code = "ADMISSION_SHARE_PROJECT_STATUS_BLOCKED";
+
+    constructor(
+      message: string,
+      public readonly statusCode: 404 | 409,
+    ) {
+      super(message);
+    }
+  },
 }));
 
 vi.mock("@/lib/db/supabase-server", () => ({
@@ -220,6 +238,13 @@ describe("project admission share-board route", () => {
     expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
       context.supabase,
     );
+    expect(assertCanCreateAdmissionShareForProject).toHaveBeenCalledWith(
+      context.supabase,
+      {
+        organizationId: "org-1",
+        projectId: "project-1",
+      },
+    );
     expect(SupabaseAdmissionShareCandidateRepository).toHaveBeenCalledWith({
       client: "admin",
     });
@@ -383,6 +408,44 @@ describe("project admission share-board route", () => {
     );
 
     expect(response.status).toBe(403);
+    expect(assertCanCreateAdmissionShareForProject).not.toHaveBeenCalled();
+    expect(createAdmissionShareBoard).not.toHaveBeenCalled();
+  });
+
+  it("blocks create before candidate access after the project lifecycle closes", async () => {
+    vi.mocked(assertCanCreateAdmissionShareForProject).mockRejectedValueOnce(
+      new AdmissionShareProjectStatusError(
+        "Project status does not allow new shares",
+        409,
+      ),
+    );
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "preview",
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "ADMISSION_SHARE_PROJECT_STATUS_BLOCKED",
+    });
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
     expect(createAdmissionShareBoard).not.toHaveBeenCalled();
   });
 });

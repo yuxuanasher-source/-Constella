@@ -2,6 +2,8 @@
 
 import React from "react";
 
+import { canShareAdmissionRecordingsForProject } from "@/features/applications/admission-share-policy";
+
 const tabs = [
   { id: "library", label: "录屏库" },
   { id: "tasks", label: "分享任务" },
@@ -85,16 +87,149 @@ const panelStyle = {
   background: "#fff",
 };
 
+const admissionShareCss = `
+  .admission-share-action {
+    transition: transform 160ms ease-out, box-shadow 160ms ease-out, filter 160ms ease-out;
+  }
+  .admission-share-action:hover:not(:disabled) {
+    filter: brightness(0.97);
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.1);
+  }
+  .admission-share-action:active:not(:disabled) {
+    transform: translateY(1px);
+    box-shadow: none;
+  }
+  .admission-share-action:focus-visible,
+  .admission-share-center :is(input, select, textarea):focus-visible,
+  .admission-share-tab:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--blue-600) 35%, transparent);
+    outline-offset: 2px;
+  }
+  .admission-share-dialog-shell,
+  .admission-share-center-panel,
+  .admission-share-center-panel > * {
+    min-width: 0;
+  }
+  @media (max-width: 640px) {
+    .admission-share-dialog-shell {
+      max-height: calc(100vh - 16px) !important;
+    }
+    .admission-share-dialog-footer {
+      align-items: stretch !important;
+      flex-direction: column;
+    }
+    .admission-share-dialog-footer > div {
+      display: grid !important;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .admission-share-action {
+      transition: none;
+    }
+  }
+`;
+
+const focusableSelector = [
+  "button:not([disabled])",
+  "[href]",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
+function focusableElements(dialog) {
+  return Array.from(dialog?.querySelectorAll(focusableSelector) || []).filter(
+    (element) => !element.closest("[inert]"),
+  );
+}
+
+function trapDialogKeyDown(event, dialog, onEscape) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    onEscape();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = focusableElements(dialog);
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!first || !last) {
+    event.preventDefault();
+    return;
+  }
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function useDialogFocus(initialFocusRef) {
+  const dialogRef = React.useRef(null);
+  const openerRef = React.useRef(null);
+
+  React.useLayoutEffect(() => {
+    openerRef.current = document.activeElement;
+    const initial =
+      initialFocusRef?.current || focusableElements(dialogRef.current)[0];
+    initial?.focus?.();
+    return () => openerRef.current?.focus?.();
+  }, [initialFocusRef]);
+
+  return { dialogRef, openerRef };
+}
+
+export function taskCapabilities(task, now = new Date().toISOString()) {
+  const nowMs = Date.parse(now);
+  const expiresAtMs = Date.parse(task?.expiresAt || "");
+  const unexpired =
+    Number.isFinite(expiresAtMs) &&
+    Number.isFinite(nowMs) &&
+    expiresAtMs > nowMs;
+  const active = task?.status === "active" && unexpired;
+  const formal = task?.mode === "formal_review";
+  const revoked = task?.status === "revoked";
+  let explanation = "";
+
+  if (revoked) {
+    explanation = "任务已撤销，仅保留历史记录。";
+  } else if (task?.status === "expired" || !unexpired) {
+    explanation = "任务已过期，不能延期、重置链接或重开。";
+  } else if (task?.mode === "preview") {
+    explanation = "预览任务不产生正式提交，也不能重开。";
+  } else if (
+    task?.status === "active" &&
+    task?.reviewState !== "submitted_locked"
+  ) {
+    explanation = "仅已提交锁定的正式复核可以重开。";
+  }
+
+  return {
+    extend: active,
+    rotate: active,
+    reopen: active && formal && task?.reviewState === "submitted_locked",
+    revoke: !revoked,
+    submissions: formal,
+    explanation,
+  };
+}
+
 function ActionButton({
   children,
   kind = "default",
   style,
   disabled,
+  className = "",
   ...props
 }) {
   return (
     <button
       type="button"
+      className={`admission-share-action admission-share-action-${kind} ${className}`.trim()}
       disabled={disabled}
       style={{
         ...buttonBase,
@@ -160,12 +295,16 @@ async function copyText(text) {
   textarea.style.opacity = "0";
   document.body.appendChild(textarea);
   textarea.select();
-  document.execCommand("copy");
+  const copied = document.execCommand("copy");
   textarea.remove();
+  if (!copied) {
+    throw new Error("Clipboard command was rejected");
+  }
 }
 
 export function AdmissionShareCenter({ project, actions, onClose }) {
   const firstTabRef = React.useRef(null);
+  const centerDialogRef = React.useRef(null);
   const openerRef = React.useRef(null);
   const [tab, setTab] = React.useState("library");
   const [candidates, setCandidates] = React.useState([]);
@@ -176,11 +315,16 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [search, setSearch] = React.useState("");
   const [sourceFilter, setSourceFilter] = React.useState("all");
   const [shareableOnly, setShareableOnly] = React.useState(false);
-  const [loading, setLoading] = React.useState(true);
+  const [candidatesLoading, setCandidatesLoading] = React.useState(true);
+  const [tasksLoading, setTasksLoading] = React.useState(true);
+  const [candidateError, setCandidateError] = React.useState("");
+  const [taskError, setTaskError] = React.useState("");
   const [busy, setBusy] = React.useState("");
+  const [pendingTasks, setPendingTasks] = React.useState(new Set());
   const [message, setMessage] = React.useState("");
   const [wizardOpen, setWizardOpen] = React.useState(false);
   const [wizardStep, setWizardStep] = React.useState(0);
+  const [wizardError, setWizardError] = React.useState("");
   const [preflight, setPreflight] = React.useState(null);
   const [draft, setDraft] = React.useState({
     mode: "formal_review",
@@ -195,6 +339,11 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [taskExpiresAt, setTaskExpiresAt] = React.useState({});
   const [reopenReasons, setReopenReasons] = React.useState({});
   const [submissions, setSubmissions] = React.useState({});
+  const canCreateShare = canShareAdmissionRecordingsForProject(project.status);
+  const projectGateMessage =
+    project.status === "settling"
+      ? "项目已进入结算阶段，不能新建录屏分享"
+      : "当前项目阶段不能新建录屏分享";
 
   React.useEffect(() => {
     openerRef.current = document.activeElement;
@@ -205,11 +354,41 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   }, []);
 
   const loadTasks = React.useCallback(async () => {
-    if (!actions.listAdmissionShareBoards) return [];
-    const result = await actions.listAdmissionShareBoards(project.id);
-    const next = Array.isArray(result) ? result : [];
-    setTasks(next);
-    return next;
+    setTasksLoading(true);
+    setTaskError("");
+    try {
+      if (!actions.listAdmissionShareBoards) {
+        throw new Error("分享任务接口暂未接入");
+      }
+      const result = await actions.listAdmissionShareBoards(project.id);
+      const next = Array.isArray(result) ? result : [];
+      setTasks(next);
+      return next;
+    } catch (error) {
+      setTaskError(error?.message || "分享任务加载失败");
+      throw error;
+    } finally {
+      setTasksLoading(false);
+    }
+  }, [actions, project.id]);
+
+  const loadCandidates = React.useCallback(async () => {
+    setCandidatesLoading(true);
+    setCandidateError("");
+    try {
+      if (!actions.listAdmissionShareCandidates) {
+        throw new Error("录屏候选接口暂未接入");
+      }
+      const result = await actions.listAdmissionShareCandidates(project.id);
+      const next = Array.isArray(result) ? result : [];
+      setCandidates(next);
+      return next;
+    } catch (error) {
+      setCandidateError(error?.message || "录屏库加载失败");
+      throw error;
+    } finally {
+      setCandidatesLoading(false);
+    }
   }, [actions, project.id]);
 
   const loadIssues = React.useCallback(async () => {
@@ -225,31 +404,36 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
 
   React.useEffect(() => {
     let current = true;
-    const loadInitialData = async () => {
-      try {
-        const [candidateResult, taskResult] = await Promise.all([
-          actions.listAdmissionShareCandidates
-            ? actions.listAdmissionShareCandidates(project.id)
-            : [],
-          actions.listAdmissionShareBoards
-            ? actions.listAdmissionShareBoards(project.id)
-            : [],
-        ]);
-        if (!current) return;
-        setCandidates(Array.isArray(candidateResult) ? candidateResult : []);
-        setTasks(Array.isArray(taskResult) ? taskResult : []);
+    void Promise.allSettled([
+      Promise.resolve().then(() => {
         if (!actions.listAdmissionShareCandidates) {
-          setMessage("录屏候选接口暂未接入");
+          throw new Error("录屏候选接口暂未接入");
         }
-      } catch (error) {
-        if (current) {
-          setMessage(error?.message || "录屏分享数据加载失败");
+        return actions.listAdmissionShareCandidates(project.id);
+      }),
+      Promise.resolve().then(() => {
+        if (!actions.listAdmissionShareBoards) {
+          throw new Error("分享任务接口暂未接入");
         }
-      } finally {
-        if (current) setLoading(false);
+        return actions.listAdmissionShareBoards(project.id);
+      }),
+    ]).then(([candidateResult, taskResult]) => {
+      if (!current) return;
+      if (candidateResult.status === "fulfilled") {
+        setCandidates(
+          Array.isArray(candidateResult.value) ? candidateResult.value : [],
+        );
+      } else {
+        setCandidateError(candidateResult.reason?.message || "录屏库加载失败");
       }
-    };
-    loadInitialData();
+      if (taskResult.status === "fulfilled") {
+        setTasks(Array.isArray(taskResult.value) ? taskResult.value : []);
+      } else {
+        setTaskError(taskResult.reason?.message || "分享任务加载失败");
+      }
+      setCandidatesLoading(false);
+      setTasksLoading(false);
+    });
     return () => {
       current = false;
     };
@@ -310,6 +494,10 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   }, [candidates, search, shareableOnly, sourceFilter]);
 
   const toggleSelection = (candidate) => {
+    if (!canCreateShare) {
+      setMessage(projectGateMessage);
+      return;
+    }
     setSelected((current) => {
       const next = new Map(current);
       if (next.has(candidate.recordingSubmissionId)) {
@@ -333,6 +521,10 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   };
 
   const startWizard = async () => {
+    if (!canCreateShare) {
+      setMessage(projectGateMessage);
+      return;
+    }
     if (selected.size === 0) {
       setMessage("请先主动选择本次分享的录屏");
       return;
@@ -343,6 +535,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     }
     setBusy("preflight");
     setMessage("");
+    setWizardError("");
     setWizardOpen(true);
     setWizardStep(0);
     setPreflight(null);
@@ -357,8 +550,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
         setWizardStep(1);
       }
     } catch (error) {
-      setMessage(error?.message || "分享预检失败");
-      setWizardOpen(false);
+      setWizardError(error?.message || "分享预检失败");
     } finally {
       setBusy("");
     }
@@ -394,6 +586,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     }
     setBusy("create");
     setMessage("");
+    setWizardError("");
     try {
       const expiresAt = dateInputToIso(draft.expiresAt);
       const result = await actions.createAdmissionShareBoard(project.id, {
@@ -418,66 +611,106 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       setPreflight(null);
       setWizardOpen(false);
       setWizardStep(0);
+      setDraft((current) => ({ ...current, accessCode: "" }));
       setMessage("分享任务已创建；链接和访问码仅在本次弹窗展示");
       await loadTasks().catch(() => {});
     } catch (error) {
-      setMessage(error?.message || "分享任务创建失败");
+      const errorMessage = error?.message || "分享任务创建失败";
+      setWizardError(errorMessage);
+      if (
+        error?.code === "SHARE_SELECTION_CHANGED" ||
+        error?.code === "SELECTION_STALE"
+      ) {
+        const staleById = new Map(
+          (Array.isArray(error.items) ? error.items : []).map((item) => [
+            item.recordingSubmissionId,
+            item,
+          ]),
+        );
+        const priorItems =
+          preflight?.items?.length > 0
+            ? preflight.items
+            : selectedCandidates.map((candidate, index) => ({
+                ...shareItem(candidate, index),
+                status: "ready",
+                sourceHealth: candidate.sourceHealth,
+                reasonCode: null,
+              }));
+        const items = priorItems.map((item) => ({
+          ...item,
+          ...(staleById.get(item.recordingSubmissionId) || {}),
+        }));
+        setPreflight({
+          items,
+          summary: items.reduce(
+            (summary, item) => ({
+              ...summary,
+              [item.status]: (summary[item.status] || 0) + 1,
+            }),
+            { ready: 0, warning: 0, blocked: 0 },
+          ),
+        });
+        setWizardStep(0);
+      }
     } finally {
       setBusy("");
     }
   };
 
-  const runTaskAction = async (key, action, successMessage) => {
-    setBusy(key);
+  const runTaskAction = async (
+    taskId,
+    action,
+    successMessage,
+    { refresh = true } = {},
+  ) => {
+    setPendingTasks((current) => new Set(current).add(taskId));
     setMessage("");
     try {
-      await action();
-      setMessage(successMessage);
-      await loadTasks();
+      const result = await action();
+      if (successMessage) setMessage(successMessage);
+      if (refresh) await loadTasks();
+      return result;
     } catch (error) {
       setMessage(error?.message || "分享任务操作失败");
     } finally {
-      setBusy("");
+      setPendingTasks((current) => {
+        const next = new Set(current);
+        next.delete(taskId);
+        return next;
+      });
     }
   };
 
   const rotateTaskToken = async (task) => {
     if (!actions.rotateAdmissionShareBoardToken) return;
-    setBusy(`rotate:${task.id}`);
-    setMessage("");
-    try {
-      const result = await actions.rotateAdmissionShareBoardToken(
-        project.id,
-        task.id,
-      );
+    const result = await runTaskAction(
+      task.id,
+      () => actions.rotateAdmissionShareBoardToken(project.id, task.id),
+      "",
+      { refresh: false },
+    );
+    if (result) {
       setDelivery({
         title: `${task.title}（已重置）`,
         shareUrl: result?.shareUrl || "",
         accessCode: result?.accessCode || "",
       });
-    } catch (error) {
-      setMessage(error?.message || "分享链接重置失败");
-    } finally {
-      setBusy("");
     }
   };
 
   const viewSubmissions = async (task) => {
     if (!actions.listAdmissionShareSubmissions) return;
-    setBusy(`submissions:${task.id}`);
-    try {
-      const result = await actions.listAdmissionShareSubmissions(
-        project.id,
-        task.id,
-      );
+    const result = await runTaskAction(
+      task.id,
+      () => actions.listAdmissionShareSubmissions(project.id, task.id),
+      "",
+      { refresh: false },
+    );
+    if (result) {
       setSubmissions((current) => ({
         ...current,
         [task.id]: Array.isArray(result) ? result : [],
       }));
-    } catch (error) {
-      setMessage(error?.message || "提交历史加载失败");
-    } finally {
-      setBusy("");
     }
   };
 
@@ -506,259 +739,304 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     }
   };
 
+  const closeWizard = () => {
+    setWizardOpen(false);
+    setPreflight(null);
+    setWizardStep(0);
+    setWizardError("");
+    setDraft((current) => ({ ...current, accessCode: "" }));
+  };
+
+  const closeDelivery = () => {
+    setDelivery(null);
+    setDraft((current) => ({ ...current, accessCode: "" }));
+  };
+
   const closeCenter = () => {
     setDelivery(null);
+    setWizardOpen(false);
+    setDraft((current) => ({ ...current, accessCode: "" }));
+    openerRef.current?.focus?.();
     onClose?.();
   };
 
   return (
-    <section
-      role="dialog"
-      aria-modal="true"
-      aria-label={`${project.name || "项目"} 录屏分享中心`}
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && !wizardOpen && !delivery) {
-          event.preventDefault();
-          closeCenter();
-        }
-      }}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 90,
-        display: "grid",
-        placeItems: "center",
-        padding: 16,
-        background: "rgba(15, 23, 42, 0.28)",
-      }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) closeCenter();
-      }}
-    >
-      <div
+    <>
+      <style>{admissionShareCss}</style>
+      <section
+        ref={centerDialogRef}
+        className="admission-share-center"
+        role="dialog"
+        aria-modal="true"
+        aria-hidden={wizardOpen || Boolean(delivery) ? "true" : undefined}
+        inert={wizardOpen || Boolean(delivery)}
+        aria-label={`${project.name || "项目"} 录屏分享中心`}
+        onKeyDown={(event) => {
+          if (!wizardOpen && !delivery) {
+            trapDialogKeyDown(event, centerDialogRef.current, closeCenter);
+          }
+        }}
         style={{
-          width: "min(1180px, 100%)",
-          height: "min(860px, calc(100vh - 32px))",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          border: "1px solid var(--line)",
-          borderRadius: 10,
-          background: "var(--bg, #f7f8fb)",
-          boxShadow: "0 24px 70px rgba(15, 23, 42, 0.2)",
-          color: "var(--ink-900)",
+          position: "fixed",
+          inset: 0,
+          zIndex: 90,
+          display: "grid",
+          placeItems: "center",
+          padding: 16,
+          background: "rgba(15, 23, 42, 0.28)",
+        }}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) closeCenter();
         }}
       >
-        <header
+        <div
+          className="admission-share-center-panel"
           style={{
+            width: "min(1180px, 100%)",
+            height: "min(860px, calc(100vh - 32px))",
             display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 16,
-            padding: "16px 20px",
-            borderBottom: "1px solid var(--line)",
-            background: "#fff",
+            flexDirection: "column",
+            overflow: "hidden",
+            borderRadius: 10,
+            background: "var(--bg, #f7f8fb)",
+            boxShadow: "0 24px 70px rgba(15, 23, 42, 0.2)",
+            color: "var(--ink-900)",
           }}
         >
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700 }}>录屏分享中心</div>
-            <div
-              style={{ marginTop: 3, fontSize: 12, color: "var(--ink-500)" }}
-            >
-              {project.name} · 由你明确选择本轮分享的录屏和版本
+          <header
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 16,
+              padding: "16px 20px",
+              borderBottom: "1px solid var(--line)",
+              background: "#fff",
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700 }}>录屏分享中心</div>
+              <div
+                style={{ marginTop: 3, fontSize: 12, color: "var(--ink-500)" }}
+              >
+                {project.name} · 由你明确选择本轮分享的录屏和版本
+              </div>
             </div>
+            <ActionButton aria-label="关闭录屏分享中心" onClick={closeCenter}>
+              关闭
+            </ActionButton>
+          </header>
+
+          <div
+            role="tablist"
+            aria-label="录屏分享中心栏目"
+            style={{
+              display: "flex",
+              gap: 4,
+              padding: "8px 20px 0",
+              borderBottom: "1px solid var(--line)",
+              background: "#fff",
+              overflowX: "auto",
+            }}
+          >
+            {tabs.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                id={`admission-share-tab-${item.id}`}
+                aria-controls="admission-share-tabpanel"
+                aria-selected={tab === item.id}
+                tabIndex={tab === item.id ? 0 : -1}
+                className="admission-share-tab"
+                ref={item.id === "library" ? firstTabRef : undefined}
+                onClick={() => changeTab(item.id)}
+                onKeyDown={(event) => {
+                  if (
+                    !["ArrowLeft", "ArrowRight", "Home", "End"].includes(
+                      event.key,
+                    )
+                  ) {
+                    return;
+                  }
+                  event.preventDefault();
+                  const currentIndex = tabs.findIndex(
+                    (candidate) => candidate.id === item.id,
+                  );
+                  const next =
+                    event.key === "Home"
+                      ? tabs[0]
+                      : event.key === "End"
+                        ? tabs[tabs.length - 1]
+                        : tabs[
+                            (currentIndex +
+                              (event.key === "ArrowRight" ? 1 : -1) +
+                              tabs.length) %
+                              tabs.length
+                          ];
+                  changeTab(next.id);
+                  document
+                    .getElementById(`admission-share-tab-${next.id}`)
+                    ?.focus();
+                }}
+                style={{
+                  minHeight: 44,
+                  padding: "0 14px",
+                  border: 0,
+                  borderBottom:
+                    tab === item.id
+                      ? "2px solid var(--blue-600)"
+                      : "2px solid transparent",
+                  background: "transparent",
+                  color: tab === item.id ? "var(--blue-700)" : "var(--ink-500)",
+                  fontSize: 13,
+                  fontWeight: tab === item.id ? 700 : 500,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
-          <ActionButton aria-label="关闭录屏分享中心" onClick={closeCenter}>
-            关闭
-          </ActionButton>
-        </header>
 
-        <div
-          role="tablist"
-          aria-label="录屏分享中心栏目"
-          style={{
-            display: "flex",
-            gap: 4,
-            padding: "8px 20px 0",
-            borderBottom: "1px solid var(--line)",
-            background: "#fff",
-            overflowX: "auto",
-          }}
-        >
-          {tabs.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              id={`admission-share-tab-${item.id}`}
-              aria-controls="admission-share-tabpanel"
-              aria-selected={tab === item.id}
-              ref={item.id === "library" ? firstTabRef : undefined}
-              onClick={() => changeTab(item.id)}
-              onKeyDown={(event) => {
-                if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
-                event.preventDefault();
-                const currentIndex = tabs.findIndex(
-                  (candidate) => candidate.id === item.id,
-                );
-                const offset = event.key === "ArrowRight" ? 1 : -1;
-                const next =
-                  tabs[(currentIndex + offset + tabs.length) % tabs.length];
-                changeTab(next.id);
-                document
-                  .getElementById(`admission-share-tab-${next.id}`)
-                  ?.focus();
-              }}
-              style={{
-                minHeight: 44,
-                padding: "0 14px",
-                border: 0,
-                borderBottom:
-                  tab === item.id
-                    ? "2px solid var(--blue-600)"
-                    : "2px solid transparent",
-                background: "transparent",
-                color: tab === item.id ? "var(--blue-700)" : "var(--ink-500)",
-                fontSize: 13,
-                fontWeight: tab === item.id ? 700 : 500,
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+          <div
+            aria-live="polite"
+            role="status"
+            style={{
+              minHeight: message ? 37 : 0,
+              padding: message ? "9px 20px" : 0,
+              borderBottom: message ? "1px solid var(--line)" : 0,
+              background: message ? "var(--blue-50)" : "transparent",
+              color: "var(--blue-700)",
+              fontSize: 13,
+            }}
+          >
+            {message}
+          </div>
 
-        <div
-          aria-live="polite"
-          role="status"
-          style={{
-            minHeight: message ? 37 : 0,
-            padding: message ? "9px 20px" : 0,
-            borderBottom: message ? "1px solid var(--line)" : 0,
-            background: message ? "var(--blue-50)" : "transparent",
-            color: "var(--blue-700)",
-            fontSize: 13,
-          }}
-        >
-          {message}
-        </div>
-
-        <main
-          id="admission-share-tabpanel"
-          role="tabpanel"
-          aria-labelledby={`admission-share-tab-${tab}`}
-          style={{ minHeight: 0, flex: 1, overflow: "auto", padding: 20 }}
-        >
-          {tab === "library" ? (
-            <CandidateLibrary
-              loading={loading}
-              groups={groupedCandidates}
-              selected={selected}
-              selectedCandidates={selectedCandidates}
-              expandedVersions={expandedVersions}
-              search={search}
-              sourceFilter={sourceFilter}
-              shareableOnly={shareableOnly}
-              onSearchChange={setSearch}
-              onSourceFilterChange={setSourceFilter}
-              onShareableOnlyChange={setShareableOnly}
-              onToggleVersion={(applicationId) =>
-                setExpandedVersions((current) => {
-                  const next = new Set(current);
-                  if (next.has(applicationId)) next.delete(applicationId);
-                  else next.add(applicationId);
-                  return next;
-                })
-              }
-              onToggleSelection={toggleSelection}
-              onMoveSelection={moveSelection}
-              onPlayback={(candidate) =>
-                actions.openAdmissionShareCandidatePlayback?.(
-                  project.id,
-                  candidate.recordingSubmissionId,
-                )
-              }
-              onCreate={startWizard}
-              busy={busy === "preflight"}
-            />
-          ) : null}
-          {tab === "tasks" ? (
-            <ShareTasks
-              tasks={tasks}
-              busy={busy}
-              taskExpiresAt={taskExpiresAt}
-              reopenReasons={reopenReasons}
-              submissions={submissions}
-              onTaskExpiresAtChange={(taskId, value) =>
-                setTaskExpiresAt((current) => ({
-                  ...current,
-                  [taskId]: value,
-                }))
-              }
-              onReopenReasonChange={(taskId, value) =>
-                setReopenReasons((current) => ({
-                  ...current,
-                  [taskId]: value,
-                }))
-              }
-              onRotate={rotateTaskToken}
-              onExtend={(task) => {
-                const expiresAt = dateInputToIso(taskExpiresAt[task.id]);
-                if (!expiresAt) {
-                  setMessage("请选择新的到期日期");
-                  return;
+          <main
+            id="admission-share-tabpanel"
+            role="tabpanel"
+            aria-labelledby={`admission-share-tab-${tab}`}
+            style={{ minHeight: 0, flex: 1, overflow: "auto", padding: 20 }}
+          >
+            {tab === "library" ? (
+              <CandidateLibrary
+                loading={candidatesLoading}
+                error={candidateError}
+                onRetry={loadCandidates}
+                creationBlocked={!canCreateShare}
+                creationBlockedMessage={projectGateMessage}
+                groups={groupedCandidates}
+                selected={selected}
+                selectedCandidates={selectedCandidates}
+                expandedVersions={expandedVersions}
+                search={search}
+                sourceFilter={sourceFilter}
+                shareableOnly={shareableOnly}
+                onSearchChange={setSearch}
+                onSourceFilterChange={setSourceFilter}
+                onShareableOnlyChange={setShareableOnly}
+                onToggleVersion={(applicationId) =>
+                  setExpandedVersions((current) => {
+                    const next = new Set(current);
+                    if (next.has(applicationId)) next.delete(applicationId);
+                    else next.add(applicationId);
+                    return next;
+                  })
                 }
-                runTaskAction(
-                  `extend:${task.id}`,
-                  () =>
-                    actions.extendAdmissionShareBoard?.(
-                      project.id,
-                      task.id,
-                      expiresAt,
-                    ),
-                  "分享任务已延期",
-                );
-              }}
-              onReopen={(task) => {
-                const reason = (reopenReasons[task.id] || "").trim();
-                if (!reason) {
-                  setMessage("请填写重开原因");
-                  return;
+                onToggleSelection={toggleSelection}
+                onMoveSelection={moveSelection}
+                onPlayback={(candidate) =>
+                  actions.openAdmissionShareCandidatePlayback?.(
+                    project.id,
+                    candidate.recordingSubmissionId,
+                  )
                 }
-                runTaskAction(
-                  `reopen:${task.id}`,
-                  () =>
-                    actions.reopenAdmissionShareBoard?.(
-                      project.id,
-                      task.id,
-                      reason,
-                    ),
-                  "复核任务已重开",
-                );
-              }}
-              onRevoke={(task) =>
-                runTaskAction(
-                  `revoke:${task.id}`,
-                  () =>
-                    actions.revokeAdmissionShareBoard?.(project.id, task.id),
-                  "分享任务已撤销",
-                )
-              }
-              onViewSubmissions={viewSubmissions}
-            />
-          ) : null}
-          {tab === "results" ? (
-            <PlaybackIssues
-              issues={issues}
-              loading={busy === "issues"}
-              busy={busy}
-              onResolve={resolveIssue}
-            />
-          ) : null}
-        </main>
-      </div>
+                onCreate={startWizard}
+                busy={busy === "preflight"}
+              />
+            ) : null}
+            {tab === "tasks" ? (
+              <ShareTasks
+                tasks={tasks}
+                loading={tasksLoading}
+                error={taskError}
+                onRetry={loadTasks}
+                pendingTasks={pendingTasks}
+                taskExpiresAt={taskExpiresAt}
+                reopenReasons={reopenReasons}
+                submissions={submissions}
+                onTaskExpiresAtChange={(taskId, value) =>
+                  setTaskExpiresAt((current) => ({
+                    ...current,
+                    [taskId]: value,
+                  }))
+                }
+                onReopenReasonChange={(taskId, value) =>
+                  setReopenReasons((current) => ({
+                    ...current,
+                    [taskId]: value,
+                  }))
+                }
+                onRotate={rotateTaskToken}
+                onExtend={(task) => {
+                  const expiresAt = dateInputToIso(taskExpiresAt[task.id]);
+                  if (!expiresAt) {
+                    setMessage("请选择新的到期日期");
+                    return;
+                  }
+                  runTaskAction(
+                    task.id,
+                    () =>
+                      actions.extendAdmissionShareBoard?.(
+                        project.id,
+                        task.id,
+                        expiresAt,
+                      ),
+                    "分享任务已延期",
+                  );
+                }}
+                onReopen={(task) => {
+                  const reason = (reopenReasons[task.id] || "").trim();
+                  if (!reason) {
+                    setMessage("请填写重开原因");
+                    return;
+                  }
+                  runTaskAction(
+                    task.id,
+                    () =>
+                      actions.reopenAdmissionShareBoard?.(
+                        project.id,
+                        task.id,
+                        reason,
+                      ),
+                    "复核任务已重开",
+                  );
+                }}
+                onRevoke={(task) =>
+                  runTaskAction(
+                    task.id,
+                    () =>
+                      actions.revokeAdmissionShareBoard?.(project.id, task.id),
+                    "分享任务已撤销",
+                  )
+                }
+                onViewSubmissions={viewSubmissions}
+              />
+            ) : null}
+            {tab === "results" ? (
+              <PlaybackIssues
+                issues={issues}
+                loading={busy === "issues"}
+                busy={busy}
+                onResolve={resolveIssue}
+              />
+            ) : null}
+          </main>
+        </div>
+      </section>
 
       {wizardOpen ? (
         <ShareWizard
@@ -768,6 +1046,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
           selected={selectedCandidates}
           candidateByRecordingId={candidateByRecordingId}
           busy={busy}
+          error={wizardError}
           onDraftChange={(patch) =>
             setDraft((current) => ({ ...current, ...patch }))
           }
@@ -777,27 +1056,23 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
           }
           onBack={() => setWizardStep((current) => Math.max(0, current - 1))}
           onCreate={createShare}
-          onClose={() => {
-            setWizardOpen(false);
-            setPreflight(null);
-            setWizardStep(0);
-          }}
+          onClose={closeWizard}
         />
       ) : null}
 
       {delivery ? (
-        <DeliveryDialog
-          delivery={delivery}
-          onClose={() => setDelivery(null)}
-          onMessage={setMessage}
-        />
+        <DeliveryDialog delivery={delivery} onClose={closeDelivery} />
       ) : null}
-    </section>
+    </>
   );
 }
 
 function CandidateLibrary({
   loading,
+  error,
+  onRetry,
+  creationBlocked,
+  creationBlockedMessage,
   groups,
   selected,
   selectedCandidates,
@@ -817,6 +1092,48 @@ function CandidateLibrary({
 }) {
   return (
     <div>
+      {creationBlocked ? (
+        <div
+          role="alert"
+          style={{
+            marginBottom: 14,
+            padding: 12,
+            border: "1px solid var(--warn-200, var(--line))",
+            borderRadius: 6,
+            background: "var(--warn-50, #fffbeb)",
+            color: "var(--warn-700, #8a5b00)",
+            fontSize: 13,
+          }}
+        >
+          {creationBlockedMessage}；历史任务仍可在“分享任务”中查看。
+        </div>
+      ) : null}
+      {error ? (
+        <div
+          role="alert"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            marginBottom: 14,
+            padding: 12,
+            border: "1px solid var(--danger-200, var(--line))",
+            borderRadius: 6,
+            background: "var(--danger-50, #fff7f7)",
+            color: "var(--danger-700, var(--danger-600))",
+            fontSize: 13,
+          }}
+        >
+          <span>录屏库加载失败：{error}</span>
+          <ActionButton
+            aria-label="重试加载录屏库"
+            onClick={() => void onRetry().catch(() => {})}
+          >
+            重试
+          </ActionButton>
+        </div>
+      ) : null}
       <div
         style={{
           display: "grid",
@@ -924,6 +1241,7 @@ function CandidateLibrary({
                     key={candidate.recordingSubmissionId}
                     candidate={candidate}
                     checked={selected.has(candidate.recordingSubmissionId)}
+                    selectionDisabled={creationBlocked}
                     onToggle={() => onToggleSelection(candidate)}
                     onPlayback={() => onPlayback(candidate)}
                   />
@@ -934,8 +1252,9 @@ function CandidateLibrary({
         )}
       </div>
 
-      {selectedCandidates.length > 0 ? (
+      {selectedCandidates.length > 0 || creationBlocked ? (
         <section
+          className="admission-share-selection-bar"
           role="region"
           aria-label="已选择录屏"
           style={{
@@ -944,10 +1263,8 @@ function CandidateLibrary({
             zIndex: 2,
             marginTop: 18,
             padding: 12,
-            border: "1px solid var(--line)",
-            borderRadius: 8,
+            borderTop: "1px solid var(--line)",
             background: "#fff",
-            boxShadow: "0 -8px 24px rgba(15, 23, 42, 0.08)",
           }}
         >
           <div
@@ -959,10 +1276,16 @@ function CandidateLibrary({
               flexWrap: "wrap",
             }}
           >
-            <strong style={{ fontSize: 14 }}>
-              已选择 {selectedCandidates.length} 条
+            <strong style={{ minWidth: 0, fontSize: 14 }}>
+              {creationBlocked
+                ? creationBlockedMessage
+                : `已选择 ${selectedCandidates.length} 条`}
             </strong>
-            <ActionButton kind="primary" disabled={busy} onClick={onCreate}>
+            <ActionButton
+              kind="primary"
+              disabled={busy || creationBlocked}
+              onClick={onCreate}
+            >
               {busy ? "正在预检…" : "创建分享"}
             </ActionButton>
           </div>
@@ -1020,7 +1343,13 @@ function CandidateLibrary({
   );
 }
 
-function CandidateRow({ candidate, checked, onToggle, onPlayback }) {
+function CandidateRow({
+  candidate,
+  checked,
+  selectionDisabled,
+  onToggle,
+  onPlayback,
+}) {
   return (
     <div
       style={{
@@ -1046,6 +1375,7 @@ function CandidateRow({ candidate, checked, onToggle, onPlayback }) {
           type="checkbox"
           aria-label={`选择 ${candidateLabel(candidate)}`}
           checked={checked}
+          disabled={selectionDisabled}
           onChange={onToggle}
         />
         <span>
@@ -1098,6 +1428,7 @@ function ShareWizard({
   selected,
   candidateByRecordingId,
   busy,
+  error,
   onDraftChange,
   onRemoveBlocked,
   onContinue,
@@ -1105,24 +1436,22 @@ function ShareWizard({
   onCreate,
   onClose,
 }) {
+  const { dialogRef } = useDialogFocus();
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label="创建录屏分享"
       style={overlayStyle}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
-          onClose();
-        }
+        trapDialogKeyDown(event, dialogRef.current, onClose);
       }}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div style={dialogStyle}>
+      <div className="admission-share-dialog-shell" style={dialogStyle}>
         <header style={dialogHeaderStyle}>
           <div>
             <strong>创建录屏分享</strong>
@@ -1146,12 +1475,28 @@ function ShareWizard({
               )}
             </div>
           </div>
-          <ActionButton autoFocus aria-label="关闭创建向导" onClick={onClose}>
+          <ActionButton aria-label="关闭创建向导" onClick={onClose}>
             关闭
           </ActionButton>
         </header>
 
         <div style={{ padding: 20, overflow: "auto" }}>
+          {error ? (
+            <div
+              role="alert"
+              style={{
+                marginBottom: 12,
+                padding: 12,
+                border: "1px solid var(--danger-200, var(--line))",
+                borderRadius: 6,
+                background: "var(--danger-50, #fff7f7)",
+                color: "var(--danger-700, var(--danger-600))",
+                fontSize: 13,
+              }}
+            >
+              {error}
+            </div>
+          ) : null}
           {step === 0 ? (
             <PreflightPanel
               preflight={preflight}
@@ -1175,7 +1520,10 @@ function ShareWizard({
           ) : null}
         </div>
 
-        <footer style={dialogFooterStyle}>
+        <footer
+          className="admission-share-dialog-footer"
+          style={dialogFooterStyle}
+        >
           {step > 0 ? (
             <ActionButton onClick={onBack}>上一步</ActionButton>
           ) : (
@@ -1514,7 +1862,10 @@ function VendorPreview({ draft, selected, preflight }) {
 
 function ShareTasks({
   tasks,
-  busy,
+  loading,
+  error,
+  onRetry,
+  pendingTasks,
   taskExpiresAt,
   reopenReasons,
   submissions,
@@ -1527,186 +1878,248 @@ function ShareTasks({
   onViewSubmissions,
 }) {
   const [confirmingRevoke, setConfirmingRevoke] = React.useState("");
+  if (loading && tasks.length === 0) {
+    return <div style={emptyStyle}>分享任务加载中…</div>;
+  }
+  if (error && tasks.length === 0) {
+    return (
+      <div role="alert" style={emptyStyle}>
+        <div>分享任务加载失败：{error}</div>
+        <ActionButton
+          style={{ marginTop: 12 }}
+          aria-label="重试加载分享任务"
+          onClick={() => void onRetry().catch(() => {})}
+        >
+          重试
+        </ActionButton>
+      </div>
+    );
+  }
   if (tasks.length === 0) return <div style={emptyStyle}>暂无分享任务</div>;
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      {tasks.map((task) => (
-        <article key={task.id} style={{ ...panelStyle, padding: 16 }}>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              gap: 12,
-              flexWrap: "wrap",
-            }}
-          >
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 700 }}>{task.title}</div>
-              <div
-                style={{ marginTop: 5, fontSize: 12, color: "var(--ink-500)" }}
-              >
-                {task.mode === "formal_review" ? "正式复核" : "仅预览"} · 第{" "}
-                {task.roundNumber || 1} 轮 ·{" "}
-                {taskStatusLabels[task.status] || task.status}
-              </div>
-            </div>
+      {error ? (
+        <div role="alert" style={{ ...emptyStyle, padding: 14 }}>
+          分享任务刷新失败：{error}
+        </div>
+      ) : null}
+      {tasks.map((task) => {
+        const capabilities = taskCapabilities(task);
+        const taskPending = pendingTasks.has(task.id);
+        return (
+          <article key={task.id} style={{ ...panelStyle, padding: 16 }}>
             <div
-              style={{
-                textAlign: "right",
-                fontSize: 12,
-                color: "var(--ink-500)",
-              }}
-            >
-              <div>
-                进度 {task.draftCompletedCount || 0}/{task.itemCount || 0}
-              </div>
-              <div style={{ marginTop: 4 }}>
-                到期 {formatDate(task.expiresAt)}
-              </div>
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-              gap: 12,
-              marginTop: 14,
-            }}
-          >
-            <label style={fieldLabelStyle}>
-              延期至
-              <input
-                type="date"
-                aria-label={`${task.title} 延期至`}
-                value={taskExpiresAt[task.id] || ""}
-                onChange={(event) =>
-                  onTaskExpiresAtChange(task.id, event.target.value)
-                }
-                style={inputStyle}
-              />
-            </label>
-            <label style={fieldLabelStyle}>
-              重开原因
-              <input
-                aria-label={`${task.title} 重开原因`}
-                value={reopenReasons[task.id] || ""}
-                onChange={(event) =>
-                  onReopenReasonChange(task.id, event.target.value)
-                }
-                placeholder="仅在确需重新提交时填写"
-                style={inputStyle}
-              />
-            </label>
-          </div>
-          <div
-            style={{
-              display: "flex",
-              gap: 8,
-              flexWrap: "wrap",
-              marginTop: 12,
-            }}
-          >
-            <ActionButton
-              onClick={() => onRotate(task)}
-              disabled={busy === `rotate:${task.id}`}
-            >
-              重置分享链接
-            </ActionButton>
-            <ActionButton
-              aria-label={`延期 ${task.title}`}
-              onClick={() => onExtend(task)}
-              disabled={busy === `extend:${task.id}`}
-            >
-              延期
-            </ActionButton>
-            <ActionButton
-              aria-label={`重开 ${task.title}`}
-              onClick={() => onReopen(task)}
-              disabled={busy === `reopen:${task.id}`}
-            >
-              重开
-            </ActionButton>
-            <ActionButton
-              aria-label={`查看 ${task.title} 提交历史`}
-              onClick={() => onViewSubmissions(task)}
-              disabled={busy === `submissions:${task.id}`}
-            >
-              查看提交历史
-            </ActionButton>
-            <ActionButton
-              kind="danger"
-              aria-label={`撤销 ${task.title}`}
-              onClick={() => setConfirmingRevoke(task.id)}
-              disabled={busy === `revoke:${task.id}`}
-            >
-              撤销
-            </ActionButton>
-          </div>
-          {confirmingRevoke === task.id ? (
-            <div
-              role="alert"
               style={{
                 display: "flex",
-                alignItems: "center",
                 justifyContent: "space-between",
                 gap: 12,
                 flexWrap: "wrap",
-                marginTop: 12,
-                padding: 12,
-                border: "1px solid var(--danger-200, var(--line))",
-                background: "var(--danger-50, #fff7f7)",
-                color: "var(--danger-700, var(--danger-600))",
-                fontSize: 12,
               }}
             >
-              <span>撤销后当前分享链接立即失效，确认继续？</span>
-              <span style={{ display: "flex", gap: 8 }}>
-                <ActionButton onClick={() => setConfirmingRevoke("")}>
-                  取消
-                </ActionButton>
-                <ActionButton
-                  kind="danger"
-                  aria-label={`确认撤销 ${task.title}`}
-                  onClick={() => {
-                    setConfirmingRevoke("");
-                    onRevoke(task);
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>
+                  {task.title}
+                </div>
+                <div
+                  style={{
+                    marginTop: 5,
+                    fontSize: 12,
+                    color: "var(--ink-500)",
                   }}
                 >
-                  确认撤销
-                </ActionButton>
-              </span>
+                  {task.mode === "formal_review" ? "正式复核" : "仅预览"} · 第{" "}
+                  {task.roundNumber || 1} 轮 ·{" "}
+                  {taskStatusLabels[task.status] || task.status}
+                </div>
+              </div>
+              <div
+                style={{
+                  textAlign: "right",
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                }}
+              >
+                <div>
+                  进度 {task.draftCompletedCount || 0}/{task.itemCount || 0}
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  到期 {formatDate(task.expiresAt)}
+                </div>
+              </div>
             </div>
-          ) : null}
-          {Object.hasOwn(submissions, task.id) ? (
+
+            {capabilities.explanation ? (
+              <p
+                style={{
+                  margin: "12px 0 0",
+                  color: "var(--ink-500)",
+                  fontSize: 12,
+                }}
+              >
+                {capabilities.explanation}
+              </p>
+            ) : null}
+            {capabilities.extend || capabilities.reopen ? (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                  gap: 12,
+                  marginTop: 14,
+                }}
+              >
+                {capabilities.extend ? (
+                  <label style={fieldLabelStyle}>
+                    延期至
+                    <input
+                      type="date"
+                      aria-label={`${task.title} 延期至`}
+                      value={taskExpiresAt[task.id] || ""}
+                      onChange={(event) =>
+                        onTaskExpiresAtChange(task.id, event.target.value)
+                      }
+                      disabled={taskPending}
+                      style={inputStyle}
+                    />
+                  </label>
+                ) : null}
+                {capabilities.reopen ? (
+                  <label style={fieldLabelStyle}>
+                    重开原因
+                    <input
+                      aria-label={`${task.title} 重开原因`}
+                      value={reopenReasons[task.id] || ""}
+                      onChange={(event) =>
+                        onReopenReasonChange(task.id, event.target.value)
+                      }
+                      disabled={taskPending}
+                      placeholder="仅在确需重新提交时填写"
+                      style={inputStyle}
+                    />
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
             <div
-              aria-label={`${task.title} 提交历史`}
               style={{
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
                 marginTop: 12,
-                padding: 12,
-                borderTop: "1px solid var(--line)",
               }}
             >
-              {submissions[task.id].length === 0 ? (
-                <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
-                  暂无提交记录
-                </span>
-              ) : (
-                submissions[task.id].map((submission, index) => (
-                  <div
-                    key={submission.id || index}
-                    style={{ fontSize: 12, color: "var(--ink-600)" }}
-                  >
-                    {`第 ${submission.revision || index + 1} 次提交 · ${formatDate(
-                      submission.submittedAt,
-                    )}`}
-                  </div>
-                ))
-              )}
+              {capabilities.rotate ? (
+                <ActionButton
+                  onClick={() => onRotate(task)}
+                  disabled={taskPending}
+                >
+                  重置分享链接
+                </ActionButton>
+              ) : null}
+              {capabilities.extend ? (
+                <ActionButton
+                  aria-label={`延期 ${task.title}`}
+                  onClick={() => onExtend(task)}
+                  disabled={taskPending}
+                >
+                  延期
+                </ActionButton>
+              ) : null}
+              {capabilities.reopen ? (
+                <ActionButton
+                  aria-label={`重开 ${task.title}`}
+                  onClick={() => onReopen(task)}
+                  disabled={taskPending}
+                >
+                  重开
+                </ActionButton>
+              ) : null}
+              {capabilities.submissions ? (
+                <ActionButton
+                  aria-label={`查看 ${task.title} 提交历史`}
+                  onClick={() => onViewSubmissions(task)}
+                  disabled={taskPending}
+                >
+                  查看提交历史
+                </ActionButton>
+              ) : null}
+              {capabilities.revoke ? (
+                <ActionButton
+                  kind="danger"
+                  aria-label={`撤销 ${task.title}`}
+                  onClick={() => setConfirmingRevoke(task.id)}
+                  disabled={taskPending}
+                >
+                  撤销
+                </ActionButton>
+              ) : null}
             </div>
-          ) : null}
-        </article>
-      ))}
+            {confirmingRevoke === task.id ? (
+              <div
+                role="alert"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  flexWrap: "wrap",
+                  marginTop: 12,
+                  padding: 12,
+                  border: "1px solid var(--danger-200, var(--line))",
+                  background: "var(--danger-50, #fff7f7)",
+                  color: "var(--danger-700, var(--danger-600))",
+                  fontSize: 12,
+                }}
+              >
+                <span>撤销后当前分享链接立即失效，确认继续？</span>
+                <span style={{ display: "flex", gap: 8 }}>
+                  <ActionButton onClick={() => setConfirmingRevoke("")}>
+                    取消
+                  </ActionButton>
+                  <ActionButton
+                    kind="danger"
+                    aria-label={`确认撤销 ${task.title}`}
+                    disabled={taskPending}
+                    onClick={() => {
+                      setConfirmingRevoke("");
+                      onRevoke(task);
+                    }}
+                  >
+                    确认撤销
+                  </ActionButton>
+                </span>
+              </div>
+            ) : null}
+            {Object.hasOwn(submissions, task.id) ? (
+              <div
+                aria-label={`${task.title} 提交历史`}
+                style={{
+                  marginTop: 12,
+                  padding: 12,
+                  borderTop: "1px solid var(--line)",
+                }}
+              >
+                {submissions[task.id].length === 0 ? (
+                  <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                    暂无提交记录
+                  </span>
+                ) : (
+                  submissions[task.id].map((submission, index) => (
+                    <div
+                      key={submission.id || index}
+                      style={{ fontSize: 12, color: "var(--ink-600)" }}
+                    >
+                      {`第 ${submission.revision || index + 1} 次提交 · ${formatDate(
+                        submission.submittedAt,
+                      )}`}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1806,7 +2219,10 @@ function PlaybackIssues({ issues, loading, busy, onResolve }) {
   );
 }
 
-function DeliveryDialog({ delivery, onClose, onMessage }) {
+function DeliveryDialog({ delivery, onClose }) {
+  const { dialogRef } = useDialogFocus();
+  const [copying, setCopying] = React.useState(false);
+  const [copyStatus, setCopyStatus] = React.useState("");
   const deliveryText = [
     delivery.title ? `任务：${delivery.title}` : "",
     `分享链接：${delivery.shareUrl}`,
@@ -1816,22 +2232,22 @@ function DeliveryDialog({ delivery, onClose, onMessage }) {
     .join("\n");
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label="一次性交付信息"
       style={{ ...overlayStyle, zIndex: 120 }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
-          onClose();
-        }
+        trapDialogKeyDown(event, dialogRef.current, onClose);
       }}
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div style={{ ...dialogStyle, width: "min(560px, 100%)" }}>
+      <div
+        className="admission-share-dialog-shell"
+        style={{ ...dialogStyle, width: "min(560px, 100%)" }}
+      >
         <header style={dialogHeaderStyle}>
           <div>
             <strong>一次性交付信息</strong>
@@ -1871,20 +2287,30 @@ function DeliveryDialog({ delivery, onClose, onMessage }) {
               </strong>
             </label>
           ) : null}
+          <div role="status" aria-live="polite" style={{ minHeight: 20 }}>
+            {copyStatus}
+          </div>
         </div>
-        <footer style={dialogFooterStyle}>
+        <footer
+          className="admission-share-dialog-footer"
+          style={dialogFooterStyle}
+        >
           <ActionButton
-            autoFocus
+            disabled={copying}
             onClick={async () => {
+              setCopying(true);
+              setCopyStatus("");
               try {
                 await copyText(deliveryText);
-                onMessage("完整交付信息已复制");
+                setCopyStatus("完整交付信息已复制");
               } catch {
-                onMessage("复制失败，请手动复制");
+                setCopyStatus("复制失败，请手动复制");
+              } finally {
+                setCopying(false);
               }
             }}
           >
-            复制完整交付信息
+            {copying ? "正在复制…" : "复制完整交付信息"}
           </ActionButton>
           <ActionButton
             kind="primary"
@@ -1941,7 +2367,6 @@ const dialogStyle = {
   display: "flex",
   flexDirection: "column",
   overflow: "hidden",
-  border: "1px solid var(--line)",
   borderRadius: 10,
   background: "#fff",
   boxShadow: "0 24px 70px rgba(15, 23, 42, 0.22)",

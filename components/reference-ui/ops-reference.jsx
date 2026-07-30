@@ -35891,7 +35891,11 @@ function OpsReferenceInner({
     const readJson = async (response, fallbackMessage) => {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(body.error || fallbackMessage);
+        const error = new Error(body.error || fallbackMessage);
+        error.code = body.code;
+        error.items = body.items;
+        error.status = response.status;
+        throw error;
       }
       return body;
     };

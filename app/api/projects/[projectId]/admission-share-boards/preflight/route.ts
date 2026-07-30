@@ -5,6 +5,10 @@ import {
   SupabaseAdmissionShareCandidateRepository,
 } from "@/features/applications/admission-share-candidates";
 import {
+  AdmissionShareProjectStatusError,
+  assertCanCreateAdmissionShareForProject,
+} from "@/features/applications/admission-share-policy";
+import {
   preflightAdmissionShareSelection,
   type AdmissionShareSelectionInput,
 } from "@/features/applications/admission-share-workflow";
@@ -33,6 +37,10 @@ export async function POST(
 
     const body = await readJsonBody(request);
     const items = parseSelectionItems(body.items);
+    await assertCanCreateAdmissionShareForProject(context.supabase, {
+      organizationId: context.auth.organizationId,
+      projectId,
+    });
     const admin = createSupabaseAdminClient();
     if (!admin) {
       throw new RouteError("Share candidate service is unavailable", 503);
@@ -47,6 +55,12 @@ export async function POST(
       preflightAdmissionShareSelection(candidates, items),
     );
   } catch (error) {
+    if (error instanceof AdmissionShareProjectStatusError) {
+      return NextResponse.json(
+        { code: error.code, error: error.message },
+        { status: error.statusCode },
+      );
+    }
     return jsonError(error);
   }
 }

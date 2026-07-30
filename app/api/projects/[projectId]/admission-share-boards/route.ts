@@ -11,6 +11,10 @@ import {
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareCandidateRepository } from "@/features/applications/admission-share-candidates";
 import {
+  AdmissionShareProjectStatusError,
+  assertCanCreateAdmissionShareForProject,
+} from "@/features/applications/admission-share-policy";
+import {
   actorFromContext,
   getAdmissionRouteContext,
   jsonError,
@@ -57,6 +61,10 @@ export async function POST(
     const body = await readJsonBody(request);
     const context = await getAdmissionRouteContext();
     assertMcnStaff(context.auth.role);
+    await assertCanCreateAdmissionShareForProject(context.supabase, {
+      organizationId: context.auth.organizationId,
+      projectId,
+    });
 
     const repo = new SupabaseAdmissionShareBoardRepository(context.supabase);
     const admin = createSupabaseAdminClient();
@@ -100,6 +108,12 @@ export async function POST(
       accessCode: result.accessCode,
     });
   } catch (error) {
+    if (error instanceof AdmissionShareProjectStatusError) {
+      return NextResponse.json(
+        { code: error.code, error: error.message },
+        { status: error.statusCode },
+      );
+    }
     if (error instanceof AdmissionShareFormalRoundConflictError) {
       return NextResponse.json(
         {

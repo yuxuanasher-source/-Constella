@@ -6265,6 +6265,7 @@ describe("OpsReferenceApp admission smoke", () => {
                   id: "project-1",
                   code: "P-001",
                   name: "Alpha Project",
+                  status: "active",
                   vendor: "Vendor A",
                   product: "Game A",
                 },
