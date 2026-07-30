@@ -41,7 +41,7 @@
 2. 读取 token 对应的有效分享看板。
 3. 使用数据库限流器检查客户端指纹是否被阻断。
 4. 验证带盐摘要或兼容旧 SHA-256 摘要。
-5. 成功后设置 `HttpOnly + SameSite=Lax + Secure(生产)` Cookie；Cookie 路径仅覆盖该 token 的公开 API。
+5. 成功后创建高熵、短期、服务端可撤销的访问会话，并把不透明会话 token 写入 `HttpOnly + SameSite=Lax + Secure(生产)` Cookie；Cookie 路径仅覆盖该 token 的公开 API。
 
 公开看板、复核提交和录屏播放路由从 Cookie 读取访问码，不再要求查询参数。客户端遇到 `ACCESS_CODE_REQUIRED` 或 `ACCESS_CODE_INVALID` 时显示访问码表单。
 
@@ -50,6 +50,7 @@
 - 新建访问码使用 `scrypt$<salt>$<digest>` 格式。
 - 旧的 64 位 SHA-256 摘要继续可验证，避免现有分享链接失效。
 - 新增 `project_recording_share_access_attempts` 表及安全定义函数，以“分享看板 + 哈希客户端指纹”为维度记录 15 分钟窗口内的失败次数。
+- 新增 `project_recording_share_access_sessions` 表，只保存高熵会话 token 的 SHA-256 摘要和过期时间；Cookie 不保存原始访问码。
 - 五次失败后阻断 15 分钟；成功验证会清空失败计数。
 - 客户端指纹只存服务端 HMAC/SHA-256 结果，不存原始 IP。
 
