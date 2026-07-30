@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import AdmissionSharePageClient from "./admission-share-page-client";
+import AdmissionSharePageClient, {
+  youtubeEmbedSource,
+} from "./admission-share-page-client";
 
 const shareBoard = {
   id: "share-1",
@@ -56,8 +58,7 @@ const shareBoard = {
       recordingVersion: 1,
       recordingStatus: "approved",
       recordingUrl: null,
-      playbackUrl:
-        "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
+      playbackUrl: "/api/public/admission-share/plain-token/recordings/rec-3",
       hasPrivateStorage: true,
       streamer: {
         id: "streamer-3",
@@ -67,8 +68,6 @@ const shareBoard = {
       vendorReview: {
         decision: "backup",
         remark: "Can be backup.",
-        reviewerName: "Vendor Reviewer",
-        reviewerContact: "reviewer@example.com",
         submittedAt: "2026-06-07T04:00:00.000Z",
       },
     },
@@ -81,8 +80,17 @@ describe("AdmissionSharePageClient", () => {
       "fetch",
       vi.fn(async (url, init) => {
         if (
-          String(url) ===
-            "/api/public/admission-share/plain-token?accessCode=2468" &&
+          String(url) === "/api/public/admission-share/plain-token/access" &&
+          init?.method === "POST"
+        ) {
+          return {
+            ok: true,
+            json: async () => ({ authenticated: true }),
+          };
+        }
+
+        if (
+          String(url) === "/api/public/admission-share/plain-token" &&
           init?.method === "GET"
         ) {
           return {
@@ -92,8 +100,7 @@ describe("AdmissionSharePageClient", () => {
         }
 
         if (
-          String(url) ===
-            "/api/public/admission-share/plain-token/reviews?accessCode=2468" &&
+          String(url) === "/api/public/admission-share/plain-token/reviews" &&
           init?.method === "POST"
         ) {
           return {
@@ -138,6 +145,10 @@ describe("AdmissionSharePageClient", () => {
     expect(container.textContent).not.toContain("tokenHash");
     expect(container.textContent).not.toContain("storagePath");
     expect(container.textContent).not.toContain("private/path");
+    expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalledWith(
+      expect.stringContaining("accessCode="),
+      expect.anything(),
+    );
   });
 
   it("renders professional delivery copy and switches recording players by source type", async () => {
@@ -160,8 +171,10 @@ describe("AdmissionSharePageClient", () => {
       screen.getByLabelText("Streamer Three 原始录屏播放器"),
     ).toHaveAttribute(
       "src",
-      "/api/public/admission-share/plain-token/recordings/rec-3?accessCode=2468",
+      "/api/public/admission-share/plain-token/recordings/rec-3",
     );
+    expect(screen.getAllByText("备选").length).toBeGreaterThan(0);
+    expect(screen.getByText("已判断 1 / 3")).toBeInTheDocument();
   });
 
   it("submits reviewer decisions with locked recording versions", async () => {
@@ -182,7 +195,7 @@ describe("AdmissionSharePageClient", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/public/admission-share/plain-token/reviews?accessCode=2468",
+        "/api/public/admission-share/plain-token/reviews",
         expect.objectContaining({ method: "POST" }),
       ),
     );
@@ -191,8 +204,6 @@ describe("AdmissionSharePageClient", () => {
         String(url).includes("/reviews") && init?.method === "POST",
     );
     expect(JSON.parse(String(submitCall?.[1]?.body))).toEqual({
-      reviewerName: "",
-      reviewerContact: "",
       items: [
         {
           recordingSubmissionId: "rec-1",
@@ -244,5 +255,135 @@ describe("AdmissionSharePageClient", () => {
           String(url).includes("/reviews") && init?.method === "POST",
       ),
     ).toBe(false);
+  });
+
+  it("exchanges a legacy URL access code for a cookie before loading", async () => {
+    const replaceState = vi.spyOn(window.history, "replaceState");
+    render(
+      <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
+    );
+
+    expect(await screen.findByText("Alpha Project")).toBeInTheDocument();
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      1,
+      "/api/public/admission-share/plain-token/access",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ accessCode: "2468" }),
+      }),
+    );
+    expect(replaceState).toHaveBeenCalledWith(
+      window.history.state,
+      "",
+      "/share/admission/plain-token",
+    );
+  });
+
+  it("prompts for an access code and retries after authentication", async () => {
+    let authenticated = false;
+    vi.mocked(globalThis.fetch).mockImplementation(async (url, init) => {
+      if (String(url).endsWith("/access") && init?.method === "POST") {
+        authenticated = true;
+        return {
+          ok: true,
+          json: async () => ({ authenticated: true }),
+        } as Response;
+      }
+      if (
+        String(url) === "/api/public/admission-share/plain-token" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: authenticated,
+          status: authenticated ? 200 : 401,
+          json: async () =>
+            authenticated
+              ? { shareBoard }
+              : {
+                  code: "ACCESS_CODE_REQUIRED",
+                  error: "请输入访问码后继续。",
+                },
+        } as Response;
+      }
+      throw new Error("unexpected request");
+    });
+
+    render(<AdmissionSharePageClient token="plain-token" />);
+
+    fireEvent.change(await screen.findByLabelText("访问码"), {
+      target: { value: "246810" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "验证访问码" }));
+
+    expect(await screen.findByText("Alpha Project")).toBeInTheDocument();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/public/admission-share/plain-token/access",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ accessCode: "246810" }),
+      }),
+    );
+  });
+
+  it("offers a retry action for transient load failures", async () => {
+    const fetchMock = vi.mocked(globalThis.fetch);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({
+          code: "SHARE_SERVICE_UNAVAILABLE",
+          error: "分享服务暂时不可用，请稍后重试。",
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ shareBoard }),
+      } as Response);
+
+    render(<AdmissionSharePageClient token="plain-token" />);
+
+    expect(
+      await screen.findByRole("alert", {
+        name: "分享服务暂时不可用，请稍后重试。",
+      }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("Alpha Project")).toBeInTheDocument();
+  });
+
+  it("shows an actionable fallback when native video playback fails", async () => {
+    render(
+      <AdmissionSharePageClient token="plain-token" initialAccessCode="2468" />,
+    );
+
+    const player = await screen.findByLabelText("Streamer One 原始录屏播放器");
+    fireEvent.error(player);
+
+    expect(screen.getByText("视频加载失败")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "打开 Streamer One 原始链接" }),
+    ).toHaveAttribute("href", "https://video.example/rec-1.mp4");
+  });
+});
+
+describe("youtubeEmbedSource", () => {
+  it.each([
+    ["https://youtu.be/abc123", "https://www.youtube.com/embed/abc123"],
+    [
+      "https://www.youtube.com/shorts/short123",
+      "https://www.youtube.com/embed/short123",
+    ],
+    [
+      "https://www.youtube.com/live/live123",
+      "https://www.youtube.com/embed/live123",
+    ],
+    [
+      "https://www.youtube.com/embed/embed123",
+      "https://www.youtube.com/embed/embed123",
+    ],
+  ])("normalizes %s", (source, expected) => {
+    expect(youtubeEmbedSource(source)).toBe(expected);
   });
 });

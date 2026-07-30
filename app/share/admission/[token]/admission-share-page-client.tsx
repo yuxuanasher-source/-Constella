@@ -49,8 +49,6 @@ type PublicAdmissionShareItem = {
   vendorReview: {
     decision: VendorDecision;
     remark: string;
-    reviewerName: string;
-    reviewerContact: string;
     submittedAt: string;
   } | null;
 };
@@ -87,6 +85,9 @@ const decisionOptions: Array<{ value: VendorDecision; label: string }> = [
 ];
 
 const statusLabels: Record<string, string> = {
+  pending: "待判断",
+  selected: "选入",
+  backup: "备选",
   active: "可复核",
   expired: "已过期",
   revoked: "已撤销",
@@ -106,7 +107,6 @@ export default function AdmissionSharePageClient({
   token,
   initialAccessCode = "",
 }: AdmissionSharePageClientProps) {
-  const accessCode = initialAccessCode;
   const [shareBoard, setShareBoard] =
     useState<PublicAdmissionShareBoard | null>(null);
   const [vendorCheckpoints, setVendorCheckpoints] = useState<
@@ -115,6 +115,9 @@ export default function AdmissionSharePageClient({
   const [drafts, setDrafts] = useState<Record<string, ReviewDraft>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [needsAccessCode, setNeedsAccessCode] = useState(false);
+  const [accessCodeInput, setAccessCodeInput] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
@@ -126,6 +129,16 @@ export default function AdmissionSharePageClient({
       .filter(Boolean)
       .join(" / ");
   }, [shareBoard]);
+
+  const reviewedCount = useMemo(
+    () =>
+      shareBoard?.items.filter(
+        (item) =>
+          (drafts[item.recordingSubmissionId]?.decision ?? "pending") !==
+          "pending",
+      ).length ?? 0,
+    [drafts, shareBoard],
+  );
 
   const applyShareBoard = useCallback(
     ({
@@ -144,40 +157,45 @@ export default function AdmissionSharePageClient({
     setErrorMessage("");
     setSuccessMessage("");
     try {
-      applyShareBoard(await requestShareBoard(token, accessCode));
+      applyShareBoard(await requestShareBoard(token));
+      setNeedsAccessCode(false);
     } catch (error) {
       setShareBoard(null);
       setDrafts({});
-      setErrorMessage(
-        error instanceof Error ? error.message : "无法读取复核链接",
-      );
+      const requestError = toShareRequestError(error, "无法读取复核链接");
+      setNeedsAccessCode(isAccessCodeError(requestError));
+      setErrorMessage(requestError.message);
     } finally {
       setIsLoading(false);
     }
-  }, [accessCode, applyShareBoard, token]);
+  }, [applyShareBoard, token]);
 
   useEffect(() => {
     let isCurrent = true;
 
     async function loadInitialShareBoard() {
       try {
-        const nextShareBoard = await requestShareBoard(
-          token,
-          initialAccessCode,
-        );
+        const legacyAccessCode =
+          initialAccessCode.trim() || readLegacyAccessCodeFromUrl();
+        if (legacyAccessCode) {
+          clearLegacyAccessCodeFromUrl(token);
+          await authenticateShareAccess(token, legacyAccessCode);
+        }
+        const nextShareBoard = await requestShareBoard(token);
         if (!isCurrent) {
           return;
         }
         applyShareBoard(nextShareBoard);
+        setNeedsAccessCode(false);
       } catch (error) {
         if (!isCurrent) {
           return;
         }
         setShareBoard(null);
         setDrafts({});
-        setErrorMessage(
-          error instanceof Error ? error.message : "无法读取复核链接",
-        );
+        const requestError = toShareRequestError(error, "无法读取复核链接");
+        setNeedsAccessCode(isAccessCodeError(requestError));
+        setErrorMessage(requestError.message);
       } finally {
         if (isCurrent) {
           setIsLoading(false);
@@ -191,6 +209,28 @@ export default function AdmissionSharePageClient({
       isCurrent = false;
     };
   }, [applyShareBoard, initialAccessCode, token]);
+
+  const submitAccessCode = async () => {
+    const normalizedAccessCode = accessCodeInput.trim();
+    if (!normalizedAccessCode) {
+      setErrorMessage("请输入访问码后继续。");
+      return;
+    }
+
+    setIsAuthenticating(true);
+    setErrorMessage("");
+    try {
+      await authenticateShareAccess(token, normalizedAccessCode);
+      setAccessCodeInput("");
+      await loadShareBoard();
+    } catch (error) {
+      const requestError = toShareRequestError(error, "访问码验证失败");
+      setNeedsAccessCode(true);
+      setErrorMessage(requestError.message);
+    } finally {
+      setIsAuthenticating(false);
+    }
+  };
 
   const updateDraft = (
     recordingSubmissionId: string,
@@ -256,18 +296,16 @@ export default function AdmissionSharePageClient({
     setErrorMessage("");
     setSuccessMessage("");
     try {
-      const response = await fetch(publicReviewUrl(token, accessCode), {
+      const response = await fetch(publicReviewUrl(token), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          reviewerName: "",
-          reviewerContact: "",
           items: payloadItems,
         }),
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(errorText(payload, "提交复核失败"));
+        throw shareRequestError(payload, "提交复核失败", response.status);
       }
 
       const result = payload as SubmitResult;
@@ -276,7 +314,12 @@ export default function AdmissionSharePageClient({
         `提交成功：${result.submittedCount} 条反馈，${result.syncedCount} 条已同步，${result.skippedCount} 条仅记录`,
       );
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "提交复核失败");
+      const requestError = toShareRequestError(error, "提交复核失败");
+      if (isAccessCodeError(requestError)) {
+        setShareBoard(null);
+        setNeedsAccessCode(true);
+      }
+      setErrorMessage(requestError.message);
     } finally {
       setIsSubmitting(false);
     }
@@ -336,20 +379,76 @@ export default function AdmissionSharePageClient({
         </section>
 
         {errorMessage ? (
-          <div className="rounded-md border border-[var(--danger-600)] bg-[var(--danger-50)] px-4 py-3 text-sm text-[var(--danger-600)]">
-            {errorMessage}
+          <div
+            className="flex flex-col gap-3 rounded-md border border-[var(--danger-600)] bg-[var(--danger-50)] px-4 py-3 text-sm text-[var(--danger-600)] sm:flex-row sm:items-center sm:justify-between"
+            role="alert"
+            aria-label={errorMessage}
+          >
+            <span>{errorMessage}</span>
+            {!needsAccessCode && !shareBoard && !isLoading ? (
+              <button
+                className="min-h-11 shrink-0 rounded-md border border-[var(--danger-600)] bg-white px-4 font-semibold hover:bg-[var(--danger-50)]"
+                type="button"
+                onClick={() => void loadShareBoard()}
+              >
+                重试
+              </button>
+            ) : null}
           </div>
         ) : null}
 
         {successMessage ? (
-          <div className="rounded-md border border-[var(--ok-600)] bg-[var(--ok-50)] px-4 py-3 text-sm text-[var(--ok-600)]">
+          <div
+            className="rounded-md border border-[var(--ok-600)] bg-[var(--ok-50)] px-4 py-3 text-sm text-[var(--ok-600)]"
+            role="status"
+            aria-live="polite"
+          >
             {successMessage}
           </div>
         ) : null}
 
         {isLoading ? (
-          <section className="rounded-md border border-[var(--line)] bg-white p-5 text-sm text-[var(--ink-500)]">
+          <section
+            className="rounded-md border border-[var(--line)] bg-white p-5 text-sm text-[var(--ink-500)]"
+            role="status"
+            aria-live="polite"
+          >
             正在读取复核清单...
+          </section>
+        ) : null}
+
+        {!isLoading && needsAccessCode && !shareBoard ? (
+          <section className="mx-auto w-full max-w-md rounded-md border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-card)]">
+            <h2 className="text-lg font-semibold text-[var(--ink-900)]">
+              此分享需要访问码
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--ink-500)]">
+              请输入分享方提供的访问码。验证成功后，本设备会保存安全会话，地址栏不会保留访问码。
+            </p>
+            <label className="mt-4 grid gap-1.5 text-sm font-medium text-[var(--ink-700)]">
+              访问码
+              <input
+                className="min-h-11 rounded-md border border-[var(--line)] bg-white px-3 text-base outline-none focus:border-[var(--blue-500)]"
+                type="password"
+                autoComplete="one-time-code"
+                value={accessCodeInput}
+                onChange={(event) => setAccessCodeInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void submitAccessCode();
+                  }
+                }}
+              />
+            </label>
+            <button
+              className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-md bg-[var(--blue-600)] px-5 text-sm font-semibold text-white hover:bg-[var(--blue-700)] disabled:cursor-not-allowed disabled:opacity-60"
+              type="button"
+              disabled={isAuthenticating}
+              onClick={() => void submitAccessCode()}
+            >
+              {isAuthenticating ? "正在验证…" : "验证访问码"}
+            </button>
           </section>
         ) : null}
 
@@ -358,7 +457,7 @@ export default function AdmissionSharePageClient({
             <section className="grid gap-3">
               {shareBoard.items.map((item, index) => (
                 <article
-                  className="grid gap-5 rounded-md border border-[var(--line)] bg-white p-5 shadow-[var(--shadow-card)] lg:grid-cols-[minmax(360px,1fr)_minmax(300px,0.72fr)]"
+                  className="grid gap-5 rounded-md border border-[var(--line)] bg-white p-4 shadow-[var(--shadow-card)] sm:p-5 lg:grid-cols-[minmax(360px,1fr)_minmax(300px,0.72fr)]"
                   key={item.recordingSubmissionId}
                 >
                   <div className="grid gap-4">
@@ -404,7 +503,7 @@ export default function AdmissionSharePageClient({
                     <label className="grid gap-1 text-xs font-medium text-[var(--ink-700)]">
                       {item.streamer.displayName || "主播"} 决策
                       <select
-                        className="h-10 rounded-md border border-[var(--line)] bg-white px-3 text-sm outline-none focus:border-[var(--blue-500)]"
+                        className="min-h-11 rounded-md border border-[var(--line)] bg-white px-3 text-base outline-none focus:border-[var(--blue-500)] sm:text-sm"
                         value={
                           drafts[item.recordingSubmissionId]?.decision ??
                           "pending"
@@ -447,8 +546,8 @@ export default function AdmissionSharePageClient({
                                 }
                                 className={
                                   selected
-                                    ? "rounded-full border border-[var(--blue-500)] bg-[var(--blue-50)] px-3 py-1 text-xs font-medium text-[var(--blue-600)]"
-                                    : "rounded-full border border-[var(--line)] bg-white px-3 py-1 text-xs text-[var(--ink-500)] hover:border-[var(--blue-300)]"
+                                    ? "min-h-11 rounded-full border border-[var(--blue-500)] bg-[var(--blue-50)] px-3 py-2 text-xs font-medium text-[var(--blue-600)]"
+                                    : "min-h-11 rounded-full border border-[var(--line)] bg-white px-3 py-2 text-xs text-[var(--ink-500)] hover:border-[var(--blue-300)]"
                                 }
                               >
                                 {checkpoint.label}
@@ -476,13 +575,18 @@ export default function AdmissionSharePageClient({
               ))}
             </section>
 
-            <div className="sticky bottom-0 -mx-4 border-t border-[var(--line)] bg-white/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
-              <div className="mx-auto flex max-w-6xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-xs text-[var(--ink-500)]">
-                  提交会携带当前录屏版本；若期间录屏更新，系统会拒绝旧版本反馈。
-                </p>
+            <div className="sticky bottom-0 -mx-4 border-t border-[var(--line)] bg-white/95 px-4 py-3 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
+              <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-[var(--ink-900)]">
+                    已判断 {reviewedCount} / {shareBoard.items.length}
+                  </p>
+                  <p className="mt-0.5 hidden text-xs text-[var(--ink-500)] sm:block">
+                    提交会锁定当前录屏版本；录屏更新后需刷新再提交。
+                  </p>
+                </div>
                 <button
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-[var(--blue-600)] px-5 text-sm font-semibold text-white shadow-[var(--shadow-fab)] hover:bg-[var(--blue-700)] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-[var(--blue-600)] px-5 text-sm font-semibold text-white shadow-[var(--shadow-fab)] hover:bg-[var(--blue-700)] disabled:cursor-not-allowed disabled:opacity-60"
                   type="button"
                   onClick={() => void submitReviews()}
                   disabled={
@@ -507,6 +611,11 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
   const sourceUrl = item.playbackUrl ?? item.recordingUrl;
   const streamerName = item.streamer.displayName || "主播";
   const externalUrl = item.recordingUrl ?? sourceUrl;
+  const [playbackFailed, setPlaybackFailed] = useState(false);
+
+  useEffect(() => {
+    setPlaybackFailed(false);
+  }, [sourceUrl]);
 
   if (!sourceUrl) {
     return (
@@ -522,6 +631,26 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
     );
   }
 
+  if (playbackFailed) {
+    return (
+      <div className="grid aspect-video place-items-center rounded-md border border-[var(--line)] bg-[var(--bg-soft)] p-5 text-center">
+        <div>
+          <div className="text-sm font-semibold text-[var(--ink-900)]">
+            视频加载失败
+          </div>
+          <p className="mt-1 text-xs leading-5 text-[var(--ink-500)]">
+            当前浏览器无法播放此来源，请在新窗口打开原始链接。
+          </p>
+          {externalUrl ? (
+            <div className="mt-3">
+              <RecordingSourceLink href={externalUrl} name={streamerName} />
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   const platformEmbedUrl = platformEmbedSource(sourceUrl);
   if (platformEmbedUrl) {
     return (
@@ -532,6 +661,7 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
           src={platformEmbedUrl}
           allow="autoplay; fullscreen; picture-in-picture"
           allowFullScreen
+          onError={() => setPlaybackFailed(true)}
         />
         {externalUrl ? (
           <RecordingSourceLink href={externalUrl} name={streamerName} />
@@ -549,6 +679,7 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
           src={sourceUrl}
           controls
           preload="metadata"
+          onError={() => setPlaybackFailed(true)}
         />
         {externalUrl ? (
           <RecordingSourceLink href={externalUrl} name={streamerName} />
@@ -565,10 +696,10 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
         </span>
         <div className="min-w-0">
           <div className="text-sm font-semibold text-[var(--ink-900)]">
-            平台录屏链接
+            平台链接无法内嵌播放
           </div>
-          <p className="mt-1 truncate text-xs text-[var(--ink-500)]">
-            {sourceUrl}
+          <p className="mt-1 text-xs leading-5 text-[var(--ink-500)]">
+            请在新窗口打开原始链接继续查看。
           </p>
           <div className="mt-3">
             <RecordingSourceLink
@@ -585,7 +716,7 @@ function RecordingPlayer({ item }: { item: PublicAdmissionShareItem }) {
 function RecordingSourceLink({ href, name }: { href: string; name: string }) {
   return (
     <a
-      className="inline-flex items-center gap-1 text-xs font-medium text-[var(--blue-600)] hover:text-[var(--blue-700)]"
+      className="inline-flex min-h-11 items-center gap-1 rounded-md px-2 text-xs font-medium text-[var(--blue-600)] hover:bg-[var(--blue-50)] hover:text-[var(--blue-700)]"
       href={href}
       target="_blank"
       rel="noreferrer"
@@ -620,18 +751,21 @@ function bilibiliEmbedSource(sourceUrl: string) {
   return `https://player.bilibili.com/player.html?${params.toString()}`;
 }
 
-function youtubeEmbedSource(sourceUrl: string) {
+export function youtubeEmbedSource(sourceUrl: string) {
   const url = parseUrl(sourceUrl);
   if (!url) {
     return null;
   }
 
   let videoId: string | null = null;
-  if (url.hostname.includes("youtu.be")) {
+  if (url.hostname === "youtu.be" || url.hostname.endsWith(".youtu.be")) {
     videoId = url.pathname.split("/").filter(Boolean)[0] ?? null;
   }
-  if (url.hostname.includes("youtube.com")) {
-    videoId = url.searchParams.get("v");
+  if (url.hostname === "youtube.com" || url.hostname.endsWith(".youtube.com")) {
+    videoId =
+      url.searchParams.get("v") ??
+      url.pathname.match(/^\/(?:shorts|live|embed)\/([^/?#]+)/)?.[1] ??
+      null;
   }
   return videoId
     ? `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`
@@ -672,16 +806,13 @@ type ShareBoardResponse = {
   vendorCheckpoints: VendorCheckpointOption[];
 };
 
-async function requestShareBoard(
-  token: string,
-  accessCode: string,
-): Promise<ShareBoardResponse> {
-  const response = await fetch(publicShareUrl(token, accessCode), {
+async function requestShareBoard(token: string): Promise<ShareBoardResponse> {
+  const response = await fetch(publicShareUrl(token), {
     method: "GET",
   });
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(errorText(payload, "无法读取复核链接"));
+    throw shareRequestError(payload, "无法读取复核链接", response.status);
   }
   return {
     shareBoard: payload.shareBoard as PublicAdmissionShareBoard,
@@ -691,33 +822,86 @@ async function requestShareBoard(
   };
 }
 
-function publicShareUrl(token: string, accessCode: string) {
-  return `/api/public/admission-share/${encodeURIComponent(token)}${queryString(
-    accessCode,
-  )}`;
-}
-
-function publicReviewUrl(token: string, accessCode: string) {
-  return `/api/public/admission-share/${encodeURIComponent(token)}/reviews${queryString(
-    accessCode,
-  )}`;
-}
-
-function queryString(accessCode: string) {
-  const trimmed = accessCode.trim();
-  return trimmed ? `?accessCode=${encodeURIComponent(trimmed)}` : "";
-}
-
-function errorText(payload: unknown, fallback: string) {
-  if (
-    payload &&
-    typeof payload === "object" &&
-    "error" in payload &&
-    typeof payload.error === "string"
-  ) {
-    return payload.error;
+async function authenticateShareAccess(token: string, accessCode: string) {
+  const response = await fetch(
+    `/api/public/admission-share/${encodeURIComponent(token)}/access`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accessCode: accessCode.trim() }),
+    },
+  );
+  const payload = await response.json();
+  if (!response.ok) {
+    throw shareRequestError(payload, "访问码验证失败", response.status);
   }
-  return fallback;
+}
+
+function clearLegacyAccessCodeFromUrl(token: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `/share/admission/${encodeURIComponent(token)}`,
+  );
+}
+
+function readLegacyAccessCodeFromUrl() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return (
+    new URLSearchParams(window.location.search).get("accessCode")?.trim() ?? ""
+  );
+}
+
+function publicShareUrl(token: string) {
+  return `/api/public/admission-share/${encodeURIComponent(token)}`;
+}
+
+function publicReviewUrl(token: string) {
+  return `/api/public/admission-share/${encodeURIComponent(token)}/reviews`;
+}
+
+class ShareRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+function shareRequestError(payload: unknown, fallback: string, status = 0) {
+  const body =
+    payload && typeof payload === "object"
+      ? (payload as { code?: unknown; error?: unknown })
+      : {};
+  return new ShareRequestError(
+    typeof body.error === "string" && body.error.trim() ? body.error : fallback,
+    typeof body.code === "string" ? body.code : "UNKNOWN",
+    status,
+  );
+}
+
+function toShareRequestError(error: unknown, fallback: string) {
+  return error instanceof ShareRequestError
+    ? error
+    : new ShareRequestError(
+        error instanceof Error ? error.message : fallback,
+        "UNKNOWN",
+        0,
+      );
+}
+
+function isAccessCodeError(error: ShareRequestError) {
+  return (
+    error.code === "ACCESS_CODE_REQUIRED" ||
+    error.code === "ACCESS_CODE_INVALID"
+  );
 }
 
 function labelOf(value: string) {
