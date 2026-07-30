@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { recordAiVsMcnSignal, recordMcnVsVendorSignal } from "./signals";
 
@@ -123,9 +123,7 @@ describe("recordAiVsMcnSignal", () => {
   });
 
   it("returns null when the pre-review side is missing", async () => {
-    const client = createSignalsClient([
-      evaluationRow({ stage: "mcn_first" }),
-    ]);
+    const client = createSignalsClient([evaluationRow({ stage: "mcn_first" })]);
 
     await expect(
       recordAiVsMcnSignal({
@@ -134,13 +132,67 @@ describe("recordAiVsMcnSignal", () => {
         submissionId: "submission-1",
       }),
     ).resolves.toBeNull();
-    expect(
-      (client as unknown as { upserts: unknown[] }).upserts,
-    ).toHaveLength(0);
+    expect((client as unknown as { upserts: unknown[] }).upserts).toHaveLength(
+      0,
+    );
   });
 });
 
 describe("recordMcnVsVendorSignal", () => {
+  it("passes cancellation to signal reads and writes", async () => {
+    const signal = new AbortController().signal;
+    const evaluations = [
+      evaluationRow({
+        id: "evaluation-vendor",
+        stage: "vendor_second",
+        decision: "rejected",
+      }),
+      evaluationRow({
+        id: "evaluation-mcn",
+        stage: "mcn_first",
+        decision: "approved",
+      }),
+    ];
+    const readResponse = Promise.resolve({ data: evaluations, error: null });
+    const writeResponse = Promise.resolve({ error: null });
+    const readAbortSignal = vi.fn(() => readResponse);
+    const writeAbortSignal = vi.fn(() => writeResponse);
+    const client = {
+      from(table: string) {
+        if (table === "admission_review_evaluations") {
+          return {
+            select: () => ({
+              eq: () => ({
+                in: () => ({
+                  order: () => ({
+                    then: readResponse.then.bind(readResponse),
+                    abortSignal: readAbortSignal,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {
+          upsert: () => ({
+            then: writeResponse.then.bind(writeResponse),
+            abortSignal: writeAbortSignal,
+          }),
+        };
+      },
+    } as never;
+
+    await recordMcnVsVendorSignal({
+      client,
+      organizationId: "org-1",
+      submissionId: "submission-1",
+      signal,
+    });
+
+    expect(readAbortSignal).toHaveBeenCalledWith(signal);
+    expect(writeAbortSignal).toHaveBeenCalledWith(signal);
+  });
+
   it("flags MCN misses when the vendor rejects an approved recording", async () => {
     const client = createSignalsClient([
       evaluationRow({
@@ -195,9 +247,9 @@ describe("recordMcnVsVendorSignal", () => {
     });
 
     expect(payload?.mcnMiss).toBe(false);
-    expect(
-      (client as unknown as { upserts: unknown[] }).upserts,
-    ).toHaveLength(1);
+    expect((client as unknown as { upserts: unknown[] }).upserts).toHaveLength(
+      1,
+    );
   });
 
   it("returns null when either stage is missing", async () => {

@@ -18,6 +18,10 @@ type EvaluationWithResultsRow = {
   }> | null;
 };
 
+type AbortableQuery<T> = PromiseLike<T> & {
+  abortSignal(signal: AbortSignal): PromiseLike<T>;
+};
+
 type SignalsDb = {
   from(table: "admission_review_evaluations"): {
     select(columns: string): {
@@ -32,7 +36,7 @@ type SignalsDb = {
           order(
             column: "created_at",
             options: { ascending: boolean },
-          ): PromiseLike<{
+          ): AbortableQuery<{
             data: EvaluationWithResultsRow[] | null;
             error: Error | null;
           }>;
@@ -44,7 +48,7 @@ type SignalsDb = {
     upsert(
       payload: Record<string, unknown>,
       options: { onConflict: string },
-    ): PromiseLike<{ error: Error | null }>;
+    ): AbortableQuery<{ error: Error | null }>;
   };
 };
 
@@ -152,15 +156,19 @@ export async function recordMcnVsVendorSignal({
   client,
   organizationId,
   submissionId,
+  signal,
 }: {
   client: SignalsDb;
   organizationId: string;
   submissionId: string;
+  signal?: AbortSignal;
 }): Promise<McnVsVendorSignalPayload | null> {
-  const byStage = await loadStagePair(client, submissionId, [
-    "mcn_first",
-    "vendor_second",
-  ]);
+  const byStage = await loadStagePair(
+    client,
+    submissionId,
+    ["mcn_first", "vendor_second"],
+    signal,
+  );
   const mcn = byStage.get("mcn_first") ?? null;
   const vendor = byStage.get("vendor_second") ?? null;
 
@@ -181,13 +189,17 @@ export async function recordMcnVsVendorSignal({
     mcnMiss: mcn.decision === "approved" && vendorNegative,
   };
 
-  await upsertSignal(client, {
-    organizationId,
-    applicationId: mcn.application_id,
-    submissionId,
-    signalKind: "mcn_vs_vendor",
-    payload,
-  });
+  await upsertSignal(
+    client,
+    {
+      organizationId,
+      applicationId: mcn.application_id,
+      submissionId,
+      signalKind: "mcn_vs_vendor",
+      payload,
+    },
+    signal,
+  );
 
   return payload;
 }
@@ -196,13 +208,15 @@ async function loadStagePair(
   client: SignalsDb,
   submissionId: string,
   stages: string[],
+  signal?: AbortSignal,
 ): Promise<Map<string, EvaluationWithResultsRow>> {
-  const { data, error } = await client
+  const query = client
     .from("admission_review_evaluations")
     .select(evaluationSelect)
     .eq("submission_id", submissionId)
     .in("stage", stages)
     .order("created_at", { ascending: false });
+  const { data, error } = await abortableQuery(query, signal);
 
   if (error) {
     throw error;
@@ -227,8 +241,9 @@ async function upsertSignal(
     signalKind: string;
     payload: unknown;
   },
+  signal?: AbortSignal,
 ): Promise<void> {
-  const { error } = await client.from("admission_review_signals").upsert(
+  const query = client.from("admission_review_signals").upsert(
     {
       organization_id: input.organizationId,
       application_id: input.applicationId,
@@ -238,9 +253,17 @@ async function upsertSignal(
     },
     { onConflict: "submission_id,signal_kind" },
   );
+  const { error } = await abortableQuery(query, signal);
   if (error) {
     throw error;
   }
+}
+
+function abortableQuery<T>(
+  query: AbortableQuery<T>,
+  signal: AbortSignal | undefined,
+): PromiseLike<T> {
+  return signal ? query.abortSignal(signal) : query;
 }
 
 function verdictMap(

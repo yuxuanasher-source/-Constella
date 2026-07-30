@@ -65,6 +65,7 @@ export async function POST(
           rubric = await resolveAdmissionRubric({
             client: reviewClient,
             organizationId: evaluation.organizationId,
+            signal: evaluation.signal,
           });
           rubricCache.set(evaluation.organizationId, rubric);
         }
@@ -84,6 +85,7 @@ export async function POST(
         await recordAdmissionEvaluation({
           client: reviewClient,
           rubric,
+          signal: evaluation.signal,
           input: {
             organizationId: evaluation.organizationId,
             applicationId: evaluation.applicationId,
@@ -102,6 +104,7 @@ export async function POST(
           client: reviewClient as never,
           organizationId: evaluation.organizationId,
           submissionId: evaluation.recordingSubmissionId,
+          signal: evaluation.signal,
         }).catch(() => null);
       },
     });

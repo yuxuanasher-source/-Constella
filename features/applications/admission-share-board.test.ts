@@ -1704,7 +1704,9 @@ describe("admission share board service", () => {
         }),
       });
       let settled = false;
+      let activeWorkers = 0;
       let evaluationSignal: AbortSignal | undefined;
+      let finishAbort: (() => void) | undefined;
       const submitted = submitVendorAdmissionReviews({
         repo,
         token: "plain-token",
@@ -1712,8 +1714,18 @@ describe("admission share board service", () => {
         now: "2026-06-07T05:00:00.000Z",
         recordEvaluation: vi.fn((evaluation) => {
           evaluationSignal = evaluation.signal;
-          return new Promise<void>(() => {
-            // Simulate a downstream write that never settles.
+          activeWorkers += 1;
+          return new Promise<void>((_resolve, reject) => {
+            evaluation.signal.addEventListener(
+              "abort",
+              () => {
+                finishAbort = () => {
+                  activeWorkers -= 1;
+                  reject(evaluation.signal.reason);
+                };
+              },
+              { once: true },
+            );
           });
         }),
       }).then((result) => {
@@ -1722,14 +1734,21 @@ describe("admission share board service", () => {
       });
 
       await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(1_000);
 
-      expect(settled).toBe(true);
       expect(evaluationSignal?.aborted).toBe(true);
+      expect(settled).toBe(false);
+      expect(activeWorkers).toBe(1);
+
+      finishAbort?.();
+      await Promise.resolve();
+      await Promise.resolve();
+
       await expect(submitted).resolves.toMatchObject({
         submissionRevision: 1,
         submittedCount: 1,
       });
+      expect(activeWorkers).toBe(0);
     } finally {
       vi.useRealTimers();
     }

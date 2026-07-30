@@ -1656,7 +1656,10 @@ export type SubmitVendorAdmissionReviewsInput = {
   projectRemark?: string;
 };
 
-/** 厂家带理由标签提交时的评估回写钩子（features/admission-review）。 */
+/**
+ * 厂家带理由标签提交时的评估回写钩子（features/admission-review）。
+ * 实现必须把 signal 传给底层 I/O，并在取消后 settle，避免提交回执遗留后台任务。
+ */
 export type VendorEvaluationRecorder = (input: {
   organizationId: string;
   applicationId: string;
@@ -1783,21 +1786,16 @@ async function recordVendorEvaluationWithTimeout(
 ) {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      const error = new Error(
-        `Vendor admission evaluation timed out after ${timeoutMs}ms`,
-      );
-      controller.abort(error);
-      reject(error);
-    }, timeoutMs);
-  });
+  timer = setTimeout(() => {
+    controller.abort(
+      new Error(`Vendor admission evaluation timed out after ${timeoutMs}ms`),
+    );
+  }, timeoutMs);
 
   try {
-    await Promise.race([
-      Promise.resolve().then(() => evaluation(controller.signal)),
-      timeout,
-    ]);
+    // The recorder contract is cancellation-aware. Await the actual worker
+    // after abort so no detached PostgREST promise survives the HTTP receipt.
+    await evaluation(controller.signal);
   } finally {
     if (timer) {
       clearTimeout(timer);
