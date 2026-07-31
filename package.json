@@ -16,6 +16,7 @@
     "test:api-contracts": "vitest run app/api/api-route-contracts.test.ts",
     "test:api-integration-smoke": "node scripts/api-integration-smoke.mjs",
     "test:manual-acceptance-smoke": "node scripts/manual-acceptance-smoke.mjs",
+    "test:deploy-contract": "node --test scripts/deploy-contract.test.mjs",
     "verify:xingyao-hermes-release": "node scripts/verify-xingyao-hermes-release.mjs",
     "test:xingyao-hermes-e2e": "node scripts/test-xingyao-hermes-e2e.mjs --local",
     "test:ops-visual": "playwright test tests/visual/arco-redesign.spec.ts",
