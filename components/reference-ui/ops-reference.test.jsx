@@ -1065,6 +1065,254 @@ describe("knowledge-base expiring share controls", () => {
       expect.objectContaining({ method: "POST" }),
     );
   }, 15_000);
+
+  it("ignores a deferred revoke success after switching documents", async () => {
+    seedSecondDocument();
+    let resolveRevoke;
+    const deferredRevoke = new Promise((resolve) => {
+      resolveRevoke = resolve;
+    });
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null }), { status: 200 });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        const sourceDocumentId = new URL(url, "http://local").searchParams.get(
+          "sourceDocumentId",
+        );
+        const isTutorial = sourceDocumentId === "kb-doc-usage-tutorial";
+        return new Response(
+          JSON.stringify({
+            shares: [
+              {
+                id: isTutorial
+                  ? "33333333-3333-4333-8333-333333333333"
+                  : "44444444-4444-4444-8444-444444444444",
+                title: isTutorial ? "📖 使用教程" : "竞态目标文档",
+                createdAt: "2026-07-31T12:00:00.000Z",
+                expiresAt: "2026-08-07T12:00:00.000Z",
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        const sourceDocumentId = JSON.parse(init.body).sourceDocumentId;
+        const isTutorial = sourceDocumentId === "kb-doc-usage-tutorial";
+        return new Response(
+          JSON.stringify({
+            id: isTutorial
+              ? "33333333-3333-4333-8333-333333333333"
+              : "44444444-4444-4444-8444-444444444444",
+            url: isTutorial
+              ? "https://app.example.test/share/kb/tutorial-token"
+              : "https://app.example.test/share/kb/target-token",
+            expiresAt: "2026-08-07T12:00:00.000Z",
+          }),
+          { status: 200 },
+        );
+      }
+      if (
+        url ===
+          "/api/knowledge-base/share/33333333-3333-4333-8333-333333333333/revoke" &&
+        method === "POST"
+      ) {
+        return deferredRevoke;
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    fireEvent.click(await screen.findByRole("button", { name: "分享链接" }));
+    expect(
+      await screen.findByDisplayValue(
+        "https://app.example.test/share/kb/tutorial-token",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+
+    fireEvent.click(screen.getByText("竞态目标文档"));
+    await screen.findByTestId(
+      "knowledge-share-44444444-4444-4444-8444-444444444444",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    expect(
+      await screen.findByDisplayValue(
+        "https://app.example.test/share/kb/target-token",
+      ),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      resolveRevoke(
+        new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      );
+    });
+
+    expect(screen.getByLabelText("分享链接")).toHaveValue(
+      "https://app.example.test/share/kb/target-token",
+    );
+    expect(screen.queryByText("分享链接已撤销。")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId(
+        "knowledge-share-44444444-4444-4444-8444-444444444444",
+      ),
+    ).toBeInTheDocument();
+  }, 15_000);
+
+  it("ignores a deferred revoke failure after switching documents", async () => {
+    seedSecondDocument();
+    let resolveRevoke;
+    const deferredRevoke = new Promise((resolve) => {
+      resolveRevoke = resolve;
+    });
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null }), { status: 200 });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        const sourceDocumentId = new URL(url, "http://local").searchParams.get(
+          "sourceDocumentId",
+        );
+        return new Response(
+          JSON.stringify({
+            shares: [
+              {
+                id:
+                  sourceDocumentId === "kb-doc-usage-tutorial"
+                    ? "33333333-3333-4333-8333-333333333333"
+                    : "44444444-4444-4444-8444-444444444444",
+                title:
+                  sourceDocumentId === "kb-doc-usage-tutorial"
+                    ? "📖 使用教程"
+                    : "竞态目标文档",
+                createdAt: "2026-07-31T12:00:00.000Z",
+                expiresAt: "2026-08-07T12:00:00.000Z",
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/revoke") && method === "POST") return deferredRevoke;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    await screen.findByTestId(
+      "knowledge-share-33333333-3333-4333-8333-333333333333",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    fireEvent.click(screen.getByText("竞态目标文档"));
+    await screen.findByTestId(
+      "knowledge-share-44444444-4444-4444-8444-444444444444",
+    );
+
+    await act(async () => {
+      resolveRevoke(
+        new Response(JSON.stringify({ error: "failed" }), { status: 500 }),
+      );
+    });
+
+    expect(screen.queryByText("撤销失败，请稍后重试。")).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId(
+        "knowledge-share-44444444-4444-4444-8444-444444444444",
+      ),
+    ).toBeInTheDocument();
+  }, 15_000);
+
+  it("does not let an old revoke finally clear the new document revoke", async () => {
+    seedSecondDocument();
+    let resolveTutorialRevoke;
+    let resolveTargetRevoke;
+    const tutorialRevoke = new Promise((resolve) => {
+      resolveTutorialRevoke = resolve;
+    });
+    const targetRevoke = new Promise((resolve) => {
+      resolveTargetRevoke = resolve;
+    });
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null }), { status: 200 });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        const isTutorial = url.includes("kb-doc-usage-tutorial");
+        return new Response(
+          JSON.stringify({
+            shares: [
+              {
+                id: isTutorial
+                  ? "33333333-3333-4333-8333-333333333333"
+                  : "44444444-4444-4444-8444-444444444444",
+                title: isTutorial ? "📖 使用教程" : "竞态目标文档",
+                createdAt: "2026-07-31T12:00:00.000Z",
+                expiresAt: "2026-08-07T12:00:00.000Z",
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (
+        url.includes("33333333-3333-4333-8333-333333333333/revoke") &&
+        method === "POST"
+      ) {
+        return tutorialRevoke;
+      }
+      if (
+        url.includes("44444444-4444-4444-8444-444444444444/revoke") &&
+        method === "POST"
+      ) {
+        return targetRevoke;
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    await screen.findByTestId(
+      "knowledge-share-33333333-3333-4333-8333-333333333333",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    fireEvent.click(screen.getByText("竞态目标文档"));
+    await screen.findByTestId(
+      "knowledge-share-44444444-4444-4444-8444-444444444444",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    expect(screen.getByRole("button", { name: "撤销中…" })).toBeDisabled();
+
+    await act(async () => {
+      resolveTutorialRevoke(
+        new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      );
+    });
+    expect(screen.getByRole("button", { name: "撤销中…" })).toBeDisabled();
+
+    await act(async () => {
+      resolveTargetRevoke(
+        new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      );
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId(
+          "knowledge-share-44444444-4444-4444-8444-444444444444",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+  }, 15_000);
 });
 
 describe("OpsReferenceApp role dashboard contract", () => {

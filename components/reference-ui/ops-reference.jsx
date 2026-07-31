@@ -29386,6 +29386,8 @@ function ScreenKnowledge() {
   const shareAttemptEpochRef = React.useRef(0);
   const currentShareInputRef = React.useRef(null);
   const activeShareRowRefs = React.useRef(new Map());
+  const revokeOperationEpochRef = React.useRef(0);
+  const activeRevokeOperationRef = React.useRef(null);
 
   // 加载：优先腾讯云 COS 真源，拿不到则用本地缓存。
   React.useEffect(() => {
@@ -29437,6 +29439,16 @@ function ScreenKnowledge() {
       ),
     [],
   );
+  const isCurrentRevokeOperation = React.useCallback(
+    (operation) =>
+      Boolean(
+        operation &&
+          activeRevokeOperationRef.current === operation &&
+          operation.epoch === revokeOperationEpochRef.current &&
+          operation.documentId === currentShareInputRef.current?.doc?.id,
+      ),
+    [],
+  );
 
   React.useEffect(() => {
     if (
@@ -29458,6 +29470,9 @@ function ScreenKnowledge() {
 
   // 切换文档时清空上一篇的分享链接 / 提示。
   React.useEffect(() => {
+    revokeOperationEpochRef.current += 1;
+    activeRevokeOperationRef.current = null;
+    setRevokingShareId(null);
     setShareUrl("");
     setShareExpiresAt("");
     setShareExpiryDays(7);
@@ -30034,9 +30049,16 @@ function ScreenKnowledge() {
                             kind="danger"
                             disabled={revokingShareId === share.id}
                             onClick={async () => {
+                              const operation = {
+                                documentId: selected.id,
+                                shareId: share.id,
+                                epoch: ++revokeOperationEpochRef.current,
+                              };
+                              activeRevokeOperationRef.current = operation;
                               setRevokingShareId(share.id);
                               try {
                                 await kbRevokeShare(share.id);
+                                if (!isCurrentRevokeOperation(operation)) return;
                                 setActiveShares((shares) =>
                                   shares.filter((item) => item.id !== share.id),
                                 );
@@ -30049,9 +30071,13 @@ function ScreenKnowledge() {
                                   setShareExpiresAt("");
                                 }
                               } catch {
+                                if (!isCurrentRevokeOperation(operation)) return;
                                 setDocMsg("撤销失败，请稍后重试。");
                               } finally {
-                                setRevokingShareId(null);
+                                if (isCurrentRevokeOperation(operation)) {
+                                  activeRevokeOperationRef.current = null;
+                                  setRevokingShareId(null);
+                                }
                               }
                             }}
                           >
