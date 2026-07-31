@@ -139,6 +139,13 @@ jobs:
           SETTLEMENT_AI_DB_LOCK_REGRESSION_CONTAINER: supabase_db_jingying-cabin
         run: pnpm exec vitest run lib/db/schema-contract.test.ts
 
+      - name: Run atomic deploy database and PostgREST contract
+        env:
+          RUN_DEPLOY_DB_TESTS: 1
+          DEPLOY_DB_TEST_CONTAINER: supabase_db_jingying-cabin
+          DEPLOY_POSTGREST_TEST_CONTAINER: supabase_rest_jingying-cabin
+        run: pnpm exec vitest run scripts/deploy-database-contract.test.mjs
+
       - name: Stop Realtime before forward migration regression
         run: docker stop supabase_realtime_jingying-cabin
 

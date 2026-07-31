@@ -25,7 +25,6 @@ DB_NAME="${DB_NAME:-postgres}"
 PM2_NAME="${PM2_NAME:-jingying-cabin}"
 PM2_TIMEOUT_SECONDS="${PM2_TIMEOUT_SECONDS:-30}"
 DATABASE_LEASE_WAIT_SECONDS="${DATABASE_LEASE_WAIT_SECONDS:-60}"
-DATABASE_LEASE_SESSION_TIMEOUT_SECONDS="${DATABASE_LEASE_SESSION_TIMEOUT_SECONDS:-900}"
 DB_COMMAND_TIMEOUT_SECONDS="${DB_COMMAND_TIMEOUT_SECONDS:-300}"
 DB_RESPONSE_TIMEOUT_SECONDS="${DB_RESPONSE_TIMEOUT_SECONDS:-10}"
 DB_LOCK_TIMEOUT_MILLISECONDS="${DB_LOCK_TIMEOUT_MILLISECONDS:-15000}"
@@ -143,7 +142,6 @@ load_runtime_env() {
   local saved_db="$DB_CONTAINER" saved_db_name="$DB_NAME" saved_pm2="$PM2_NAME"
   local saved_pm2_timeout="$PM2_TIMEOUT_SECONDS"
   local saved_database_lease_wait="$DATABASE_LEASE_WAIT_SECONDS"
-  local saved_database_lease_session_timeout="$DATABASE_LEASE_SESSION_TIMEOUT_SECONDS"
   local saved_db_command_timeout="$DB_COMMAND_TIMEOUT_SECONDS"
   local saved_db_response_timeout="$DB_RESPONSE_TIMEOUT_SECONDS"
   local saved_db_lock_timeout="$DB_LOCK_TIMEOUT_MILLISECONDS"
@@ -171,7 +169,6 @@ load_runtime_env() {
   PM2_NAME="$saved_pm2"
   PM2_TIMEOUT_SECONDS="$saved_pm2_timeout"
   DATABASE_LEASE_WAIT_SECONDS="$saved_database_lease_wait"
-  DATABASE_LEASE_SESSION_TIMEOUT_SECONDS="$saved_database_lease_session_timeout"
   DB_COMMAND_TIMEOUT_SECONDS="$saved_db_command_timeout"
   DB_RESPONSE_TIMEOUT_SECONDS="$saved_db_response_timeout"
   DB_LOCK_TIMEOUT_MILLISECONDS="$saved_db_lock_timeout"
@@ -255,7 +252,6 @@ validate_rollback_runtime() {
   [[ "$DATABASE_LEASE_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
     die "DATABASE_LEASE_WAIT_SECONDS must be a positive integer"
   for timeout_name in \
-    DATABASE_LEASE_SESSION_TIMEOUT_SECONDS \
     DB_COMMAND_TIMEOUT_SECONDS \
     DB_RESPONSE_TIMEOUT_SECONDS \
     DB_LOCK_TIMEOUT_MILLISECONDS \
@@ -520,7 +516,12 @@ db() {
 }
 
 db_lease_session() {
-  db_session "$DATABASE_LEASE_SESSION_TIMEOUT_SECONDS" "$@"
+  # The session itself is the lease. It must not expire while a valid deploy is
+  # still running; response reads and cleanup remain independently bounded.
+  docker exec \
+    -e "PGOPTIONS=-c lock_timeout=${DB_LOCK_TIMEOUT_MILLISECONDS}ms -c statement_timeout=${DB_STATEMENT_TIMEOUT_MILLISECONDS}ms" \
+    -i "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 \
+    -U postgres -d "$DB_NAME" "$@"
 }
 
 docker_bounded() {
@@ -545,6 +546,8 @@ terminate_database_deploy_lease() {
   fi
   wait "$DB_LEASE_PID" >/dev/null 2>&1 || true
   DB_LEASE_PID=""
+  DB_LEASE_INPUT_FD=""
+  DB_LEASE_OUTPUT_FD=""
   DB_LEASE_ACTIVE=0
 }
 
@@ -582,6 +585,25 @@ acquire_database_deploy_lease() {
   done
   terminate_database_deploy_lease
   die "database deploy lease remained busy for ${DATABASE_LEASE_WAIT_SECONDS}s"
+}
+
+assert_database_deploy_lease() {
+  local marker=""
+  if [[ "$DB_LEASE_ACTIVE" -ne 1 || -z "$DB_LEASE_PID" ]] ||
+    ! kill -0 "$DB_LEASE_PID" >/dev/null 2>&1; then
+    terminate_database_deploy_lease
+    die "database deploy lease is no longer provably held"
+  fi
+  if ! printf "select case when (select count(*) from pg_locks where pid = pg_backend_pid() and locktype = 'advisory' and mode = 'ExclusiveLock' and granted) = 1 then 'DEPLOY_LEASE_ALIVE' else 'DEPLOY_LEASE_MISSING' end;\n" \
+    >&"$DB_LEASE_INPUT_FD"; then
+    terminate_database_deploy_lease
+    die "database deploy lease is no longer provably held"
+  fi
+  if ! IFS= read -r -t "$DB_RESPONSE_TIMEOUT_SECONDS" marker <&"$DB_LEASE_OUTPUT_FD" ||
+    [[ "$marker" != "DEPLOY_LEASE_ALIVE" ]]; then
+    terminate_database_deploy_lease
+    die "database deploy lease is no longer provably held"
+  fi
 }
 
 release_database_deploy_lease() {
@@ -1007,6 +1029,7 @@ apply_migrations() {
   local schema_probe=""
   [[ "$DB_LEASE_ACTIVE" -eq 1 ]] ||
     die "database deploy lease must cover the migration batch and schema-cache proof"
+  assert_database_deploy_lease
   [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] ||
     die "TARGET_SHA must be set before applying migrations"
   schema_probe="deploy_schema_probe_${TARGET_SHA}"
@@ -1072,6 +1095,7 @@ apply_migrations() {
   applied="$(grep -c '^APPLIED:' <<< "$output" || true)"
   wait_for_postgrest_schema_cache "$schema_cache_before" "$schema_probe" ||
     die "PostgREST did not expose this target's schema probe in a newer ready cache within 25 seconds"
+  assert_database_deploy_lease
   log "Migrations complete ($applied newly applied)"
 }
 
@@ -1112,11 +1136,13 @@ save_pm2() {
 }
 
 verify_release() {
-  local sha="$1" manifest_sha256="$2"
-  validate_release_capabilities "$CURRENT_LINK" "$sha" "$manifest_sha256"
+  local sha="$1" manifest_sha256="$2" current_target
+  [[ -L "$CURRENT_LINK" ]] || die "CURRENT_LINK is not a managed release symlink"
+  current_target="$(physical_path "$CURRENT_LINK")"
+  validate_release_capabilities "$current_target" "$sha" "$manifest_sha256"
   CURRENT_LINK="$CURRENT_LINK" RELEASE_ROOT="$RELEASE_ROOT" PM2_NAME="$PM2_NAME" \
     PM2_TIMEOUT_SECONDS="$PM2_TIMEOUT_SECONDS" HEALTH_URL="$HEALTH_URL" \
-    "$CURRENT_LINK/scripts/verify-release.sh" "$sha" "$manifest_sha256"
+    "$current_target/scripts/verify-release.sh" "$sha" "$manifest_sha256"
 }
 
 rollback_after_activation_failure() {
@@ -1261,10 +1287,12 @@ main() {
   migration_manifest="$(mktemp "$RELEASE_ROOT/.migrations.$TARGET_SHA.XXXXXX")"
   write_migration_manifest "$release_dir/supabase/migrations" "$migration_manifest"
   acquire_database_deploy_lease
+  assert_database_deploy_lease
   preflight_migration_ledgers
   apply_migrations
 
   log "Atomically switching current release to $TARGET_SHA"
+  assert_database_deploy_lease
   atomic_switch_current
   candidate_activation_attempted=1
   candidate_pm2_may_be_active=1

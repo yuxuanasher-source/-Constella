@@ -130,14 +130,16 @@ values or command output.
 
 The first managed release must follow
 `docs/runbooks/atomic-release-bootstrap.md`. Subsequent releases use the locked,
-immutable release pipeline:
+immutable release pipeline. Hermes changes must first be reviewed and merged into
+`codex/full-project-ui`; deploy only the successful push artifact for that default
+branch and use that merged commit as `EXPECTED_SHA`:
 
 ```sh
 SOURCE_REPO=/var/www/jingying-cabin \
 RELEASE_ROOT=/var/cache/jingying-cabin-releases \
 CURRENT_LINK=/var/www/jingying-cabin-current \
 ENV_FILE=/etc/jingying-cabin/production.env \
-BRANCH=codex/hermes-native-intelligence-restoration \
+BRANCH=codex/full-project-ui \
 EXPECTED_SHA=<reviewed-full-40-character-ci-sha> \
 EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256> \
 EXPECTED_RELEASE_ARTIFACT_SHA256=<reviewed-ci-release-artifact-sha256> \
@@ -251,7 +253,7 @@ Run rollback with:
 
 ```sh
 PACKAGE_DIR="$(realpath -e artifacts/xingyao-hermes-rollback)"
-EXPECTED_MANIFEST_SHA256=<reviewed-hash-printed-at-package-creation>
+export EXPECTED_MANIFEST_SHA256=<reviewed-hash-printed-at-package-creation>
 export RELEASE_ROOT=/var/cache/jingying-cabin-releases
 export CURRENT_LINK=/var/www/jingying-cabin-current
 export ENV_FILE=/etc/jingying-cabin/production.env

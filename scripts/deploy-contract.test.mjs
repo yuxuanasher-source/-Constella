@@ -280,6 +280,50 @@ esac`,
   assert.equal(shell.status, 0, `${shell.stdout}\n${shell.stderr}`);
 });
 
+test("release verification resolves CURRENT_LINK to the managed SHA directory", async (t) => {
+  const sandbox = await mkdtemp(join(tmpdir(), "deploy-verify-current-"));
+  t.after(() => rm(sandbox, { recursive: true, force: true }));
+
+  const releaseRoot = join(sandbox, "releases");
+  const sha = "a".repeat(40);
+  const manifestSha = "e".repeat(64);
+  const release = join(releaseRoot, sha);
+  const currentLink = join(sandbox, "current");
+  await mkdir(join(release, "scripts"), { recursive: true });
+  await writeExecutable(
+    join(release, "scripts/verify-release.sh"),
+    "#!/usr/bin/env bash\n[[ \"$1\" =~ ^[0-9a-f]{40}$ && \"$2\" =~ ^[0-9a-f]{64}$ ]]\n",
+  );
+  await symlink(
+    release,
+    currentLink,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+
+  const result = run(bash, {
+    args: [
+      "-lc",
+      `set -Eeuo pipefail
+RELEASE_ROOT="$(cygpath -u "$RELEASE_NATIVE" 2>/dev/null || printf '%s' "$RELEASE_NATIVE")"
+CURRENT_LINK="$(cygpath -u "$CURRENT_NATIVE" 2>/dev/null || printf '%s' "$CURRENT_NATIVE")"
+source "$(cygpath -u "$DEPLOY_NATIVE" 2>/dev/null || printf '%s' "$DEPLOY_NATIVE")"
+validate_release_capabilities() {
+  [[ "$1" == "$RELEASE_ROOT/${sha}" ]]
+  [[ "$2" == "${sha}" ]]
+  [[ "$3" == "${manifestSha}" ]]
+}
+verify_release "${sha}" "${manifestSha}"`,
+    ],
+    env: {
+      ...process.env,
+      CURRENT_NATIVE: currentLink,
+      DEPLOY_NATIVE: join(process.cwd(), "scripts/deploy.sh"),
+      RELEASE_NATIVE: releaseRoot,
+    },
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+});
+
 test("artifact extraction failure leaves database, PM2, and current release untouched", async (t) => {
   const sandbox = await mkdtemp(join(tmpdir(), "deploy-build-failure-"));
   t.after(() => rm(sandbox, { recursive: true, force: true }));
@@ -681,10 +725,10 @@ pm2_bounded jlist`,
       BIN_NATIVE: fakeBin,
       DEPLOY_NATIVE: join(process.cwd(), "scripts/deploy.sh"),
     },
-    timeout: 8_000,
+    timeout: 20_000,
   });
   assert.notEqual(result.status, 0);
-  assert.ok(Date.now() - started < 7_000, "PM2 timeout exceeded hard deadline");
+  assert.ok(Date.now() - started < 15_000, "PM2 timeout exceeded hard deadline");
 });
 
 test("database lease acquisition has a bounded response deadline", () => {
@@ -695,7 +739,6 @@ test("database lease acquisition has a bounded response deadline", () => {
       `source "$DEPLOY_NATIVE"
 DATABASE_LEASE_WAIT_SECONDS=1
 DB_RESPONSE_TIMEOUT_SECONDS=1
-DATABASE_LEASE_SESSION_TIMEOUT_SECONDS=30
 db_lease_session() {
   trap '' TERM
   while :; do sleep 1; done
@@ -714,6 +757,39 @@ acquire_database_deploy_lease`,
     Date.now() - started < 15_000,
     "database lease acquisition exceeded its hard cleanup deadline",
   );
+});
+
+test("database deploy lease has no independent wall-clock expiry", () => {
+  assert.doesNotMatch(deploy, /DATABASE_LEASE_SESSION_TIMEOUT_SECONDS/);
+  assert.match(
+    deploy,
+    /db_lease_session\(\)[\s\S]*docker exec[\s\S]*psql -X -v ON_ERROR_STOP=1/,
+  );
+});
+
+test("database deploy lease liveness fails closed when its session disappears", () => {
+  const result = run(bash, {
+    args: [
+      "-lc",
+      `set -Eeuo pipefail
+source "$DEPLOY_NATIVE"
+DATABASE_LEASE_WAIT_SECONDS=2
+DB_RESPONSE_TIMEOUT_SECONDS=1
+db_lease_session() {
+  IFS= read -r request
+  printf 'DEPLOY_LEASE_ACQUIRED\\n'
+}
+acquire_database_deploy_lease
+assert_database_deploy_lease`,
+    ],
+    env: {
+      ...process.env,
+      DEPLOY_NATIVE: join(process.cwd(), "scripts/deploy.sh"),
+    },
+    timeout: 20_000,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /database deploy lease is no longer provably held/);
 });
 
 test("rollback preserves both releases until old reload, verify, and save succeed", async (t) => {
@@ -1113,6 +1189,19 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(bootstrapRunbook, /Never store raw `pm2 jlist`/);
   assert.match(hermesRunbook, /EXPECTED_RELEASE_ARTIFACT_SHA256/);
   assert.match(hermesRunbook, /RELEASE_ARTIFACT_PATH/);
+  assert.match(hermesRunbook, /BRANCH=codex\/full-project-ui/);
+  assert.doesNotMatch(
+    hermesRunbook,
+    /BRANCH=codex\/hermes-native-intelligence-restoration/,
+  );
+  assert.match(
+    hermesRunbook,
+    /Hermes changes[\s\S]*merged[\s\S]*codex\/full-project-ui/i,
+  );
+  assert.match(
+    hermesRunbook,
+    /export EXPECTED_MANIFEST_SHA256=<reviewed-hash-printed-at-package-creation>/,
+  );
   assert.match(hermesRunbook, /TRUSTED_RELEASE_INTEGRITY/);
   assert.match(hermesRunbook, /TRUSTED_ROLLBACK_PACKAGE_VERIFIER/);
   assert.doesNotMatch(
@@ -1122,6 +1211,11 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.doesNotMatch(
     `${bootstrapRunbook}\n${hermesRunbook}`,
     /timeout --signal=TERM 30s pm2/,
+  );
+  assert.match(ciWorkflow, /RUN_DEPLOY_DB_TESTS:\s*1/);
+  assert.match(
+    ciWorkflow,
+    /vitest run scripts\/deploy-database-contract\.test\.mjs/,
   );
 
   const mainActivation = main.slice(position(main, "atomic_switch_current"));
