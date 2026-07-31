@@ -83,6 +83,7 @@ describe("public admission share route", () => {
     );
     publicContext = {
       organizationId: "org-1",
+      allowVendorSubmit: true,
       session: {
         sessionToken: "opaque-session-token",
         created: false,
@@ -305,5 +306,25 @@ describe("public admission share route", () => {
     );
     expect(listReviewDrafts).toHaveBeenCalledOnce();
     expect(listReviewDrafts).toHaveBeenCalledWith("share-1");
+  });
+
+  it("does not include review drafts when vendor submissions are disabled", async () => {
+    vi.mocked(
+      getPublicAdmissionShareBoardContextWithSession,
+    ).mockResolvedValueOnce({
+      ...publicContext,
+      allowVendorSubmit: false,
+    } as never);
+
+    const response = await GET(
+      new Request("http://localhost/api/public/admission-share/plain-token"),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(
+      expect.objectContaining({ reviewDrafts: [] }),
+    );
+    expect(listReviewDrafts).not.toHaveBeenCalled();
   });
 });

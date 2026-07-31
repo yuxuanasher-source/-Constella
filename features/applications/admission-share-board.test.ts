@@ -1457,6 +1457,7 @@ describe("admission share board service", () => {
       mode: "formal_review",
       canSubmit: true,
     });
+    expect(passwordless.allowVendorSubmit).toBe(true);
 
     const protectedRepo = createRepo({
       getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
@@ -1513,6 +1514,7 @@ describe("admission share board service", () => {
       mode: "preview",
       canSubmit: false,
     });
+    expect(preview.allowVendorSubmit).toBe(false);
     expect(previewAccessStore.createSession).not.toHaveBeenCalled();
     expect(previewAccessStore.hasValidSession).not.toHaveBeenCalled();
   });

@@ -1733,6 +1733,7 @@ export async function getPublicAdmissionShareBoardContextWithSession({
   sessionTokenFactory?: () => string;
 }): Promise<{
   organizationId: string;
+  allowVendorSubmit: boolean;
   board: PublicAdmissionShareBoard;
   session: PreparedPublicAdmissionShareSession;
 }> {
@@ -1760,6 +1761,7 @@ export async function getPublicAdmissionShareBoardContextWithSession({
 
   return {
     ...publicAdmissionShareContext(snapshot, token),
+    allowVendorSubmit: snapshot.allowVendorSubmit,
     session,
   };
 }

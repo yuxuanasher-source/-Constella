@@ -49,6 +49,7 @@ export async function GET(
       readAdmissionShareAccessSession(request, token) ?? undefined;
     const {
       organizationId,
+      allowVendorSubmit,
       board: shareBoard,
       session: preparedSession,
     } = await getPublicAdmissionShareBoardContextWithSession({
@@ -65,7 +66,7 @@ export async function GET(
         client: supabase as unknown as AdmissionReviewClient,
         organizationId: organizationId ?? "",
       }).catch(() => defaultAdmissionRubric()),
-      shareBoard.mode === "formal_review"
+      shareBoard.mode === "formal_review" && allowVendorSubmit
         ? repo.listReviewDrafts(shareBoard.id)
         : Promise.resolve([]),
     ]);
