@@ -80,18 +80,20 @@ node scripts/verify-xingyao-hermes-release.mjs \
 Review the JSON before sharing it. It should include hashes, not raw provider
 values or command output.
 
-## Repo-Native Deploy
+## Atomic Release Deploy
 
-Deploy the exact branch through the existing deploy script:
+The first managed release must follow
+`docs/runbooks/atomic-release-bootstrap.md`. Subsequent releases use the locked,
+immutable release pipeline:
 
 ```sh
-cd /var/www/jingying-cabin
-APP_DIR=/var/www/jingying-cabin \
+SOURCE_REPO=/var/www/jingying-cabin \
+RELEASE_ROOT=/var/cache/jingying-cabin-releases \
+CURRENT_LINK=/var/www/jingying-cabin-current \
+ENV_FILE=/etc/jingying-cabin/production.env \
 BRANCH=codex/hermes-native-intelligence-restoration \
 PM2_NAME=jingying-cabin \
-SYSTEMD_UNIT=jingying-cabin \
-bash scripts/deploy.sh
-pm2 restart jingying-cabin --update-env
+bash /var/www/jingying-cabin/scripts/deploy.sh
 pm2 save
 ```
 
@@ -142,35 +144,48 @@ Create the rollback package before widening traffic:
 
 ```sh
 bash scripts/create-xingyao-hermes-rollback.sh \
-  --app-dir /var/www/jingying-cabin \
+  --release-root /var/cache/jingying-cabin-releases \
+  --current-link /var/www/jingying-cabin-current \
   --output-dir artifacts/xingyao-hermes-rollback \
   --product-commit "$(git rev-parse HEAD)" \
   --previous-commit "<last-known-good-product-commit>" \
   --reason "canary failed"
 ```
 
-The package contains an allowlisted file snapshot, `manifest.txt` with SHA-256
-values, `manifest.txt.sha256` for the manifest itself, and
-`rollback-command.sh`. It intentionally excludes env files and any
-credential-bearing files.
+The package contains the reviewed atomic deploy/verifier helpers, hashes, and a
+`rollback-command.sh`. It never copies env files and never resets a source
+checkout. Both release SHAs must already exist under `RELEASE_ROOT`.
 
 Run rollback with:
 
 ```sh
-APP_DIR=/var/www/jingying-cabin PM2_NAME=jingying-cabin \
+RELEASE_ROOT=/var/cache/jingying-cabin-releases \
+CURRENT_LINK=/var/www/jingying-cabin-current \
+ENV_FILE=/etc/jingying-cabin/production.env PM2_NAME=jingying-cabin \
 bash artifacts/xingyao-hermes-rollback/rollback-command.sh
 ```
 
-The rollback command checks that `git rev-parse HEAD` equals the packaged
-product commit before resetting to the previous commit. If the server has moved
-for a known reason, rerun only with an explicit override:
+The rollback command acquires the same host lock, verifies the current full SHA,
+atomically switches the symlink, reloads and exactly verifies every matching PM2
+instance, then runs `pm2 save`. Failure restores the packaged product release;
+both directories are retained for recovery.
+
+After rollback, edit the protected `ENV_FILE` to set
+`XINGYAO_HERMES_GATEWAY_ENABLED=false` and clear
+`XINGYAO_HERMES_GATEWAY_ALLOWLIST`. Reload and verify the current managed
+release, then persist the disabled gateway state:
 
 ```sh
-HERMES_ROLLBACK_OVERRIDE=true APP_DIR=/var/www/jingying-cabin \
-PM2_NAME=jingying-cabin \
-bash artifacts/xingyao-hermes-rollback/rollback-command.sh
+set -a
+source /etc/jingying-cabin/production.env
+set +a
+CURRENT_LINK=/var/www/jingying-cabin-current
+RELEASE_ROOT=/var/cache/jingying-cabin-releases
+RESTORED_SHA="$(basename "$(realpath -e "$CURRENT_LINK")")"
+CURRENT_LINK="$CURRENT_LINK" PM2_NAME=jingying-cabin RELEASE_SHA="$RESTORED_SHA" \
+  pm2 startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --update-env
+CURRENT_LINK="$CURRENT_LINK" RELEASE_ROOT="$RELEASE_ROOT" \
+  PM2_NAME=jingying-cabin \
+  "$CURRENT_LINK/scripts/verify-release.sh" "$RESTORED_SHA"
+pm2 save
 ```
-
-After rollback, set `XINGYAO_HERMES_GATEWAY_ENABLED=false`, clear
-`XINGYAO_HERMES_GATEWAY_ALLOWLIST`, restart PM2 with `--update-env`, and record
-fresh health-check evidence.

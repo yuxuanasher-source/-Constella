@@ -26,8 +26,9 @@ health_file="$(mktemp)"
 pm2_file="$(mktemp)"
 trap 'rm -f -- "$health_file" "$pm2_file"' EXIT
 
-curl --fail --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
-  "$HEALTH_URL" > "$health_file"
+timeout --signal=TERM 30s curl --fail --silent --show-error \
+  --connect-timeout 2 --max-time 5 --retry 5 --retry-delay 1 \
+  --retry-all-errors --retry-max-time 25 "$HEALTH_URL" > "$health_file"
 
 node - "$health_file" "$EXPECTED_SHA" <<'NODE'
 const fs = require("node:fs");
@@ -45,27 +46,34 @@ const fs = require("node:fs");
 const path = require("node:path");
 const [file, name, currentLink, expectedTarget, expectedSha] = process.argv.slice(2);
 const processes = JSON.parse(fs.readFileSync(file, "utf8"));
-const processEntry = processes.find((entry) => entry?.name === name);
-if (!processEntry) throw new Error(`PM2 process not found: ${name}`);
-const env = processEntry.pm2_env ?? {};
-if (env.status !== "online") throw new Error(`PM2 process is not online: ${env.status}`);
-if (env.RELEASE_SHA !== expectedSha) throw new Error("PM2 RELEASE_SHA does not match");
-
-const pm_cwd = env.pm_cwd;
-const pm_exec_path = env.pm_exec_path;
-if (typeof pm_cwd !== "string") throw new Error("PM2 cwd is missing");
-if (typeof pm_exec_path !== "string") throw new Error("PM2 script is missing");
-if (fs.realpathSync(pm_cwd) !== fs.realpathSync(expectedTarget)) {
-  throw new Error(`PM2 cwd is not current release: ${pm_cwd}`);
-}
+const matchingProcesses = processes.filter((entry) => entry?.name === name);
+if (matchingProcesses.length === 0) throw new Error(`PM2 process not found: ${name}`);
 if (fs.realpathSync(currentLink) !== fs.realpathSync(expectedTarget)) {
   throw new Error("CURRENT_LINK changed during verification");
 }
-if (!/^pnpm(?:\.cjs)?$/.test(path.basename(pm_exec_path))) {
-  throw new Error(`PM2 script is not pnpm: ${pm_exec_path}`);
-}
-if (!String(env.args ?? "").includes("start")) {
-  throw new Error("PM2 arguments do not start the application");
+
+const valid = matchingProcesses.every((processEntry) => {
+  const env = processEntry.pm2_env ?? {};
+  const pm_cwd = env.pm_cwd;
+  const pm_exec_path = env.pm_exec_path;
+  const normalizedArgs = Array.isArray(env.args)
+    ? env.args.map(String)
+    : typeof env.args === "string"
+      ? [env.args.trim()]
+      : [];
+  return (
+    env.status === "online" &&
+    env.RELEASE_SHA === expectedSha &&
+    typeof pm_cwd === "string" &&
+    typeof pm_exec_path === "string" &&
+    fs.realpathSync(pm_cwd) === fs.realpathSync(expectedTarget) &&
+    /^pnpm(?:\.cjs)?$/.test(path.basename(pm_exec_path)) &&
+    normalizedArgs.length === 1 &&
+    normalizedArgs[0] === "start"
+  );
+});
+if (!valid) {
+  throw new Error("one or more PM2 instances failed exact release verification");
 }
 NODE
 

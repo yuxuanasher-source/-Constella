@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
+# Create a reviewable rollback package for two already-built atomic releases.
 set -euo pipefail
+umask 077
 
-APP_DIR="/var/www/jingying-cabin"
+RELEASE_ROOT="${RELEASE_ROOT:-/var/cache/jingying-cabin-releases}"
+CURRENT_LINK="${CURRENT_LINK:-/var/www/jingying-cabin-current}"
+ENV_FILE="${ENV_FILE:-/etc/jingying-cabin/production.env}"
 OUTPUT_DIR=""
 PRODUCT_COMMIT=""
 PREVIOUS_COMMIT=""
@@ -12,143 +16,137 @@ usage() {
   cat <<'USAGE'
 Usage:
   bash scripts/create-xingyao-hermes-rollback.sh \
-    --app-dir /var/www/jingying-cabin \
+    --release-root /var/cache/jingying-cabin-releases \
+    --current-link /var/www/jingying-cabin-current \
     --output-dir artifacts/xingyao-hermes-rollback \
     --product-commit <40-hex> \
     --previous-commit <40-hex> \
     --reason "canary failed"
 
-Creates an allowlisted rollback package with a manifest, file hashes, and a
-rollback command. Env files and credential-bearing files are never copied.
+Both commits must already be immutable, verified release directories. The
+generated command switches CURRENT_LINK, reloads PM2, verifies the exact full
+SHA, and persists the restored process list. It never resets a source checkout.
 USAGE
 }
 
-die() {
-  printf 'rollback package error: %s\n' "$*" >&2
-  exit 1
-}
+die() { printf 'rollback package error: %s\n' "$*" >&2; exit 1; }
 
-while [ "$#" -gt 0 ]; do
+while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    --help|-h)
-      usage
-      exit 0
-      ;;
-    --app-dir)
-      APP_DIR="${2:-}"
-      shift 2
-      ;;
-    --output-dir)
-      OUTPUT_DIR="${2:-}"
-      shift 2
-      ;;
-    --product-commit)
-      PRODUCT_COMMIT="${2:-}"
-      shift 2
-      ;;
-    --previous-commit)
-      PREVIOUS_COMMIT="${2:-}"
-      shift 2
-      ;;
-    --reason)
-      REASON="${2:-}"
-      shift 2
-      ;;
-    *)
-      die "unknown option: $1"
-      ;;
+    --help|-h) usage; exit 0 ;;
+    --release-root) RELEASE_ROOT="${2:-}"; shift 2 ;;
+    --current-link) CURRENT_LINK="${2:-}"; shift 2 ;;
+    --env-file) ENV_FILE="${2:-}"; shift 2 ;;
+    --output-dir) OUTPUT_DIR="${2:-}"; shift 2 ;;
+    --product-commit) PRODUCT_COMMIT="${2:-}"; shift 2 ;;
+    --previous-commit) PREVIOUS_COMMIT="${2:-}"; shift 2 ;;
+    --reason) REASON="${2:-}"; shift 2 ;;
+    *) die "unknown option: $1" ;;
   esac
 done
 
-case "$PRODUCT_COMMIT" in
-  [a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9]) ;;
-  *) die "--product-commit must be a 40 character commit" ;;
-esac
+[[ "$PRODUCT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "--product-commit must be a lowercase full SHA"
+[[ "$PREVIOUS_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "--previous-commit must be a lowercase full SHA"
+[[ "$REASON" != *$'\n'* && "$REASON" != *$'\r'* ]] ||
+  die "--reason must be a single line"
+[[ -n "$OUTPUT_DIR" && "$OUTPUT_DIR" != "/" && "$OUTPUT_DIR" != "." && "$OUTPUT_DIR" != ".." ]] ||
+  die "--output-dir must be a safe non-root path"
+[[ "$RELEASE_ROOT" == /* && "$CURRENT_LINK" == /* && "$ENV_FILE" == /* ]] ||
+  die "release, current-link, and env paths must be absolute"
 
-case "$PREVIOUS_COMMIT" in
-  [a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9][a-fA-F0-9]) ;;
-  *) die "--previous-commit must be a 40 character commit" ;;
-esac
+RELEASE_ROOT="$(realpath -e -- "$RELEASE_ROOT")"
+product_release="$RELEASE_ROOT/$PRODUCT_COMMIT"
+previous_release="$RELEASE_ROOT/$PREVIOUS_COMMIT"
+for release in "$product_release" "$previous_release"; do
+  [[ -d "$release" && ! -L "$release" ]] || die "release is missing or unsafe: $release"
+  [[ -f "$release/ecosystem.config.cjs" ]] || die "release lacks ecosystem config: $release"
+  [[ -x "$release/scripts/verify-release.sh" ]] || die "release lacks verifier: $release"
+  [[ -f "$release/scripts/deploy.sh" ]] || die "release lacks atomic deploy helpers: $release"
+done
+[[ -L "$CURRENT_LINK" ]] || die "CURRENT_LINK is not a symlink"
+[[ "$(realpath -e -- "$CURRENT_LINK")" -ef "$product_release" ]] ||
+  die "CURRENT_LINK does not point to --product-commit"
 
-[ -n "$OUTPUT_DIR" ] || die "--output-dir is required"
-[ -d "$APP_DIR" ] || die "app dir does not exist: $APP_DIR"
-
-case "$OUTPUT_DIR" in
-  ""|"/"|"."|"..") die "unsafe output dir: $OUTPUT_DIR" ;;
-esac
-
-if [ -e "$OUTPUT_DIR" ] && [ -n "$(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
-  die "output dir must be empty: $OUTPUT_DIR"
+if [[ -e "$OUTPUT_DIR" ]]; then
+  shopt -s nullglob dotglob
+  output_entries=("$OUTPUT_DIR"/*)
+  shopt -u nullglob dotglob
+  (( ${#output_entries[@]} == 0 )) || die "output dir must be empty: $OUTPUT_DIR"
 fi
-
-mkdir -p "$OUTPUT_DIR/files"
-
-copy_if_exists() {
-  local rel="$1"
-  local src="$APP_DIR/$rel"
-  local dest="$OUTPUT_DIR/files/$rel"
-
-  [ -f "$src" ] || return 0
-
-  case "$rel" in
-    *.env|*.env.*|.env|.env.*|*credential*|*private*|*key*) return 0 ;;
-  esac
-
-  mkdir -p "$(dirname "$dest")"
-  cp "$src" "$dest"
-}
-
-copy_if_exists "scripts/deploy.sh"
-copy_if_exists "docs/runbooks/xingyao-hermes-gateway.md"
-
-if [ -d "$APP_DIR/supabase/migrations" ]; then
-  while IFS= read -r migration; do
-    rel="${migration#"$APP_DIR/"}"
-    copy_if_exists "$rel"
-  done < <(find "$APP_DIR/supabase/migrations" -type f -name '*hermes*.sql' | sort)
-fi
+mkdir -p -- "$OUTPUT_DIR/files"
+cp -- "$product_release/scripts/deploy.sh" "$OUTPUT_DIR/files/deploy.sh"
+cp -- "$product_release/scripts/verify-release.sh" "$OUTPUT_DIR/files/verify-release.sh"
 
 cat > "$OUTPUT_DIR/rollback-command.sh" <<EOF
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
-APP_DIR="\${APP_DIR:-/var/www/jingying-cabin}"
+RELEASE_ROOT="\${RELEASE_ROOT:-$RELEASE_ROOT}"
+CURRENT_LINK="\${CURRENT_LINK:-$CURRENT_LINK}"
+ENV_FILE="\${ENV_FILE:-$ENV_FILE}"
 PM2_NAME="\${PM2_NAME:-$PM2_NAME}"
 PRODUCT_COMMIT="$PRODUCT_COMMIT"
 PREVIOUS_COMMIT="$PREVIOUS_COMMIT"
-HERMES_ROLLBACK_OVERRIDE="\${HERMES_ROLLBACK_OVERRIDE:-false}"
 
-cd "\$APP_DIR"
-current_commit="\$(git rev-parse HEAD)"
-if [ "\$current_commit" != "\$PRODUCT_COMMIT" ] && [ "\$HERMES_ROLLBACK_OVERRIDE" != "true" ]; then
-  printf 'Refusing rollback: HEAD %s does not match expected product commit %s. Set HERMES_ROLLBACK_OVERRIDE=true to override.\n' "\$current_commit" "\$PRODUCT_COMMIT" >&2
+product_release="\$RELEASE_ROOT/\$PRODUCT_COMMIT"
+[[ -f "\$product_release/scripts/deploy.sh" ]] || {
+  printf 'Refusing rollback: product deploy helpers are missing\n' >&2
   exit 1
+}
+source "\$product_release/scripts/deploy.sh"
+validate_rollback_runtime
+validate_secure_env_file
+load_runtime_env
+validate_rollback_control_paths
+acquire_deploy_lock
+load_previous_release
+
+[[ "\$previous_sha" == "\$PRODUCT_COMMIT" && "\$previous_target" -ef "\$product_release" ]] || {
+  printf 'Refusing rollback: current release is not %s\n' "\$PRODUCT_COMMIT" >&2
+  exit 1
+}
+product_target="\$previous_target"
+rollback_target="\$RELEASE_ROOT/\$PREVIOUS_COMMIT"
+validate_release_capabilities "\$rollback_target" "\$PREVIOUS_COMMIT"
+previous_target="\$rollback_target"
+previous_sha="\$PREVIOUS_COMMIT"
+candidate_pm2_may_be_active=1
+rollback_current
+if reload_pm2 "\$PREVIOUS_COMMIT" && verify_release "\$PREVIOUS_COMMIT" && save_pm2; then
+  printf 'Rollback verified and persisted at %s\n' "\$PREVIOUS_COMMIT"
+  exit 0
 fi
 
-git fetch origin
-git reset --hard "\$PREVIOUS_COMMIT"
-pnpm install --frozen-lockfile
-pnpm run build
-pm2 restart "\$PM2_NAME" --update-env
-pm2 save
+printf 'Rollback activation failed; restoring product release %s\n' "\$PRODUCT_COMMIT" >&2
+previous_target="\$product_target"
+previous_sha="\$PRODUCT_COMMIT"
+rollback_current
+reload_pm2 "\$PRODUCT_COMMIT"
+verify_release "\$PRODUCT_COMMIT"
+save_pm2
+exit 1
 EOF
 chmod 750 "$OUTPUT_DIR/rollback-command.sh"
 
+manifest_files=(
+  "$OUTPUT_DIR/files/deploy.sh"
+  "$OUTPUT_DIR/files/verify-release.sh"
+  "$OUTPUT_DIR/rollback-command.sh"
+)
 {
-  printf 'package=xingyao-hermes-rollback\n'
+  printf 'package=xingyao-hermes-atomic-rollback\n'
   printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'app_dir=%s\n' "$APP_DIR"
+  printf 'release_root=%s\n' "$RELEASE_ROOT"
+  printf 'current_link=%s\n' "$CURRENT_LINK"
   printf 'product_commit=%s\n' "$PRODUCT_COMMIT"
   printf 'previous_commit=%s\n' "$PREVIOUS_COMMIT"
   printf 'reason=%s\n' "$REASON"
-  while IFS= read -r file; do
+  for file in "${manifest_files[@]}"; do
     rel="${file#"$OUTPUT_DIR/"}"
     hash="$(sha256sum "$file" | awk '{print $1}')"
     printf 'sha256(%s)=%s\n' "$rel" "$hash"
-  done < <(find "$OUTPUT_DIR" -type f ! -name manifest.txt | sort)
+  done
 } > "$OUTPUT_DIR/manifest.txt"
-
 manifest_hash="$(sha256sum "$OUTPUT_DIR/manifest.txt" | awk '{print $1}')"
 printf '%s  manifest.txt\n' "$manifest_hash" > "$OUTPUT_DIR/manifest.txt.sha256"
-
-printf 'Created rollback package: %s\n' "$OUTPUT_DIR"
+printf 'Created atomic rollback package: %s\n' "$OUTPUT_DIR"

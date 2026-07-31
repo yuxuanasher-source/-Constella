@@ -16,6 +16,7 @@ module.exports = {
       script: "pnpm",
       args: "start",
       env: {
+        ...process.env,
         NODE_ENV: "production",
         RELEASE_SHA: process.env.RELEASE_SHA,
         PORT: process.env.PORT || "3000",

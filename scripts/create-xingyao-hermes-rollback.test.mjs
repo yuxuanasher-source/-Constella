@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,52 +18,64 @@ const rollbackScript = join(
   repoRoot,
   "scripts/create-xingyao-hermes-rollback.sh",
 );
-const shellPath = (path) => path.replace(/\\/g, "/");
+const shellPath = (path) => {
+  const normalized = path.replace(/\\/g, "/");
+  if (process.platform !== "win32") return normalized;
+  return `/${normalized[0].toLowerCase()}${normalized.slice(2)}`;
+};
 const bashBin = [
   "C:\\Program Files\\Git\\bin\\bash.exe",
   "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
   "bash",
 ].find((candidate) => candidate === "bash" || existsSync(candidate));
 
-describe("Xingyao Hermes rollback package", () => {
-  it("creates a rollback package with hashes and without env files or secret values", () => {
+describe("Xingyao Hermes atomic rollback package", () => {
+  it("creates a symlink rollback package without source reset or secrets", () => {
     const workspace = mkdtempSync(join(tmpdir(), "hermes-rollback-"));
-    const appDir = join(workspace, "app");
+    const releaseRoot = join(workspace, "releases");
     const outputDir = join(workspace, "rollback");
+    const currentLink = join(workspace, "current");
+    const productCommit = "1234567890abcdef1234567890abcdef12345678";
+    const previousCommit = "2222222222222222222222222222222222222222";
 
     try {
-      mkdirSync(join(appDir, "scripts"), { recursive: true });
-      mkdirSync(join(appDir, "docs/runbooks"), { recursive: true });
-      mkdirSync(join(appDir, "supabase/migrations"), { recursive: true });
-      writeFileSync(
-        join(appDir, "scripts/deploy.sh"),
-        "#!/usr/bin/env bash\necho deploy\n",
-      );
-      writeFileSync(
-        join(appDir, "docs/runbooks/xingyao-hermes-gateway.md"),
-        "rollback instructions without sensitive values\n",
-      );
-      writeFileSync(
-        join(appDir, "supabase/migrations/20260722000000_hermes_gateway.sql"),
-        "create table hermes_gateway_release(id uuid primary key);\n",
-      );
-      writeFileSync(
-        join(appDir, ".env.production"),
-        "XINGYAO_HERMES_API_KEY=sk-live-secret\n",
+      for (const sha of [productCommit, previousCommit]) {
+        const release = join(releaseRoot, sha);
+        mkdirSync(join(release, "scripts"), { recursive: true });
+        writeFileSync(
+          join(release, "ecosystem.config.cjs"),
+          "module.exports = {};\n",
+        );
+        writeFileSync(
+          join(release, "scripts/deploy.sh"),
+          "#!/usr/bin/env bash\nverify_release() { :; }\n",
+        );
+        writeFileSync(
+          join(release, "scripts/verify-release.sh"),
+          "#!/usr/bin/env bash\nexit 0\n",
+          { mode: 0o755 },
+        );
+      }
+      symlinkSync(
+        join(releaseRoot, productCommit),
+        currentLink,
+        process.platform === "win32" ? "junction" : "dir",
       );
 
       const result = spawnSync(
         bashBin,
         [
           shellPath(rollbackScript),
-          "--app-dir",
-          shellPath(appDir),
+          "--release-root",
+          shellPath(releaseRoot),
+          "--current-link",
+          shellPath(currentLink),
           "--output-dir",
           shellPath(outputDir),
           "--product-commit",
-          "1234567890abcdef1234567890abcdef12345678",
+          productCommit,
           "--previous-commit",
-          "2222222222222222222222222222222222222222",
+          previousCommit,
           "--reason",
           "canary failed",
         ],
@@ -70,56 +83,30 @@ describe("Xingyao Hermes rollback package", () => {
       );
 
       expect(result.status, result.stderr).toBe(0);
-
       const manifest = readFileSync(join(outputDir, "manifest.txt"), "utf8");
-      const manifestHash = readFileSync(
-        join(outputDir, "manifest.txt.sha256"),
-        "utf8",
-      );
-      expect(manifest).toContain(
-        "product_commit=1234567890abcdef1234567890abcdef12345678",
-      );
-      expect(manifest).toContain(
-        "previous_commit=2222222222222222222222222222222222222222",
-      );
+      expect(manifest).toContain(`product_commit=${productCommit}`);
+      expect(manifest).toContain(`previous_commit=${previousCommit}`);
+      expect(manifest).toContain(`release_root=${shellPath(releaseRoot)}`);
       expect(manifest).toMatch(/sha256\([^)]+\)=\b[a-f0-9]{64}\b/);
-      expect(manifestHash).toMatch(/\b[a-f0-9]{64}\b  manifest\.txt\n/);
 
       const rollbackCommand = readFileSync(
         join(outputDir, "rollback-command.sh"),
         "utf8",
       );
-      expect(rollbackCommand).toContain(
-        'PRODUCT_COMMIT="1234567890abcdef1234567890abcdef12345678"',
-      );
-      expect(rollbackCommand).toContain(
-        'current_commit="$(git rev-parse HEAD)"',
-      );
-      expect(rollbackCommand).toContain(
-        'HERMES_ROLLBACK_OVERRIDE="${HERMES_ROLLBACK_OVERRIDE:-false}"',
-      );
-      expect(rollbackCommand).toContain(
-        'if [ "$current_commit" != "$PRODUCT_COMMIT" ] && [ "$HERMES_ROLLBACK_OVERRIDE" != "true" ]; then',
-      );
-      expect(rollbackCommand).toContain("git reset --hard");
-      expect(rollbackCommand).toContain("pm2 restart");
+      expect(rollbackCommand).toContain("CURRENT_LINK=");
+      expect(rollbackCommand).toContain("acquire_deploy_lock");
+      expect(rollbackCommand).toContain("verify_release");
+      expect(rollbackCommand).toContain("save_pm2");
+      expect(rollbackCommand).not.toContain("git reset --hard");
+      expect(rollbackCommand).not.toContain("HERMES_ROLLBACK_OVERRIDE");
 
       const packageText = [
         manifest,
-        manifestHash,
         rollbackCommand,
-        readFileSync(join(outputDir, "files/scripts/deploy.sh"), "utf8"),
-        readFileSync(
-          join(outputDir, "files/docs/runbooks/xingyao-hermes-gateway.md"),
-          "utf8",
-        ),
+        readFileSync(join(outputDir, "files/deploy.sh"), "utf8"),
+        readFileSync(join(outputDir, "files/verify-release.sh"), "utf8"),
       ].join("\n");
-
-      expect(packageText).not.toContain("sk-live-secret");
-      expect(packageText).not.toMatch(/api[_-]?key|token|secret/i);
-      expect(() =>
-        readFileSync(join(outputDir, "files/.env.production"), "utf8"),
-      ).toThrow();
+      expect(packageText).not.toMatch(/sk-live-secret|api[_-]?key/i);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
