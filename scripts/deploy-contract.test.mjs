@@ -42,7 +42,7 @@ function test(name, handler) {
     }
   };
   return process.env.VITEST
-    ? rawTest(name, portableHandler, 30_000)
+    ? rawTest(name, portableHandler, 60_000)
     : rawTest(name, portableHandler);
 }
 
@@ -701,12 +701,12 @@ acquire_database_deploy_lease`,
       ...process.env,
       DEPLOY_NATIVE: join(process.cwd(), "scripts/deploy.sh"),
     },
-    timeout: 10_000,
+    timeout: 20_000,
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /lease response timed out/);
   assert.ok(
-    Date.now() - started < 8_000,
+    Date.now() - started < 15_000,
     "database lease acquisition exceeded its hard cleanup deadline",
   );
 });

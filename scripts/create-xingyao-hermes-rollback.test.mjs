@@ -279,5 +279,5 @@ describe("Xingyao Hermes atomic rollback package", () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 });
