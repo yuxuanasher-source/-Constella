@@ -134,12 +134,18 @@ describe("POST /api/ai/hermes/skill-drafts/[draftId]/review", () => {
   });
 });
 
-function request(body: Record<string, unknown>, headers: Record<string, string> = {}) {
-  return new Request("http://localhost/api/ai/hermes/skill-drafts/draft/review", {
-    method: "POST",
-    headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body),
-  });
+function request(
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+) {
+  return new Request(
+    "http://localhost/api/ai/hermes/skill-drafts/draft/review",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 function draftRow(overrides: Record<string, unknown> = {}) {
@@ -161,16 +167,14 @@ function supabaseClient(row: Record<string, unknown>) {
   const maybeSingle = vi.fn(async () => ({ data: row, error: null }));
   const eq = vi.fn(() => ({ eq, maybeSingle }));
   const select = vi.fn(() => ({ eq, maybeSingle }));
-  const rpc = vi.fn(
-    async (fn: string, args: Record<string, unknown>) => {
-      void fn;
-      void args;
-      return {
+  const rpc = vi.fn(async (fn: string, args: Record<string, unknown>) => {
+    void fn;
+    void args;
+    return {
       data: { draft_id: DRAFT_ID, status: "approved" },
       error: null,
-      };
-    },
-  );
+    };
+  });
   return {
     from: vi.fn(() => ({ select })),
     rpc,

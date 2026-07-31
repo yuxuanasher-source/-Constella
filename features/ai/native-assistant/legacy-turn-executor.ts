@@ -2,7 +2,12 @@ import type {
   ConversationContextSnapshot,
   ConversationGatewayContext,
 } from "../conversation-contracts";
-import type { AiAttachment, AiChatMode, AiMessage, AiProviderName } from "../contracts";
+import type {
+  AiAttachment,
+  AiChatMode,
+  AiMessage,
+  AiProviderName,
+} from "../contracts";
 import type {
   ConversationTurnExecutor,
   ConversationTurnExecutorInput,
@@ -67,7 +72,9 @@ type LegacyEvent = {
 
 type ConversationTurnExecutorOptions = {
   trustedGatewayContext?: ConversationGatewayContext;
-  onContextReady?: (context: ConversationGatewayContext) => Promise<void> | void;
+  onContextReady?: (
+    context: ConversationGatewayContext,
+  ) => Promise<void> | void;
   onGenerationStarted?: (providerName: AiProviderName) => Promise<void> | void;
   nativeAssistant?: {
     conversationId: string;
@@ -150,7 +157,9 @@ export function createLegacyTurnExecutor({
 
       if (
         !legacyResponse.ok ||
-        !legacyResponse.headers.get("content-type")?.includes("text/event-stream")
+        !legacyResponse.headers
+          .get("content-type")
+          ?.includes("text/event-stream")
       ) {
         const summary = await responseErrorSummary(legacyResponse);
         await service.failTurn(actor, turn.turnId, {
@@ -173,7 +182,8 @@ export function createLegacyTurnExecutor({
         if (legacyEvent.event === "delta") {
           const delta = stringField(legacyEvent.data.content) ?? "";
           if (!delta) continue;
-          providerName = providerField(legacyEvent.data.providerName) ?? providerName;
+          providerName =
+            providerField(legacyEvent.data.providerName) ?? providerName;
           accumulatedContent += delta;
           yield {
             type: "response.delta",
@@ -186,10 +196,13 @@ export function createLegacyTurnExecutor({
         }
 
         if (legacyEvent.event === "done") {
-          const content = messageContent(legacyEvent.data.message) ?? accumulatedContent;
+          const content =
+            messageContent(legacyEvent.data.message) ?? accumulatedContent;
           const metadata = responseMetadata(legacyEvent.data);
-          providerName = providerField(legacyEvent.data.providerName) ?? providerName;
-          invocationId = stringField(legacyEvent.data.invocationId) ?? invocationId;
+          providerName =
+            providerField(legacyEvent.data.providerName) ?? providerName;
+          invocationId =
+            stringField(legacyEvent.data.invocationId) ?? invocationId;
           await service.markValidating(actor, turn.turnId);
           await service.completeTurn(actor, turn.turnId, {
             content,
@@ -217,9 +230,12 @@ export function createLegacyTurnExecutor({
         }
 
         if (legacyEvent.event === "error") {
-          const summary = stringField(legacyEvent.data.error) ?? "AI provider failed";
-          providerName = providerField(legacyEvent.data.providerName) ?? providerName;
-          invocationId = stringField(legacyEvent.data.invocationId) ?? invocationId;
+          const summary =
+            stringField(legacyEvent.data.error) ?? "AI provider failed";
+          providerName =
+            providerField(legacyEvent.data.providerName) ?? providerName;
+          invocationId =
+            stringField(legacyEvent.data.invocationId) ?? invocationId;
           await service.failTurn(actor, turn.turnId, {
             content: accumulatedContent,
             providerName,
@@ -339,7 +355,9 @@ function messageContent(value: unknown): string | null {
   return isRecord(value) ? stringField(value.content) : null;
 }
 
-function responseMetadata(value: Record<string, unknown>): Record<string, unknown> {
+function responseMetadata(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
   return {
     ...(isRecord(value.grounding) ? { grounding: value.grounding } : {}),
     ...(isRecord(value.knowledge) ? { knowledge: value.knowledge } : {}),

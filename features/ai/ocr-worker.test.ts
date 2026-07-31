@@ -326,7 +326,9 @@ describe("runOcrWorkerIteration", () => {
   });
 
   it("does not append a separate terminal event when finalization fails", async () => {
-    const { client, events, updates } = createClient({ jobs: [claimedJob("job-1")] });
+    const { client, events, updates } = createClient({
+      jobs: [claimedJob("job-1")],
+    });
     vi.mocked(client.rpc).mockImplementation(async (name) => {
       if (name === "claim_async_ocr_jobs") {
         return { data: [toRow(claimedJob("job-1"))], error: null };

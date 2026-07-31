@@ -56,9 +56,7 @@ describe("Hermes Gateway JSON-RPC client", () => {
         "read-api-service-token-that-must-never-be-used",
     });
     expect(config).toMatchObject({
-      url: expect.stringMatching(
-        /^ws:\/\/localhost:\d+\/api\/xingyao\/ws$/,
-      ),
+      url: expect.stringMatching(/^ws:\/\/localhost:\d+\/api\/xingyao\/ws$/),
       serviceToken: "gateway-service-token-that-is-long-enough",
     });
     expect(

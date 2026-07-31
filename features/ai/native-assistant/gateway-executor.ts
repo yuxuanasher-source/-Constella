@@ -56,7 +56,13 @@ type GatewayService = {
   listMessages(
     actor: ConversationActor,
     conversationId: string,
-  ): Promise<Array<Parameters<typeof buildGatewayNativeAssistantContext>[0]["messages"][number]>>;
+  ): Promise<
+    Array<
+      Parameters<
+        typeof buildGatewayNativeAssistantContext
+      >[0]["messages"][number]
+    >
+  >;
   getGatewayState?(
     actor: ConversationActor,
     conversationId: string,
@@ -124,7 +130,9 @@ type GatewayService = {
 
 type GatewayClient = {
   createSession(input: Record<string, unknown>): Promise<{ sessionId: string }>;
-  branchSession?(input: Record<string, unknown>): Promise<{ sessionId: string }>;
+  branchSession?(
+    input: Record<string, unknown>,
+  ): Promise<{ sessionId: string }>;
   submitPrompt(input: Record<string, unknown>): AsyncIterable<unknown>;
   interruptSession?(input: { sessionId: string }): Promise<unknown>;
   respondToClarify?(input: {
@@ -179,11 +187,17 @@ export function createGatewayTurnExecutor(
 ): ConversationTurnExecutor<Omit<GatewayService, "listMessages">> {
   const gateway = options.gateway ?? createHermesGatewayClient();
   return {
-    async *execute(input: ConversationTurnExecutorInput<Omit<GatewayService, "listMessages">>) {
+    async *execute(
+      input: ConversationTurnExecutorInput<
+        Omit<GatewayService, "listMessages">
+      >,
+    ) {
       const service = options.service;
       const now = options.now ?? (() => new Date());
       let content = "";
-      let state: Awaited<ReturnType<NonNullable<GatewayService["getGatewayState"]>>> | null = null;
+      let state: Awaited<
+        ReturnType<NonNullable<GatewayService["getGatewayState"]>>
+      > | null = null;
       let unregisterActiveRun: (() => void) | null = null;
       let abortListener: (() => void) | null = null;
       let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -197,11 +211,14 @@ export function createGatewayTurnExecutor(
           input.turn.turnId,
           [],
         );
-        state =
-          (await service.getGatewayState?.(
-            input.actor,
-            input.turn.conversationId,
-          )) ?? { generation: 0, summary: {}, summaryVersion: prepared.snapshot.summaryVersion };
+        state = (await service.getGatewayState?.(
+          input.actor,
+          input.turn.conversationId,
+        )) ?? {
+          generation: 0,
+          summary: {},
+          summaryVersion: prepared.snapshot.summaryVersion,
+        };
         const frozen = frozenGatewayContext(prepared.snapshot.gatewayContext);
         const sessionSetup = frozen
           ? {
@@ -257,7 +274,9 @@ export function createGatewayTurnExecutor(
         abortListener = () => {
           if (disconnectTimer) return;
           disconnectTimer = setTimeout(() => {
-            void gateway.interruptSession?.({ sessionId }).catch(() => undefined);
+            void gateway
+              .interruptSession?.({ sessionId })
+              .catch(() => undefined);
           }, 2_000);
         };
         input.request.signal.addEventListener("abort", abortListener, {
@@ -357,7 +376,9 @@ export function createGatewayTurnExecutor(
                 return;
               }
               if (terminal.status === "failed") {
-                const code = gatewayTraceCode(terminal.code ?? "provider_failed");
+                const code = gatewayTraceCode(
+                  terminal.code ?? "provider_failed",
+                );
                 await persistTerminalFailure({
                   service,
                   actor: input.actor,
@@ -506,7 +527,14 @@ async function buildAndCaptureFreshGatewayContext({
     sourceTurnId && service.getSourceGatewayCheckpoint
       ? await service.getSourceGatewayCheckpoint(input.actor, sourceTurnId)
       : null;
-  if (sourceTurnId && !isUsableCheckpoint(sourceCheckpoint, input.actor, input.turn.conversationId)) {
+  if (
+    sourceTurnId &&
+    !isUsableCheckpoint(
+      sourceCheckpoint,
+      input.actor,
+      input.turn.conversationId,
+    )
+  ) {
     throw new GatewayExecutionError("gateway_checkpoint_invalid");
   }
 
@@ -621,7 +649,13 @@ async function buildAndCaptureFreshGatewayContext({
     },
     gatewayContext,
   );
-  return { context: gatewayContext, session, checkpoint, captured: true, capability };
+  return {
+    context: gatewayContext,
+    session,
+    checkpoint,
+    captured: true,
+    capability,
+  };
 }
 
 async function issueGatewayInvocationCapability({
@@ -676,7 +710,11 @@ function approvedSkillDraftIds(actor: HermesActorProfile): string[] {
     : [];
   return skills
     .map((skill) => skill.skillId)
-    .filter((value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
+    .filter((value) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        value,
+      ),
+    )
     .sort();
 }
 
@@ -701,15 +739,16 @@ async function completeWithCoherentSummary({
   observations: ToolObservation[];
   summary: unknown;
   forcedOutcome?: ConversationResponseOutcome;
-  state: Awaited<ReturnType<NonNullable<GatewayService["getGatewayState"]>>> | null;
+  state: Awaited<
+    ReturnType<NonNullable<GatewayService["getGatewayState"]>>
+  > | null;
 }): Promise<
   | { type: "completed"; event: ConversationStreamEvent }
   | { type: "failed"; code: string }
 > {
   const outcome = forcedOutcome ?? classifyOutcome(observations);
   const metadata = completionMetadata({ observations, provider, model });
-  const expectedSummaryVersion =
-    state?.summaryVersion ?? 0;
+  const expectedSummaryVersion = state?.summaryVersion ?? 0;
   try {
     await service.finishTurnV2(actor, turn.turnId, {
       invocationId: turn.turnId,
@@ -837,7 +876,7 @@ function terminalGatewayEvent(event: unknown):
       status,
       code:
         payload.outcome === "failed"
-          ? sanitizeTraceCode(payload.message) ?? "provider_failed"
+          ? (sanitizeTraceCode(payload.message) ?? "provider_failed")
           : undefined,
       outcome: isConversationOutcome(payload.outcome)
         ? payload.outcome
@@ -851,7 +890,10 @@ function terminalGatewayEvent(event: unknown):
     return { status: "completed", summary: event.summary };
   }
   if (event.type === "failed") {
-    return { status: "failed", code: sanitizeTraceCode(event.code) ?? undefined };
+    return {
+      status: "failed",
+      code: sanitizeTraceCode(event.code) ?? undefined,
+    };
   }
   if (event.type === "cancelled") return { status: "cancelled" };
   if (event.type === "turn.terminal") {
@@ -911,7 +953,13 @@ function checkpointFromMetadata(value: unknown): GatewayCheckpoint | null {
   const conversationId = stringValue(value.conversationId);
   const organizationId = stringValue(value.organizationId);
   const ownerUserId = stringValue(value.ownerUserId);
-  if (!sessionId || !turnId || !conversationId || !organizationId || !ownerUserId) {
+  if (
+    !sessionId ||
+    !turnId ||
+    !conversationId ||
+    !organizationId ||
+    !ownerUserId
+  ) {
     return null;
   }
   return {
@@ -977,7 +1025,14 @@ export function createHermesGatewayClient({
     config: HermesRuntimeConfig;
   }) => Promise<string>;
 } = {}): GatewayClient {
-  let session: (HermesGatewaySession & { rpc?: (method: string, params: Record<string, unknown>) => Promise<unknown> }) | null = null;
+  let session:
+    | (HermesGatewaySession & {
+        rpc?: (
+          method: string,
+          params: Record<string, unknown>,
+        ) => Promise<unknown>;
+      })
+    | null = null;
   return {
     async createSession(input) {
       session = await openOfficialGatewaySession({
@@ -1036,7 +1091,8 @@ export function createHermesGatewayClient({
       }
       await session.rpc("prompt.submit", {
         conversationId:
-          stringValue(input.conversationId) ?? gatewayActor(input).conversationId,
+          stringValue(input.conversationId) ??
+          gatewayActor(input).conversationId,
         text: stringValue(input.prompt) ?? "",
         mode: input.mode === "deep" ? "deep" : "fast",
       });
@@ -1091,7 +1147,11 @@ async function openOfficialGatewaySession({
     config: HermesRuntimeConfig;
   }) => Promise<string>;
   sessionId?: string;
-}): Promise<HermesGatewaySession & { rpc?: (method: string, params: Record<string, unknown>) => Promise<unknown> }> {
+}): Promise<
+  HermesGatewaySession & {
+    rpc?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  }
+> {
   if (!config || !actorAssertionConfig) {
     throw new GatewayExecutionError("gateway_config_missing");
   }
@@ -1134,7 +1194,9 @@ async function attachGatewayBytes(
   }
 }
 
-function gatewayByteAttachment(value: unknown): HermesGatewayByteAttachment | null {
+function gatewayByteAttachment(
+  value: unknown,
+): HermesGatewayByteAttachment | null {
   if (!isRecord(value)) return null;
   const attachmentId = stringValue(value.fileId);
   const filename = stringValue(value.name);
@@ -1167,9 +1229,13 @@ type ToolObservation = {
   critical: boolean;
 };
 
-function classifyOutcome(observations: ToolObservation[]): ConversationResponseOutcome {
+function classifyOutcome(
+  observations: ToolObservation[],
+): ConversationResponseOutcome {
   if (observations.length === 0) return "complete";
-  const successful = observations.some((observation) => observation.status === "completed");
+  const successful = observations.some(
+    (observation) => observation.status === "completed",
+  );
   const criticalFailures = observations.filter(
     (observation) =>
       observation.critical &&
@@ -1208,8 +1274,12 @@ function completionMetadata({
   model: string;
   summarySync?: { status: "synced" | "failed"; expectedSummaryVersion: number };
 } {
-  const evidence = unique(observations.flatMap((observation) => observation.evidence));
-  const missing = unique(observations.flatMap((observation) => observation.missing));
+  const evidence = unique(
+    observations.flatMap((observation) => observation.evidence),
+  );
+  const missing = unique(
+    observations.flatMap((observation) => observation.missing),
+  );
   const observedAt = observations
     .map((observation) => observation.observedAt)
     .filter(isString)
@@ -1241,7 +1311,13 @@ function normalizeGatewayEvent(
       conversationId: turn.conversationId,
       turnId: turn.turnId,
       label,
-      status: statusValue(event.status, ["pending", "running", "completed", "failed"]) ?? "running",
+      status:
+        statusValue(event.status, [
+          "pending",
+          "running",
+          "completed",
+          "failed",
+        ]) ?? "running",
     };
   }
   if (event.type === "tool.call") {
@@ -1281,7 +1357,9 @@ function normalizeGatewayEvent(
       toolCallId,
       toolName,
       label: stringValue(event.label) ?? toolName,
-      status: statusValue(event.status, ["completed", "failed", "denied"]) ?? "completed",
+      status:
+        statusValue(event.status, ["completed", "failed", "denied"]) ??
+        "completed",
       evidence: stringList(event.evidenceRefs),
       missing: stringList(event.missing),
       ...(isString(event.observedAt) ? { observedAt: event.observedAt } : {}),
@@ -1310,10 +1388,15 @@ function normalizeGatewayEvent(
       status,
       evidence: gatewayEvidence(metadata),
       missing: unique([...missingData, ...permissionDenials]),
-      ...(isString(metadata.updatedAt) ? { observedAt: metadata.updatedAt } : {}),
+      ...(isString(metadata.updatedAt)
+        ? { observedAt: metadata.updatedAt }
+        : {}),
     };
   }
-  if (event.type === "text.delta" || event.type === "response.output_text.delta") {
+  if (
+    event.type === "text.delta" ||
+    event.type === "response.output_text.delta"
+  ) {
     return {
       type: "response.delta",
       conversationId: turn.conversationId,
@@ -1540,7 +1623,9 @@ function observationFromGatewayMetadata(
   };
 }
 
-function isConversationOutcome(value: unknown): value is ConversationResponseOutcome {
+function isConversationOutcome(
+  value: unknown,
+): value is ConversationResponseOutcome {
   return value === "complete" || value === "partial" || value === "blocked";
 }
 
@@ -1555,7 +1640,9 @@ function gatewayTraceCode(value: unknown): string {
 }
 
 function sanitizeTraceCode(value: unknown): string | null {
-  const raw = stringValue(value)?.toLowerCase().replace(/[^a-z0-9_:-]+/g, "_");
+  const raw = stringValue(value)
+    ?.toLowerCase()
+    .replace(/[^a-z0-9_:-]+/g, "_");
   if (!raw) return null;
   return raw.slice(0, 80);
 }
@@ -1579,7 +1666,9 @@ function normalizeAttachmentUpload(attachments: AiAttachment[]) {
   }));
 }
 
-async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
+async function readJsonBody(
+  request: Request,
+): Promise<Record<string, unknown>> {
   try {
     const body = (await request.clone().json()) as unknown;
     return isRecord(body) ? body : {};
@@ -1589,9 +1678,14 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
 }
 
 function latestUserMessage(
-  messages: Array<Parameters<typeof buildGatewayNativeAssistantContext>[0]["messages"][number]>,
+  messages: Array<
+    Parameters<typeof buildGatewayNativeAssistantContext>[0]["messages"][number]
+  >,
 ): string {
-  return [...messages].reverse().find((message) => message.role === "user")?.content ?? "";
+  return (
+    [...messages].reverse().find((message) => message.role === "user")
+      ?.content ?? ""
+  );
 }
 
 function statusValue<T extends string>(
@@ -1613,7 +1707,10 @@ function recordValue(value: unknown, key: string): unknown {
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value)
-    ? value.filter(isString).map((item) => item.trim()).filter(Boolean)
+    ? value
+        .filter(isString)
+        .map((item) => item.trim())
+        .filter(Boolean)
     : [];
 }
 
