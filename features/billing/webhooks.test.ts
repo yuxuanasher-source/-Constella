@@ -46,6 +46,44 @@ async function setupWithPendingOrder() {
   return { repo, state };
 }
 
+async function setupWithRefundingFeatureOrder(
+  orderProvider: string | null = "mock",
+) {
+  const { repo, state } = createMemoryBillingRepo({
+    plans: TEST_PLANS,
+    prices: TEST_PRICES,
+    subscription: makeSubscription({
+      organizationId: "org-1",
+      planId: "plan_pro",
+      status: "active",
+    }),
+  });
+  await repo.insertOrder({
+    id: "order-1",
+    organizationId: "org-1",
+    kind: "feature_addon",
+    amountCents: 10000,
+    currency: "CNY",
+    target: { featureKey: "war_room" },
+    idempotencyKey: "refund-k1",
+    provider: orderProvider,
+    createdBy: "user-owner",
+  });
+  await repo.updateOrder("order-1", {
+    status: "refunding",
+    paidAt: "2026-06-15T00:00:00.000Z",
+  });
+  await repo.upsertFeatureAddon({
+    organizationId: "org-1",
+    featureKey: "war_room",
+    amountCents: 10000,
+    enabled: true,
+    periodStart: "2026-06-01",
+    periodEnd: "2026-07-01",
+  });
+  return { repo, state };
+}
+
 function paymentWebhook(overrides: Partial<MockWebhookBody> = {}) {
   return buildSignedMockWebhook(
     {
@@ -208,39 +246,104 @@ describe("handleWebhook", () => {
     expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
   });
 
-  it("permits a partial refund when the order provider matches", async () => {
-    const { repo, state } = createMemoryBillingRepo({
-      plans: TEST_PLANS,
-      prices: TEST_PRICES,
-      subscription: makeSubscription({
-        organizationId: "org-1",
-        planId: "plan_pro",
+  it.each([
+    ["missing", null],
+    ["mismatched", "offline"],
+  ])(
+    "rejects a refund whose order provider is %s without side effects",
+    async (_label, orderProvider) => {
+      const { repo, state } =
+        await setupWithRefundingFeatureOrder(orderProvider);
+      const audit = vi.fn(async () => undefined);
+
+      const result = await handleWebhook({
+        repo,
+        provider,
+        ...paymentWebhook({
+          type: "refund",
+          providerTxnId: "mock_refund_order-1",
+          amountCents: 4000,
+        }),
+        now: NOW,
+        audit,
+      });
+
+      expect(result).toEqual({
+        processed: false,
+        reason: "provider_mismatch",
+        orderId: "order-1",
+      });
+      expect(state.transactions).toHaveLength(0);
+      expect(state.orders.get("order-1")).toMatchObject({
+        status: "refunding",
+        provider: orderProvider,
+      });
+      expect(state.subscriptions.get("org-1")).toMatchObject({
         status: "active",
-      }),
-    });
-    await repo.insertOrder({
-      id: "order-1",
-      organizationId: "org-1",
-      kind: "feature_addon",
-      amountCents: 10000,
-      currency: "CNY",
-      target: { featureKey: "war_room" },
-      idempotencyKey: "refund-k1",
-      provider: "mock",
-      createdBy: "user-owner",
-    });
-    await repo.updateOrder("order-1", {
-      status: "refunding",
-      paidAt: "2026-06-15T00:00:00.000Z",
-    });
-    await repo.upsertFeatureAddon({
-      organizationId: "org-1",
-      featureKey: "war_room",
-      amountCents: 10000,
-      enabled: true,
-      periodStart: "2026-06-01",
-      periodEnd: "2026-07-01",
-    });
+        planId: "plan_pro",
+      });
+      expect(state.featureAddons.get("org-1:war_room")?.enabled).toBe(true);
+      expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
+      expect(audit).toHaveBeenCalledOnce();
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          objectType: "billing_webhook_event",
+          objectId: "evt-1",
+          reason: "provider_mismatch",
+          result: "failure",
+        }),
+      );
+    },
+  );
+
+  it.each(["", "   "])(
+    "rejects refund provider transaction id %j without side effects",
+    async (providerTxnId) => {
+      const { repo, state } = await setupWithRefundingFeatureOrder();
+      const audit = vi.fn(async () => undefined);
+
+      const result = await handleWebhook({
+        repo,
+        provider,
+        ...paymentWebhook({
+          type: "refund",
+          providerTxnId,
+          amountCents: 4000,
+        }),
+        now: NOW,
+        audit,
+      });
+
+      expect(result).toEqual({
+        processed: false,
+        reason: "invalid_provider_transaction",
+        orderId: "order-1",
+      });
+      expect(state.transactions).toHaveLength(0);
+      expect(state.orders.get("order-1")).toMatchObject({
+        status: "refunding",
+        provider: "mock",
+      });
+      expect(state.subscriptions.get("org-1")).toMatchObject({
+        status: "active",
+        planId: "plan_pro",
+      });
+      expect(state.featureAddons.get("org-1:war_room")?.enabled).toBe(true);
+      expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
+      expect(audit).toHaveBeenCalledOnce();
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          objectType: "billing_webhook_event",
+          objectId: "evt-1",
+          reason: "invalid_provider_transaction",
+          result: "failure",
+        }),
+      );
+    },
+  );
+
+  it("permits a partial refund when the order provider matches", async () => {
+    const { repo, state } = await setupWithRefundingFeatureOrder();
 
     const result = await handle(
       repo,
