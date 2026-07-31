@@ -35,6 +35,7 @@ function createClient(
     }>;
     rpcErrors?: Record<string, Error>;
     insertErrors?: Record<string, Error>;
+    reservationStatus?: "reserved" | "consumed";
   } = {},
 ) {
   const ocrResults = [...(fixtures.ocrResults ?? [])];
@@ -157,7 +158,10 @@ function createClient(
         }
         if (name === "reserve_usage_reservation") {
           return {
-            data: { id: String(args.p_reservation_id), status: "reserved" },
+            data: {
+              id: String(args.p_reservation_id),
+              status: fixtures.reservationStatus ?? "reserved",
+            },
             error: fixtures.rpcErrors?.[name] ?? null,
           };
         }
@@ -985,7 +989,101 @@ describe("OCR jobs", () => {
     );
   });
 
-  it("does not call the provider when reservation consumption fails", async () => {
+  it("releases a reserved allowance when the provider is unconfigured and sends no request", async () => {
+    const { client } = createClient({
+      jobs: [
+        {
+          id: "job-provider-unconfigured",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          maxAttempts: 3,
+          payload: {
+            liveReportId: "report-provider-unconfigured",
+            imageBase64: "AQID",
+          },
+        },
+      ],
+    });
+    const runGeneralBasicOcr = vi.fn(async () => ({
+      status: "degraded" as const,
+      textLines: [],
+      textItems: [],
+      confidence: 0,
+      degradedReason: "provider_unconfigured",
+      errorSummary: "Tencent OCR credentials are not configured",
+    }));
+
+    const result = await runOcrJobOnce({
+      client,
+      metricClient: null,
+      actor,
+      jobId: "job-provider-unconfigured",
+      provider: { runGeneralBasicOcr },
+    });
+
+    expect(runGeneralBasicOcr).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      status: "queued",
+      errorCode: "provider_unconfigured",
+    });
+    expect(client.rpc).toHaveBeenCalledWith("release_usage_reservation", {
+      p_reservation_id: "job-provider-unconfigured",
+      p_reason: "provider_unconfigured",
+    });
+    expect(client.rpc).not.toHaveBeenCalledWith(
+      "consume_usage_reservation",
+      expect.anything(),
+    );
+  });
+
+  it("does not reverse or duplicate a consumed allowance when an unconfigured retry sends no request", async () => {
+    const { client } = createClient({
+      reservationStatus: "consumed",
+      jobs: [
+        {
+          id: "job-provider-unconfigured-consumed",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 1,
+          maxAttempts: 3,
+          payload: {
+            liveReportId: "report-provider-unconfigured-consumed",
+            imageBase64: "AQID",
+          },
+        },
+      ],
+    });
+
+    await runOcrJobOnce({
+      client,
+      metricClient: null,
+      actor,
+      jobId: "job-provider-unconfigured-consumed",
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "degraded" as const,
+          textLines: [],
+          textItems: [],
+          confidence: 0,
+          degradedReason: "provider_unconfigured",
+        })),
+      },
+    });
+
+    expect(client.rpc).not.toHaveBeenCalledWith(
+      "release_usage_reservation",
+      expect.anything(),
+    );
+    expect(client.rpc).not.toHaveBeenCalledWith(
+      "consume_usage_reservation",
+      expect.anything(),
+    );
+  });
+
+  it("records an attempted provider call even when consumption persistence fails", async () => {
     const { client } = createClient({
       jobs: [
         {
@@ -1005,7 +1103,13 @@ describe("OCR jobs", () => {
         consume_usage_reservation: new Error("reservation unavailable"),
       },
     });
-    const runGeneralBasicOcr = vi.fn();
+    const runGeneralBasicOcr = vi.fn(async () => ({
+      status: "failed" as const,
+      textLines: [],
+      textItems: [],
+      confidence: 0,
+      errorSummary: "provider request failed",
+    }));
 
     const result = await runOcrJobOnce({
       client,
@@ -1015,7 +1119,7 @@ describe("OCR jobs", () => {
       provider: { runGeneralBasicOcr },
     });
 
-    expect(runGeneralBasicOcr).not.toHaveBeenCalled();
+    expect(runGeneralBasicOcr).toHaveBeenCalledOnce();
     expect(result).toMatchObject({
       status: "queued",
       errorCode: "usage_reservation_failed",

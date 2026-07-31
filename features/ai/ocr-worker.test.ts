@@ -331,6 +331,43 @@ describe("runOcrWorkerIteration", () => {
     );
   });
 
+  it("releases claimed reservations when the provider reports unconfigured without an external attempt", async () => {
+    const { client, rpcs } = createClient({
+      jobs: [claimedJob("job-config-degraded")],
+    });
+    vi.mocked(createTencentOcrProvider).mockReturnValueOnce({
+      runGeneralBasicOcr: vi.fn(async () => ({
+        status: "degraded" as const,
+        textLines: [],
+        textItems: [],
+        confidence: 0,
+        degradedReason: "provider_unconfigured",
+      })),
+    });
+
+    const result = await runOcrWorkerIteration({
+      client: client as never,
+      workerId: "worker-1",
+      limit: 1,
+      leaseSeconds: 60,
+      imageResolver: vi.fn(async () => ({ imageBase64: "AQID" })),
+    });
+
+    expect(result.jobs).toEqual([
+      { id: "job-config-degraded", status: "queued", attempt: 1 },
+    ]);
+    expect(rpcs).toContainEqual({
+      name: "release_usage_reservation",
+      args: {
+        p_reservation_id: "job-config-degraded",
+        p_reason: "provider_unconfigured",
+      },
+    });
+    expect(rpcs).not.toContainEqual(
+      expect.objectContaining({ name: "consume_usage_reservation" }),
+    );
+  });
+
   it("does not release consumed usage when configuration fails on a provider retry", async () => {
     const { client, rpcs, updates } = createClient({
       jobs: [claimedJob("job-config-consumed")],

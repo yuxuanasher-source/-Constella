@@ -155,6 +155,54 @@ describe("/api/ocr/jobs/run", () => {
     });
   });
 
+  it("passes an unconfigured provider result through the shared manual run path", async () => {
+    const job = {
+      id: "job-unconfigured",
+      organizationId: "org-1",
+      jobType: "ocr.extract_live_report" as const,
+      status: "queued" as const,
+      attempt: 0,
+      maxAttempts: 3,
+      payload: { liveReportId: "report-unconfigured", imageBase64: "AQID" },
+    };
+    vi.mocked(claimRunnableOcrJobs).mockResolvedValue([job]);
+    const provider = {
+      runGeneralBasicOcr: vi.fn(async () => ({
+        status: "degraded" as const,
+        textLines: [],
+        textItems: [],
+        confidence: 0,
+        degradedReason: "provider_unconfigured",
+      })),
+    };
+    vi.mocked(createTencentOcrProvider).mockReturnValueOnce(provider);
+    vi.mocked(runOcrJobOnce).mockImplementationOnce(async (input) => {
+      await input.provider.runGeneralBasicOcr({ imageBase64: "AQID" });
+      return {
+        ...job,
+        status: "queued",
+        attempt: 1,
+        errorCode: "provider_unconfigured",
+      };
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs/run", {
+        method: "POST",
+        body: JSON.stringify({ limit: 1 }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      jobs: [{ id: "job-unconfigured", errorCode: "provider_unconfigured" }],
+      failures: [],
+    });
+    expect(runOcrJobOnce).toHaveBeenCalledWith(
+      expect.objectContaining({ provider }),
+    );
+  });
+
   it("continues processing later OCR jobs when one job fails", async () => {
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
       {

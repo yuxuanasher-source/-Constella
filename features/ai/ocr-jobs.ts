@@ -619,33 +619,34 @@ export async function runClaimedOcrJob({
     });
   }
 
-  try {
-    await consumeUsageReservation({
-      client,
-      reservationId: job.id,
-      metadata: {
-        provider: "tencent_ocr",
-        attempt,
-      },
-    });
-  } catch {
-    return failOcrJobAttempt({
-      client,
-      job,
-      attempt,
-      maxAttempts,
-      startedAt,
-      errorCode: "usage_reservation_failed",
-      errorSummary: "OCR usage reservation could not be consumed",
-      deferTerminalJobUpdate,
-      beforePostTerminalFailureSideEffects,
-    });
-  }
-
   let providerResult: Awaited<ReturnType<TencentOcrProvider["runGeneralBasicOcr"]>>;
   try {
     providerResult = await provider.runGeneralBasicOcr(providerInput);
   } catch (error) {
+    if (reservationStatus === "reserved") {
+      try {
+        await consumeUsageReservation({
+          client,
+          reservationId: job.id,
+          metadata: {
+            provider: "tencent_ocr",
+            attempt,
+          },
+        });
+      } catch {
+        return failOcrJobAttempt({
+          client,
+          job,
+          attempt,
+          maxAttempts,
+          startedAt,
+          errorCode: "usage_reservation_failed",
+          errorSummary: "OCR usage reservation could not be consumed",
+          deferTerminalJobUpdate,
+          beforePostTerminalFailureSideEffects,
+        });
+      }
+    }
     return failOcrJobAttempt({
       client,
       job,
@@ -660,6 +661,56 @@ export async function runClaimedOcrJob({
       deferTerminalJobUpdate,
       beforePostTerminalFailureSideEffects,
     });
+  }
+
+  if (
+    providerResult.status === "degraded" &&
+    providerResult.degradedReason === "provider_unconfigured"
+  ) {
+    if (reservationStatus === "reserved") {
+      await releaseUsageReservation({
+        client,
+        reservationId: job.id,
+        reason: "provider_unconfigured",
+      });
+    }
+    return failOcrJobAttempt({
+      client,
+      job,
+      attempt,
+      maxAttempts,
+      startedAt,
+      errorCode: "provider_unconfigured",
+      errorSummary:
+        providerResult.errorSummary ?? "Tencent OCR is not configured",
+      deferTerminalJobUpdate,
+      beforePostTerminalFailureSideEffects,
+    });
+  }
+
+  if (reservationStatus === "reserved") {
+    try {
+      await consumeUsageReservation({
+        client,
+        reservationId: job.id,
+        metadata: {
+          provider: "tencent_ocr",
+          attempt,
+        },
+      });
+    } catch {
+      return failOcrJobAttempt({
+        client,
+        job,
+        attempt,
+        maxAttempts,
+        startedAt,
+        errorCode: "usage_reservation_failed",
+        errorSummary: "OCR usage reservation could not be consumed",
+        deferTerminalJobUpdate,
+        beforePostTerminalFailureSideEffects,
+      });
+    }
   }
 
   const liveReport = await loadLiveReportForOcrAdvance({

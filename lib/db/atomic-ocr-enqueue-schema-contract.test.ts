@@ -151,6 +151,30 @@ describe("atomic OCR enqueue schema contract", () => {
     );
   });
 
+  it("re-arms released reservations against the current month's active allowance", () => {
+    const functionStart = migration.indexOf(
+      "function public.reserve_usage_reservation(",
+    );
+    const functionEnd = migration.indexOf(
+      "function public.list_stale_usage_reservations(",
+      functionStart,
+    );
+    const functionSql = migration.slice(functionStart, functionEnd);
+
+    expect(functionSql).toMatch(
+      /from public\.usage_reservations[\s\S]*for update[\s\S]*v_period_month := date_trunc\('month', current_date\)::date/,
+    );
+    expect(functionSql).toMatch(
+      /insert into public\.usage_monthly_counters[\s\S]*from public\.organization_subscriptions[\s\S]*join public\.billing_plans[\s\S]*status in \('trialing', 'active'\)[\s\S]*on conflict \(organization_id, metric, period_month\) do nothing/,
+    );
+    expect(functionSql).toMatch(
+      /from public\.usage_monthly_counters[\s\S]*period_month = v_period_month[\s\S]*for update/,
+    );
+    expect(functionSql).toMatch(
+      /period_month = v_period_month[\s\S]*status = 'reserved'/,
+    );
+  });
+
   it("tracks the current reservation attempt and review progression", () => {
     expect(migration).toMatch(
       /reserved_at timestamptz not null default now\(\)/,

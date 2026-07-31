@@ -197,6 +197,7 @@ as $$
 declare
   v_reservation public.usage_reservations%rowtype;
   v_counter public.usage_monthly_counters%rowtype;
+  v_period_month date;
 begin
   if coalesce(auth.role(), '') <> 'service_role' then
     raise exception 'Usage reservation mutation requires the service role'
@@ -221,13 +222,48 @@ begin
     return to_jsonb(v_reservation);
   end if;
 
+  v_period_month := date_trunc('month', current_date)::date;
+  insert into public.usage_monthly_counters (
+    organization_id,
+    metric,
+    period_month,
+    used_quantity,
+    included_quantity,
+    addon_quantity
+  )
+  select
+    v_reservation.organization_id,
+    v_reservation.metric,
+    v_period_month,
+    0,
+    case v_reservation.metric
+      when 'active_streamer' then coalesce(plan.included_active_streamers, 0)
+      when 'seat' then coalesce(plan.included_seats, 0)
+      when 'ocr' then coalesce(plan.included_ocr, 0)
+      when 'ai' then coalesce(plan.included_ai, 0)
+      when 'storage_mb' then coalesce(plan.included_storage_mb, 0)
+      when 'export' then coalesce(plan.included_exports, 0)
+    end,
+    0
+  from public.organization_subscriptions as subscription
+  join public.billing_plans as plan on plan.id = subscription.plan_id
+  where subscription.organization_id = v_reservation.organization_id
+    and subscription.status in ('trialing', 'active')
+    and current_date between subscription.current_period_start
+      and subscription.current_period_end
+    and (
+      subscription.status <> 'trialing'
+      or subscription.trial_ends_at is null
+      or now() <= subscription.trial_ends_at
+    )
+  on conflict (organization_id, metric, period_month) do nothing;
+
   select counter.*
   into v_counter
   from public.usage_monthly_counters as counter
   where counter.organization_id = v_reservation.organization_id
     and counter.metric = v_reservation.metric
-    and counter.period_month = v_reservation.period_month
-    and v_reservation.period_month = date_trunc('month', current_date)::date
+    and counter.period_month = v_period_month
     and exists (
       select 1
       from public.organization_subscriptions as subscription
@@ -259,6 +295,7 @@ begin
 
   update public.usage_reservations
   set
+    period_month = v_period_month,
     status = 'reserved',
     released_at = null,
     reserved_at = now(),

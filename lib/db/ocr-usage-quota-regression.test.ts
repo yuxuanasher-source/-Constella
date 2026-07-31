@@ -272,6 +272,252 @@ describe.runIf(Boolean(container))("OCR usage quota PostgreSQL regression", () =
     }
   });
 
+  it("re-arms released reservations into the current month without mutating failed cases", () => {
+    const dbContainer = container ?? "";
+    const ids = {
+      plan: "b5000000-0000-4000-8000-000000000001",
+      successOrg: "b5000000-0000-4000-8000-000000000002",
+      noSubscriptionOrg: "b5000000-0000-4000-8000-000000000003",
+      fullOrg: "b5000000-0000-4000-8000-000000000004",
+      successReservation: "b5000000-0000-4000-8000-000000000005",
+      noSubscriptionReservation: "b5000000-0000-4000-8000-000000000006",
+      fullReservation: "b5000000-0000-4000-8000-000000000007",
+    } as const;
+    const cleanupSql = `
+      delete from public.organizations where id in (
+        '${ids.successOrg}', '${ids.noSubscriptionOrg}', '${ids.fullOrg}'
+      );
+      delete from public.billing_plans where id = '${ids.plan}'::uuid;
+    `;
+
+    runSql(
+      dbContainer,
+      `${cleanupSql}
+       insert into public.billing_plans (id, code, tier, name, included_ocr)
+       values (
+         '${ids.plan}'::uuid, 'cross-month-rearm', 'pro',
+         'Cross Month Rearm', 1
+       );
+       insert into public.organizations (id, name, code) values
+         ('${ids.successOrg}'::uuid, 'Cross Month Success', 'cross-month-success'),
+         ('${ids.noSubscriptionOrg}'::uuid, 'Cross Month No Subscription', 'cross-month-no-subscription'),
+         ('${ids.fullOrg}'::uuid, 'Cross Month Full', 'cross-month-full');
+       insert into public.organization_subscriptions (
+         organization_id, plan_id, status, billing_cycle,
+         current_period_start, current_period_end
+       ) values
+         (
+           '${ids.successOrg}'::uuid, '${ids.plan}'::uuid, 'active', 'monthly',
+           current_date - 1, current_date + 1
+         ),
+         (
+           '${ids.fullOrg}'::uuid, '${ids.plan}'::uuid, 'active', 'monthly',
+           current_date - 1, current_date + 1
+         )
+       on conflict (organization_id) do update
+       set plan_id = excluded.plan_id,
+           status = excluded.status,
+           billing_cycle = excluded.billing_cycle,
+           current_period_start = excluded.current_period_start,
+           current_period_end = excluded.current_period_end;
+       delete from public.organization_subscriptions
+       where organization_id = '${ids.noSubscriptionOrg}'::uuid;
+       insert into public.usage_monthly_counters (
+         organization_id, metric, period_month, used_quantity,
+         included_quantity, addon_quantity
+       ) values
+         (
+           '${ids.successOrg}'::uuid, 'ocr',
+           (date_trunc('month', current_date) - interval '1 month')::date,
+           0, 1, 0
+         ),
+         (
+           '${ids.noSubscriptionOrg}'::uuid, 'ocr',
+           (date_trunc('month', current_date) - interval '1 month')::date,
+           0, 1, 0
+         ),
+         (
+           '${ids.fullOrg}'::uuid, 'ocr',
+           (date_trunc('month', current_date) - interval '1 month')::date,
+           0, 1, 0
+         ),
+         (
+           '${ids.fullOrg}'::uuid, 'ocr',
+           date_trunc('month', current_date)::date,
+           1, 1, 0
+         );
+       insert into public.usage_reservations (
+         id, organization_id, metric, quantity, period_month, source,
+         object_type, object_id, status, released_at, created_at, reserved_at
+       ) values
+         (
+           '${ids.successReservation}'::uuid, '${ids.successOrg}'::uuid,
+           'ocr', 1,
+           (date_trunc('month', current_date) - interval '1 month')::date,
+           'ocr_job', 'background_job', '${ids.successReservation}',
+           'released', now(), now() - interval '32 days', now() - interval '32 days'
+         ),
+         (
+           '${ids.noSubscriptionReservation}'::uuid,
+           '${ids.noSubscriptionOrg}'::uuid, 'ocr', 1,
+           (date_trunc('month', current_date) - interval '1 month')::date,
+           'ocr_job', 'background_job', '${ids.noSubscriptionReservation}',
+           'released', now(), now() - interval '32 days', now() - interval '32 days'
+         ),
+         (
+           '${ids.fullReservation}'::uuid, '${ids.fullOrg}'::uuid,
+           'ocr', 1,
+           (date_trunc('month', current_date) - interval '1 month')::date,
+           'ocr_job', 'background_job', '${ids.fullReservation}',
+           'released', now(), now() - interval '32 days', now() - interval '32 days'
+         );`,
+    );
+
+    try {
+      runSql(
+        dbContainer,
+        serviceRoleSql(
+          `select public.reserve_usage_reservation('${ids.successReservation}'::uuid);`,
+        ),
+      );
+      expect(
+        runSqlText(
+          dbContainer,
+          `select
+             (reservation.period_month = date_trunc('month', current_date)::date)::text || '|' ||
+             reservation.status || '|' ||
+             old_counter.used_quantity::text || '|' || current_counter.used_quantity::text
+           from public.usage_reservations as reservation
+           join public.usage_monthly_counters as old_counter
+             on old_counter.organization_id = reservation.organization_id
+            and old_counter.metric = reservation.metric
+            and old_counter.period_month =
+              (date_trunc('month', current_date) - interval '1 month')::date
+           join public.usage_monthly_counters as current_counter
+             on current_counter.organization_id = reservation.organization_id
+            and current_counter.metric = reservation.metric
+            and current_counter.period_month = date_trunc('month', current_date)::date
+           where reservation.id = '${ids.successReservation}'::uuid;`,
+        ),
+      ).toBe("true|reserved|0|1");
+
+      runSql(
+        dbContainer,
+        serviceRoleSql(
+          `select public.release_usage_reservation(
+             '${ids.successReservation}'::uuid, 'cross_month_test'
+           );`,
+        ),
+      );
+      expect(
+        runSqlText(
+          dbContainer,
+          `select old_counter.used_quantity::text || '|' || current_counter.used_quantity::text
+           from public.usage_monthly_counters as old_counter
+           join public.usage_monthly_counters as current_counter
+             on current_counter.organization_id = old_counter.organization_id
+            and current_counter.metric = old_counter.metric
+            and current_counter.period_month = date_trunc('month', current_date)::date
+           where old_counter.organization_id = '${ids.successOrg}'::uuid
+             and old_counter.metric = 'ocr'
+             and old_counter.period_month =
+               (date_trunc('month', current_date) - interval '1 month')::date;`,
+        ),
+      ).toBe("0|0");
+
+      runSql(
+        dbContainer,
+        serviceRoleSql(
+          `select public.reserve_usage_reservation('${ids.successReservation}'::uuid);
+           select public.release_usage_reservation(
+             '${ids.successReservation}'::uuid, 'provider_unconfigured'
+           );`,
+        ),
+      );
+      expect(
+        runSqlText(
+          dbContainer,
+          `select counter.used_quantity::text || '|' ||
+             (select count(*)::text from public.usage_events
+              where id = '${ids.successReservation}'::uuid) || '|' ||
+             reservation.status
+           from public.usage_monthly_counters as counter
+           join public.usage_reservations as reservation
+             on reservation.organization_id = counter.organization_id
+            and reservation.metric = counter.metric
+            and reservation.period_month = counter.period_month
+           where reservation.id = '${ids.successReservation}'::uuid;`,
+        ),
+      ).toBe("0|0|released");
+
+      runSql(
+        dbContainer,
+        serviceRoleSql(
+          `select public.reserve_usage_reservation('${ids.successReservation}'::uuid);
+           select public.consume_usage_reservation(
+             '${ids.successReservation}'::uuid,
+             '{"provider":"tencent_ocr","attempt":1}'::jsonb
+           );
+           select public.consume_usage_reservation(
+             '${ids.successReservation}'::uuid,
+             '{"provider":"tencent_ocr","attempt":2}'::jsonb
+           );`,
+        ),
+      );
+      expect(
+        runSqlText(
+          dbContainer,
+          `select counter.used_quantity::text || '|' ||
+             (select count(*)::text from public.usage_events
+              where id = '${ids.successReservation}'::uuid) || '|' ||
+             reservation.status
+           from public.usage_monthly_counters as counter
+           join public.usage_reservations as reservation
+             on reservation.organization_id = counter.organization_id
+            and reservation.metric = counter.metric
+            and reservation.period_month = counter.period_month
+           where reservation.id = '${ids.successReservation}'::uuid;`,
+        ),
+      ).toBe("1|1|consumed");
+
+      for (const [reservationId, expectedCurrent] of [
+        [ids.noSubscriptionReservation, "-1"],
+        [ids.fullReservation, "1"],
+      ] as const) {
+        const failed = runSqlCapture(
+          dbContainer,
+          serviceRoleSql(
+            `select public.reserve_usage_reservation('${reservationId}'::uuid);`,
+          ),
+        );
+        expect(failed.code).not.toBe(0);
+        expect(failed.stderr).toContain("OCR_USAGE_LIMIT_REACHED");
+        expect(
+          runSqlText(
+            dbContainer,
+            `select
+               (reservation.period_month =
+                 (date_trunc('month', current_date) - interval '1 month')::date)::text || '|' ||
+               reservation.status || '|' || old_counter.used_quantity::text || '|' ||
+               coalesce(current_counter.used_quantity, -1)::text
+             from public.usage_reservations as reservation
+             join public.usage_monthly_counters as old_counter
+               on old_counter.organization_id = reservation.organization_id
+              and old_counter.metric = reservation.metric
+              and old_counter.period_month = reservation.period_month
+             left join public.usage_monthly_counters as current_counter
+               on current_counter.organization_id = reservation.organization_id
+              and current_counter.metric = reservation.metric
+              and current_counter.period_month = date_trunc('month', current_date)::date
+             where reservation.id = '${reservationId}'::uuid;`,
+          ),
+        ).toBe(`true|released|0|${expectedCurrent}`);
+      }
+    } finally {
+      runSql(dbContainer, cleanupSql);
+    }
+  });
+
   it("serializes allowance, leaves no rejected artifacts, and isolates organizations", async () => {
     const dbContainer = container ?? "";
     const ids = {

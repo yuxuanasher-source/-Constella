@@ -9,6 +9,7 @@ import {
   OCR_INLINE_KICK_GATE,
   kickQueuedOcrJobsInProcess,
 } from "./ocr-instant-run";
+import { createTencentOcrProvider } from "./providers/tencent-ocr-provider";
 
 const { resolveIdentity, claimJobs, runJob } = vi.hoisted(() => ({
   resolveIdentity: vi.fn(),
@@ -64,6 +65,32 @@ describe("kickQueuedOcrJobsInProcess", () => {
     expect(runJob).toHaveBeenCalledTimes(2);
   });
 
+  it("passes an unconfigured provider result through the shared run path", async () => {
+    resolveIdentity.mockReturnValue(identityOk);
+    claimJobs.mockResolvedValue([{ id: "job-unconfigured" }]);
+    const provider = {
+      runGeneralBasicOcr: vi.fn(async () => ({
+        status: "degraded" as const,
+        textLines: [],
+        textItems: [],
+        confidence: 0,
+        degradedReason: "provider_unconfigured",
+      })),
+    };
+    vi.mocked(createTencentOcrProvider).mockReturnValueOnce(provider);
+    runJob.mockImplementationOnce(async ({ provider: sharedProvider }) => {
+      await sharedProvider.runGeneralBasicOcr({ imageBase64: "AQID" });
+      return {};
+    });
+
+    await kickQueuedOcrJobsInProcess({ limit: 1 });
+
+    expect(runJob).toHaveBeenCalledWith(
+      expect.objectContaining({ provider }),
+    );
+    expect(provider.runGeneralBasicOcr).toHaveBeenCalledOnce();
+  });
+
   it("silently skips when the runner identity is not configured", async () => {
     resolveIdentity.mockReturnValue({
       ok: false,
@@ -92,7 +119,7 @@ describe("kickQueuedOcrJobsInProcess", () => {
       await kickQueuedOcrJobsInProcess({ limit: 1 });
       expect(claimJobs).not.toHaveBeenCalled();
     } finally {
-      for (const _ of held) {
+      while (held.pop() !== undefined) {
         releaseInlineKickSlot(OCR_INLINE_KICK_GATE);
       }
     }

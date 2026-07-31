@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GET, POST } from "./route";
 
 import { createOcrJob, listOcrJobs } from "@/features/ai/ocr-jobs";
+import { UsageHardBlockError } from "@/features/billing/usage-reservations";
 import { getAuthContext } from "@/lib/auth/context";
 import {
   createSupabaseAdminClient,
@@ -123,6 +124,63 @@ describe("/api/ocr/jobs", () => {
       error: "Supabase admin client is unavailable",
     });
     expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("maps the OCR hard limit to the stable 429 contract", async () => {
+    vi.mocked(createOcrJob).mockRejectedValueOnce(new UsageHardBlockError());
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          liveReportId: "report-1",
+          imageBase64: "ZmFrZQ==",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toEqual({
+      error: "OCR usage limit reached",
+      code: "usage_limit_reached",
+    });
+  });
+
+  it("does not expose unexpected enqueue errors", async () => {
+    vi.mocked(createOcrJob).mockRejectedValueOnce(
+      Object.assign(new Error("database secret metadata"), {
+        code: "PGRST500",
+      }),
+    );
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          liveReportId: "report-1",
+          imageBase64: "ZmFrZQ==",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "OCR job request failed",
+    });
+  });
+
+  it("preserves safe client-error status semantics", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs", {
+        method: "POST",
+        body: JSON.stringify({ imageBase64: "ZmFrZQ==" }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "liveReportId is required",
+    });
   });
 
   it("does not elevate an operator without access to the report project", async () => {
