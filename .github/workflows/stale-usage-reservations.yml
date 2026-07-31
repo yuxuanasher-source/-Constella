@@ -1,0 +1,53 @@
+name: Stale Usage Reservation Review
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stale-usage-reservation-review
+  cancel-in-progress: false
+
+jobs:
+  review-stale-usage-reservations:
+    name: Review stale usage reservations
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger read-only reservation review
+        env:
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          BILLING_CRON_SECRET: ${{ secrets.BILLING_CRON_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+
+          if [[ ! "$APP_BASE_URL" =~ ^https://[^[:space:]]+$ ]]; then
+            echo "APP_BASE_URL must be a configured HTTPS URL" >&2
+            exit 1
+          fi
+          if [[ -z "$BILLING_CRON_SECRET" ]]; then
+            echo "BILLING_CRON_SECRET is not configured" >&2
+            exit 1
+          fi
+
+          status="$(curl --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 240 \
+            --output "$response_file" \
+            --write-out "%{http_code}" \
+            --request POST \
+            "${APP_BASE_URL%/}/api/billing/jobs/stale-usage-reservations" \
+            --header "x-cron-secret: ${BILLING_CRON_SECRET}")"
+
+          if [[ ! "$status" =~ ^2[0-9]{2}$ ]]; then
+            echo "Stale usage reservation review failed with HTTP $status" >&2
+            exit 1
+          fi
+          echo "Stale usage reservation review completed with HTTP $status"

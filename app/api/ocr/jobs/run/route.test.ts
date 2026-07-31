@@ -128,6 +128,7 @@ describe("/api/ocr/jobs/run", () => {
     expect(JSON.stringify(body)).not.toContain("org/report-screenshots");
     expect(runOcrJobOnce).toHaveBeenCalledWith(
       expect.objectContaining({
+        client: admin,
         metricClient: admin,
         imageResolver: expect.any(Function),
       }),
@@ -291,26 +292,36 @@ describe("/api/ocr/jobs/run", () => {
     expect(runOcrJobOnce).not.toHaveBeenCalled();
   });
 
-  it("keeps automatic OCR processing available when the admin metric sink is unavailable", async () => {
+  it("fails closed before claim or provider initialization when the admin client is unavailable", async () => {
     vi.mocked(createSupabaseAdminClient).mockReturnValue(null);
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs/run", {
+        method: "POST",
+        body: JSON.stringify({}),
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "OCR execution service is unavailable",
+    });
+    expect(claimRunnableOcrJobs).not.toHaveBeenCalled();
+    expect(createTencentOcrProvider).not.toHaveBeenCalled();
+    expect(runOcrJobOnce).not.toHaveBeenCalled();
+  });
+
+  it("does not execute a claimed job outside the authenticated organization", async () => {
     vi.mocked(claimRunnableOcrJobs).mockResolvedValue([
       {
-        id: "job-no-admin",
-        organizationId: "org-1",
+        id: "job-cross-org",
+        organizationId: "org-2",
         jobType: "ocr.extract_live_report",
         status: "queued",
         attempt: 0,
-        payload: { liveReportId: "report-no-admin" },
+        payload: { liveReportId: "report-cross-org" },
       },
     ]);
-    vi.mocked(runOcrJobOnce).mockResolvedValue({
-      id: "job-no-admin",
-      organizationId: "org-1",
-      jobType: "ocr.extract_live_report",
-      status: "succeeded",
-      attempt: 1,
-      payload: { liveReportId: "report-no-admin" },
-    });
 
     const response = await POST(
       new Request("http://localhost/api/ocr/jobs/run", {
@@ -320,9 +331,16 @@ describe("/api/ocr/jobs/run", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(claimRunnableOcrJobs).toHaveBeenCalled();
-    expect(runOcrJobOnce).toHaveBeenCalledWith(
-      expect.objectContaining({ metricClient: null }),
-    );
+    await expect(response.json()).resolves.toEqual({
+      jobs: [],
+      failures: [
+        {
+          jobId: "job-cross-org",
+          errorCode: "runner_failed",
+          errorMessage: "OCR job organization mismatch",
+        },
+      ],
+    });
+    expect(runOcrJobOnce).not.toHaveBeenCalled();
   });
 });

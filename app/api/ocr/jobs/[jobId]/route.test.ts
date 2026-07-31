@@ -41,13 +41,12 @@ const auth = {
 };
 
 describe("/api/ocr/jobs/[jobId]", () => {
+  const supabase = { from: vi.fn() };
   const admin = { rpc: vi.fn() };
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(createSupabaseServerClient).mockResolvedValue({
-      from: vi.fn(),
-    } as never);
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
     vi.mocked(createSupabaseAdminClient).mockReturnValue(admin as never);
     vi.mocked(getAuthContext).mockResolvedValue(auth);
   });
@@ -165,6 +164,44 @@ describe("/api/ocr/jobs/[jobId]", () => {
         errorCode: "provider_failed",
       },
     });
+    expect(getOcrJob).toHaveBeenCalledWith({
+      client: supabase,
+      jobId: "job-1",
+    });
+    expect(retryOcrJob).toHaveBeenCalledWith({
+      client: admin,
+      actor: auth,
+      jobId: "job-1",
+    });
+    expect(retryOcrJob).not.toHaveBeenCalledWith(
+      expect.objectContaining({ client: supabase }),
+    );
+  });
+
+  it("fails closed before retry mutation when the admin client is unavailable", async () => {
+    vi.mocked(getOcrJob).mockResolvedValue({
+      id: "job-1",
+      organizationId: "org-1",
+      jobType: "ocr.extract_live_report",
+      status: "failed",
+      attempt: 1,
+      payload: { liveReportId: "report-1" },
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(null);
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs/job-1", {
+        method: "POST",
+        body: JSON.stringify({ action: "retry" }),
+      }),
+      { params: Promise.resolve({ jobId: "job-1" }) },
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "OCR execution service is unavailable",
+    });
+    expect(retryOcrJob).not.toHaveBeenCalled();
   });
 
   it("maps retry re-arm quota rejection to a stable non-sensitive 429", async () => {
@@ -400,6 +437,7 @@ describe("/api/ocr/jobs/[jobId]", () => {
 
     expect(response.status).toBe(404);
     expect(retryOcrJob).not.toHaveBeenCalled();
+    expect(createSupabaseAdminClient).not.toHaveBeenCalled();
   });
 
   it("returns 404 when a job does not exist", async () => {

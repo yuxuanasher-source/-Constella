@@ -259,6 +259,52 @@ begin
 end;
 $$;
 
+create or replace function public.list_stale_usage_reservations(
+  p_before timestamptz,
+  p_limit integer
+)
+returns table (
+  reservation_id uuid,
+  organization_id uuid,
+  source text,
+  created_at timestamptz,
+  age_seconds bigint
+)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if coalesce(auth.role(), '') <> 'service_role' then
+    raise exception 'Usage reservation review requires the service role'
+      using errcode = '42501';
+  end if;
+  if p_before is null
+    or p_before > now()
+    or p_limit is null
+    or p_limit < 1
+    or p_limit > 500
+  then
+    raise exception 'Usage reservation review input is invalid'
+      using errcode = '22023';
+  end if;
+
+  return query
+  select
+    reservation.id,
+    reservation.organization_id,
+    reservation.source,
+    reservation.created_at,
+    extract(epoch from (now() - reservation.created_at))::bigint
+  from public.usage_reservations as reservation
+  where reservation.status = 'reserved'
+    and reservation.created_at <= p_before
+  order by reservation.created_at, reservation.id
+  limit p_limit;
+end;
+$$;
+
 revoke all on function public.consume_usage_reservation(uuid, jsonb)
 from public, anon, authenticated, service_role;
 grant execute on function public.consume_usage_reservation(uuid, jsonb)
@@ -270,6 +316,10 @@ to service_role;
 revoke all on function public.reserve_usage_reservation(uuid)
 from public, anon, authenticated, service_role;
 grant execute on function public.reserve_usage_reservation(uuid)
+to service_role;
+revoke all on function public.list_stale_usage_reservations(timestamptz, integer)
+from public, anon, authenticated, service_role;
+grant execute on function public.list_stale_usage_reservations(timestamptz, integer)
 to service_role;
 
 create or replace function public.enqueue_ocr_job(

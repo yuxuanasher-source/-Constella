@@ -20,6 +20,82 @@ describe.runIf(Boolean(container))("OCR usage quota PostgreSQL regression", () =
     ).toBe("false|false|false|true");
   });
 
+  it("lists only stale reserved usage for service-role review", () => {
+    const dbContainer = container ?? "";
+    const orgId = "b3000000-0000-4000-8000-000000000001";
+    const staleId = "b3000000-0000-4000-8000-000000000002";
+    const recentId = "b3000000-0000-4000-8000-000000000003";
+    const releasedId = "b3000000-0000-4000-8000-000000000004";
+    const cleanupSql = `delete from public.organizations where id = '${orgId}'::uuid;`;
+
+    expect(
+      runSqlText(
+        dbContainer,
+        `select has_function_privilege(
+          'authenticated',
+          'public.list_stale_usage_reservations(timestamptz,integer)',
+          'EXECUTE'
+        );`,
+      ),
+    ).toBe("f");
+
+    runSql(
+      dbContainer,
+      `${cleanupSql}
+       insert into public.organizations (id, name, code)
+       values ('${orgId}'::uuid, 'Stale Usage Review', 'stale-usage-review');
+       insert into public.usage_reservations (
+         id, organization_id, metric, quantity, period_month, source,
+         object_type, object_id, status, released_at, created_at
+       ) values
+         (
+           '${staleId}'::uuid, '${orgId}'::uuid, 'ocr', 1,
+           date_trunc('month', current_date)::date, 'ocr_job',
+           'background_job', '${staleId}', 'reserved', null,
+           now() - interval '48 hours'
+         ),
+         (
+           '${recentId}'::uuid, '${orgId}'::uuid, 'ocr', 1,
+           date_trunc('month', current_date)::date, 'ocr_job',
+           'background_job', '${recentId}', 'reserved', null,
+           now() - interval '1 hour'
+         ),
+         (
+           '${releasedId}'::uuid, '${orgId}'::uuid, 'ocr', 1,
+           date_trunc('month', current_date)::date, 'ocr_job',
+           'background_job', '${releasedId}', 'released', now(),
+           now() - interval '72 hours'
+         );`,
+    );
+    try {
+      expect(
+        runSqlText(
+          dbContainer,
+          serviceRoleQuerySql(
+            `select reservation_id::text || '|' || organization_id::text || '|' ||
+               source || '|' || (age_seconds >= 172799)::text
+             from public.list_stale_usage_reservations(
+               now() - interval '24 hours',
+               100
+             );`,
+          ),
+        ),
+      ).toBe(`${staleId}|${orgId}|ocr_job|true`);
+
+      const authenticatedReview = runSqlCapture(
+        dbContainer,
+        `begin;
+         select set_config('request.jwt.claim.role', 'authenticated', true);
+         select * from public.list_stale_usage_reservations(now(), 100);
+         commit;`,
+      );
+      expect(authenticatedReview.code).not.toBe(0);
+      expect(authenticatedReview.stderr).toContain("42501");
+    } finally {
+      runSql(dbContainer, cleanupSql);
+    }
+  });
+
   it("serializes allowance, leaves no rejected artifacts, and isolates organizations", async () => {
     const dbContainer = container ?? "";
     const ids = {
@@ -50,6 +126,10 @@ describe.runIf(Boolean(container))("OCR usage quota PostgreSQL regression", () =
       invocationA2: "b1000000-0000-4000-8000-000000000025",
       invocationB: "b1000000-0000-4000-8000-000000000026",
       invocationC: "b1000000-0000-4000-8000-000000000027",
+      taskB2: "b1000000-0000-4000-8000-000000000028",
+      reportB2: "b1000000-0000-4000-8000-000000000029",
+      jobB2: "b1000000-0000-4000-8000-000000000030",
+      invocationB2: "b1000000-0000-4000-8000-000000000031",
     } as const;
     const cleanupSql = `
       delete from public.organizations
@@ -115,6 +195,7 @@ describe.runIf(Boolean(container))("OCR usage quota PostgreSQL regression", () =
         ('${ids.taskA1}'::uuid, '${ids.orgA}'::uuid, '${ids.projectA}'::uuid, '${ids.streamerA}'::uuid, 'OCR A1', 'pending_report', '${ids.user}'::uuid),
         ('${ids.taskA2}'::uuid, '${ids.orgA}'::uuid, '${ids.projectA}'::uuid, '${ids.streamerA}'::uuid, 'OCR A2', 'pending_report', '${ids.user}'::uuid),
         ('${ids.taskB}'::uuid, '${ids.orgB}'::uuid, '${ids.projectB}'::uuid, '${ids.streamerB}'::uuid, 'OCR B', 'pending_report', '${ids.user}'::uuid),
+        ('${ids.taskB2}'::uuid, '${ids.orgB}'::uuid, '${ids.projectB}'::uuid, '${ids.streamerB}'::uuid, 'OCR B2', 'pending_report', '${ids.user}'::uuid),
         ('${ids.taskC}'::uuid, '${ids.orgC}'::uuid, '${ids.projectC}'::uuid, '${ids.streamerC}'::uuid, 'OCR C', 'pending_report', '${ids.user}'::uuid);
       insert into public.live_reports (
         id, organization_id, live_task_id, project_id, streamer_id, status,
@@ -123,6 +204,7 @@ describe.runIf(Boolean(container))("OCR usage quota PostgreSQL regression", () =
         ('${ids.reportA1}'::uuid, '${ids.orgA}'::uuid, '${ids.taskA1}'::uuid, '${ids.projectA}'::uuid, '${ids.streamerA}'::uuid, 'ocr_ing', '${ids.user}'::uuid),
         ('${ids.reportA2}'::uuid, '${ids.orgA}'::uuid, '${ids.taskA2}'::uuid, '${ids.projectA}'::uuid, '${ids.streamerA}'::uuid, 'ocr_ing', '${ids.user}'::uuid),
         ('${ids.reportB}'::uuid, '${ids.orgB}'::uuid, '${ids.taskB}'::uuid, '${ids.projectB}'::uuid, '${ids.streamerB}'::uuid, 'ocr_ing', '${ids.user}'::uuid),
+        ('${ids.reportB2}'::uuid, '${ids.orgB}'::uuid, '${ids.taskB2}'::uuid, '${ids.projectB}'::uuid, '${ids.streamerB}'::uuid, 'ocr_ing', '${ids.user}'::uuid),
         ('${ids.reportC}'::uuid, '${ids.orgC}'::uuid, '${ids.taskC}'::uuid, '${ids.projectC}'::uuid, '${ids.streamerC}'::uuid, 'ocr_ing', '${ids.user}'::uuid);
     `;
 
@@ -226,6 +308,46 @@ describe.runIf(Boolean(container))("OCR usage quota PostgreSQL regression", () =
            where reservation.id = '${ids.jobB}'::uuid;`,
         ),
       ).toBe("reserved|1");
+
+      runSql(
+        dbContainer,
+        serviceRoleSql(
+          `select public.release_usage_reservation('${ids.jobB}'::uuid, 'second_job_will_use_allowance');`,
+        ),
+      );
+      runSql(
+        dbContainer,
+        enqueueSql(ids.jobB2, ids.invocationB2, ids.orgB, ids.reportB2, ids.user),
+      );
+      const rearmWhileFull = runSqlCapture(
+        dbContainer,
+        serviceRoleSql(
+          `select public.reserve_usage_reservation('${ids.jobB}'::uuid);`,
+        ),
+      );
+      expect(rearmWhileFull.code).not.toBe(0);
+      expect(rearmWhileFull.stderr).toContain("P0001");
+      expect(rearmWhileFull.stderr).toContain("OCR_USAGE_LIMIT_REACHED");
+      expect(
+        runSqlText(
+          dbContainer,
+          `select
+            (select status from public.usage_reservations where id = '${ids.jobB}'::uuid) || '|' ||
+            (select used_quantity from public.usage_monthly_counters
+             where organization_id = '${ids.orgB}'::uuid and metric = 'ocr'
+               and period_month = '2026-07-01')::text || '|' ||
+            (select count(*) from public.usage_events
+             where organization_id = '${ids.orgB}'::uuid)::text || '|' ||
+            (select count(*) from public.usage_reservations
+             where organization_id = '${ids.orgB}'::uuid)::text || '|' ||
+            (select count(*) from public.background_jobs
+             where organization_id = '${ids.orgB}'::uuid)::text || '|' ||
+            (select count(*) from public.ai_invocations
+             where organization_id = '${ids.orgB}'::uuid)::text || '|' ||
+            (select count(*) from public.ocr_results
+             where organization_id = '${ids.orgB}'::uuid)::text;`,
+        ),
+      ).toBe("released|1|0|2|2|2|2");
 
       const missingSubscription = runSqlCapture(
         dbContainer,
@@ -361,6 +483,15 @@ function serviceRoleSql(sql: string) {
   return `
     begin;
     select set_config('request.jwt.claim.role', 'service_role', true);
+    ${sql}
+    commit;
+  `;
+}
+
+function serviceRoleQuerySql(sql: string) {
+  return `
+    begin;
+    set local "request.jwt.claim.role" = 'service_role';
     ${sql}
     commit;
   `;

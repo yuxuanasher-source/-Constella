@@ -5,6 +5,14 @@ type UsageReservationClient = {
   ): PromiseLike<{ data: unknown; error: unknown }>;
 };
 
+export type StaleUsageReservation = {
+  reservationId: string;
+  organizationId: string;
+  source: string;
+  createdAt: string;
+  ageSeconds: number;
+};
+
 export class UsageHardBlockError extends Error {
   readonly code = "usage_limit_reached";
 
@@ -89,4 +97,54 @@ export async function releaseUsageReservation({
   if (error) {
     throw error;
   }
+}
+
+export async function listStaleUsageReservations({
+  client,
+  before,
+  limit,
+}: {
+  client: UsageReservationClient;
+  before: string;
+  limit: number;
+}): Promise<StaleUsageReservation[]> {
+  const { data, error } = await client.rpc("list_stale_usage_reservations", {
+    p_before: before,
+    p_limit: limit,
+  });
+  if (error) {
+    throw error;
+  }
+  if (!Array.isArray(data)) {
+    throw new Error("Stale usage reservation RPC returned an invalid payload");
+  }
+
+  return data.map((value) => {
+    if (!value || typeof value !== "object") {
+      throw new Error("Stale usage reservation RPC returned an invalid payload");
+    }
+    const row = value as Record<string, unknown>;
+    const ageSeconds = Number(row.age_seconds);
+    if (
+      typeof row.reservation_id !== "string" ||
+      !row.reservation_id ||
+      typeof row.organization_id !== "string" ||
+      !row.organization_id ||
+      typeof row.source !== "string" ||
+      !row.source ||
+      typeof row.created_at !== "string" ||
+      !row.created_at ||
+      !Number.isSafeInteger(ageSeconds) ||
+      ageSeconds < 0
+    ) {
+      throw new Error("Stale usage reservation RPC returned an invalid payload");
+    }
+    return {
+      reservationId: row.reservation_id,
+      organizationId: row.organization_id,
+      source: row.source,
+      createdAt: row.created_at,
+      ageSeconds,
+    };
+  });
 }

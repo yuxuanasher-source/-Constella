@@ -9,6 +9,7 @@ import {
   runExpirePendingOrdersSweep,
   runRenewalSweep,
 } from "@/features/billing/subscription-jobs";
+import { listStaleUsageReservations } from "@/features/billing/usage-reservations";
 import { recordFunnelEvent } from "@/features/funnel/funnel-events";
 import { writeAuditLog } from "@/lib/audit/audit";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
@@ -17,6 +18,10 @@ import { sendNotification } from "@/lib/notify/notify";
 type RouteContext = {
   params: Promise<{ task: string }>;
 };
+
+const STALE_RESERVATION_THRESHOLD_HOURS = 24;
+const DEFAULT_STALE_RESERVATION_LIMIT = 100;
+const MAX_STALE_RESERVATION_LIMIT = 500;
 
 /**
  * 计费定时任务入口（由外部调度器以 x-cron-secret 触发，service-role 执行）。
@@ -39,6 +44,63 @@ export async function POST(request: Request, context: RouteContext) {
   try {
     const { task } = await context.params;
     const repo = createSupabaseBillingRepo(admin);
+
+    if (task === "stale-usage-reservations") {
+      const requestedLimit = Number(
+        new URL(request.url).searchParams.get("limit") ??
+          DEFAULT_STALE_RESERVATION_LIMIT,
+      );
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.max(
+            1,
+            Math.min(Math.trunc(requestedLimit), MAX_STALE_RESERVATION_LIMIT),
+          )
+        : DEFAULT_STALE_RESERVATION_LIMIT;
+      const before = new Date(
+        Date.now() - STALE_RESERVATION_THRESHOLD_HOURS * 60 * 60 * 1000,
+      ).toISOString();
+      const reservations = await listStaleUsageReservations({
+        client: admin,
+        before,
+        limit,
+      });
+
+      for (const reservation of reservations) {
+        await writeAuditLog(admin, {
+          organizationId: reservation.organizationId,
+          action: "update",
+          module: "billing",
+          objectType: "usage_reservation",
+          objectId: reservation.reservationId,
+          after: {
+            reservationId: reservation.reservationId,
+            source: reservation.source,
+            createdAt: reservation.createdAt,
+            ageSeconds: reservation.ageSeconds,
+          },
+          changedFields: [],
+          reason: "stale_usage_reservation_detected",
+        });
+      }
+
+      return NextResponse.json({
+        task,
+        summary: {
+          before,
+          thresholdHours: STALE_RESERVATION_THRESHOLD_HOURS,
+          limit,
+          staleCount: reservations.length,
+          organizationCount: new Set(
+            reservations.map((reservation) => reservation.organizationId),
+          ).size,
+          oldestAgeSeconds: reservations.reduce(
+            (oldest, reservation) =>
+              Math.max(oldest, reservation.ageSeconds),
+            0,
+          ),
+        },
+      });
+    }
 
     if (task === "dunning") {
       const summary = await runDunningSweep({

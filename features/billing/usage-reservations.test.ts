@@ -2,18 +2,24 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   consumeUsageReservation,
+  listStaleUsageReservations,
   releaseUsageReservation,
   reserveUsageReservation,
 } from "./usage-reservations";
 
 function createClient(errorByRpc: Record<string, Error> = {}) {
   return {
-    rpc: vi.fn(async (name: string, args: Record<string, unknown>) => ({
-      data: errorByRpc[name]
-        ? null
-        : { id: args.p_reservation_id, status: "reserved" },
-      error: errorByRpc[name] ?? null,
-    })),
+    rpc: vi.fn(
+      async (
+        name: string,
+        args: Record<string, unknown>,
+      ): Promise<{ data: unknown; error: Error | null }> => ({
+        data: errorByRpc[name]
+          ? null
+          : { id: args.p_reservation_id, status: "reserved" },
+        error: errorByRpc[name] ?? null,
+      }),
+    ),
   };
 }
 
@@ -84,5 +90,60 @@ describe("usage reservations", () => {
       name: "UsageHardBlockError",
       message: "OCR usage limit reached",
     });
+  });
+
+  it("lists only the minimal stale reservation review fields", async () => {
+    const client = createClient();
+    vi.mocked(client.rpc).mockResolvedValueOnce({
+      data: [
+        {
+          reservation_id: "reservation-1",
+          organization_id: "org-1",
+          source: "ocr_job",
+          created_at: "2026-07-29T08:00:00.000Z",
+          age_seconds: 100_000,
+        },
+      ],
+      error: null,
+    });
+
+    await expect(
+      listStaleUsageReservations({
+        client,
+        before: "2026-07-30T08:00:00.000Z",
+        limit: 100,
+      }),
+    ).resolves.toEqual([
+      {
+        reservationId: "reservation-1",
+        organizationId: "org-1",
+        source: "ocr_job",
+        createdAt: "2026-07-29T08:00:00.000Z",
+        ageSeconds: 100_000,
+      },
+    ]);
+    expect(client.rpc).toHaveBeenCalledWith("list_stale_usage_reservations", {
+      p_before: "2026-07-30T08:00:00.000Z",
+      p_limit: 100,
+    });
+    expect(JSON.stringify(await vi.mocked(client.rpc).mock.results[0]?.value)).not.toContain(
+      "metadata",
+    );
+  });
+
+  it("rejects malformed stale reservation RPC rows", async () => {
+    const client = createClient();
+    vi.mocked(client.rpc).mockResolvedValueOnce({
+      data: [{ reservation_id: "reservation-1", metadata: { secret: true } }],
+      error: null,
+    });
+
+    await expect(
+      listStaleUsageReservations({
+        client,
+        before: "2026-07-30T08:00:00.000Z",
+        limit: 100,
+      }),
+    ).rejects.toThrow("invalid payload");
   });
 });

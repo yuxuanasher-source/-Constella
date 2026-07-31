@@ -76,8 +76,15 @@ export async function POST(request: Request, context: RouteContext) {
     }
 
     if (body.action === "retry") {
+      const executionClient = createSupabaseAdminClient();
+      if (!executionClient) {
+        return NextResponse.json(
+          { error: "OCR execution service is unavailable" },
+          { status: 503 },
+        );
+      }
       const job = await retryOcrJob({
-        client: authResult.supabase as never,
+        client: executionClient as never,
         actor: authResult.auth,
         jobId,
       });
