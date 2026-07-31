@@ -1026,7 +1026,7 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(ecosystem, /\.\.\.process\.env/);
   assert.match(
     ecosystem,
-    /NODE_PATH:\s*join\([\s\S]*\.next\/standalone\/node_modules\/\.pnpm\/node_modules/,
+    /NODE_PATH:\s*`\$\{currentLink\}\/\.next\/standalone\/node_modules\/\.pnpm\/node_modules`/,
   );
   assert.match(ciWorkflow, /RELEASE_SHA:\s*\$\{\{ github\.sha \}\}/);
   assert.match(ciWorkflow, /prepare-standalone-release\.mjs/);

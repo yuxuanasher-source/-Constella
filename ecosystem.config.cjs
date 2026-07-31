@@ -1,5 +1,3 @@
-const { join } = require("node:path");
-
 const currentLink = process.env.CURRENT_LINK;
 const releaseSha = process.env.RELEASE_SHA;
 const releaseManifestSha256 = process.env.RELEASE_MANIFEST_SHA256;
@@ -24,10 +22,7 @@ module.exports = {
       env: {
         ...process.env,
         NODE_ENV: "production",
-        NODE_PATH: join(
-          currentLink,
-          ".next/standalone/node_modules/.pnpm/node_modules",
-        ),
+        NODE_PATH: `${currentLink}/.next/standalone/node_modules/.pnpm/node_modules`,
         RELEASE_SHA: process.env.RELEASE_SHA,
         RELEASE_MANIFEST_SHA256: releaseManifestSha256,
         PORT: process.env.PORT || "3000",
