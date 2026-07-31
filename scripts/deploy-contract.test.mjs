@@ -1048,7 +1048,7 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   );
   assert.match(
     standalonePreparer,
-    /relative\(standalone, target\)[\s\S]*escaped the standalone root/,
+    /isInside\(standalone, target\)[\s\S]*isInside\(pnpmVirtualStore, target\)[\s\S]*escaped its generated roots/,
   );
 
   assert.doesNotMatch(legacyRollback, /git reset --hard/);

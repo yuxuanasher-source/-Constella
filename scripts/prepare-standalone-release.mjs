@@ -27,6 +27,7 @@ if (!/^[0-9a-f]{40}$/.test(expectedSha ?? "")) {
 
 const root = realpathSync(resolve(rootInput));
 const standalone = join(root, ".next/standalone");
+const pnpmVirtualStore = join(root, "node_modules/.pnpm");
 const server = join(standalone, "server.js");
 if (
   !existsSync(standalone) ||
@@ -66,6 +67,17 @@ for (const [source, destination] of copies) {
   });
 }
 
+function isInside(allowedRoot, target) {
+  const relativeTarget = relative(allowedRoot, target);
+  return (
+    relativeTarget === "" ||
+    (relativeTarget !== ".." &&
+      !relativeTarget.startsWith(`..${sep}`) &&
+      !isAbsolute(relativeTarget))
+  );
+}
+
+const visitedDirectories = new Set();
 function validateRuntimeLinks(path) {
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) {
@@ -75,18 +87,16 @@ function validateRuntimeLinks(path) {
     } catch {
       fail(`standalone runtime contains a broken symlink: ${path}`);
     }
-    const relativeTarget = relative(standalone, target);
-    if (
-      relativeTarget === "" ||
-      relativeTarget === ".." ||
-      relativeTarget.startsWith(`..${sep}`) ||
-      isAbsolute(relativeTarget)
-    ) {
-      fail(`standalone runtime symlink escaped the standalone root: ${path}`);
+    if (!isInside(standalone, target) && !isInside(pnpmVirtualStore, target)) {
+      fail(`standalone runtime symlink escaped its generated roots: ${path}`);
     }
+    validateRuntimeLinks(target);
     return;
   }
   if (!stat.isDirectory()) return;
+  const directory = realpathSync(path);
+  if (visitedDirectories.has(directory)) return;
+  visitedDirectories.add(directory);
   for (const entry of readdirSync(path).sort()) {
     validateRuntimeLinks(join(path, entry));
   }

@@ -32,6 +32,13 @@ describe("standalone release preparation", () => {
       mkdirSync(join(root, ".next/standalone/node_modules/.store/runtime"), {
         recursive: true,
       });
+      mkdirSync(
+        join(
+          root,
+          "node_modules/.pnpm/external-runtime@1.0.0/node_modules/external-runtime",
+        ),
+        { recursive: true },
+      );
       mkdirSync(join(root, ".next/static/chunks"), { recursive: true });
       mkdirSync(join(root, "public/assets"), { recursive: true });
       writeFileSync(
@@ -48,9 +55,24 @@ describe("standalone release preparation", () => {
         join(root, ".next/standalone/node_modules/.store/runtime/index.js"),
         "runtime\n",
       );
+      writeFileSync(
+        join(
+          root,
+          "node_modules/.pnpm/external-runtime@1.0.0/node_modules/external-runtime/index.js",
+        ),
+        "external runtime\n",
+      );
       symlinkSync(
         join(root, ".next/standalone/node_modules/.store/runtime"),
         join(root, ".next/standalone/node_modules/runtime"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      symlinkSync(
+        join(
+          root,
+          "node_modules/.pnpm/external-runtime@1.0.0/node_modules/external-runtime",
+        ),
+        join(root, ".next/standalone/node_modules/external-runtime"),
         process.platform === "win32" ? "junction" : "dir",
       );
 
@@ -71,6 +93,12 @@ describe("standalone release preparation", () => {
       expect(
         readFileSync(join(root, ".next/standalone/.release-sha"), "utf8"),
       ).toBe(`${sha}\n`);
+      expect(
+        readFileSync(
+          join(root, ".next/standalone/node_modules/external-runtime/index.js"),
+          "utf8",
+        ),
+      ).toBe("external runtime\n");
       expect(
         readFileSync(
           join(root, ".next/standalone/node_modules/runtime/index.js"),
@@ -110,7 +138,7 @@ describe("standalone release preparation", () => {
       );
       const leaked = run(root, sha);
       expect(leaked.status).not.toBe(0);
-      expect(leaked.stderr).toMatch(/escaped the standalone root/i);
+      expect(leaked.stderr).toMatch(/escaped its generated roots/i);
 
       rmSync(join(root, ".next/standalone"), {
         recursive: true,
