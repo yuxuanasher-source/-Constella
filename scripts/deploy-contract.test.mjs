@@ -132,7 +132,7 @@ test("rolls the application symlink back and verifies the previous SHA", () => {
 
 test("recreates PM2 from an ecosystem file and verifies the release", () => {
   const activation = deploy.slice(position(deploy, "reload_pm2() {"));
-  const reload = position(activation, "pm2 startOrReload");
+  const reload = position(activation, "pm2_bounded startOrReload");
   const verification = position(activation, "verify-release.sh");
   assert.ok(reload < verification, "verification must follow PM2 reload");
 
@@ -214,6 +214,7 @@ RELEASE_ROOT="$(cygpath -u "$RELEASE_NATIVE" 2>/dev/null || printf '%s' "$RELEAS
 CURRENT_LINK="$(cygpath -u "$CURRENT_NATIVE" 2>/dev/null || printf '%s' "$CURRENT_NATIVE")"
 deploy_script="$(cygpath -u "$DEPLOY_NATIVE" 2>/dev/null || printf '%s' "$DEPLOY_NATIVE")"
 source "$deploy_script"
+validate_release_capabilities() { validate_release_path "$1"; }
 expected_link="$(lexical_path "$CURRENT_LINK")"
 validate_control_paths
 load_previous_release
@@ -270,6 +271,11 @@ test("candidate build failure leaves database, PM2, and current release untouche
     "#!/usr/bin/env bash\nexit 0\n",
   );
   await writeFile(
+    join(previousTarget, "scripts/release-integrity.mjs"),
+    "process.exit(0);\n",
+  );
+  await writeFile(join(previousTarget, ".release-integrity.json"), "{}\n");
+  await writeFile(
     join(previousTarget, "app/api/health/route.ts"),
     "const sha = process.env.RELEASE_SHA;\n",
   );
@@ -287,6 +293,8 @@ if [[ "$1" == "-C" ]]; then REPO="$2"; shift 2; fi
 case "$1 $2" in
   "rev-parse --show-toplevel") printf '%s\\n' "$REPO" ;;
   "rev-parse origin/"*) printf '%s\\n' "$FAKE_TARGET_SHA" ;;
+  "rev-parse HEAD") basename "$REPO" ;;
+  "diff --quiet"|"diff --cached") exit 0 ;;
   "worktree add") mkdir -p -- "$4" ;;
   "worktree remove") exit 1 ;;
   *) exit 0 ;;
@@ -337,8 +345,10 @@ export SOURCE_REPO="$(native_to_unix "$SOURCE_NATIVE")"
 export RELEASE_ROOT="$(native_to_unix "$RELEASE_NATIVE")"
 export CURRENT_LINK="$(native_to_unix "$CURRENT_NATIVE")"
 export ENV_FILE="$(native_to_unix "$ENV_NATIVE")"
+export LOCK_FILE="$(native_to_unix "$LOCK_NATIVE")"
 export CALLS_FILE="$(native_to_unix "$CALLS_NATIVE")"
 export FAKE_TARGET_SHA="${targetSha}"
+export EXPECTED_SHA="\${EXPECTED_SHA_OVERRIDE:-${targetSha}}"
 export PATH="$(native_to_unix "$BIN_NATIVE"):$PATH"
 deploy_script="$(native_to_unix "$DEPLOY_NATIVE")"
 bash "$deploy_script"`,
@@ -349,6 +359,7 @@ bash "$deploy_script"`,
         RELEASE_NATIVE: releaseRoot,
         CURRENT_NATIVE: currentLink,
         ENV_NATIVE: envFile,
+        LOCK_NATIVE: join(releaseRoot, ".deploy.lock"),
         CALLS_NATIVE: callsFile,
         BIN_NATIVE: fakeBin,
         DEPLOY_NATIVE: deployPath,
@@ -363,7 +374,11 @@ bash "$deploy_script"`,
 
   await writeFile(
     envFile,
-    "POSTGREST_READY_URL=http://127.0.0.1:3001/ready\n",
+    [
+      "POSTGREST_READY_URL=http://127.0.0.1:3001/ready",
+      "POSTGREST_METRICS_URL=http://127.0.0.1:3001/metrics",
+      "",
+    ].join("\n"),
     {
       mode: 0o640,
     },
@@ -372,6 +387,13 @@ bash "$deploy_script"`,
   assert.notEqual(unsafeEnv.status, 0);
   assert.match(unsafeEnv.stderr, /group\/world writable/);
   assert.equal(await readFile(callsFile, "utf8"), "");
+
+  const movedHead = invoke({ EXPECTED_SHA_OVERRIDE: "c".repeat(40) });
+  assert.notEqual(movedHead.status, 0);
+  assert.match(movedHead.stderr, /branch head moved/);
+  const movedCalls = await readFile(callsFile, "utf8");
+  assert.doesNotMatch(movedCalls, /worktree add|pnpm |docker |pm2 /);
+  await writeFile(callsFile, "");
 
   const shell = invoke();
   assert.notEqual(shell.status, 0, "the simulated candidate build must fail");
@@ -458,6 +480,11 @@ select 'commit and rollback are data here';
   for (const [body, expected] of [
     ["select 1;\nCOMMIT;\n", /top-level transaction control/i],
     ["  \\set unsafe 1\nselect 1;\n", /psql meta-command/i],
+    ["select 'commit;' \\gexec\n", /psql meta-command/i],
+    [
+      "PREPARE TRANSACTION 'escape-wrapper';\n",
+      /top-level transaction control/i,
+    ],
   ]) {
     await writeFile(migration, `-- deploy: expand\n${body}`);
     const invalid = run(process.execPath, { args: [validator, migration] });
@@ -484,6 +511,7 @@ mkdir "$FAKE_FLOCK_STATE" 2>/dev/null
   const shellScript = `native_to_unix() { cygpath -u "$1" 2>/dev/null || printf '%s' "$1"; }
 export PATH="$(native_to_unix "$BIN_NATIVE"):$PATH"
 export RELEASE_ROOT="$(native_to_unix "$RELEASE_NATIVE")"
+export LOCK_FILE="$(native_to_unix "$LOCK_NATIVE")"
 export FAKE_FLOCK_STATE="$(native_to_unix "$LOCK_STATE_NATIVE")"
 source "$(native_to_unix "$DEPLOY_NATIVE")"
 acquire_deploy_lock`;
@@ -491,6 +519,7 @@ acquire_deploy_lock`;
     ...process.env,
     BIN_NATIVE: fakeBin,
     RELEASE_NATIVE: releaseRoot,
+    LOCK_NATIVE: join(releaseRoot, ".deploy.lock"),
     LOCK_STATE_NATIVE: lockState,
     DEPLOY_NATIVE: deployPath,
   };
@@ -568,7 +597,12 @@ test("release verifier accepts only the exact healthy runtime SHA", async (t) =>
   const currentTarget = join(releaseRoot, expectedSha);
   const currentLink = join(sandbox, "current");
   await mkdir(currentTarget, { recursive: true });
+  await mkdir(join(currentTarget, "scripts"), { recursive: true });
   await mkdir(fakeBin);
+  await writeFile(
+    join(currentTarget, "scripts/release-integrity.mjs"),
+    "process.exit(0);\n",
+  );
   await symlink(
     currentTarget,
     currentLink,
@@ -661,6 +695,80 @@ test("release cleanup counts protected releases inside KEEP_RELEASES", () => {
   assert.ok(protectedRelease < retention);
 });
 
+test("release cleanup preserves candidates when PM2 output is malformed", async (t) => {
+  const sandbox = await mkdtemp(join(tmpdir(), "deploy-pm2-malformed-"));
+  t.after(() => rm(sandbox, { recursive: true, force: true }));
+  const candidate = join(sandbox, "d".repeat(40));
+  await mkdir(candidate);
+  const deployPath = join(process.cwd(), "scripts/deploy.sh");
+
+  const shell = run(bash, {
+    args: [
+      "-lc",
+      `native_to_unix() { cygpath -u "$1" 2>/dev/null || printf '%s' "$1"; }
+source "$(native_to_unix "$DEPLOY_NATIVE")"
+node() { "$(native_to_unix "$NODE_NATIVE")" "$@"; }
+candidate="$(native_to_unix "$CANDIDATE_NATIVE")"
+pm2_bounded() { printf '{malformed'; }
+pm2_references_release "$candidate"
+pm2_bounded() { printf '[]'; }
+if pm2_references_release "$candidate"; then exit 55; fi`,
+    ],
+    env: {
+      ...process.env,
+      DEPLOY_NATIVE: deployPath,
+      NODE_NATIVE: process.execPath,
+      CANDIDATE_NATIVE: candidate,
+    },
+  });
+  assert.equal(shell.status, 0, `${shell.stdout}\n${shell.stderr}`);
+});
+
+test("PostgREST proof requires a newer successful schema-cache generation", async (t) => {
+  const sandbox = await mkdtemp(join(tmpdir(), "deploy-postgrest-generation-"));
+  t.after(() => rm(sandbox, { recursive: true, force: true }));
+  const counter = join(sandbox, "counter");
+  await writeFile(counter, "0\n");
+  const deployPath = join(process.cwd(), "scripts/deploy.sh");
+
+  const shell = run(bash, {
+    args: [
+      "-lc",
+      `native_to_unix() { cygpath -u "$1" 2>/dev/null || printf '%s' "$1"; }
+source "$(native_to_unix "$DEPLOY_NATIVE")"
+node() { "$(native_to_unix "$NODE_NATIVE")" "$@"; }
+counter="$(native_to_unix "$COUNTER_NATIVE")"
+POSTGREST_READY_URL=https://example.invalid/ready
+POSTGREST_METRICS_URL=https://example.invalid/metrics
+if validate_postgrest_admin_urls; then exit 56; fi
+POSTGREST_READY_URL=http://127.0.0.1:3001/ready
+POSTGREST_METRICS_URL=http://127.0.0.1:3001/metrics
+validate_postgrest_admin_urls
+timeout() {
+  printf '# HELP ignored\\npgrst_schema_cache_loads_total{status="FAIL"} 9\\npgrst_schema_cache_loads_total{status="SUCCESS"} 41\\n'
+}
+[[ "$(read_postgrest_schema_cache_generation)" == "41" ]]
+timeout() { return 0; }
+read_postgrest_schema_cache_generation() {
+  value="$(cat "$counter")"
+  value=$((value + 1))
+  printf '%s\\n' "$value" > "$counter"
+  if [[ "$value" -eq 1 ]]; then printf '41'; else printf '42'; fi
+}
+sleep() { :; }
+wait_for_postgrest_schema_cache 41
+[[ "$(cat "$counter")" == "2" ]]`,
+    ],
+    env: {
+      ...process.env,
+      DEPLOY_NATIVE: deployPath,
+      NODE_NATIVE: process.execPath,
+      COUNTER_NATIVE: counter,
+    },
+  });
+  assert.equal(shell.status, 0, `${shell.stdout}\n${shell.stderr}`);
+});
+
 test("package exposes the deploy contract", () => {
   assert.equal(
     packageJson.scripts["test:deploy-contract"],
@@ -682,9 +790,10 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(deploy, /pg_advisory_xact_lock/);
   assert.match(deploy, /write_migration_manifest/);
   assert.match(deploy, /if ! find/);
-  assert.match(deploy, /pm2 save/);
+  assert.match(deploy, /pm2_bounded save/);
   assert.doesNotMatch(deploy, /rm -rf/);
   assert.match(deploy, /POSTGREST_READY_URL/);
+  assert.match(deploy, /POSTGREST_METRICS_URL/);
   assert.match(migrationValidator, /-- deploy: expand/);
   assert.match(migrationValidator, /psql meta-command is forbidden/);
   assert.match(migrationValidator, /top-level transaction control/);

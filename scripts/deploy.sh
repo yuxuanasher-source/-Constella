@@ -13,12 +13,17 @@ SOURCE_REPO="${SOURCE_REPO:-/var/www/jingying-cabin}"
 RELEASE_ROOT="${RELEASE_ROOT:-/var/cache/jingying-cabin-releases}"
 CURRENT_LINK="${CURRENT_LINK:-/var/www/jingying-cabin-current}"
 ENV_FILE="${ENV_FILE:-/etc/jingying-cabin/production.env}"
+LOCK_FILE="${LOCK_FILE:-/var/cache/jingying-cabin-releases/.jingying-cabin.deploy.lock}"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"
 BRANCH="${BRANCH:-codex/full-project-ui}"
+EXPECTED_SHA="${EXPECTED_SHA:-}"
 DB_CONTAINER="${DB_CONTAINER:-supabase-db}"
+DB_NAME="${DB_NAME:-postgres}"
 PM2_NAME="${PM2_NAME:-jingying-cabin}"
+PM2_TIMEOUT_SECONDS="${PM2_TIMEOUT_SECONDS:-30}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 POSTGREST_READY_URL="${POSTGREST_READY_URL:-}"
+POSTGREST_METRICS_URL="${POSTGREST_METRICS_URL:-}"
 
 BOOTSTRAP_SENTINEL="__atomic_release_bootstrap_v1__"
 BOOTSTRAP_VERSION="bootstrap-v1"
@@ -40,6 +45,7 @@ declare -a BOOTSTRAP_FILENAMES=()
 declare -A MIGRATION_VERSIONS=()
 declare -A SUPABASE_LEDGER_VERSIONS=()
 declare -A CUSTOM_LEDGER_FILES=()
+declare -A PENDING_VERSIONS=()
 LOCK_FD=""
 
 log() { printf '\033[1;36m[deploy]\033[0m %s\n' "$*"; }
@@ -109,7 +115,9 @@ load_runtime_env() {
   local saved_source="$SOURCE_REPO" saved_root="$RELEASE_ROOT"
   local saved_current="$CURRENT_LINK" saved_env="$ENV_FILE"
   local saved_keep="$KEEP_RELEASES" saved_branch="$BRANCH"
-  local saved_db="$DB_CONTAINER" saved_pm2="$PM2_NAME"
+  local saved_expected="$EXPECTED_SHA" saved_lock="$LOCK_FILE"
+  local saved_db="$DB_CONTAINER" saved_db_name="$DB_NAME" saved_pm2="$PM2_NAME"
+  local saved_pm2_timeout="$PM2_TIMEOUT_SECONDS"
 
   set -a
   # shellcheck disable=SC1090 -- path was validated as a secure regular file.
@@ -122,10 +130,15 @@ load_runtime_env() {
   ENV_FILE="$saved_env"
   KEEP_RELEASES="$saved_keep"
   BRANCH="$saved_branch"
+  EXPECTED_SHA="$saved_expected"
+  LOCK_FILE="$saved_lock"
   DB_CONTAINER="$saved_db"
+  DB_NAME="$saved_db_name"
   PM2_NAME="$saved_pm2"
+  PM2_TIMEOUT_SECONDS="$saved_pm2_timeout"
   export ENV_FILE
   POSTGREST_READY_URL="${POSTGREST_READY_URL:-}"
+  POSTGREST_METRICS_URL="${POSTGREST_METRICS_URL:-}"
   HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 }
 
@@ -191,13 +204,15 @@ validate_rollback_control_paths() {
 
 validate_rollback_runtime() {
   local node_major pnpm_version
-  for command_name in realpath stat id node pnpm pm2 curl timeout flock; do
+  for command_name in git realpath sha256sum stat id node pnpm pm2 curl timeout flock; do
     command -v "$command_name" >/dev/null 2>&1 || die "required command is missing: $command_name"
   done
   node_major="$(node -p 'process.versions.node.split(".")[0]')"
   [[ "$node_major" == "20" ]] || die "Node major must be 20 (found $(node --version))"
   pnpm_version="$(pnpm --version)"
   [[ "$pnpm_version" == "10.12.1" ]] || die "pnpm must be exactly 10.12.1 (found $pnpm_version)"
+  [[ "$PM2_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+    die "PM2_TIMEOUT_SECONDS must be a positive integer"
 }
 
 validate_runtime() {
@@ -208,19 +223,25 @@ validate_runtime() {
 }
 
 acquire_deploy_lock() {
-  local lock_file="$RELEASE_ROOT/.deploy.lock" path_identity fd_identity
-  if [[ -e "$lock_file" || -L "$lock_file" ]]; then
-    validate_owner_and_mode "deploy lock" "$lock_file" file
+  local lock_parent path_identity fd_identity
+  require_absolute_path "LOCK_FILE" "$LOCK_FILE"
+  LOCK_FILE="$(lexical_path "$LOCK_FILE")"
+  reject_dangerous_path "LOCK_FILE" "$LOCK_FILE"
+  lock_parent="$(physical_path "$(dirname "$LOCK_FILE")")"
+  validate_owner_and_mode "deploy lock parent" "$lock_parent" dir
+  LOCK_FILE="$lock_parent/$(basename "$LOCK_FILE")"
+  if [[ -e "$LOCK_FILE" || -L "$LOCK_FILE" ]]; then
+    validate_owner_and_mode "deploy lock" "$LOCK_FILE" file
   else
-    ( umask 077; : > "$lock_file" ) || die "cannot create deploy lock: $lock_file"
-    validate_owner_and_mode "deploy lock" "$lock_file" file
+    ( umask 077; : > "$LOCK_FILE" ) || die "cannot create deploy lock: $LOCK_FILE"
+    validate_owner_and_mode "deploy lock" "$LOCK_FILE" file
   fi
-  exec {LOCK_FD}<>"$lock_file" || die "cannot open deploy lock: $lock_file"
-  path_identity="$(stat -Lc '%d:%i' -- "$lock_file")"
+  exec {LOCK_FD}<>"$LOCK_FILE" || die "cannot open deploy lock: $LOCK_FILE"
+  path_identity="$(stat -Lc '%d:%i' -- "$LOCK_FILE")"
   fd_identity="$(stat -Lc '%d:%i' -- "/proc/$$/fd/$LOCK_FD")" ||
     die "cannot verify physical deploy lock descriptor"
   [[ "$path_identity" == "$fd_identity" ]] || die "deploy lock path changed while opening"
-  flock -n "$LOCK_FD" || die "another deployment already holds $lock_file"
+  flock -n "$LOCK_FD" || die "another deployment already holds $LOCK_FILE"
 }
 
 validate_source_repo() {
@@ -251,9 +272,32 @@ validate_release_capabilities() {
   [[ "$(basename "$target")" == "$sha" ]] || die "release SHA/path mismatch: $target"
   [[ -f "$target/ecosystem.config.cjs" ]] || die "release lacks ecosystem config: $target"
   [[ -x "$target/scripts/verify-release.sh" ]] || die "release lacks executable verifier: $target"
+  [[ -f "$target/scripts/release-integrity.mjs" ]] ||
+    die "release lacks integrity verifier: $target"
+  [[ -f "$target/.release-integrity.json" ]] ||
+    die "release lacks build integrity manifest: $target"
   [[ -f "$target/app/api/health/route.ts" ]] || die "release lacks health source: $target"
   grep -Fq 'process.env.RELEASE_SHA' "$target/app/api/health/route.ts" ||
     die "release health route lacks full RELEASE_SHA capability: $target"
+  assert_release_git_state "$target" "$sha"
+  node "$target/scripts/release-integrity.mjs" verify "$target" "$sha" ||
+    die "release build integrity verification failed: $target"
+}
+
+assert_release_git_state() {
+  local target="$1" sha="$2" actual
+  actual="$(git -C "$target" rev-parse HEAD)" ||
+    die "cannot read release Git HEAD: $target"
+  actual="${actual,,}"
+  [[ "$actual" == "$sha" ]] || die "release Git HEAD mismatch: expected $sha, found $actual"
+  git -C "$target" diff --quiet --ignore-submodules -- ||
+    die "release has modified tracked files: $target"
+  git -C "$target" diff --cached --quiet --ignore-submodules -- ||
+    die "release index differs from HEAD: $target"
+}
+
+pm2_bounded() {
+  timeout --signal=TERM "${PM2_TIMEOUT_SECONDS}s" pm2 "$@"
 }
 
 load_previous_release() {
@@ -298,22 +342,44 @@ safe_remove_release_dir() {
 }
 
 pm2_references_release() {
-  local candidate="$1" pm2_snapshot
-  pm2_snapshot="$(pm2 jlist)" || return 0
-  PM2_CANDIDATE="$candidate" node -e '
+  local candidate="$1" pm2_snapshot status
+  pm2_snapshot="$(pm2_bounded jlist)" || return 0
+  if PM2_CANDIDATE="$candidate" node -e '
     const fs = require("node:fs");
-    const candidate = fs.realpathSync(process.env.PM2_CANDIDATE);
-    const entries = JSON.parse(fs.readFileSync(0, "utf8"));
+    let candidate;
+    let entries;
+    try {
+      candidate = fs.realpathSync(process.env.PM2_CANDIDATE);
+      entries = JSON.parse(fs.readFileSync(0, "utf8"));
+    } catch {
+      process.exit(2);
+    }
+    if (!Array.isArray(entries)) process.exit(2);
     const referenced = entries.some(({ pm2_env: env = {} }) => {
-      if (typeof env.pm_cwd !== "string") return false;
-      try { return fs.realpathSync(env.pm_cwd) === candidate; } catch { return true; }
+      if (typeof env.pm_cwd !== "string") {
+        process.exitCode = 2;
+        return false;
+      }
+      try {
+        return fs.realpathSync(env.pm_cwd) === candidate;
+      } catch {
+        process.exitCode = 2;
+        return false;
+      }
     });
-    process.exit(referenced ? 0 : 1);
-  ' <<< "$pm2_snapshot"
+    if (referenced) process.exit(0);
+    process.exit(process.exitCode === 2 ? 2 : 1);
+  ' <<< "$pm2_snapshot"; then
+    return 0
+  else
+    status=$?
+    [[ "$status" -eq 1 ]] && return 1
+    return 0
+  fi
 }
 
 db() {
-  docker exec -i "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres "$@"
+  docker exec -i "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d "$DB_NAME" "$@"
 }
 
 db_q() {
@@ -354,21 +420,58 @@ validate_expand_header() {
     die "expand migration validation failed: $(basename "$file")"
 }
 
+validate_postgrest_admin_urls() {
+  node - "$POSTGREST_READY_URL" "$POSTGREST_METRICS_URL" <<'NODE'
+const [readyInput, metricsInput] = process.argv.slice(2);
+let ready;
+let metrics;
+try {
+  ready = new URL(readyInput);
+  metrics = new URL(metricsInput);
+} catch {
+  process.exit(1);
+}
+const loopbackHosts = new Set(["127.0.0.1", "[::1]", "::1", "localhost"]);
+const safe = [ready, metrics].every(
+  (url) =>
+    url.protocol === "http:" &&
+    loopbackHosts.has(url.hostname) &&
+    url.username === "" &&
+    url.password === "" &&
+    url.search === "" &&
+    url.hash === "",
+);
+if (
+  !safe ||
+  ready.origin !== metrics.origin ||
+  ready.pathname !== "/ready" ||
+  metrics.pathname !== "/metrics"
+) {
+  process.exit(1);
+}
+NODE
+}
+
 preflight_migration_ledgers() {
-  local file base version supabase_present custom_present sentinel_present
-  local version_column supabase_applied custom_filename custom_version
+  local file base version supabase_present custom_present public_legacy_present
+  local sentinel_count security_ok supabase_applied custom_filename custom_version
   local supabase_rows custom_rows row_filename row_version
   PENDING_MIGRATIONS=()
   BOOTSTRAP_FILENAMES=()
   MIGRATION_VERSIONS=()
   SUPABASE_LEDGER_VERSIONS=()
   CUSTOM_LEDGER_FILES=()
+  PENDING_VERSIONS=()
 
+  [[ "$DB_NAME" =~ ^[0-9A-Za-z_-]+$ ]] || die "DB_NAME contains unsafe characters"
   docker inspect "$DB_CONTAINER" >/dev/null 2>&1 || die "database container was not found: $DB_CONTAINER"
   supabase_present="$(db_q "select to_regclass('supabase_migrations.schema_migrations') is not null")"
   [[ "$supabase_present" == "t" ]] ||
     die "no trusted Supabase migration ledger; follow docs/runbooks/atomic-release-bootstrap.md"
-  custom_present="$(db_q "select to_regclass('public.deploy_migrations') is not null")"
+  custom_present="$(db_q "select to_regclass('deploy_internal.schema_migrations') is not null")"
+  public_legacy_present="$(db_q "select to_regclass('public.deploy_migrations') is not null")"
+  [[ "$public_legacy_present" != "t" ]] ||
+    die "legacy public deploy ledger must be secured and moved; follow docs/runbooks/atomic-release-bootstrap.md"
 
   while IFS= read -r -d '' file; do
     parse_migration_identity "$file"
@@ -385,14 +488,34 @@ preflight_migration_ledgers() {
   done <<< "$supabase_rows"
 
   if [[ "$custom_present" == "t" ]]; then
-    version_column="$(db_q "select exists(select 1 from information_schema.columns where table_schema='public' and table_name='deploy_migrations' and column_name='version')")"
-    [[ "$version_column" == "t" ]] ||
-      die "legacy deploy ledger lacks version mapping; follow docs/runbooks/atomic-release-bootstrap.md"
-    sentinel_present="$(db_q "select exists(select 1 from public.deploy_migrations where filename='$BOOTSTRAP_SENTINEL' and version='$BOOTSTRAP_VERSION')")"
-    [[ "$sentinel_present" == "t" ]] ||
-      die "deploy ledger lacks trusted bootstrap sentinel; follow docs/runbooks/atomic-release-bootstrap.md"
+    security_ok="$(db_q "
+      select
+        pg_get_userbyid(c.relowner) = current_user
+        and c.relrowsecurity
+        and c.relforcerowsecurity
+        and c.relkind = 'r'
+        and not exists (
+          select 1
+          from aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) acl
+          where acl.grantee <> c.relowner
+        )
+        and pg_get_userbyid(n.nspowner) = current_user
+        and not exists (
+          select 1
+          from aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) acl
+          where acl.grantee <> n.nspowner
+        )
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'deploy_internal' and c.relname = 'schema_migrations'
+    ")"
+    [[ "$security_ok" == "t" ]] ||
+      die "internal deploy ledger owner, RLS, or ACL is unsafe; follow docs/runbooks/atomic-release-bootstrap.md"
+    sentinel_count="$(db_q "select count(*) from deploy_internal.schema_migrations where filename='$BOOTSTRAP_SENTINEL' and version='$BOOTSTRAP_VERSION'")"
+    [[ "$sentinel_count" == "1" ]] ||
+      die "deploy ledger lacks exactly one trusted bootstrap sentinel"
     custom_ledger_state="trusted"
-    custom_rows="$(db_q "select filename || E'\\t' || version from public.deploy_migrations order by version, filename")" ||
+    custom_rows="$(db_q "select filename || E'\\t' || version from deploy_internal.schema_migrations order by version, filename")" ||
       die "cannot read custom migration ledger"
     while IFS=$'\t' read -r row_filename row_version; do
       [[ -z "$row_filename" ]] && continue
@@ -432,6 +555,7 @@ preflight_migration_ledgers() {
     fi
     if [[ "$supabase_applied" != "t" ]]; then
       PENDING_MIGRATIONS+=("$file")
+      PENDING_VERSIONS[$version]=1
     fi
   done < "$migration_manifest"
 
@@ -439,78 +563,225 @@ preflight_migration_ledgers() {
     validate_expand_header "$file"
   done
   if (( ${#PENDING_MIGRATIONS[@]} > 0 )); then
-    [[ "$POSTGREST_READY_URL" =~ ^https?:// ]] ||
-      die "POSTGREST_READY_URL is required before applying migrations"
+    validate_postgrest_admin_urls ||
+      die "loopback PostgREST /ready and /metrics URLs on one admin origin are required"
   fi
 }
 
-bootstrap_custom_ledger() {
-  local base version
-  [[ "$custom_ledger_state" == "absent" ]] || return 0
-  {
-    printf 'begin;\n'
-    printf "select pg_advisory_xact_lock(hashtextextended('%s', 0));\n" "$MIGRATION_LOCK_KEY"
-    cat <<'SQL'
-create table public.deploy_migrations (
+read_postgrest_schema_cache_generation() {
+  timeout --signal=TERM 10s curl --fail --silent --show-error \
+    --connect-timeout 2 --max-time 5 "$POSTGREST_METRICS_URL" |
+    node -e '
+      const fs = require("node:fs");
+      const lines = fs.readFileSync(0, "utf8").split(/\r?\n/);
+      const match = lines
+        .filter((line) => line.startsWith("pgrst_schema_cache_loads_total{"))
+        .find((line) => /status="SUCCESS"/.test(line))
+        ?.match(/\s([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$/);
+      if (!match || !Number.isFinite(Number(match[1]))) process.exit(1);
+      process.stdout.write(match[1]);
+    '
+}
+
+wait_for_postgrest_schema_cache() {
+  local before_generation="$1" attempt after_generation=""
+  for attempt in {1..25}; do
+    if timeout --signal=TERM 5s curl --fail --silent --show-error \
+      --connect-timeout 2 --max-time 3 "$POSTGREST_READY_URL" >/dev/null; then
+      after_generation="$(read_postgrest_schema_cache_generation || true)"
+      if node -e '
+        const [before, after] = process.argv.slice(1).map(Number);
+        process.exit(Number.isFinite(before) && Number.isFinite(after) && after > before ? 0 : 1);
+      ' "$before_generation" "$after_generation"; then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+emit_internal_ledger_security_sql() {
+  cat <<'SQL'
+create schema if not exists deploy_internal authorization current_user;
+revoke all on schema deploy_internal from public;
+do $deploy_roles$
+declare role_name text;
+begin
+  foreach role_name in array array['anon', 'authenticated', 'service_role']
+  loop
+    if exists (select 1 from pg_roles where rolname = role_name) then
+      execute format('revoke all on schema deploy_internal from %I', role_name);
+    end if;
+  end loop;
+end
+$deploy_roles$;
+create table if not exists deploy_internal.schema_migrations (
   filename text primary key,
   version text not null unique,
   applied_at timestamptz not null default now()
 );
+alter table deploy_internal.schema_migrations enable row level security;
+alter table deploy_internal.schema_migrations force row level security;
+revoke all on table deploy_internal.schema_migrations from public;
+do $deploy_roles$
+declare role_name text;
+begin
+  foreach role_name in array array['anon', 'authenticated', 'service_role']
+  loop
+    if exists (select 1 from pg_roles where rolname = role_name) then
+      execute format(
+        'revoke all on table deploy_internal.schema_migrations from %I',
+        role_name
+      );
+    end if;
+  end loop;
+end
+$deploy_roles$;
 SQL
-    for base in "${BOOTSTRAP_FILENAMES[@]}"; do
-      version="${base%%_*}"
-      printf "insert into public.deploy_migrations(filename, version) values ('%s', '%s');\n" "$base" "$version"
-    done
-    printf "insert into public.deploy_migrations(filename, version) values ('%s', '%s');\n" \
-      "$BOOTSTRAP_SENTINEL" "$BOOTSTRAP_VERSION"
-    printf 'commit;\n'
-  } | db -q
-  custom_ledger_state="trusted"
 }
 
-apply_one_migration() {
-  local file="$1" base version name output
-  base="$(basename "$file")"
-  version="${base%%_*}"
-  name="${base#*_}"
-  name="${name%.sql}"
-  output="$({
-    printf 'begin;\n'
-    printf "select pg_advisory_xact_lock(hashtextextended('%s', 0));\n" "$MIGRATION_LOCK_KEY"
-    printf "do \\\$\\\$ declare c boolean; s boolean; begin select exists(select 1 from public.deploy_migrations where filename='%s' and version='%s') into c; select exists(select 1 from supabase_migrations.schema_migrations where version='%s') into s; if c <> s then raise exception 'migration ledger mismatch under lock for version %s'; end if; end \\\$\\\$;\n" \
-      "$base" "$version" "$version" "$version"
-    printf "select not exists(select 1 from public.deploy_migrations where filename='%s' and version='%s') as should_apply \\gset\n" "$base" "$version"
-    printf '\\if :should_apply\n'
-    cat "$file"
-    printf "\ninsert into public.deploy_migrations(filename, version) values ('%s', '%s');\n" "$base" "$version"
-    printf "insert into supabase_migrations.schema_migrations(version, name) values ('%s', '%s') on conflict (version) do nothing;\n" "$version" "$name"
-    printf "select 'APPLIED:%s';\n" "$base"
-    printf '\\else\n'
-    printf "select 'SKIPPED:%s';\n" "$base"
-    printf '\\endif\ncommit;\n'
-  } | db -Atq)" || die "migration transaction failed: $base"
-  printf '%s\n' "$output"
-}
-
-wait_for_postgrest_schema_cache() {
-  timeout --signal=TERM 30s curl --fail --silent --show-error \
-    --connect-timeout 2 --max-time 5 --retry 5 --retry-delay 1 \
-    --retry-all-errors --retry-max-time 25 "$POSTGREST_READY_URL" >/dev/null
+emit_locked_ledger_assertion_sql() {
+  cat <<'SQL'
+do $deploy_assert$
+begin
+  if not exists (
+    select 1
+    from pg_namespace n
+    where n.nspname = 'deploy_internal'
+      and pg_get_userbyid(n.nspowner) = current_user
+      and not exists (
+        select 1
+        from aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) acl
+        where acl.grantee <> n.nspowner
+      )
+  ) then
+    raise exception 'deploy_internal schema owner or ACL is unsafe';
+  end if;
+  if not exists (
+    select 1
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'deploy_internal'
+      and c.relname = 'schema_migrations'
+      and c.relkind = 'r'
+      and pg_get_userbyid(c.relowner) = current_user
+      and c.relrowsecurity
+      and c.relforcerowsecurity
+      and not exists (
+        select 1
+        from aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) acl
+        where acl.grantee <> c.relowner
+      )
+  ) then
+    raise exception 'internal deploy ledger owner, RLS, or ACL is unsafe';
+  end if;
+  if to_regclass('public.deploy_migrations') is not null then
+    raise exception 'legacy public deploy ledger must be moved before deployment';
+  end if;
+  if (
+    select count(*)
+    from deploy_internal.schema_migrations
+    where filename = '__atomic_release_bootstrap_v1__'
+      and version = 'bootstrap-v1'
+  ) <> 1 then
+    raise exception 'internal deploy ledger bootstrap sentinel is invalid';
+  end if;
+  if exists (
+    select 1
+    from supabase_migrations.schema_migrations native
+    left join expected_deploy_migrations expected using (version)
+    where expected.version is null
+  ) then
+    raise exception 'Supabase ledger contains a version outside the candidate manifest';
+  end if;
+  if exists (
+    select 1
+    from deploy_internal.schema_migrations internal
+    left join expected_deploy_migrations expected
+      on expected.version = internal.version
+     and expected.filename = internal.filename
+    left join supabase_migrations.schema_migrations native
+      on native.version = internal.version
+    where internal.filename <> '__atomic_release_bootstrap_v1__'
+      and (expected.version is null or native.version is null)
+  ) then
+    raise exception 'internal deploy ledger does not exactly match candidate and Supabase ledgers';
+  end if;
+  if exists (
+    select 1
+    from supabase_migrations.schema_migrations native
+    join expected_deploy_migrations expected using (version)
+    left join deploy_internal.schema_migrations internal
+      on internal.version = expected.version
+     and internal.filename = expected.filename
+    where internal.version is null
+  ) then
+    raise exception 'Supabase ledger row is absent from the internal deploy ledger';
+  end if;
+end
+$deploy_assert$;
+SQL
 }
 
 apply_migrations() {
-  local file output applied=0
-  bootstrap_custom_ledger
-  for file in "${PENDING_MIGRATIONS[@]}"; do
-    log "Applying expand migration $(basename "$file")"
-    output="$(apply_one_migration "$file")"
-    [[ "$output" == *"APPLIED:"* ]] && applied=$((applied + 1))
-  done
+  local file base version name output applied=0 schema_cache_before=""
+  if (( ${#PENDING_MIGRATIONS[@]} > 0 )); then
+    schema_cache_before="$(read_postgrest_schema_cache_generation)" ||
+      die "cannot read the pre-migration PostgREST schema-cache generation"
+    [[ "$schema_cache_before" =~ ^[-+]?[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]] ||
+      die "invalid pre-migration PostgREST schema-cache generation"
+  fi
+
+  output="$({
+    printf 'begin;\n'
+    printf "select pg_advisory_xact_lock(hashtextextended('%s', 0));\n" "$MIGRATION_LOCK_KEY"
+    printf 'lock table supabase_migrations.schema_migrations in share row exclusive mode;\n'
+    printf 'create temporary table expected_deploy_migrations (version text primary key, filename text not null unique, name text not null) on commit drop;\n'
+    while IFS= read -r -d '' file; do
+      base="$(basename "$file")"
+      version="${base%%_*}"
+      name="${base#*_}"
+      name="${name%.sql}"
+      printf "insert into expected_deploy_migrations(version, filename, name) values ('%s', '%s', '%s');\n" \
+        "$version" "$base" "$name"
+    done < "$migration_manifest"
+    emit_internal_ledger_security_sql
+    printf 'lock table deploy_internal.schema_migrations in share row exclusive mode;\n'
+    printf "insert into deploy_internal.schema_migrations(filename, version) select expected.filename, expected.version from expected_deploy_migrations expected join supabase_migrations.schema_migrations native using (version) on conflict (version) do nothing;\n"
+    printf "insert into deploy_internal.schema_migrations(filename, version) values ('%s', '%s') on conflict (filename) do nothing;\n" \
+      "$BOOTSTRAP_SENTINEL" "$BOOTSTRAP_VERSION"
+    emit_locked_ledger_assertion_sql
+
+    while IFS= read -r -d '' file; do
+      base="$(basename "$file")"
+      version="${base%%_*}"
+      name="${base#*_}"
+      name="${name%.sql}"
+      if [[ -n "${PENDING_VERSIONS[$version]:-}" ]]; then
+        printf "select not exists(select 1 from supabase_migrations.schema_migrations where version='%s') as should_apply \\gset\n" "$version"
+        printf '\\if :should_apply\n'
+        cat "$file"
+        printf "\ninsert into deploy_internal.schema_migrations(filename, version) values ('%s', '%s') on conflict (version) do nothing;\n" "$base" "$version"
+        printf "insert into supabase_migrations.schema_migrations(version, name) values ('%s', '%s');\n" "$version" "$name"
+        printf "select 'APPLIED:%s';\n" "$base"
+        printf '\\else\n'
+        printf "select 'SKIPPED:%s';\n" "$base"
+        printf '\\endif\n'
+      else
+        printf "do \\\$\\\$ begin if not exists(select 1 from supabase_migrations.schema_migrations where version='%s') then raise exception 'previously applied migration disappeared: %s'; end if; end \\\$\\\$;\n" "$version" "$base"
+        printf "select 'SKIPPED:%s';\n" "$base"
+      fi
+    done < "$migration_manifest"
+    emit_locked_ledger_assertion_sql
+    printf "select pg_notify('pgrst', 'reload schema');\n"
+    printf 'commit;\n'
+  } | db -Atq)" || die "serialized migration batch failed"
+
+  applied="$(grep -c '^APPLIED:' <<< "$output" || true)"
   if (( applied > 0 )); then
-    db_q "select pg_notify('pgrst', 'reload schema')" >/dev/null ||
-      die "PostgREST schema reload notification failed"
-    wait_for_postgrest_schema_cache ||
-      die "PostgREST schema cache readiness did not recover within 30 seconds"
+    wait_for_postgrest_schema_cache "$schema_cache_before" ||
+      die "PostgREST did not expose a new ready schema-cache generation within 25 seconds"
   fi
   log "Migrations complete ($applied newly applied)"
 }
@@ -542,17 +813,18 @@ rollback_current() {
 reload_pm2() {
   local sha="$1"
   CURRENT_LINK="$CURRENT_LINK" PM2_NAME="$PM2_NAME" RELEASE_SHA="$sha" \
-    pm2 startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --update-env
+    pm2_bounded startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --update-env
 }
 
 save_pm2() {
-  pm2 save
+  pm2_bounded save
 }
 
 verify_release() {
   local sha="$1"
   CURRENT_LINK="$CURRENT_LINK" RELEASE_ROOT="$RELEASE_ROOT" PM2_NAME="$PM2_NAME" \
-    HEALTH_URL="$HEALTH_URL" "$CURRENT_LINK/scripts/verify-release.sh" "$sha"
+    PM2_TIMEOUT_SECONDS="$PM2_TIMEOUT_SECONDS" HEALTH_URL="$HEALTH_URL" \
+    "$CURRENT_LINK/scripts/verify-release.sh" "$sha"
 }
 
 rollback_after_activation_failure() {
@@ -640,6 +912,8 @@ on_exit() {
 
 main() {
   trap on_exit EXIT
+  [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+    die "EXPECTED_SHA must be the reviewed full lowercase Git SHA"
   validate_runtime
   validate_secure_env_file
   load_runtime_env
@@ -652,6 +926,8 @@ main() {
   TARGET_SHA="$(git -C "$SOURCE_REPO" rev-parse "origin/$BRANCH^{commit}")"
   TARGET_SHA="${TARGET_SHA,,}"
   [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || die "target is not a full Git SHA: $TARGET_SHA"
+  [[ "$TARGET_SHA" == "$EXPECTED_SHA" ]] ||
+    die "branch head moved: expected $EXPECTED_SHA, found $TARGET_SHA"
   release_dir="$RELEASE_ROOT/$TARGET_SHA"
   validate_release_path "$release_dir"
   [[ "$release_dir" != "$previous_target" ]] || die "target release is already current: $TARGET_SHA"
@@ -662,6 +938,7 @@ main() {
   candidate_cleanup_intended=1
   log "Creating immutable candidate $TARGET_SHA"
   git -C "$SOURCE_REPO" worktree add --detach "$release_dir" "$TARGET_SHA"
+  assert_release_git_state "$release_dir" "$TARGET_SHA"
 
   (
     cd "$release_dir"
@@ -670,6 +947,9 @@ main() {
     NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=3072}" \
       RELEASE_SHA="$TARGET_SHA" pnpm run build
   ) 2>&1 | tee "$RELEASE_ROOT/$TARGET_SHA-build.log"
+  assert_release_git_state "$release_dir" "$TARGET_SHA"
+  node "$release_dir/scripts/release-integrity.mjs" write "$release_dir" "$TARGET_SHA"
+  node "$release_dir/scripts/release-integrity.mjs" verify "$release_dir" "$TARGET_SHA"
 
   migration_manifest="$(mktemp "$RELEASE_ROOT/.migrations.$TARGET_SHA.XXXXXX")"
   write_migration_manifest "$release_dir/supabase/migrations" "$migration_manifest"
@@ -693,7 +973,9 @@ main() {
   candidate_pm2_may_be_active=0
   current_switched=0
   candidate_cleanup_intended=0
-  cleanup_old_releases
+  if ! ( trap cleanup_temp_manifests EXIT; cleanup_old_releases ); then
+    warn "Release is verified and persisted; old release cleanup is deferred"
+  fi
   log "Deployment verified and persisted at $TARGET_SHA"
 }
 

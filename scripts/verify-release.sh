@@ -5,6 +5,7 @@ EXPECTED_SHA="${1:-}"
 CURRENT_LINK="${CURRENT_LINK:-/var/www/jingying-cabin-current}"
 RELEASE_ROOT="${RELEASE_ROOT:-/var/cache/jingying-cabin-releases}"
 PM2_NAME="${PM2_NAME:-jingying-cabin}"
+PM2_TIMEOUT_SECONDS="${PM2_TIMEOUT_SECONDS:-30}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 
 die() { printf '[verify-release] %s\n' "$*" >&2; exit 1; }
@@ -13,6 +14,8 @@ die() { printf '[verify-release] %s\n' "$*" >&2; exit 1; }
   die "expected SHA must be the full 40-character lowercase Git SHA"
 [[ "$CURRENT_LINK" == /* ]] || die "CURRENT_LINK must be absolute"
 [[ "$RELEASE_ROOT" == /* ]] || die "RELEASE_ROOT must be absolute"
+[[ "$PM2_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+  die "PM2_TIMEOUT_SECONDS must be a positive integer"
 [[ -L "$CURRENT_LINK" ]] || die "CURRENT_LINK is not a symlink: $CURRENT_LINK"
 
 current_target="$(readlink -f "$CURRENT_LINK")"
@@ -21,6 +24,7 @@ current_target="$(readlink -f "$CURRENT_LINK")"
   die "current release target is outside RELEASE_ROOT"
 [[ "$(basename "$current_target")" == "$EXPECTED_SHA" ]] ||
   die "current symlink does not target expected SHA"
+node "$current_target/scripts/release-integrity.mjs" verify "$current_target" "$EXPECTED_SHA"
 
 health_file="$(mktemp)"
 pm2_file="$(mktemp)"
@@ -40,7 +44,7 @@ if (body.release?.sha !== expected) {
 }
 NODE
 
-pm2 jlist > "$pm2_file"
+timeout --signal=TERM "${PM2_TIMEOUT_SECONDS}s" pm2 jlist > "$pm2_file"
 node - "$pm2_file" "$PM2_NAME" "$CURRENT_LINK" "$current_target" "$EXPECTED_SHA" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");

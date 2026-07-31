@@ -27,17 +27,30 @@ Run as the deployment user, using root only for ownership setup:
 ```bash
 sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0750 \
   /var/cache/jingying-cabin-releases
+sudo install -o "$(id -un)" -g "$(id -gn)" -m 0600 /dev/null \
+  /var/cache/jingying-cabin-releases/.jingying-cabin.deploy.lock
 sudo install -d -o root -g "$(id -gn)" -m 0750 /etc/jingying-cabin
 sudo install -o root -g "$(id -gn)" -m 0640 /dev/null \
   /etc/jingying-cabin/production.env
 sudoedit /etc/jingying-cabin/production.env
 ```
 
-The env file contains application runtime values and a PostgREST admin readiness
-URL reachable from the host, for example:
+Enable the PostgREST admin server on loopback only. Its `ready` endpoint proves
+the connection pool and schema cache are healthy; its `metrics` endpoint gives
+the successful schema-cache load counter used to prove that a post-migration
+generation is newer than the pre-migration generation:
+
+```bash
+PGRST_ADMIN_SERVER_HOST=127.0.0.1
+PGRST_ADMIN_SERVER_PORT=3001
+```
+
+Do not publish the admin port through the public reverse proxy. The protected
+application env file contains the two loopback URLs:
 
 ```bash
 POSTGREST_READY_URL=http://127.0.0.1:3001/ready
+POSTGREST_METRICS_URL=http://127.0.0.1:3001/metrics
 ```
 
 Neither the env file nor any parent deployment path may be group/world writable.
@@ -54,7 +67,9 @@ select version, name
 from supabase_migrations.schema_migrations
 order by version;
 
-select to_regclass('public.deploy_migrations') as custom_ledger;
+select
+  to_regclass('public.deploy_migrations') as unsafe_legacy_ledger,
+  to_regclass('deploy_internal.schema_migrations') as private_deploy_ledger;
 SQL
 ```
 
@@ -64,7 +79,7 @@ ledger and deployment must remain fail-closed.
 For a legacy `public.deploy_migrations`, first compare every 14-digit filename
 prefix with the exact Supabase `version`. Resolve any mismatch from database
 backup and release evidence; never infer applied state from table existence.
-Only after an exact match, promote the legacy ledger in one transaction:
+Only after an exact match, move and harden the legacy ledger in one transaction:
 
 ```bash
 DB_CONTAINER="${DB_CONTAINER:-supabase-db}"
@@ -91,15 +106,45 @@ end $$;
 alter table public.deploy_migrations alter column version set not null;
 create unique index if not exists deploy_migrations_version_key
   on public.deploy_migrations(version);
-insert into public.deploy_migrations(filename, version)
+create schema if not exists deploy_internal authorization postgres;
+revoke all on schema deploy_internal from public;
+alter table public.deploy_migrations set schema deploy_internal;
+alter table deploy_internal.deploy_migrations rename to schema_migrations;
+alter table deploy_internal.schema_migrations owner to postgres;
+revoke all on table deploy_internal.schema_migrations from public;
+do $roles$
+declare role_name text;
+begin
+  foreach role_name in array array['anon', 'authenticated', 'service_role']
+  loop
+    if exists (select 1 from pg_roles where rolname = role_name) then
+      execute format('revoke all on schema deploy_internal from %I', role_name);
+      execute format(
+        'revoke all on table deploy_internal.schema_migrations from %I',
+        role_name
+      );
+    end if;
+  end loop;
+end
+$roles$;
+alter table deploy_internal.schema_migrations enable row level security;
+alter table deploy_internal.schema_migrations force row level security;
+insert into deploy_internal.schema_migrations(filename, version)
 values ('__atomic_release_bootstrap_v1__', 'bootstrap-v1')
 on conflict (filename) do nothing;
 commit;
 SQL
 ```
 
+If `deploy_internal.schema_migrations` already exists, stop unless it is owned by
+`postgres`, is an ordinary table with both RLS and forced RLS enabled, has no
+ACL entry for any non-owner, contains exactly one bootstrap sentinel, and every
+non-sentinel row exactly matches both the candidate manifest and Supabase
+ledger. Never leave `public.deploy_migrations` present.
+
 If the custom ledger is absent, leave it absent. The first normal deploy creates
-and imports it from the trusted Supabase ledger in one advisory-locked transaction.
+and imports it from the trusted Supabase ledger inside the same serialized
+transaction as the migration batch.
 
 ## 4. Prepare and prove the legacy restore command
 
@@ -127,7 +172,7 @@ working process list:
 umask 077
 test -x "$LEGACY_RESTORE_SCRIPT"
 "$LEGACY_RESTORE_SCRIPT"
-pm2 jlist | node -e '
+timeout --signal=TERM 30s pm2 jlist | node -e '
   const fs = require("node:fs");
   const entries = JSON.parse(fs.readFileSync(0, "utf8"));
   const redacted = entries.map(({ name, pm2_env: env = {} }) => ({
@@ -140,7 +185,7 @@ pm2 jlist | node -e '
   }));
   process.stdout.write(`${JSON.stringify(redacted, null, 2)}\n`);
 ' > "/var/cache/jingying-cabin-releases/legacy-pm2-before-bootstrap.redacted.json"
-pm2 save
+timeout --signal=TERM 30s pm2 save
 ```
 
 Do not continue if this rehearsal changes the expected release, fails health, or
@@ -160,13 +205,18 @@ export SOURCE_REPO=/var/www/jingying-cabin
 export RELEASE_ROOT=/var/cache/jingying-cabin-releases
 export CURRENT_LINK=/var/www/jingying-cabin-current
 export ENV_FILE=/etc/jingying-cabin/production.env
+export LOCK_FILE=/var/cache/jingying-cabin-releases/.jingying-cabin.deploy.lock
 export BRANCH=codex/full-project-ui
+export EXPECTED_SHA=<reviewed-full-40-character-ci-sha>
 export DB_CONTAINER="${DB_CONTAINER:-supabase-db}"
 export LEGACY_RESTORE_SCRIPT=/etc/jingying-cabin/restore-legacy.sh
 export STAGING_LINK=/var/www/jingying-cabin-bootstrap-staging
 export STAGING_PM2_NAME=jingying-cabin-bootstrap-staging
 export STAGING_PORT=3002
 
+[[ "$(git -C "$SOURCE_REPO" rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+git -C "$SOURCE_REPO" diff --quiet --ignore-submodules --
+git -C "$SOURCE_REPO" diff --cached --quiet --ignore-submodules --
 source "$SOURCE_REPO/scripts/deploy.sh"
 validate_runtime
 validate_secure_env_file
@@ -178,16 +228,26 @@ validate_source_repo
 git -C "$SOURCE_REPO" fetch origin "$BRANCH"
 TARGET_SHA="$(git -C "$SOURCE_REPO" rev-parse "origin/$BRANCH^{commit}")"
 [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+[[ "$TARGET_SHA" == "$EXPECTED_SHA" ]] || {
+  printf 'Reviewed SHA differs from remote branch head; refusing bootstrap.\n' >&2
+  exit 1
+}
 release_dir="$RELEASE_ROOT/$TARGET_SHA"
 validate_release_path "$release_dir"
 [[ ! -e "$release_dir" ]]
 git -C "$SOURCE_REPO" worktree add --detach "$release_dir" "$TARGET_SHA"
+assert_release_git_state "$release_dir" "$TARGET_SHA"
 
 (
   cd "$release_dir"
   pnpm install --frozen-lockfile
   RELEASE_SHA="$TARGET_SHA" pnpm run build
 )
+assert_release_git_state "$release_dir" "$TARGET_SHA"
+node "$release_dir/scripts/release-integrity.mjs" write \
+  "$release_dir" "$TARGET_SHA"
+node "$release_dir/scripts/release-integrity.mjs" verify \
+  "$release_dir" "$TARGET_SHA"
 
 migration_manifest="$(mktemp "$RELEASE_ROOT/.bootstrap-migrations.XXXXXX")"
 write_migration_manifest "$release_dir/supabase/migrations" "$migration_manifest"
@@ -210,7 +270,7 @@ touching production:
 ln -s "$release_dir" "$STAGING_LINK"
 CURRENT_LINK="$STAGING_LINK" PM2_NAME="$STAGING_PM2_NAME" \
   RELEASE_SHA="$TARGET_SHA" PORT="$STAGING_PORT" \
-  pm2 startOrReload "$STAGING_LINK/ecosystem.config.cjs" --update-env
+  pm2_bounded startOrReload "$STAGING_LINK/ecosystem.config.cjs" --update-env
 CURRENT_LINK="$STAGING_LINK" RELEASE_ROOT="$RELEASE_ROOT" \
   PM2_NAME="$STAGING_PM2_NAME" \
   HEALTH_URL="http://127.0.0.1:${STAGING_PORT}/api/health" \
@@ -222,7 +282,7 @@ leave the candidate worktree for inspection. Do not touch the production PM2
 process or create `CURRENT_LINK`.
 
 ```bash
-pm2 delete "$STAGING_PM2_NAME"
+pm2_bounded delete "$STAGING_PM2_NAME"
 rm -- "$STAGING_LINK"
 ```
 
@@ -239,21 +299,21 @@ ln -s "$release_dir" "$next_link"
 mv -Tf "$next_link" "$CURRENT_LINK"
 
 if ! CURRENT_LINK="$CURRENT_LINK" PM2_NAME=jingying-cabin \
-    RELEASE_SHA="$TARGET_SHA" pm2 startOrReload \
+    RELEASE_SHA="$TARGET_SHA" pm2_bounded startOrReload \
     "$CURRENT_LINK/ecosystem.config.cjs" --update-env ||
   ! CURRENT_LINK="$CURRENT_LINK" RELEASE_ROOT="$RELEASE_ROOT" \
     PM2_NAME=jingying-cabin \
-    "$CURRENT_LINK/scripts/verify-release.sh" "$TARGET_SHA"; then
+    "$CURRENT_LINK/scripts/verify-release.sh" "$TARGET_SHA" ||
+  ! pm2_bounded save; then
   printf 'Managed release activation failed; restoring rehearsed legacy service.\n' >&2
   if "$LEGACY_RESTORE_SCRIPT"; then
     failed_link="${CURRENT_LINK}.failed-${TARGET_SHA}"
     [[ ! -e "$failed_link" && ! -L "$failed_link" ]]
     mv -Tf "$CURRENT_LINK" "$failed_link"
-    if pm2 delete "$STAGING_PM2_NAME"; then
-      pm2 save
+    if pm2_bounded save; then
       printf 'Legacy service restored; candidate and failed link were preserved.\n' >&2
     else
-      printf 'Legacy service restored, but staging cleanup failed; the pre-bootstrap PM2 dump remains authoritative.\n' >&2
+      printf 'CRITICAL: legacy service is healthy but its PM2 state could not be persisted.\n' >&2
     fi
   else
     printf 'CRITICAL: legacy restore failed; preserve all releases and PM2 evidence.\n' >&2
@@ -261,12 +321,39 @@ if ! CURRENT_LINK="$CURRENT_LINK" PM2_NAME=jingying-cabin \
   exit 1
 fi
 
-pm2 delete "$STAGING_PM2_NAME"
-rm -- "$STAGING_LINK"
-pm2 save
+# Production is already exactly verified and persisted. Staging cleanup is
+# post-success housekeeping and must not turn a healthy production switch into
+# an application rollback.
+if pm2_bounded delete "$STAGING_PM2_NAME" &&
+  rm -- "$STAGING_LINK" &&
+  pm2_bounded save; then
+  printf 'Staging process removed and persisted.\n'
+else
+  printf 'Production remains persisted; finish staging cleanup manually.\n' >&2
+fi
+
+CURRENT_LINK="$CURRENT_LINK" RELEASE_ROOT="$RELEASE_ROOT" \
+  PM2_NAME=jingying-cabin \
+  "$CURRENT_LINK/scripts/verify-release.sh" "$TARGET_SHA"
 ```
 
 Confirm the production health response, PM2 cwd/script, and `CURRENT_LINK` all
 identify `TARGET_SHA` after `pm2 save`. Keep the legacy restore script, PM2
 snapshot, old release, and candidate for the entire observation window.
 Expand migrations are not application rollback.
+
+## 7. Normal releases after bootstrap
+
+Take `EXPECTED_SHA` from the reviewed hosted-CI result, not from the current
+branch name. The deploy script fetches the branch and refuses all candidate,
+database, symlink, and PM2 mutation if the branch head no longer equals that
+exact SHA:
+
+```bash
+EXPECTED_SHA=<reviewed-full-40-character-ci-sha> \
+BRANCH=codex/full-project-ui \
+bash /var/www/jingying-cabin/scripts/deploy.sh
+```
+
+The deploy command itself verifies and persists PM2. A successful command does
+not authorize application rollback of expand migrations.

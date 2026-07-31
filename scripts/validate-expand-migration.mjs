@@ -44,12 +44,12 @@ const forbidden = new Set([
   "begin",
   "commit",
   "end",
+  "prepare",
   "rollback",
   "start",
 ]);
 let index = 0;
 let line = headerLine + 2;
-let lineStart = true;
 let statementStart = true;
 let state = "normal";
 let blockDepth = 0;
@@ -63,7 +63,6 @@ while (index < sql.length) {
     if (char === "\n") {
       state = "normal";
       line += 1;
-      lineStart = true;
     }
     index += 1;
     continue;
@@ -83,7 +82,6 @@ while (index < sql.length) {
     }
     if (char === "\n") {
       line += 1;
-      lineStart = true;
     }
     index += 1;
     continue;
@@ -97,7 +95,6 @@ while (index < sql.length) {
     if (char === "'") state = "normal";
     if (char === "\n") {
       line += 1;
-      lineStart = true;
     }
     index += 1;
     continue;
@@ -111,7 +108,6 @@ while (index < sql.length) {
     if (char === '"') state = "normal";
     if (char === "\n") {
       line += 1;
-      lineStart = true;
     }
     index += 1;
     continue;
@@ -121,12 +117,10 @@ while (index < sql.length) {
     if (sql.startsWith(dollarTag, index)) {
       index += dollarTag.length;
       state = "normal";
-      lineStart = false;
       continue;
     }
     if (char === "\n") {
       line += 1;
-      lineStart = true;
     }
     index += 1;
     continue;
@@ -134,7 +128,6 @@ while (index < sql.length) {
 
   if (char === "\n") {
     line += 1;
-    lineStart = true;
     index += 1;
     continue;
   }
@@ -153,19 +146,17 @@ while (index < sql.length) {
     index += 2;
     continue;
   }
-  if (lineStart && char === "\\") {
+  if (char === "\\") {
     fail(`psql meta-command is forbidden at ${basename(file)}:${line}`);
   }
   if (char === "'") {
     state = "single-quote";
-    lineStart = false;
     statementStart = false;
     index += 1;
     continue;
   }
   if (char === '"') {
     state = "double-quote";
-    lineStart = false;
     statementStart = false;
     index += 1;
     continue;
@@ -175,7 +166,6 @@ while (index < sql.length) {
     if (match) {
       dollarTag = match[0];
       state = "dollar-quote";
-      lineStart = false;
       statementStart = false;
       index += dollarTag.length;
       continue;
@@ -183,7 +173,6 @@ while (index < sql.length) {
   }
   if (char === ";") {
     statementStart = true;
-    lineStart = false;
     index += 1;
     continue;
   }
@@ -196,13 +185,11 @@ while (index < sql.length) {
       );
     }
     statementStart = false;
-    lineStart = false;
     index += token.length;
     continue;
   }
 
   statementStart = false;
-  lineStart = false;
   index += 1;
 }
 

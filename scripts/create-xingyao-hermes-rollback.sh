@@ -49,6 +49,11 @@ done
 [[ "$PREVIOUS_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "--previous-commit must be a lowercase full SHA"
 [[ "$REASON" != *$'\n'* && "$REASON" != *$'\r'* ]] ||
   die "--reason must be a single line"
+for value in "$RELEASE_ROOT" "$CURRENT_LINK" "$ENV_FILE" "$OUTPUT_DIR"; do
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] ||
+    die "paths must not contain line breaks"
+done
+[[ "$PM2_NAME" =~ ^[0-9A-Za-z_.-]+$ ]] || die "PM2_NAME contains unsafe characters"
 [[ -n "$OUTPUT_DIR" && "$OUTPUT_DIR" != "/" && "$OUTPUT_DIR" != "." && "$OUTPUT_DIR" != ".." ]] ||
   die "--output-dir must be a safe non-root path"
 [[ "$RELEASE_ROOT" == /* && "$CURRENT_LINK" == /* && "$ENV_FILE" == /* ]] ||
@@ -77,23 +82,66 @@ mkdir -p -- "$OUTPUT_DIR/files"
 cp -- "$product_release/scripts/deploy.sh" "$OUTPUT_DIR/files/deploy.sh"
 cp -- "$product_release/scripts/verify-release.sh" "$OUTPUT_DIR/files/verify-release.sh"
 
-cat > "$OUTPUT_DIR/rollback-command.sh" <<EOF
+printf -v default_release_root_q '%q' "$RELEASE_ROOT"
+printf -v default_current_link_q '%q' "$CURRENT_LINK"
+printf -v default_env_file_q '%q' "$ENV_FILE"
+printf -v default_pm2_name_q '%q' "$PM2_NAME"
+
+{
+cat <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
-RELEASE_ROOT="\${RELEASE_ROOT:-$RELEASE_ROOT}"
-CURRENT_LINK="\${CURRENT_LINK:-$CURRENT_LINK}"
-ENV_FILE="\${ENV_FILE:-$ENV_FILE}"
-PM2_NAME="\${PM2_NAME:-$PM2_NAME}"
-PRODUCT_COMMIT="$PRODUCT_COMMIT"
-PREVIOUS_COMMIT="$PREVIOUS_COMMIT"
+PACKAGE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+EOF
+printf 'DEFAULT_RELEASE_ROOT=%s\n' "$default_release_root_q"
+printf 'DEFAULT_CURRENT_LINK=%s\n' "$default_current_link_q"
+printf 'DEFAULT_ENV_FILE=%s\n' "$default_env_file_q"
+printf 'DEFAULT_PM2_NAME=%s\n' "$default_pm2_name_q"
+printf 'PRODUCT_COMMIT=%q\n' "$PRODUCT_COMMIT"
+printf 'PREVIOUS_COMMIT=%q\n' "$PREVIOUS_COMMIT"
+cat <<'EOF'
+readonly PACKAGE_DIR DEFAULT_RELEASE_ROOT DEFAULT_CURRENT_LINK DEFAULT_ENV_FILE
+readonly DEFAULT_PM2_NAME PRODUCT_COMMIT PREVIOUS_COMMIT
 
-product_release="\$RELEASE_ROOT/\$PRODUCT_COMMIT"
-[[ -f "\$product_release/scripts/deploy.sh" ]] || {
-  printf 'Refusing rollback: product deploy helpers are missing\n' >&2
+RELEASE_ROOT="${RELEASE_ROOT:-$DEFAULT_RELEASE_ROOT}"
+CURRENT_LINK="${CURRENT_LINK:-$DEFAULT_CURRENT_LINK}"
+ENV_FILE="${ENV_FILE:-$DEFAULT_ENV_FILE}"
+PM2_NAME="${PM2_NAME:-$DEFAULT_PM2_NAME}"
+EXPECTED_MANIFEST_SHA256="${EXPECTED_MANIFEST_SHA256:-}"
+
+[[ "$EXPECTED_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+  printf 'EXPECTED_MANIFEST_SHA256 must be the reviewed manifest hash\n' >&2
   exit 1
 }
-source "\$product_release/scripts/deploy.sh"
+readonly EXPECTED_MANIFEST_SHA256
+actual_manifest_hash="$(sha256sum "$PACKAGE_DIR/manifest.txt" | awk '{print $1}')"
+[[ "$actual_manifest_hash" == "$EXPECTED_MANIFEST_SHA256" ]] || {
+  printf 'Rollback package manifest hash mismatch\n' >&2
+  exit 1
+}
+
+verify_packaged_file() {
+  local rel="$1" expected actual
+  expected="$(awk -v key="sha256($rel)=" 'index($0, key) == 1 { print substr($0, length(key) + 1) }' \
+    "$PACKAGE_DIR/manifest.txt")"
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || {
+    printf 'Missing packaged hash for %s\n' "$rel" >&2
+    exit 1
+  }
+  actual="$(sha256sum "$PACKAGE_DIR/$rel" | awk '{print $1}')"
+  [[ "$actual" == "$expected" ]] || {
+    printf 'Rollback package file hash mismatch: %s\n' "$rel" >&2
+    exit 1
+  }
+}
+verify_packaged_file "files/deploy.sh"
+verify_packaged_file "files/verify-release.sh"
+verify_packaged_file "rollback-command.sh"
+
+product_release="$RELEASE_ROOT/$PRODUCT_COMMIT"
+source "$PACKAGE_DIR/files/deploy.sh"
 validate_rollback_runtime
 validate_secure_env_file
 load_runtime_env
@@ -101,31 +149,32 @@ validate_rollback_control_paths
 acquire_deploy_lock
 load_previous_release
 
-[[ "\$previous_sha" == "\$PRODUCT_COMMIT" && "\$previous_target" -ef "\$product_release" ]] || {
-  printf 'Refusing rollback: current release is not %s\n' "\$PRODUCT_COMMIT" >&2
+[[ "$previous_sha" == "$PRODUCT_COMMIT" && "$previous_target" -ef "$product_release" ]] || {
+  printf 'Refusing rollback: current release is not %s\n' "$PRODUCT_COMMIT" >&2
   exit 1
 }
-product_target="\$previous_target"
-rollback_target="\$RELEASE_ROOT/\$PREVIOUS_COMMIT"
-validate_release_capabilities "\$rollback_target" "\$PREVIOUS_COMMIT"
-previous_target="\$rollback_target"
-previous_sha="\$PREVIOUS_COMMIT"
+product_target="$previous_target"
+rollback_target="$RELEASE_ROOT/$PREVIOUS_COMMIT"
+validate_release_capabilities "$rollback_target" "$PREVIOUS_COMMIT"
+previous_target="$rollback_target"
+previous_sha="$PREVIOUS_COMMIT"
 candidate_pm2_may_be_active=1
 rollback_current
-if reload_pm2 "\$PREVIOUS_COMMIT" && verify_release "\$PREVIOUS_COMMIT" && save_pm2; then
-  printf 'Rollback verified and persisted at %s\n' "\$PREVIOUS_COMMIT"
+if reload_pm2 "$PREVIOUS_COMMIT" && verify_release "$PREVIOUS_COMMIT" && save_pm2; then
+  printf 'Rollback verified and persisted at %s\n' "$PREVIOUS_COMMIT"
   exit 0
 fi
 
-printf 'Rollback activation failed; restoring product release %s\n' "\$PRODUCT_COMMIT" >&2
-previous_target="\$product_target"
-previous_sha="\$PRODUCT_COMMIT"
+printf 'Rollback activation failed; restoring product release %s\n' "$PRODUCT_COMMIT" >&2
+previous_target="$product_target"
+previous_sha="$PRODUCT_COMMIT"
 rollback_current
-reload_pm2 "\$PRODUCT_COMMIT"
-verify_release "\$PRODUCT_COMMIT"
+reload_pm2 "$PRODUCT_COMMIT"
+verify_release "$PRODUCT_COMMIT"
 save_pm2
 exit 1
 EOF
+} > "$OUTPUT_DIR/rollback-command.sh"
 chmod 750 "$OUTPUT_DIR/rollback-command.sh"
 
 manifest_files=(
@@ -149,4 +198,5 @@ manifest_files=(
 } > "$OUTPUT_DIR/manifest.txt"
 manifest_hash="$(sha256sum "$OUTPUT_DIR/manifest.txt" | awk '{print $1}')"
 printf '%s  manifest.txt\n' "$manifest_hash" > "$OUTPUT_DIR/manifest.txt.sha256"
-printf 'Created atomic rollback package: %s\n' "$OUTPUT_DIR"
+printf 'Created atomic rollback package: %s\nReviewed manifest SHA-256: %s\n' \
+  "$OUTPUT_DIR" "$manifest_hash"

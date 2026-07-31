@@ -9,10 +9,12 @@ The deploy path stays repo-native and uses the existing `scripts/deploy.sh`.
 - Start every release with `XINGYAO_HERMES_GATEWAY_ENABLED=false`.
 - Do not paste credentials, model identifiers, provider tokens, or connection
   strings into shell history.
-- Store runtime values in root-owned env files, for example
-  `/etc/jingying-cabin/xingyao-hermes.env`.
-- Env files must be owned by root and mode `640`.
-- Edit env files with `sudoedit`, then reload PM2 with `--update-env`.
+- Store every application runtime value in the one env file that the atomic
+  deploy actually loads: `/etc/jingying-cabin/production.env`.
+- The env file must be owned by root, readable by the deployment group, and
+  mode `640`.
+- Edit it with `sudoedit`, explicitly source it, then reload PM2 with
+  `--update-env`.
 - Evidence files must contain hashes for sensitive identifiers and command
   output, not raw values.
 
@@ -21,9 +23,9 @@ The deploy path stays repo-native and uses the existing `scripts/deploy.sh`.
 Create or edit the env file with:
 
 ```sh
-sudoedit /etc/jingying-cabin/xingyao-hermes.env
-sudo chown root:root /etc/jingying-cabin/xingyao-hermes.env
-sudo chmod 640 /etc/jingying-cabin/xingyao-hermes.env
+sudoedit /etc/jingying-cabin/production.env
+sudo chown root:"$(id -gn)" /etc/jingying-cabin/production.env
+sudo chmod 640 /etc/jingying-cabin/production.env
 ```
 
 The initial release state must keep the gateway off:
@@ -33,8 +35,9 @@ XINGYAO_HERMES_GATEWAY_ENABLED=false
 XINGYAO_HERMES_GATEWAY_ALLOWLIST=
 ```
 
-Use the service manager or PM2 ecosystem file to source this root-owned env
-file. Do not inline sensitive values into ad hoc shell commands.
+Do not create a second Hermes env file: `scripts/deploy.sh` intentionally loads
+only `ENV_FILE`, so a second file can look correct while production continues
+running stale values. Do not inline sensitive values into ad hoc shell commands.
 
 If the model identifier is not already available in a root-owned env file, store
 it in a separate root-owned `640` file and edit it only with `sudoedit`:
@@ -92,16 +95,17 @@ RELEASE_ROOT=/var/cache/jingying-cabin-releases \
 CURRENT_LINK=/var/www/jingying-cabin-current \
 ENV_FILE=/etc/jingying-cabin/production.env \
 BRANCH=codex/hermes-native-intelligence-restoration \
+EXPECTED_SHA=<reviewed-full-40-character-ci-sha> \
 PM2_NAME=jingying-cabin \
 bash /var/www/jingying-cabin/scripts/deploy.sh
-pm2 save
 ```
 
-After deploy, verify both services while the gateway is still disabled:
+The deploy command already verifies and persists PM2. After deploy, verify both
+services while the gateway is still disabled:
 
 ```sh
 mkdir -p artifacts
-pm2 status jingying-cabin
+timeout --signal=TERM 30s pm2 status jingying-cabin
 systemctl status jingying-cabin --no-pager
 curl -fsS http://127.0.0.1:3000/api/health
 curl -fsS http://127.0.0.1:8642/healthz | tee artifacts/hermes-8642-healthz.log
@@ -116,7 +120,7 @@ enablement. The evidence script stores their SHA-256 values, not raw output.
 Only after both services are healthy, enable exactly one canary pair:
 
 ```sh
-sudoedit /etc/jingying-cabin/xingyao-hermes.env
+sudoedit /etc/jingying-cabin/production.env
 ```
 
 Set:
@@ -126,11 +130,31 @@ XINGYAO_HERMES_GATEWAY_ENABLED=true
 XINGYAO_HERMES_GATEWAY_ALLOWLIST=<organization-uuid>/<user-uuid>
 ```
 
-Restart PM2 with the refreshed environment:
+Source the authoritative file and restart PM2 with the refreshed environment:
 
 ```sh
-pm2 restart jingying-cabin --update-env
-pm2 save
+set -a
+source /etc/jingying-cabin/production.env
+set +a
+timeout --signal=TERM 30s pm2 restart jingying-cabin --update-env
+timeout --signal=TERM 30s pm2 save
+timeout --signal=TERM 30s pm2 jlist | node -e '
+  const fs = require("node:fs");
+  const apps = JSON.parse(fs.readFileSync(0, "utf8"))
+    .filter(({ name }) => name === "jingying-cabin")
+    .map(({ pm2_env: env = {} }) => ({
+      enabled: env.XINGYAO_HERMES_GATEWAY_ENABLED,
+      allowlist: env.XINGYAO_HERMES_GATEWAY_ALLOWLIST,
+    }));
+  if (
+    apps.length === 0 ||
+    apps.some(({ enabled, allowlist }) =>
+      enabled !== "true" ||
+      !/^[0-9a-f-]+\/[0-9a-f-]+$/i.test(allowlist ?? "")
+    )
+  ) process.exit(1);
+  process.stdout.write("Hermes canary env verified for every PM2 instance\n");
+'
 ```
 
 Confirm that only the exact `organizationUuid` and `userUuid` pair routes to
@@ -159,16 +183,19 @@ checkout. Both release SHAs must already exist under `RELEASE_ROOT`.
 Run rollback with:
 
 ```sh
+EXPECTED_MANIFEST_SHA256=<reviewed-hash-printed-at-package-creation> \
 RELEASE_ROOT=/var/cache/jingying-cabin-releases \
 CURRENT_LINK=/var/www/jingying-cabin-current \
 ENV_FILE=/etc/jingying-cabin/production.env PM2_NAME=jingying-cabin \
 bash artifacts/xingyao-hermes-rollback/rollback-command.sh
 ```
 
-The rollback command acquires the same host lock, verifies the current full SHA,
+Keep the reviewed manifest hash outside the package. The command refuses a
+different manifest or a modified packaged helper, sources only the packaged
+deploy helper, acquires the same host lock, verifies the current full SHA,
 atomically switches the symlink, reloads and exactly verifies every matching PM2
-instance, then runs `pm2 save`. Failure restores the packaged product release;
-both directories are retained for recovery.
+instance, then persists PM2. Failure restores the packaged product release; both
+directories are retained for recovery.
 
 After rollback, edit the protected `ENV_FILE` to set
 `XINGYAO_HERMES_GATEWAY_ENABLED=false` and clear
@@ -183,9 +210,10 @@ CURRENT_LINK=/var/www/jingying-cabin-current
 RELEASE_ROOT=/var/cache/jingying-cabin-releases
 RESTORED_SHA="$(basename "$(realpath -e "$CURRENT_LINK")")"
 CURRENT_LINK="$CURRENT_LINK" PM2_NAME=jingying-cabin RELEASE_SHA="$RESTORED_SHA" \
-  pm2 startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --update-env
+  timeout --signal=TERM 30s pm2 startOrReload \
+  "$CURRENT_LINK/ecosystem.config.cjs" --update-env
 CURRENT_LINK="$CURRENT_LINK" RELEASE_ROOT="$RELEASE_ROOT" \
   PM2_NAME=jingying-cabin \
   "$CURRENT_LINK/scripts/verify-release.sh" "$RESTORED_SHA"
-pm2 save
+timeout --signal=TERM 30s pm2 save
 ```

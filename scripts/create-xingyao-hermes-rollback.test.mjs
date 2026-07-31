@@ -33,8 +33,9 @@ describe("Xingyao Hermes atomic rollback package", () => {
   it("creates a symlink rollback package without source reset or secrets", () => {
     const workspace = mkdtempSync(join(tmpdir(), "hermes-rollback-"));
     const releaseRoot = join(workspace, "releases");
-    const outputDir = join(workspace, "rollback");
-    const currentLink = join(workspace, "current");
+    const outputDir = join(workspace, "rollback package's copy");
+    const currentLink = join(workspace, "current release");
+    const callsFile = join(workspace, "rollback-calls.log");
     const productCommit = "1234567890abcdef1234567890abcdef12345678";
     const previousCommit = "2222222222222222222222222222222222222222";
 
@@ -48,7 +49,24 @@ describe("Xingyao Hermes atomic rollback package", () => {
         );
         writeFileSync(
           join(release, "scripts/deploy.sh"),
-          "#!/usr/bin/env bash\nverify_release() { :; }\n",
+          [
+            "#!/usr/bin/env bash",
+            "validate_rollback_runtime() { :; }",
+            "validate_secure_env_file() { :; }",
+            "load_runtime_env() { :; }",
+            "validate_rollback_control_paths() { :; }",
+            "acquire_deploy_lock() { printf 'lock\\n' >> \"$CALLS_FILE\"; }",
+            "load_previous_release() {",
+            '  previous_sha="$PRODUCT_COMMIT"',
+            '  previous_target="$RELEASE_ROOT/$PRODUCT_COMMIT"',
+            "}",
+            'validate_release_capabilities() { [[ -d "$1" && "$2" == "$(basename "$1")" ]]; }',
+            'rollback_current() { printf \'switch:%s\\n\' "$previous_sha" >> "$CALLS_FILE"; }',
+            'reload_pm2() { printf \'reload:%s\\n\' "$1" >> "$CALLS_FILE"; }',
+            'verify_release() { printf \'verify:%s\\n\' "$1" >> "$CALLS_FILE"; }',
+            "save_pm2() { printf 'save\\n' >> \"$CALLS_FILE\"; }",
+            "",
+          ].join("\n"),
         );
         writeFileSync(
           join(release, "scripts/verify-release.sh"),
@@ -97,6 +115,13 @@ describe("Xingyao Hermes atomic rollback package", () => {
       expect(rollbackCommand).toContain("acquire_deploy_lock");
       expect(rollbackCommand).toContain("verify_release");
       expect(rollbackCommand).toContain("save_pm2");
+      expect(rollbackCommand).toContain(
+        'source "$PACKAGE_DIR/files/deploy.sh"',
+      );
+      expect(rollbackCommand).toContain("EXPECTED_MANIFEST_SHA256");
+      expect(rollbackCommand).not.toContain(
+        'source "$product_release/scripts/deploy.sh"',
+      );
       expect(rollbackCommand).not.toContain("git reset --hard");
       expect(rollbackCommand).not.toContain("HERMES_ROLLBACK_OVERRIDE");
 
@@ -107,6 +132,60 @@ describe("Xingyao Hermes atomic rollback package", () => {
         readFileSync(join(outputDir, "files/verify-release.sh"), "utf8"),
       ].join("\n");
       expect(packageText).not.toMatch(/sk-live-secret|api[_-]?key/i);
+
+      const manifestHash = readFileSync(
+        join(outputDir, "manifest.txt.sha256"),
+        "utf8",
+      ).split(/\s+/)[0];
+      writeFileSync(
+        join(releaseRoot, productCommit, "scripts/deploy.sh"),
+        "#!/usr/bin/env bash\nprintf 'LIVE HELPER MUST NOT RUN\\n' >&2\nexit 99\n",
+      );
+      const rollback = spawnSync(
+        bashBin,
+        [shellPath(join(outputDir, "rollback-command.sh"))],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            EXPECTED_MANIFEST_SHA256: manifestHash,
+            CALLS_FILE: shellPath(callsFile),
+          },
+        },
+      );
+      expect(rollback.status, rollback.stderr).toBe(0);
+      expect(rollback.stderr).not.toContain("LIVE HELPER MUST NOT RUN");
+      expect(readFileSync(callsFile, "utf8")).toBe(
+        [
+          "lock",
+          `switch:${previousCommit}`,
+          `reload:${previousCommit}`,
+          `verify:${previousCommit}`,
+          "save",
+          "",
+        ].join("\n"),
+      );
+
+      writeFileSync(
+        join(outputDir, "files/deploy.sh"),
+        "#!/usr/bin/env bash\nexit 98\n",
+      );
+      const tampered = spawnSync(
+        bashBin,
+        [shellPath(join(outputDir, "rollback-command.sh"))],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            EXPECTED_MANIFEST_SHA256: manifestHash,
+            CALLS_FILE: shellPath(callsFile),
+          },
+        },
+      );
+      expect(tampered.status).not.toBe(0);
+      expect(tampered.stderr).toMatch(/package file hash mismatch/i);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
