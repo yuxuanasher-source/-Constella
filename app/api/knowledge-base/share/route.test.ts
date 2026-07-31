@@ -78,6 +78,7 @@ describe("knowledge share route", () => {
   });
 
   it("uses a 32-byte base64url token but never places it in the COS key", async () => {
+    const token = Buffer.alloc(32, 7).toString("base64url");
     const response = await route.POST(
       new Request("http://local/api/knowledge-base/share", {
         method: "POST",
@@ -96,10 +97,12 @@ describe("knowledge share route", () => {
     const payload = await response.json();
 
     expect(response.status).toBe(200);
-    expect(payload.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(payload.url).toBe(
-      `https://app.example.test/share/kb/${payload.token}`,
-    );
+    expect(payload).toEqual({
+      id: "33333333-3333-4333-8333-333333333333",
+      url: `https://app.example.test/share/kb/${token}`,
+      expiresAt: "2026-08-07T12:00:00.000Z",
+    });
+    expect(payload).not.toHaveProperty("token");
     expect(createKnowledgeShare).toHaveBeenCalledWith(
       expect.objectContaining({
         organizationId: auth.organizationId,
@@ -125,7 +128,7 @@ describe("knowledge share route", () => {
       }),
     );
     expect(JSON.stringify(vi.mocked(writeAuditLog).mock.calls)).not.toContain(
-      payload.token,
+      token,
     );
   });
 
@@ -168,9 +171,10 @@ describe("knowledge share route", () => {
     expect(createKnowledgeShare).not.toHaveBeenCalled();
   });
 
-  it("does not lose the one-time token when supplemental auditing fails", async () => {
+  it("does not lose the one-time share URL when supplemental auditing fails", async () => {
     vi.mocked(writeAuditLog).mockRejectedValue(new Error("audit database secret"));
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const token = Buffer.alloc(32, 7).toString("base64url");
 
     const response = await route.POST(
       new Request("http://local/api/knowledge-base/share", {
@@ -190,8 +194,9 @@ describe("knowledge share route", () => {
     const payload = await response.json();
 
     expect(response.status).toBe(200);
-    expect(payload.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(payload.token);
+    expect(payload).not.toHaveProperty("token");
+    expect(payload.url).toBe(`https://app.example.test/share/kb/${token}`);
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(token);
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain("database secret");
     consoleError.mockRestore();
   });

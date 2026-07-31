@@ -661,6 +661,187 @@ describe("knowledge-base expiring share controls", () => {
     expect(createCall[1].headers["Idempotency-Key"]).toBeTruthy();
   }, 15_000);
 
+  it("reuses one idempotency key after a failed response and rotates it after success", async () => {
+    let createAttempts = 0;
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null, configured: false }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        return new Response(JSON.stringify({ shares: [] }), { status: 200 });
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        createAttempts += 1;
+        if (createAttempts === 1) {
+          return new Response(JSON.stringify({ error: "Sharing unavailable" }), {
+            status: 503,
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            id: `33333333-3333-4333-8333-33333333333${createAttempts}`,
+            url: `https://app.example.test/share/kb/token-${createAttempts}`,
+            expiresAt: "2026-08-07T12:00:00.000Z",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "分享链接" }));
+    expect(await screen.findByText(/分享失败/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    expect(
+      await screen.findByDisplayValue(
+        "https://app.example.test/share/kb/token-2",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    await waitFor(() => expect(createAttempts).toBe(3));
+
+    const requestKeys = fetchMock.mock.calls
+      .filter(
+        ([url, init]) =>
+          String(url) === "/api/knowledge-base/share" &&
+          init?.method === "POST",
+      )
+      .map(([, init]) => init.headers["Idempotency-Key"]);
+    expect(requestKeys[0]).toBe(requestKeys[1]);
+    expect(requestKeys[2]).not.toBe(requestKeys[1]);
+  }, 15_000);
+
+  it("rotates a pending idempotency key when the requested lifetime changes", async () => {
+    let createAttempts = 0;
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null, configured: false }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        return new Response(JSON.stringify({ shares: [] }), { status: 200 });
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        createAttempts += 1;
+        if (createAttempts === 1) {
+          throw new TypeError("Failed to fetch");
+        }
+        return new Response(
+          JSON.stringify({
+            id: "33333333-3333-4333-8333-333333333333",
+            url: "https://app.example.test/share/kb/token-new-input",
+            expiresAt: "2026-08-01T12:00:00.000Z",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    fireEvent.click(await screen.findByRole("button", { name: "分享链接" }));
+    expect(await screen.findByText(/分享失败/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("分享有效期"), {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    expect(
+      await screen.findByDisplayValue(
+        "https://app.example.test/share/kb/token-new-input",
+      ),
+    ).toBeInTheDocument();
+
+    const requestKeys = fetchMock.mock.calls
+      .filter(
+        ([url, init]) =>
+          String(url) === "/api/knowledge-base/share" &&
+          init?.method === "POST",
+      )
+      .map(([, init]) => init.headers["Idempotency-Key"]);
+    expect(requestKeys[1]).not.toBe(requestKeys[0]);
+  }, 15_000);
+
+  it("reuses the pending key on 409 and refreshes active shares without exposing a token", async () => {
+    let createAttempts = 0;
+    let listAttempts = 0;
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null, configured: false }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        listAttempts += 1;
+        return new Response(
+          JSON.stringify({
+            shares:
+              listAttempts > 1
+                ? [
+                    {
+                      id: "33333333-3333-4333-8333-333333333333",
+                      title: "📖 使用教程",
+                      createdAt: "2026-07-31T12:00:00.000Z",
+                      expiresAt: "2026-08-07T12:00:00.000Z",
+                    },
+                  ]
+                : [],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        createAttempts += 1;
+        if (createAttempts === 1) throw new TypeError("Failed to fetch");
+        return new Response(
+          JSON.stringify({ error: "Share request already processed" }),
+          { status: 409 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    fireEvent.click(await screen.findByRole("button", { name: "分享链接" }));
+    expect(await screen.findByText(/分享失败/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+
+    expect(
+      await screen.findByText("该分享请求已处理，已刷新活跃分享。"),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByLabelText("有效期至 2026/08/07 20:00:00"),
+    ).toHaveAttribute("datetime", "2026-08-07T12:00:00.000Z");
+    expect(screen.queryByDisplayValue(/\/share\/kb\//)).not.toBeInTheDocument();
+
+    const requestKeys = fetchMock.mock.calls
+      .filter(
+        ([url, init]) =>
+          String(url) === "/api/knowledge-base/share" &&
+          init?.method === "POST",
+      )
+      .map(([, init]) => init.headers["Idempotency-Key"]);
+    expect(requestKeys[1]).toBe(requestKeys[0]);
+    expect(listAttempts).toBeGreaterThanOrEqual(2);
+  }, 15_000);
+
   it("shows the current document's active shares and revokes in place", async () => {
     let revoked = false;
     const fetchMock = vi.fn(async (input, init = {}) => {
@@ -704,14 +885,14 @@ describe("knowledge-base expiring share controls", () => {
     fireEvent.click(await screen.findByText("📖 使用教程"));
 
     expect(await screen.findByText("活跃分享")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        (_, element) =>
-          element?.tagName === "SPAN" &&
-          element.textContent.includes("有效期至") &&
-          element.textContent.includes("2026"),
-      ),
-    ).toBeInTheDocument();
+    const expiry = await screen.findByLabelText(
+      "有效期至 2026/08/07 20:00:00",
+    );
+    expect(expiry).toHaveAttribute(
+      "datetime",
+      "2026-08-07T12:00:00.000Z",
+    );
+    expect(expiry).toHaveTextContent("2026/08/07 20:00:00");
     fireEvent.click(screen.getByRole("button", { name: "撤销" }));
 
     await waitFor(() =>

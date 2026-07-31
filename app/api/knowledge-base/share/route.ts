@@ -140,7 +140,6 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       id: result.id,
-      token: result.token,
       url: `${publicBaseUrl}/share/kb/${result.token}`,
       expiresAt: result.expiresAt,
     });

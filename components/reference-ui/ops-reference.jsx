@@ -29280,6 +29280,31 @@ function kbShareRequestKey() {
   return `kb-share-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
+function kbFormatShareExpiry(expiresAt) {
+  const value = new Date(expiresAt);
+  if (!Number.isFinite(value.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(value);
+}
+
+function kbShareAttemptMatches(attempt, doc, expiresInDays) {
+  return Boolean(
+    attempt &&
+      attempt.documentId === doc?.id &&
+      attempt.documentName === doc?.name &&
+      attempt.contentMd === (doc?.contentMd || "") &&
+      attempt.expiresInDays === expiresInDays,
+  );
+}
+
 async function kbShareDoc(doc, expiresInDays, requestKey) {
   const res = await globalThis.fetch("/api/knowledge-base/share", {
     method: "POST",
@@ -29296,7 +29321,9 @@ async function kbShareDoc(doc, expiresInDays, requestKey) {
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
-    throw new Error(payload.error || "分享失败");
+    const error = new Error(payload.error || "分享失败");
+    error.status = res.status;
+    throw error;
   }
   const payload = await res.json();
   return payload;
@@ -29351,6 +29378,7 @@ function ScreenKnowledge() {
   const [syncState, setSyncState] = React.useState("loading"); // loading|synced|local
   const hydratedRef = React.useRef(false);
   const remoteTimerRef = React.useRef(null);
+  const pendingShareAttemptRef = React.useRef(null);
 
   // 加载：优先腾讯云 COS 真源，拿不到则用本地缓存。
   React.useEffect(() => {
@@ -29384,6 +29412,25 @@ function ScreenKnowledge() {
   }, [store]);
 
   const selected = store.nodes[selectedId] || store.nodes[KB_ROOT_ID];
+
+  React.useEffect(() => {
+    if (
+      pendingShareAttemptRef.current &&
+      !kbShareAttemptMatches(
+        pendingShareAttemptRef.current,
+        selected?.type === "doc" ? selected : null,
+        shareExpiryDays,
+      )
+    ) {
+      pendingShareAttemptRef.current = null;
+    }
+  }, [
+    selected?.id,
+    selected?.name,
+    selected?.contentMd,
+    selected?.type,
+    shareExpiryDays,
+  ]);
 
   // 切换文档时清空上一篇的分享链接 / 提示。
   React.useEffect(() => {
@@ -29684,12 +29731,29 @@ function ScreenKnowledge() {
                       setShareUrl("");
                       setShareExpiresAt("");
                       setShareBusy(true);
+                      const pendingAttempt = pendingShareAttemptRef.current;
+                      const requestKey =
+                        kbShareAttemptMatches(
+                          pendingAttempt,
+                          selected,
+                          shareExpiryDays,
+                        )
+                          ? pendingAttempt.requestKey
+                          : kbShareRequestKey();
+                      pendingShareAttemptRef.current = {
+                        documentId: selected.id,
+                        documentName: selected.name,
+                        contentMd: selected.contentMd || "",
+                        expiresInDays: shareExpiryDays,
+                        requestKey,
+                      };
                       try {
                         const result = await kbShareDoc(
                           selected,
                           shareExpiryDays,
-                          kbShareRequestKey(),
+                          requestKey,
                         );
+                        pendingShareAttemptRef.current = null;
                         setShareUrl(result.url);
                         setShareExpiresAt(result.expiresAt || "");
                         setActiveShares((shares) => [
@@ -29708,11 +29772,22 @@ function ScreenKnowledge() {
                           setDocMsg("分享链接已生成。");
                         }
                       } catch (e) {
-                        setDocMsg(
-                          e?.message === "Tencent COS is not configured"
-                            ? "未连接云端存储，暂不可生成分享链接。"
-                            : `分享失败：${e?.message || "请稍后重试"}`,
-                        );
+                        if (e?.status === 409) {
+                          pendingShareAttemptRef.current = null;
+                          const refreshedShares = await kbListActiveShares(
+                            selected.id,
+                          ).catch(() => null);
+                          if (refreshedShares) {
+                            setActiveShares(refreshedShares);
+                          }
+                          setDocMsg("该分享请求已处理，已刷新活跃分享。");
+                        } else {
+                          setDocMsg(
+                            e?.message === "Tencent COS is not configured"
+                              ? "未连接云端存储，暂不可生成分享链接。"
+                              : `分享失败：${e?.message || "请稍后重试"}`,
+                          );
+                        }
                       } finally {
                         setShareBusy(false);
                       }
@@ -29858,48 +29933,61 @@ function ScreenKnowledge() {
                   {activeSharesLoading ? (
                     <div style={{ color: "var(--ink-400)" }}>读取中…</div>
                   ) : (
-                    activeShares.map((share) => (
-                      <div
-                        key={share.id}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                          padding: "6px 0",
-                          borderTop: "1px solid var(--line)",
-                        }}
-                      >
-                        <span style={{ flex: 1, minWidth: 0 }}>
-                          {share.title} · 有效期至 {" "}
-                          {new Date(share.expiresAt).toLocaleString("zh-CN")}
-                        </span>
-                        <Button
-                          size="sm"
-                          kind="danger"
-                          disabled={revokingShareId === share.id}
-                          onClick={async () => {
-                            setRevokingShareId(share.id);
-                            try {
-                              await kbRevokeShare(share.id);
-                              setActiveShares((shares) =>
-                                shares.filter((item) => item.id !== share.id),
-                              );
-                              setDocMsg("分享链接已撤销。");
-                              if (shareUrl && share.id === activeShares[0]?.id) {
-                                setShareUrl("");
-                                setShareExpiresAt("");
-                              }
-                            } catch {
-                              setDocMsg("撤销失败，请稍后重试。");
-                            } finally {
-                              setRevokingShareId(null);
-                            }
+                    activeShares.map((share) => {
+                      const formattedExpiry = kbFormatShareExpiry(
+                        share.expiresAt,
+                      );
+                      return (
+                        <div
+                          key={share.id}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            padding: "6px 0",
+                            borderTop: "1px solid var(--line)",
                           }}
                         >
-                          {revokingShareId === share.id ? "撤销中…" : "撤销"}
-                        </Button>
-                      </div>
-                    ))
+                          <span style={{ flex: 1, minWidth: 0 }}>
+                            {share.title} · 有效期至 {" "}
+                            <time
+                              dateTime={share.expiresAt}
+                              aria-label={`有效期至 ${formattedExpiry}`}
+                            >
+                              {formattedExpiry}
+                            </time>
+                          </span>
+                          <Button
+                            size="sm"
+                            kind="danger"
+                            disabled={revokingShareId === share.id}
+                            onClick={async () => {
+                              setRevokingShareId(share.id);
+                              try {
+                                await kbRevokeShare(share.id);
+                                setActiveShares((shares) =>
+                                  shares.filter((item) => item.id !== share.id),
+                                );
+                                setDocMsg("分享链接已撤销。");
+                                if (
+                                  shareUrl &&
+                                  share.id === activeShares[0]?.id
+                                ) {
+                                  setShareUrl("");
+                                  setShareExpiresAt("");
+                                }
+                              } catch {
+                                setDocMsg("撤销失败，请稍后重试。");
+                              } finally {
+                                setRevokingShareId(null);
+                              }
+                            }}
+                          >
+                            {revokingShareId === share.id ? "撤销中…" : "撤销"}
+                          </Button>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               ) : null}
