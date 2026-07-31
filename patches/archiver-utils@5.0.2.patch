@@ -1,0 +1,17 @@
+diff --git a/index.js b/index.js
+index a7e7f91..31e730c 100644
+--- a/index.js
++++ b/index.js
+@@ -80,9 +80,11 @@ utils.normalizeInputSource = function(source) {
+   } else if (utils.isStream(source)) {
+     // Always pipe through a PassThrough stream to guarantee pausing the stream if it's already flowing,
+     // since it will only be processed in a (distant) future iteration of the event loop, and will lose
+     // data if already flowing now.
+-    return source.pipe(new PassThrough());
++    var passthrough = new PassThrough();
++    source.pipe(passthrough);
++    return passthrough;
+   }
+
+   return source;
+ };
