@@ -34,6 +34,8 @@ sudo install -d -o root -g "$(id -gn)" -m 0750 \
 sudo install -o "$(id -un)" -g "$(id -gn)" -m 0600 /dev/null \
   /var/lock/jingying-cabin/deploy.lock
 sudo install -d -o root -g "$(id -gn)" -m 0750 /etc/jingying-cabin
+sudo install -d -o root -g "$(id -gn)" -m 0750 \
+  /etc/jingying-cabin/release-controls
 sudo install -o root -g "$(id -gn)" -m 0640 /dev/null \
   /etc/jingying-cabin/production.env
 sudoedit /etc/jingying-cabin/production.env
@@ -276,7 +278,7 @@ working process list:
 umask 077
 test -x "$LEGACY_RESTORE_SCRIPT"
 "$LEGACY_RESTORE_SCRIPT"
-timeout --signal=TERM 30s pm2 jlist | node -e '
+timeout --signal=TERM --kill-after=5s 30s pm2 jlist | node -e '
   const fs = require("node:fs");
   const entries = JSON.parse(fs.readFileSync(0, "utf8"));
   const redacted = entries.map(({ name, pm2_env: env = {} }) => ({
@@ -289,7 +291,7 @@ timeout --signal=TERM 30s pm2 jlist | node -e '
   }));
   process.stdout.write(`${JSON.stringify(redacted, null, 2)}\n`);
 ' > "/var/cache/jingying-cabin-releases/legacy-pm2-before-bootstrap.redacted.json"
-timeout --signal=TERM 30s pm2 save
+timeout --signal=TERM --kill-after=5s 30s pm2 save
 ```
 
 Do not continue if this rehearsal changes the expected release, fails health, or
@@ -394,6 +396,18 @@ actual_manifest_sha256="$(
 [[ "$actual_manifest_sha256" == "$EXPECTED_RELEASE_MANIFEST_SHA256" ]]
 node "$release_dir/scripts/release-integrity.mjs" verify \
   "$release_dir" "$TARGET_SHA" "$EXPECTED_RELEASE_MANIFEST_SHA256"
+
+# Establish root-owned, source-independent verification entrypoints. Future
+# replacement requires another reviewed maintenance-window procedure.
+sudo install -o root -g "$(id -gn)" -m 0640 \
+  "$release_dir/scripts/release-integrity.mjs" \
+  /etc/jingying-cabin/release-controls/release-integrity.mjs
+sudo install -o root -g "$(id -gn)" -m 0640 \
+  "$release_dir/scripts/deploy.sh" \
+  /etc/jingying-cabin/release-controls/deploy.sh
+sudo install -o root -g "$(id -gn)" -m 0640 \
+  "$release_dir/scripts/verify-xingyao-hermes-rollback-package.mjs" \
+  /etc/jingying-cabin/release-controls/verify-xingyao-hermes-rollback-package.mjs
 
 migration_manifest="$(mktemp "$RELEASE_ROOT/.bootstrap-migrations.XXXXXX")"
 write_migration_manifest "$release_dir/supabase/migrations" "$migration_manifest"
@@ -504,14 +518,25 @@ digest as shown above. The deploy script fetches the branch and refuses database
 symlink, and PM2 mutation unless the branch head, tar digest, embedded release
 SHA, and extracted integrity manifest all match those reviewed values:
 
+Also supply `TRUSTED_CURRENT_SHA` and
+`TRUSTED_CURRENT_MANIFEST_SHA256` from the off-host release record created after
+the previous successful deployment. The deploy controller checks those values
+against both `CURRENT_LINK` and every matching PM2 process before it trusts the
+rollback target. Do not derive them from the deployment host at command time.
+
 ```bash
 EXPECTED_SHA=<reviewed-full-40-character-ci-sha> \
 EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256> \
 EXPECTED_RELEASE_ARTIFACT_SHA256=<reviewed-ci-release-artifact-sha256> \
 RELEASE_ARTIFACT_PATH=/var/cache/jingying-cabin-release-artifacts/<sha>/release-runtime-<sha>.tar \
+TRUSTED_CURRENT_SHA=<off-host-recorded-current-release-sha> \
+TRUSTED_CURRENT_MANIFEST_SHA256=<off-host-recorded-current-manifest-sha256> \
 BRANCH=codex/full-project-ui \
-bash /var/www/jingying-cabin/scripts/deploy.sh
+bash /etc/jingying-cabin/release-controls/deploy.sh
 ```
 
 The deploy command itself verifies and persists PM2. A successful command does
-not authorize application rollback of expand migrations.
+not authorize application rollback of expand migrations. After success, record
+the new release SHA, manifest SHA-256, artifact SHA-256, CI run ID, and deployment
+evidence in the off-host change record; those first two values are mandatory
+inputs for the next deployment.

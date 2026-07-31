@@ -77,6 +77,8 @@ function createRelease(releaseRoot, label) {
       "validate_rollback_control_paths() { :; }",
       "acquire_deploy_lock() { printf 'lock\\n' >> \"$CALLS_FILE\"; }",
       "load_previous_release() {",
+      '  [[ "$TRUSTED_CURRENT_SHA" == "$PRODUCT_COMMIT" ]]',
+      '  [[ "$TRUSTED_CURRENT_MANIFEST_SHA256" == "$PRODUCT_MANIFEST_SHA256" ]]',
       '  previous_sha="$PRODUCT_COMMIT"',
       '  previous_target="$RELEASE_ROOT/$PRODUCT_COMMIT"',
       '  previous_manifest_sha="$PRODUCT_MANIFEST_SHA256"',

@@ -18,11 +18,18 @@ EXPECTED_SHA="${EXPECTED_SHA:-}"
 EXPECTED_RELEASE_MANIFEST_SHA256="${EXPECTED_RELEASE_MANIFEST_SHA256:-}"
 RELEASE_ARTIFACT_PATH="${RELEASE_ARTIFACT_PATH:-}"
 EXPECTED_RELEASE_ARTIFACT_SHA256="${EXPECTED_RELEASE_ARTIFACT_SHA256:-}"
+TRUSTED_CURRENT_SHA="${TRUSTED_CURRENT_SHA:-}"
+TRUSTED_CURRENT_MANIFEST_SHA256="${TRUSTED_CURRENT_MANIFEST_SHA256:-}"
 DB_CONTAINER="${DB_CONTAINER:-supabase-db}"
 DB_NAME="${DB_NAME:-postgres}"
 PM2_NAME="${PM2_NAME:-jingying-cabin}"
 PM2_TIMEOUT_SECONDS="${PM2_TIMEOUT_SECONDS:-30}"
 DATABASE_LEASE_WAIT_SECONDS="${DATABASE_LEASE_WAIT_SECONDS:-60}"
+DATABASE_LEASE_SESSION_TIMEOUT_SECONDS="${DATABASE_LEASE_SESSION_TIMEOUT_SECONDS:-900}"
+DB_COMMAND_TIMEOUT_SECONDS="${DB_COMMAND_TIMEOUT_SECONDS:-300}"
+DB_RESPONSE_TIMEOUT_SECONDS="${DB_RESPONSE_TIMEOUT_SECONDS:-10}"
+DB_LOCK_TIMEOUT_MILLISECONDS="${DB_LOCK_TIMEOUT_MILLISECONDS:-15000}"
+DB_STATEMENT_TIMEOUT_MILLISECONDS="${DB_STATEMENT_TIMEOUT_MILLISECONDS:-300000}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 POSTGREST_READY_URL="${POSTGREST_READY_URL:-}"
 POSTGREST_METRICS_URL="${POSTGREST_METRICS_URL:-}"
@@ -131,9 +138,16 @@ load_runtime_env() {
   local saved_expected_manifest="$EXPECTED_RELEASE_MANIFEST_SHA256"
   local saved_artifact="$RELEASE_ARTIFACT_PATH"
   local saved_artifact_sha="$EXPECTED_RELEASE_ARTIFACT_SHA256"
+  local saved_current_sha="$TRUSTED_CURRENT_SHA"
+  local saved_current_manifest="$TRUSTED_CURRENT_MANIFEST_SHA256"
   local saved_db="$DB_CONTAINER" saved_db_name="$DB_NAME" saved_pm2="$PM2_NAME"
   local saved_pm2_timeout="$PM2_TIMEOUT_SECONDS"
   local saved_database_lease_wait="$DATABASE_LEASE_WAIT_SECONDS"
+  local saved_database_lease_session_timeout="$DATABASE_LEASE_SESSION_TIMEOUT_SECONDS"
+  local saved_db_command_timeout="$DB_COMMAND_TIMEOUT_SECONDS"
+  local saved_db_response_timeout="$DB_RESPONSE_TIMEOUT_SECONDS"
+  local saved_db_lock_timeout="$DB_LOCK_TIMEOUT_MILLISECONDS"
+  local saved_db_statement_timeout="$DB_STATEMENT_TIMEOUT_MILLISECONDS"
 
   set -a
   # shellcheck disable=SC1090 -- path was validated as a secure regular file.
@@ -150,11 +164,18 @@ load_runtime_env() {
   EXPECTED_RELEASE_MANIFEST_SHA256="$saved_expected_manifest"
   RELEASE_ARTIFACT_PATH="$saved_artifact"
   EXPECTED_RELEASE_ARTIFACT_SHA256="$saved_artifact_sha"
+  TRUSTED_CURRENT_SHA="$saved_current_sha"
+  TRUSTED_CURRENT_MANIFEST_SHA256="$saved_current_manifest"
   DB_CONTAINER="$saved_db"
   DB_NAME="$saved_db_name"
   PM2_NAME="$saved_pm2"
   PM2_TIMEOUT_SECONDS="$saved_pm2_timeout"
   DATABASE_LEASE_WAIT_SECONDS="$saved_database_lease_wait"
+  DATABASE_LEASE_SESSION_TIMEOUT_SECONDS="$saved_database_lease_session_timeout"
+  DB_COMMAND_TIMEOUT_SECONDS="$saved_db_command_timeout"
+  DB_RESPONSE_TIMEOUT_SECONDS="$saved_db_response_timeout"
+  DB_LOCK_TIMEOUT_MILLISECONDS="$saved_db_lock_timeout"
+  DB_STATEMENT_TIMEOUT_MILLISECONDS="$saved_db_statement_timeout"
   export ENV_FILE
   POSTGREST_READY_URL="${POSTGREST_READY_URL:-}"
   POSTGREST_METRICS_URL="${POSTGREST_METRICS_URL:-}"
@@ -233,6 +254,15 @@ validate_rollback_runtime() {
     die "PM2_TIMEOUT_SECONDS must be a positive integer"
   [[ "$DATABASE_LEASE_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
     die "DATABASE_LEASE_WAIT_SECONDS must be a positive integer"
+  for timeout_name in \
+    DATABASE_LEASE_SESSION_TIMEOUT_SECONDS \
+    DB_COMMAND_TIMEOUT_SECONDS \
+    DB_RESPONSE_TIMEOUT_SECONDS \
+    DB_LOCK_TIMEOUT_MILLISECONDS \
+    DB_STATEMENT_TIMEOUT_MILLISECONDS; do
+    [[ "${!timeout_name}" =~ ^[1-9][0-9]*$ ]] ||
+      die "$timeout_name must be a positive integer"
+  done
 }
 
 validate_runtime() {
@@ -342,14 +372,24 @@ pm2_bounded() {
 }
 
 load_previous_release() {
+  local pm2_manifest_sha
+  [[ "$TRUSTED_CURRENT_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+    die "TRUSTED_CURRENT_SHA must come from the external release record"
+  [[ "$TRUSTED_CURRENT_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "TRUSTED_CURRENT_MANIFEST_SHA256 must come from the external release record"
   [[ -L "$CURRENT_LINK" ]] ||
     die "CURRENT_LINK is not a managed release symlink; follow docs/runbooks/atomic-release-bootstrap.md"
   previous_target="$(physical_path "$CURRENT_LINK")"
   [[ -d "$previous_target" ]] || die "CURRENT_LINK target does not exist: $previous_target"
   previous_sha="$(basename "$previous_target")"
-  previous_manifest_sha="$(
+  [[ "$previous_sha" == "$TRUSTED_CURRENT_SHA" ]] ||
+    die "current release differs from the external release record"
+  pm2_manifest_sha="$(
     read_pm2_release_manifest_sha "$previous_target" "$previous_sha"
   )" || die "cannot recover the trusted manifest SHA-256 for the current release"
+  [[ "$pm2_manifest_sha" == "$TRUSTED_CURRENT_MANIFEST_SHA256" ]] ||
+    die "PM2 manifest differs from the external release record"
+  previous_manifest_sha="$TRUSTED_CURRENT_MANIFEST_SHA256"
   validate_release_capabilities \
     "$previous_target" "$previous_sha" "$previous_manifest_sha"
 }
@@ -465,8 +505,27 @@ pm2_references_release() {
   fi
 }
 
+db_session() {
+  local timeout_seconds="$1"
+  shift
+  timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" \
+    docker exec \
+      -e "PGOPTIONS=-c lock_timeout=${DB_LOCK_TIMEOUT_MILLISECONDS}ms -c statement_timeout=${DB_STATEMENT_TIMEOUT_MILLISECONDS}ms" \
+      -i "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 \
+      -U postgres -d "$DB_NAME" "$@"
+}
+
 db() {
-  docker exec -i "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d "$DB_NAME" "$@"
+  db_session "$DB_COMMAND_TIMEOUT_SECONDS" "$@"
+}
+
+db_lease_session() {
+  db_session "$DATABASE_LEASE_SESSION_TIMEOUT_SECONDS" "$@"
+}
+
+docker_bounded() {
+  timeout --signal=TERM --kill-after=5s "${DB_COMMAND_TIMEOUT_SECONDS}s" \
+    docker "$@"
 }
 
 db_q() {
@@ -490,21 +549,26 @@ terminate_database_deploy_lease() {
 }
 
 acquire_database_deploy_lease() {
-  local marker="" attempt
+  local marker="" deadline remaining read_timeout
   [[ "$DB_LEASE_ACTIVE" -eq 0 ]] || die "database deploy lease is already active"
-  coproc DEPLOY_DB_LEASE_PROCESS { db -Atq; }
+  coproc DEPLOY_DB_LEASE_PROCESS { db_lease_session -Atq; }
   DB_LEASE_OUTPUT_FD="${DEPLOY_DB_LEASE_PROCESS[0]}"
   DB_LEASE_INPUT_FD="${DEPLOY_DB_LEASE_PROCESS[1]}"
   DB_LEASE_PID="$DEPLOY_DB_LEASE_PROCESS_PID"
-  for ((attempt = 1; attempt <= DATABASE_LEASE_WAIT_SECONDS; attempt += 1)); do
+  deadline=$((SECONDS + DATABASE_LEASE_WAIT_SECONDS))
+  while (( SECONDS < deadline )); do
     if ! printf "select case when pg_try_advisory_lock(hashtextextended('%s', 0)) then 'DEPLOY_LEASE_ACQUIRED' else 'DEPLOY_LEASE_BUSY' end;\n" \
       "$MIGRATION_LEASE_KEY" >&"$DB_LEASE_INPUT_FD"; then
       terminate_database_deploy_lease
       die "cannot request database deploy lease"
     fi
-    if ! IFS= read -r marker <&"$DB_LEASE_OUTPUT_FD"; then
+    remaining=$((deadline - SECONDS))
+    read_timeout="$DB_RESPONSE_TIMEOUT_SECONDS"
+    (( read_timeout > remaining )) && read_timeout="$remaining"
+    if (( read_timeout <= 0 )) ||
+      ! IFS= read -r -t "$read_timeout" marker <&"$DB_LEASE_OUTPUT_FD"; then
       terminate_database_deploy_lease
-      die "database deploy lease returned no response"
+      die "database deploy lease response timed out"
     fi
     if [[ "$marker" == "DEPLOY_LEASE_ACQUIRED" ]]; then
       DB_LEASE_ACTIVE=1
@@ -514,7 +578,7 @@ acquire_database_deploy_lease() {
       terminate_database_deploy_lease
       die "database deploy lease returned an invalid response: $marker"
     }
-    [[ "$attempt" -lt "$DATABASE_LEASE_WAIT_SECONDS" ]] && sleep 1
+    (( SECONDS < deadline )) && sleep 1
   done
   terminate_database_deploy_lease
   die "database deploy lease remained busy for ${DATABASE_LEASE_WAIT_SECONDS}s"
@@ -526,14 +590,12 @@ release_database_deploy_lease() {
   if ! printf "select case when pg_advisory_unlock(hashtextextended('%s', 0)) then 'DEPLOY_LEASE_RELEASED' else 'DEPLOY_LEASE_MISSING' end;\n\\q\n" \
     "$MIGRATION_LEASE_KEY" >&"$DB_LEASE_INPUT_FD"; then
     status=1
-  elif ! IFS= read -r marker <&"$DB_LEASE_OUTPUT_FD" ||
+  elif ! IFS= read -r -t "$DB_RESPONSE_TIMEOUT_SECONDS" marker <&"$DB_LEASE_OUTPUT_FD" ||
     [[ "$marker" != "DEPLOY_LEASE_RELEASED" ]]; then
     status=1
   fi
   if [[ "$status" -eq 0 ]]; then
-    wait "$DB_LEASE_PID" || status=$?
-    DB_LEASE_PID=""
-    DB_LEASE_ACTIVE=0
+    terminate_database_deploy_lease
   else
     terminate_database_deploy_lease
   fi
@@ -629,7 +691,8 @@ preflight_migration_ledgers() {
   PENDING_VERSIONS=()
 
   [[ "$DB_NAME" =~ ^[0-9A-Za-z_-]+$ ]] || die "DB_NAME contains unsafe characters"
-  docker inspect "$DB_CONTAINER" >/dev/null 2>&1 || die "database container was not found: $DB_CONTAINER"
+  docker_bounded inspect "$DB_CONTAINER" >/dev/null 2>&1 ||
+    die "database container was not found: $DB_CONTAINER"
   supabase_present="$(db_q "select to_regclass('supabase_migrations.schema_migrations') is not null")"
   [[ "$supabase_present" == "t" ]] ||
     die "no trusted Supabase migration ledger; follow docs/runbooks/atomic-release-bootstrap.md"
@@ -954,6 +1017,8 @@ apply_migrations() {
 
   output="$({
     printf 'begin;\n'
+    printf "set local lock_timeout = '%sms';\n" "$DB_LOCK_TIMEOUT_MILLISECONDS"
+    printf "set local statement_timeout = '%sms';\n" "$DB_STATEMENT_TIMEOUT_MILLISECONDS"
     printf "select pg_advisory_xact_lock(hashtextextended('%s', 0));\n" "$MIGRATION_LOCK_KEY"
     printf 'lock table supabase_migrations.schema_migrations in share row exclusive mode;\n'
     printf 'create temporary table expected_deploy_migrations (version text primary key, filename text not null unique, name text not null, content_sha256 text not null) on commit drop;\n'
@@ -1149,6 +1214,10 @@ main() {
     die "EXPECTED_RELEASE_MANIFEST_SHA256 must come from the trusted CI artifact"
   [[ "$EXPECTED_RELEASE_ARTIFACT_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
     die "EXPECTED_RELEASE_ARTIFACT_SHA256 must come from the trusted CI artifact"
+  [[ "$TRUSTED_CURRENT_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+    die "TRUSTED_CURRENT_SHA must come from the external release record"
+  [[ "$TRUSTED_CURRENT_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "TRUSTED_CURRENT_MANIFEST_SHA256 must come from the external release record"
   validate_runtime
   validate_secure_env_file
   load_runtime_env

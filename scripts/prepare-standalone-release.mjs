@@ -69,14 +69,20 @@ for (const [source, destination] of copies) {
 function validateRuntimeLinks(path) {
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) {
-    const target = realpathSync(path);
-    const relativeTarget = relative(root, target);
+    let target;
+    try {
+      target = realpathSync(path);
+    } catch {
+      fail(`standalone runtime contains a broken symlink: ${path}`);
+    }
+    const relativeTarget = relative(standalone, target);
     if (
+      relativeTarget === "" ||
       relativeTarget === ".." ||
       relativeTarget.startsWith(`..${sep}`) ||
       isAbsolute(relativeTarget)
     ) {
-      fail(`standalone runtime symlink escaped the release: ${path}`);
+      fail(`standalone runtime symlink escaped the standalone root: ${path}`);
     }
     return;
   }

@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -92,6 +93,11 @@ describe("trusted release artifact extraction", () => {
           contents: `${releaseSha}\n`,
           mode: 0o600,
         },
+        {
+          path: ".next/standalone/large.bin",
+          contents: Buffer.alloc(2 * 1024 * 1024 + 17, 7),
+          mode: 0o640,
+        },
       ]);
       writeFileSync(archivePath, archive);
 
@@ -105,6 +111,15 @@ describe("trusted release artifact extraction", () => {
       expect(
         readFileSync(join(destination, ".next/standalone/server.js"), "utf8"),
       ).toBe("server\n");
+      expect(
+        statSync(join(destination, ".next/standalone/large.bin")).size,
+      ).toBe(2 * 1024 * 1024 + 17);
+      if (process.platform !== "win32") {
+        expect(
+          statSync(join(destination, ".next/standalone/.release-sha")).mode &
+            0o777,
+        ).toBe(0o600);
+      }
 
       const wrongHashDestination = join(sandbox, "b".repeat(40));
       mkdirSync(wrongHashDestination);

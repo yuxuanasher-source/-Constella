@@ -3,13 +3,17 @@
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
+  createReadStream,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
-  readFileSync,
+  openSync,
+  readSync,
   realpathSync,
   statSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { TextDecoder } from "node:util";
@@ -53,13 +57,49 @@ if (
   fail("release destination already contains runtime artifacts");
 }
 
-const archive = readFileSync(archivePath);
-const actualArtifactSha256 = createHash("sha256").update(archive).digest("hex");
+const archiveFd = openSync(archivePath, "r");
+const openedArchiveStat = fstatSync(archiveFd);
+if (
+  openedArchiveStat.dev !== archiveStat.dev ||
+  openedArchiveStat.ino !== archiveStat.ino ||
+  openedArchiveStat.size !== archiveStat.size
+) {
+  fail("release artifact changed while opening");
+}
+
+const actualArtifactSha256 = await new Promise((resolveHash, rejectHash) => {
+  const hash = createHash("sha256");
+  const stream = createReadStream(archivePath, {
+    fd: archiveFd,
+    autoClose: false,
+    start: 0,
+  });
+  stream.on("data", (chunk) => hash.update(chunk));
+  stream.on("error", rejectHash);
+  stream.on("end", () => resolveHash(hash.digest("hex")));
+}).catch(() => "");
 if (actualArtifactSha256 !== expectedArtifactSha256) {
   fail("release artifact does not match its trusted SHA-256");
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
+
+function readExact(position, length, label) {
+  const buffer = Buffer.allocUnsafe(length);
+  let consumed = 0;
+  while (consumed < length) {
+    const count = readSync(
+      archiveFd,
+      buffer,
+      consumed,
+      length - consumed,
+      position + consumed,
+    );
+    if (count === 0) fail(`truncated tar ${label}`);
+    consumed += count;
+  }
+  return buffer;
+}
 
 function decodeString(buffer) {
   const end = buffer.indexOf(0);
@@ -110,8 +150,8 @@ const entries = [];
 const paths = new Set();
 let offset = 0;
 let zeroBlocks = 0;
-while (offset + 512 <= archive.length) {
-  const header = archive.subarray(offset, offset + 512);
+while (offset + 512 <= openedArchiveStat.size) {
+  const header = readExact(offset, 512, "header");
   offset += 512;
   if (header.every((byte) => byte === 0)) {
     zeroBlocks += 1;
@@ -142,16 +182,19 @@ while (offset + 512 <= archive.length) {
   const mode = parseOctal(header.subarray(100, 108), "mode");
   if (!Number.isSafeInteger(size) || size < 0) fail("invalid tar entry size");
   if (type === "5" && size !== 0) fail(`tar directory has content: ${path}`);
-  if (offset + size > archive.length) fail(`truncated tar entry: ${path}`);
+  if (offset + size > openedArchiveStat.size) {
+    fail(`truncated tar entry: ${path}`);
+  }
   entries.push({
     path,
     type,
     mode,
-    contents: archive.subarray(offset, offset + size),
+    contentOffset: offset,
+    size,
   });
   offset += Math.ceil(size / 512) * 512;
 }
-if (offset !== archive.length || zeroBlocks < 2) {
+if (offset !== openedArchiveStat.size || zeroBlocks < 2) {
   fail("release artifact lacks a complete tar end marker");
 }
 for (const required of [
@@ -188,13 +231,30 @@ for (const entry of entries) {
 }
 
 const releaseShaEntry = entryByPath.get(".next/standalone/.release-sha");
-if (releaseShaEntry.contents.toString("utf8") !== `${expectedSha}\n`) {
+if (
+  releaseShaEntry.size !== expectedSha.length + 1 ||
+  readExact(
+    releaseShaEntry.contentOffset,
+    releaseShaEntry.size,
+    "release SHA",
+  ).toString("utf8") !== `${expectedSha}\n`
+) {
   fail("release artifact contains the wrong release SHA");
+}
+const manifestEntry = entryByPath.get(".release-integrity.json");
+if (manifestEntry.size <= 0 || manifestEntry.size > 64 * 1024 * 1024) {
+  fail(
+    "release artifact integrity manifest size is outside the supported range",
+  );
 }
 let releaseManifest;
 try {
   releaseManifest = JSON.parse(
-    entryByPath.get(".release-integrity.json").contents.toString("utf8"),
+    readExact(
+      manifestEntry.contentOffset,
+      manifestEntry.size,
+      "integrity manifest",
+    ).toString("utf8"),
   );
 } catch {
   fail("release artifact contains an invalid integrity manifest");
@@ -216,17 +276,35 @@ for (const entry of entries) {
   }
   mkdirSync(dirname(output), { recursive: true, mode: 0o750 });
   const mode =
-    entry.path === ".release-integrity.json"
+    entry.path === ".release-integrity.json" ||
+    entry.path === ".next/standalone/.release-sha"
       ? 0o600
       : entry.mode & 0o111
         ? 0o750
         : 0o640;
-  writeFileSync(output, entry.contents, { flag: "wx", mode });
+  const outputFd = openSync(output, "wx", mode);
+  let remaining = entry.size;
+  let sourcePosition = entry.contentOffset;
+  const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, remaining || 1));
+  while (remaining > 0) {
+    const requested = Math.min(buffer.length, remaining);
+    const count = readSync(archiveFd, buffer, 0, requested, sourcePosition);
+    if (count === 0)
+      fail(`truncated tar entry while extracting: ${entry.path}`);
+    let written = 0;
+    while (written < count) {
+      written += writeSync(outputFd, buffer, written, count - written);
+    }
+    remaining -= count;
+    sourcePosition += count;
+  }
+  closeSync(outputFd);
   chmodSync(output, mode);
 }
 
 const releaseShaPath = join(destination, ".next/standalone/.release-sha");
 if (!statSync(releaseShaPath).isFile()) fail("release SHA was not extracted");
+closeSync(archiveFd);
 process.stdout.write(
   `[extract-release-artifact] extracted ${entries.length} trusted entries\n`,
 );

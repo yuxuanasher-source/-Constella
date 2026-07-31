@@ -102,7 +102,9 @@ timeout --signal=TERM --kill-after=5s 30s pm2 jlist |
       })
     ) process.exit(1);
   '
-node "$CURRENT_LINK/scripts/release-integrity.mjs" verify \
+TRUSTED_RELEASE_INTEGRITY=/etc/jingying-cabin/release-controls/release-integrity.mjs
+[[ "$(stat -Lc '%u:%a' "$TRUSTED_RELEASE_INTEGRITY")" == "0:640" ]]
+node "$TRUSTED_RELEASE_INTEGRITY" verify \
   "$PRODUCT_RELEASE" "$PRODUCT_COMMIT" "$PRODUCT_MANIFEST_SHA256"
 
 node scripts/verify-xingyao-hermes-release.mjs \
@@ -140,8 +142,10 @@ EXPECTED_SHA=<reviewed-full-40-character-ci-sha> \
 EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256> \
 EXPECTED_RELEASE_ARTIFACT_SHA256=<reviewed-ci-release-artifact-sha256> \
 RELEASE_ARTIFACT_PATH=/var/cache/jingying-cabin-release-artifacts/<sha>/release-runtime-<sha>.tar \
+TRUSTED_CURRENT_SHA=<off-host-recorded-current-release-sha> \
+TRUSTED_CURRENT_MANIFEST_SHA256=<off-host-recorded-current-manifest-sha256> \
 PM2_NAME=jingying-cabin \
-bash /var/www/jingying-cabin/scripts/deploy.sh
+bash /etc/jingying-cabin/release-controls/deploy.sh
 ```
 
 Retrieve the SHA-named artifact by reviewed successful CI run ID and verify its
@@ -151,7 +155,7 @@ while the gateway is still disabled:
 
 ```sh
 mkdir -p artifacts
-timeout --signal=TERM 30s pm2 status jingying-cabin
+timeout --signal=TERM --kill-after=5s 30s pm2 status jingying-cabin
 systemctl status jingying-cabin --no-pager
 curl -fsS http://127.0.0.1:3000/api/health
 curl -fsS http://127.0.0.1:8642/healthz | tee artifacts/hermes-8642-healthz.log
@@ -182,9 +186,9 @@ Source the authoritative file and restart PM2 with the refreshed environment:
 set -a
 source /etc/jingying-cabin/production.env
 set +a
-timeout --signal=TERM 30s pm2 restart jingying-cabin --update-env
-timeout --signal=TERM 30s pm2 save
-timeout --signal=TERM 30s pm2 jlist | node -e '
+timeout --signal=TERM --kill-after=5s 30s pm2 restart jingying-cabin --update-env
+timeout --signal=TERM --kill-after=5s 30s pm2 save
+timeout --signal=TERM --kill-after=5s 30s pm2 jlist | node -e '
   const fs = require("node:fs");
   const apps = JSON.parse(fs.readFileSync(0, "utf8"))
     .filter(({ name }) => name === "jingying-cabin")
@@ -222,7 +226,9 @@ PRODUCT_COMMIT="$(basename "$PRODUCT_RELEASE")"
 [[ "$PRODUCT_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
 PREVIOUS_COMMIT="<last-known-good-product-commit>"
 PREVIOUS_MANIFEST_SHA256="<reviewed-last-known-good-manifest-sha256>"
-node "$CURRENT_LINK/scripts/release-integrity.mjs" verify \
+TRUSTED_RELEASE_INTEGRITY=/etc/jingying-cabin/release-controls/release-integrity.mjs
+[[ "$(stat -Lc '%u:%a' "$TRUSTED_RELEASE_INTEGRITY")" == "0:640" ]]
+node "$TRUSTED_RELEASE_INTEGRITY" verify \
   "$RELEASE_ROOT/$PREVIOUS_COMMIT" \
   "$PREVIOUS_COMMIT" "$PREVIOUS_MANIFEST_SHA256"
 
@@ -250,18 +256,20 @@ export RELEASE_ROOT=/var/cache/jingying-cabin-releases
 export CURRENT_LINK=/var/www/jingying-cabin-current
 export ENV_FILE=/etc/jingying-cabin/production.env
 export PM2_NAME=jingying-cabin
-node /var/www/jingying-cabin-current/scripts/verify-xingyao-hermes-rollback-package.mjs \
+TRUSTED_ROLLBACK_PACKAGE_VERIFIER=/etc/jingying-cabin/release-controls/verify-xingyao-hermes-rollback-package.mjs
+[[ "$(stat -Lc '%u:%a' "$TRUSTED_ROLLBACK_PACKAGE_VERIFIER")" == "0:640" ]]
+node "$TRUSTED_ROLLBACK_PACKAGE_VERIFIER" \
   execute "$PACKAGE_DIR" "$EXPECTED_MANIFEST_SHA256"
 ```
 
-Keep the reviewed manifest hash and trusted verifier outside the package. The
-release-anchored verifier checks the manifest and every packaged file, including
-`rollback-command.sh`, before it starts that command. The command then sources
-only the packaged deploy helper, acquires the same host lock, verifies the
-current full SHA and manifest, atomically switches the symlink, reloads and
-exactly verifies every matching PM2 instance, then persists PM2. Failure
-restores the packaged product release; both directories are retained for
-recovery.
+Keep the reviewed manifest hash outside the package. The root-owned verifier
+installed during atomic bootstrap is independent of `CURRENT_LINK`; it checks
+the manifest and every packaged file, including `rollback-command.sh`, before it
+starts that command. The command then sources only the verified packaged deploy
+helper, acquires the same host lock, verifies the current full SHA and manifest,
+atomically switches the symlink, reloads and exactly verifies every matching PM2
+instance, then persists PM2. Failure restores the packaged product release; both
+directories are retained for recovery.
 
 After rollback, edit the protected `ENV_FILE` to set
 `XINGYAO_HERMES_GATEWAY_ENABLED=false` and clear

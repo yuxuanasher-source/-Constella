@@ -56,6 +56,7 @@ const [
   bootstrapRunbook,
   migrationValidator,
   artifactExtractor,
+  standalonePreparer,
   ciWorkflow,
 ] = await Promise.all([
   readFile(join(process.cwd(), "scripts/deploy.sh"), "utf8"),
@@ -79,6 +80,10 @@ const [
     "utf8",
   ),
   readFile(join(process.cwd(), "scripts/extract-release-artifact.mjs"), "utf8"),
+  readFile(
+    join(process.cwd(), "scripts/prepare-standalone-release.mjs"),
+    "utf8",
+  ),
   readFile(join(process.cwd(), ".github/workflows/ci.yml"), "utf8"),
 ]);
 
@@ -123,7 +128,10 @@ test("extracts the reviewed runtime before touching migrations or current", () =
   assert.ok(extract < migrate, "artifact extraction must precede migrations");
   assert.ok(migrate < switchCurrent, "migrations must precede symlink switch");
   assert.doesNotMatch(main, /pnpm run build|pnpm install/);
-  assert.match(main, /node "\$release_dir\/scripts\/extract-release-artifact\.mjs"/);
+  assert.match(
+    main,
+    /node "\$release_dir\/scripts\/extract-release-artifact\.mjs"/,
+  );
   assert.match(
     deploy,
     /node "\$target\/scripts\/release-integrity\.mjs" verify/,
@@ -237,6 +245,8 @@ deploy_script="$(cygpath -u "$DEPLOY_NATIVE" 2>/dev/null || printf '%s' "$DEPLOY
 source "$deploy_script"
 validate_release_capabilities() { validate_release_path "$1"; }
 read_pm2_release_manifest_sha() { printf '%s' "${"e".repeat(64)}"; }
+TRUSTED_CURRENT_SHA="${targetSha}"
+TRUSTED_CURRENT_MANIFEST_SHA256="${"e".repeat(64)}"
 expected_link="$(lexical_path "$CURRENT_LINK")"
 validate_control_paths
 load_previous_release
@@ -399,6 +409,8 @@ export EXPECTED_SHA="\${EXPECTED_SHA_OVERRIDE:-${targetSha}}"
 export EXPECTED_RELEASE_MANIFEST_SHA256="${testManifestSha}"
 export RELEASE_ARTIFACT_PATH="$(native_to_unix "$ARTIFACT_NATIVE")"
 export EXPECTED_RELEASE_ARTIFACT_SHA256="${"d".repeat(64)}"
+export TRUSTED_CURRENT_SHA="${previousSha}"
+export TRUSTED_CURRENT_MANIFEST_SHA256="${testManifestSha}"
 export REAL_NODE="$(native_to_unix "$REAL_NODE_NATIVE")"
 export FAKE_EXTRACTOR="$(native_to_unix "$EXTRACTOR_NATIVE")"
 export PREVIOUS_TARGET="$(native_to_unix "$PREVIOUS_NATIVE")"
@@ -668,6 +680,35 @@ pm2_bounded jlist`,
   });
   assert.notEqual(result.status, 0);
   assert.ok(Date.now() - started < 7_000, "PM2 timeout exceeded hard deadline");
+});
+
+test("database lease acquisition has a bounded response deadline", () => {
+  const started = Date.now();
+  const result = run(bash, {
+    args: [
+      "-lc",
+      `source "$DEPLOY_NATIVE"
+DATABASE_LEASE_WAIT_SECONDS=1
+DB_RESPONSE_TIMEOUT_SECONDS=1
+DATABASE_LEASE_SESSION_TIMEOUT_SECONDS=30
+db_lease_session() {
+  trap '' TERM
+  while :; do sleep 1; done
+}
+acquire_database_deploy_lease`,
+    ],
+    env: {
+      ...process.env,
+      DEPLOY_NATIVE: join(process.cwd(), "scripts/deploy.sh"),
+    },
+    timeout: 10_000,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /lease response timed out/);
+  assert.ok(
+    Date.now() - started < 8_000,
+    "database lease acquisition exceeded its hard cleanup deadline",
+  );
 });
 
 test("rollback preserves both releases until old reload, verify, and save succeed", async (t) => {
@@ -940,6 +981,9 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(deploy, /validate_secure_env_file/);
   assert.match(deploy, /validate_rollback_runtime/);
   assert.match(deploy, /validate_rollback_control_paths/);
+  assert.match(deploy, /TRUSTED_CURRENT_SHA/);
+  assert.match(deploy, /TRUSTED_CURRENT_MANIFEST_SHA256/);
+  assert.match(deploy, /external release record/);
   assert.match(deploy, /supabase_migrations\.schema_migrations/);
   assert.match(deploy, /__atomic_release_bootstrap_v1__/);
   assert.match(deploy, /pg_advisory_xact_lock/);
@@ -955,6 +999,11 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
     /readonly LOCK_FILE="\/var\/lock\/jingying-cabin\/deploy\.lock"/,
   );
   assert.match(deploy, /--kill-after=5s/);
+  assert.match(deploy, /read -r -t "\$read_timeout"/);
+  assert.match(deploy, /DB_LOCK_TIMEOUT_MILLISECONDS/);
+  assert.match(deploy, /DB_STATEMENT_TIMEOUT_MILLISECONDS/);
+  assert.match(deploy, /set local lock_timeout/);
+  assert.match(deploy, /set local statement_timeout/);
   assert.match(migrationValidator, /-- deploy: expand/);
   assert.match(migrationValidator, /psql meta-command is forbidden/);
   assert.match(migrationValidator, /top-level transaction control/);
@@ -979,10 +1028,28 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(ciWorkflow, /actions\/upload-artifact@[0-9a-f]{40}\s+# v4/);
   assert.match(ciWorkflow, /release-runtime-\$\{\{ github\.sha \}\}/);
   assert.match(ciWorkflow, /GITHUB_STEP_SUMMARY/);
+  assert.match(
+    ciWorkflow,
+    /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/codex\/full-project-ui'/,
+  );
+  assert.match(ciWorkflow, /Verify reviewed release artifact round trip/);
+  assert.match(ciWorkflow, /git worktree add --detach/);
+  assert.match(ciWorkflow, /release-integrity\.mjs" verify/);
+  assert.match(ciWorkflow, /127\.0\.0\.1:3999\/api\/health/);
   assert.match(artifactExtractor, /release artifact does not match/);
+  assert.match(artifactExtractor, /createReadStream/);
+  assert.doesNotMatch(artifactExtractor, /readFileSync\(archivePath\)/);
   assert.match(artifactExtractor, /POSIX ustar/);
   assert.match(artifactExtractor, /unsafe release artifact path/);
   assert.match(artifactExtractor, /entry type is not allowed/);
+  assert.match(
+    artifactExtractor,
+    /entry\.path === "\.next\/standalone\/\.release-sha"[\s\S]*0o600/,
+  );
+  assert.match(
+    standalonePreparer,
+    /relative\(standalone, target\)[\s\S]*escaped the standalone root/,
+  );
 
   assert.doesNotMatch(legacyRollback, /git reset --hard/);
   assert.match(legacyRollback, /CURRENT_LINK/);
@@ -1010,11 +1077,29 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(bootstrapRunbook, /EXPECTED_RELEASE_ARTIFACT_SHA256/);
   assert.match(bootstrapRunbook, /RELEASE_ARTIFACT_PATH/);
   assert.match(bootstrapRunbook, /extract-release-artifact\.mjs/);
+  assert.match(
+    bootstrapRunbook,
+    /\/etc\/jingying-cabin\/release-controls\/release-integrity\.mjs/,
+  );
+  assert.match(
+    bootstrapRunbook,
+    /\/etc\/jingying-cabin\/release-controls\/verify-xingyao-hermes-rollback-package\.mjs/,
+  );
   assert.match(bootstrapRunbook, /pm2 save/);
   assert.match(bootstrapRunbook, /legacy-pm2-before-bootstrap\.redacted\.json/);
   assert.match(bootstrapRunbook, /Never store raw `pm2 jlist`/);
   assert.match(hermesRunbook, /EXPECTED_RELEASE_ARTIFACT_SHA256/);
   assert.match(hermesRunbook, /RELEASE_ARTIFACT_PATH/);
+  assert.match(hermesRunbook, /TRUSTED_RELEASE_INTEGRITY/);
+  assert.match(hermesRunbook, /TRUSTED_ROLLBACK_PACKAGE_VERIFIER/);
+  assert.doesNotMatch(
+    hermesRunbook,
+    /node "\$CURRENT_LINK\/scripts\/verify-xingyao-hermes-rollback-package\.mjs"/,
+  );
+  assert.doesNotMatch(
+    `${bootstrapRunbook}\n${hermesRunbook}`,
+    /timeout --signal=TERM 30s pm2/,
+  );
 
   const mainActivation = main.slice(position(main, "atomic_switch_current"));
   const reload = position(mainActivation, 'reload_pm2 "$TARGET_SHA"');

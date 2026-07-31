@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  lstatSync,
   readFileSync,
   rmSync,
   statSync,
@@ -28,6 +29,9 @@ describe("standalone release preparation", () => {
     try {
       mkdirSync(join(root, ".next/standalone"), { recursive: true });
       mkdirSync(join(root, ".next/standalone/.next"), { recursive: true });
+      mkdirSync(join(root, ".next/standalone/node_modules/.store/runtime"), {
+        recursive: true,
+      });
       mkdirSync(join(root, ".next/static/chunks"), { recursive: true });
       mkdirSync(join(root, "public/assets"), { recursive: true });
       writeFileSync(
@@ -40,6 +44,15 @@ describe("standalone release preparation", () => {
       );
       writeFileSync(join(root, ".next/static/chunks/app.js"), "chunk\n");
       writeFileSync(join(root, "public/assets/logo.txt"), "logo\n");
+      writeFileSync(
+        join(root, ".next/standalone/node_modules/.store/runtime/index.js"),
+        "runtime\n",
+      );
+      symlinkSync(
+        join(root, ".next/standalone/node_modules/.store/runtime"),
+        join(root, ".next/standalone/node_modules/runtime"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
 
       const prepared = run(root, sha);
       expect(prepared.status, prepared.stderr).toBe(0);
@@ -58,6 +71,17 @@ describe("standalone release preparation", () => {
       expect(
         readFileSync(join(root, ".next/standalone/.release-sha"), "utf8"),
       ).toBe(`${sha}\n`);
+      expect(
+        readFileSync(
+          join(root, ".next/standalone/node_modules/runtime/index.js"),
+          "utf8",
+        ),
+      ).toBe("runtime\n");
+      expect(
+        lstatSync(
+          join(root, ".next/standalone/node_modules/runtime"),
+        ).isSymbolicLink(),
+      ).toBe(false);
       if (process.platform !== "win32") {
         expect(
           statSync(join(root, ".next/standalone/server.js")).mode & 0o777,
@@ -67,6 +91,26 @@ describe("standalone release preparation", () => {
       expect(run(root, "short").status).not.toBe(0);
       rmSync(join(root, ".next/standalone/server.js"));
       expect(run(root, sha).status).not.toBe(0);
+
+      rmSync(join(root, ".next/standalone"), {
+        recursive: true,
+        force: true,
+      });
+      mkdirSync(join(root, ".next/standalone"), { recursive: true });
+      writeFileSync(join(root, ".next/standalone/server.js"), "server\n");
+      mkdirSync(join(root, "private-build-input"), { recursive: true });
+      writeFileSync(
+        join(root, "private-build-input/credentials.txt"),
+        "AUTHORIZATION: basic secret-token\n",
+      );
+      symlinkSync(
+        join(root, "private-build-input"),
+        join(root, ".next/standalone/leaked-build-input"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      const leaked = run(root, sha);
+      expect(leaked.status).not.toBe(0);
+      expect(leaked.stderr).toMatch(/escaped the standalone root/i);
 
       rmSync(join(root, ".next/standalone"), {
         recursive: true,

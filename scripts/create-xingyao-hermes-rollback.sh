@@ -165,6 +165,8 @@ verify_packaged_file "rollback-command.sh"
 
 product_release="$RELEASE_ROOT/$PRODUCT_COMMIT"
 source "$PACKAGE_DIR/files/deploy.sh"
+TRUSTED_CURRENT_SHA="$PRODUCT_COMMIT"
+TRUSTED_CURRENT_MANIFEST_SHA256="$PRODUCT_MANIFEST_SHA256"
 validate_rollback_runtime
 validate_secure_env_file
 load_runtime_env

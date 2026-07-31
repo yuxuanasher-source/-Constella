@@ -42,6 +42,7 @@ jobs:
 
       - name: Produce reviewed release artifact
         id: release-artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/codex/full-project-ui'
         run: |
           node scripts/prepare-standalone-release.mjs "$GITHUB_WORKSPACE" "$GITHUB_SHA"
           node scripts/release-integrity.mjs write "$GITHUB_WORKSPACE" "$GITHUB_SHA"
@@ -57,8 +58,69 @@ jobs:
             printf 'Release artifact SHA-256: `%s`\n' "$artifact_sha256"
           } >> "$GITHUB_STEP_SUMMARY"
           printf 'path=%s\n' "$artifact" >> "$GITHUB_OUTPUT"
+          printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
+          printf 'artifact_sha256=%s\n' "$artifact_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Verify reviewed release artifact round trip
+        if: github.event_name == 'push' && github.ref == 'refs/heads/codex/full-project-ui'
+        env:
+          ARTIFACT_PATH: ${{ steps.release-artifact.outputs.path }}
+          ARTIFACT_SHA256: ${{ steps.release-artifact.outputs.artifact_sha256 }}
+          MANIFEST_SHA256: ${{ steps.release-artifact.outputs.manifest_sha256 }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          roundtrip_root="$(mktemp -d)"
+          candidate="$roundtrip_root/$RELEASE_SHA"
+          server_pid=""
+          cleanup() {
+            if [ -n "$server_pid" ]; then
+              kill -TERM "$server_pid" 2>/dev/null || true
+              for _ in 1 2 3 4 5; do
+                kill -0 "$server_pid" 2>/dev/null || break
+                sleep 1
+              done
+              kill -KILL "$server_pid" 2>/dev/null || true
+              wait "$server_pid" 2>/dev/null || true
+            fi
+            git worktree remove --force "$candidate" 2>/dev/null || true
+            rm -rf -- "$roundtrip_root"
+          }
+          trap cleanup EXIT
+          git worktree add --detach "$candidate" "$RELEASE_SHA"
+          node "$candidate/scripts/extract-release-artifact.mjs" \
+            "$GITHUB_WORKSPACE/$ARTIFACT_PATH" "$candidate" \
+            "$ARTIFACT_SHA256" "$RELEASE_SHA"
+          node "$candidate/scripts/release-integrity.mjs" verify \
+            "$candidate" "$RELEASE_SHA" "$MANIFEST_SHA256"
+          (
+            cd "$candidate"
+            exec env PORT=3999 HOSTNAME=127.0.0.1 \
+              RELEASE_SHA="$RELEASE_SHA" \
+              RELEASE_MANIFEST_SHA256="$MANIFEST_SHA256" \
+              node .next/standalone/server.js
+          ) >"$roundtrip_root/server.log" 2>&1 &
+          server_pid="$!"
+          health=""
+          for _ in $(seq 1 30); do
+            if health="$(curl --fail --silent --show-error \
+              --connect-timeout 1 --max-time 2 \
+              http://127.0.0.1:3999/api/health)"; then
+              break
+            fi
+            sleep 1
+          done
+          HEALTH_JSON="$health" node -e '
+            const body = JSON.parse(process.env.HEALTH_JSON);
+            if (
+              body.ok !== true ||
+              body.release?.sha !== process.env.RELEASE_SHA ||
+              body.release?.manifestSha256 !== process.env.MANIFEST_SHA256
+            ) process.exit(1);
+          '
 
       - name: Upload reviewed release artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/codex/full-project-ui'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-runtime-${{ github.sha }}
