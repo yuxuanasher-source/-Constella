@@ -31,6 +31,7 @@ export default defineConfig({
         "features/ai/knowledge-base.ts",
       ],
       thresholds: {
+        perFile: true,
         lines: 85,
         functions: 85,
         statements: 85,

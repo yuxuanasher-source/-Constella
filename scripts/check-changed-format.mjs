@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { extname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -89,6 +89,9 @@ export function filterSupportedFiles(rootInput, files) {
   const root = realpathSync(resolve(rootInput));
   const supported = [];
   for (const rawPath of files) {
+    if (rawPath.includes("\\")) {
+      fatal(`unsafe changed path: ${rawPath}`);
+    }
     const normalized = rawPath.replaceAll("\\", "/");
     if (
       normalized === "" ||
@@ -112,21 +115,22 @@ export function filterSupportedFiles(rootInput, files) {
 }
 
 export function prettierArguments(files) {
-  return ["exec", "prettier", "--check", "--", ...files];
+  return ["--check", "--", ...files];
 }
 
 function runPrettier(root, files) {
   const args = prettierArguments(files);
-  const npmExecPath = process.env.npm_execpath;
-  const command =
-    npmExecPath && /\.(?:c?js|mjs)$/i.test(npmExecPath)
-      ? process.execPath
-      : process.platform === "win32"
-        ? "pnpm.cmd"
-        : "pnpm";
-  const commandArgs =
-    command === process.execPath ? [npmExecPath, ...args] : args;
-  const result = spawnSync(command, commandArgs, {
+  const prettierCli = resolve(
+    root,
+    "node_modules",
+    "prettier",
+    "bin",
+    "prettier.cjs",
+  );
+  if (!existsSync(prettierCli)) {
+    fatal("local Prettier CLI is not installed");
+  }
+  const result = spawnSync(process.execPath, [prettierCli, ...args], {
     cwd: root,
     stdio: "inherit",
     windowsHide: true,

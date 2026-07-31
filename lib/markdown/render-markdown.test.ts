@@ -104,6 +104,32 @@ describe("renderMarkdownToHtml", () => {
     );
   });
 
+  it("renders blockquotes, ordered lists, and unmatched strong markers", () => {
+    const markdown = [
+      "> first line",
+      "> second **line**",
+      "",
+      "1. one",
+      "2. two",
+      "",
+      "unfinished **marker",
+    ].join("\n");
+
+    expect(renderMarkdownToHtml(markdown)).toBe(
+      [
+        "<blockquote>first line<br/>second <strong>line</strong></blockquote>",
+        "<ol><li>one</li><li>two</li></ol>",
+        "<p>unfinished **marker</p>",
+      ].join("\n"),
+    );
+  });
+
+  it("rejects malformed raster data URLs", () => {
+    expect(renderMarkdownToHtml("![bad](data:image/png;base64,abc)")).toBe(
+      "<p></p>",
+    );
+  });
+
   it("preserves strong emphasis across an inline image", () => {
     expect(
       renderMarkdownToHtml(

@@ -92,13 +92,20 @@ test("selects added, copied, modified, renamed, and type-changed files", (t) => 
 
 test("passes exact paths after an option terminator without shell composition", () => {
   assert.deepEqual(prettierArguments(["-leading.ts", "line\nbreak.md"]), [
-    "exec",
-    "prettier",
     "--check",
     "--",
     "-leading.ts",
     "line\nbreak.md",
   ]);
+});
+
+test("rejects backslash paths instead of aliasing distinct Git names", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "changed-format-backslash-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.throws(
+    () => filterSupportedFiles(root, ["a\\b.ts"]),
+    /unsafe changed path/,
+  );
 });
 
 test("rejects a changed supported-file symlink", (t) => {
