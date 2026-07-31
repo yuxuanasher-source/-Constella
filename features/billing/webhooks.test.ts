@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createMemoryBillingRepo } from "./billing-repo-memory";
 import type { BillingRepo } from "./billing-repo";
 import {
+  TEST_PAYMENT_WEBHOOK_SECRET,
   TEST_PLANS,
   TEST_PRICES,
   makeSubscription,
@@ -15,8 +16,9 @@ import {
 import { handleWebhook } from "./webhooks";
 
 const NOW = new Date("2026-06-16T00:00:00.000Z");
-const SECRET = "test-secret";
-const provider = createMockPaymentProvider({ secret: SECRET });
+const provider = createMockPaymentProvider({
+  secret: TEST_PAYMENT_WEBHOOK_SECRET,
+});
 
 async function setupWithPendingOrder() {
   const { repo, state } = createMemoryBillingRepo({
@@ -38,6 +40,7 @@ async function setupWithPendingOrder() {
     planId: "plan_pro",
     billingCycle: "monthly",
     idempotencyKey: "k1",
+    provider: "mock",
     createdBy: "user-owner",
   });
   return { repo, state };
@@ -54,7 +57,7 @@ function paymentWebhook(overrides: Partial<MockWebhookBody> = {}) {
       amountCents: 99900,
       ...overrides,
     },
-    SECRET,
+    TEST_PAYMENT_WEBHOOK_SECRET,
   );
 }
 
@@ -121,9 +124,142 @@ describe("handleWebhook", () => {
 
   it("marks the order failed on a reported payment failure", async () => {
     const { repo, state } = await setupWithPendingOrder();
-    const result = await handle(repo, paymentWebhook({ status: "failed" }));
+    const result = await handle(
+      repo,
+      paymentWebhook({ status: "failed", amountCents: 1 }),
+    );
     expect(result.processed).toBe(true);
     expect(state.orders.get("order-1")?.status).toBe("failed");
     expect(state.subscriptions.get("org-1")?.status).toBe("trialing");
+    expect(state.transactions[0]?.amountCents).toBe(1);
+  });
+
+  it("rejects a succeeded payment with an amount mismatch without side effects", async () => {
+    const { repo, state } = await setupWithPendingOrder();
+    const audit = vi.fn(async () => undefined);
+
+    const result = await handleWebhook({
+      repo,
+      provider,
+      ...paymentWebhook({ amountCents: 99899 }),
+      now: NOW,
+      audit,
+    });
+
+    expect(result).toEqual({
+      processed: false,
+      reason: "amount_mismatch",
+      orderId: "order-1",
+    });
+    expect(state.orders.get("order-1")?.status).toBe("pending");
+    expect(state.subscriptions.get("org-1")?.status).toBe("trialing");
+    expect(state.transactions).toHaveLength(0);
+    expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        module: "billing",
+        objectType: "billing_webhook_event",
+        objectId: "evt-1",
+        reason: "amount_mismatch",
+        result: "failure",
+      }),
+    );
+  });
+
+  it.each([
+    ["missing", null],
+    ["mismatched", "offline"],
+  ])(
+    "rejects a payment whose order provider is %s without side effects",
+    async (_label, orderProvider) => {
+      const { repo, state } = await setupWithPendingOrder();
+      await repo.updateOrder("order-1", { provider: orderProvider });
+
+      const result = await handle(repo, paymentWebhook());
+
+      expect(result).toEqual({
+        processed: false,
+        reason: "provider_mismatch",
+        orderId: "order-1",
+      });
+      expect(state.orders.get("order-1")?.status).toBe("pending");
+      expect(state.subscriptions.get("org-1")?.status).toBe("trialing");
+      expect(state.transactions).toHaveLength(0);
+      expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
+    },
+  );
+
+  it("rejects a blank provider transaction id without side effects", async () => {
+    const { repo, state } = await setupWithPendingOrder();
+
+    const result = await handle(
+      repo,
+      paymentWebhook({ providerTxnId: "   " }),
+    );
+
+    expect(result).toEqual({
+      processed: false,
+      reason: "invalid_provider_transaction",
+      orderId: "order-1",
+    });
+    expect(state.orders.get("order-1")?.status).toBe("pending");
+    expect(state.subscriptions.get("org-1")?.status).toBe("trialing");
+    expect(state.transactions).toHaveLength(0);
+    expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
+  });
+
+  it("permits a partial refund when the order provider matches", async () => {
+    const { repo, state } = createMemoryBillingRepo({
+      plans: TEST_PLANS,
+      prices: TEST_PRICES,
+      subscription: makeSubscription({
+        organizationId: "org-1",
+        planId: "plan_pro",
+        status: "active",
+      }),
+    });
+    await repo.insertOrder({
+      id: "order-1",
+      organizationId: "org-1",
+      kind: "feature_addon",
+      amountCents: 10000,
+      currency: "CNY",
+      target: { featureKey: "war_room" },
+      idempotencyKey: "refund-k1",
+      provider: "mock",
+      createdBy: "user-owner",
+    });
+    await repo.updateOrder("order-1", {
+      status: "refunding",
+      paidAt: "2026-06-15T00:00:00.000Z",
+    });
+    await repo.upsertFeatureAddon({
+      organizationId: "org-1",
+      featureKey: "war_room",
+      amountCents: 10000,
+      enabled: true,
+      periodStart: "2026-06-01",
+      periodEnd: "2026-07-01",
+    });
+
+    const result = await handle(
+      repo,
+      paymentWebhook({
+        type: "refund",
+        providerTxnId: "mock_refund_order-1",
+        amountCents: 4000,
+      }),
+    );
+
+    expect(result).toEqual({ processed: true, orderId: "order-1" });
+    expect(state.transactions).toEqual([
+      expect.objectContaining({
+        type: "refund",
+        status: "succeeded",
+        amountCents: 4000,
+      }),
+    ]);
+    expect(state.orders.get("order-1")?.status).toBe("refunded");
+    expect(state.featureAddons.get("org-1:war_room")?.enabled).toBe(false);
   });
 });

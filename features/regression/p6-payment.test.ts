@@ -4,6 +4,7 @@ import { createMemoryBillingRepo } from "@/features/billing/billing-repo-memory"
 import type { BillingRepo } from "@/features/billing/billing-repo";
 import {
   TEST_ACTOR,
+  TEST_PAYMENT_WEBHOOK_SECRET,
   TEST_PLANS,
   TEST_PRICES,
   makeSubscription,
@@ -17,8 +18,9 @@ import {
 import { calculateUsageStatus } from "@/features/billing/usage-metering";
 import { handleWebhook } from "@/features/billing/webhooks";
 
-const SECRET = "test-secret";
-const provider = createMockPaymentProvider({ secret: SECRET });
+const provider = createMockPaymentProvider({
+  secret: TEST_PAYMENT_WEBHOOK_SECRET,
+});
 const NOW = new Date("2026-06-16T00:00:00.000Z");
 
 async function payLatestOrder(
@@ -36,7 +38,7 @@ async function payLatestOrder(
       orderId,
       amountCents,
     },
-    SECRET,
+    TEST_PAYMENT_WEBHOOK_SECRET,
   );
   return handleWebhook({ repo, provider, ...payload, now: NOW });
 }

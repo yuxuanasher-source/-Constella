@@ -10,7 +10,13 @@ export type WebhookHandleResult = {
   processed: boolean;
   reason?: string;
   orderId?: string;
+  verificationFailed?: true;
 };
+
+export type WebhookBusinessInvariantReason =
+  | "amount_mismatch"
+  | "provider_mismatch"
+  | "invalid_provider_transaction";
 
 /**
  * 渠道异步回调处理：验签 → 落 billing_webhook_events → 幂等 → 写交易 → 推状态机。
@@ -43,7 +49,11 @@ export async function handleWebhook({
       signatureVerified: false,
       rawPayload: safeParse(rawBody),
     });
-    return { processed: false, reason: verify.reason };
+    return {
+      processed: false,
+      reason: verify.reason,
+      verificationFailed: true,
+    };
   }
 
   const event = verify.event;
@@ -62,6 +72,39 @@ export async function handleWebhook({
   if (!order) {
     await repo.markWebhookProcessed(provider.name, event.eventId);
     return { processed: false, reason: "order_not_found", orderId: event.orderId };
+  }
+
+  const invariantRejection = businessInvariantRejection({
+    provider,
+    orderProvider: order.provider,
+    event,
+    orderAmountCents: order.amountCents,
+  });
+  if (invariantRejection) {
+    await repo.markWebhookProcessed(provider.name, event.eventId);
+    if (audit) {
+      await audit({
+        organizationId: order.organizationId,
+        action: "reject",
+        module: "billing",
+        objectType: "billing_webhook_event",
+        objectId: event.eventId,
+        reason: invariantRejection,
+        result: "failure",
+        after: {
+          processed: true,
+          rejectionReason: invariantRejection,
+          orderId: order.id,
+          eventType: event.type,
+        },
+        changedFields: ["processed"],
+      });
+    }
+    return {
+      processed: false,
+      reason: invariantRejection,
+      orderId: order.id,
+    };
   }
 
   if (event.type === "refund") {
@@ -140,6 +183,38 @@ export async function handleWebhook({
 
   await repo.markWebhookProcessed(provider.name, event.eventId);
   return { processed: true, orderId: order.id };
+}
+
+function businessInvariantRejection({
+  provider,
+  orderProvider,
+  event,
+  orderAmountCents,
+}: {
+  provider: PaymentProvider;
+  orderProvider?: string | null;
+  event: {
+    type: "payment" | "refund";
+    status: "succeeded" | "failed";
+    providerTxnId: string;
+    amountCents: number;
+  };
+  orderAmountCents: number;
+}): WebhookBusinessInvariantReason | null {
+  if (!orderProvider || orderProvider !== provider.name) {
+    return "provider_mismatch";
+  }
+  if (!event.providerTxnId.trim()) {
+    return "invalid_provider_transaction";
+  }
+  if (
+    event.type === "payment" &&
+    event.status === "succeeded" &&
+    event.amountCents !== orderAmountCents
+  ) {
+    return "amount_mismatch";
+  }
+  return null;
 }
 
 function fingerprint(rawBody: string): string {

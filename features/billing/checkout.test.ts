@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createMemoryBillingRepo } from "./billing-repo-memory";
 import {
   TEST_ACTOR,
+  TEST_PAYMENT_WEBHOOK_SECRET,
   TEST_PLANS,
   TEST_PRICES,
   makeSubscription,
@@ -11,7 +12,9 @@ import { createCheckoutOrder } from "./checkout";
 import { createMockPaymentProvider } from "./providers/mock-provider";
 
 const NOW = new Date("2026-06-16T00:00:00.000Z");
-const provider = createMockPaymentProvider({ secret: "test-secret" });
+const provider = createMockPaymentProvider({
+  secret: TEST_PAYMENT_WEBHOOK_SECRET,
+});
 
 function setup(subscriptionOverrides?: Parameters<typeof makeSubscription>[0]) {
   return createMemoryBillingRepo({

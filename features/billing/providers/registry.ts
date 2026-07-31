@@ -2,20 +2,47 @@ import { createMockPaymentProvider } from "./mock-provider";
 import { createOfflinePaymentProvider } from "./offline-provider";
 import type { PaymentProvider } from "./payment-provider";
 
+export type PaymentProviderEnv = {
+  NODE_ENV?: string;
+  BILLING_PAYMENT_PROVIDER?: string;
+  BILLING_MOCK_WEBHOOK_SECRET?: string;
+};
+
+export class PaymentProviderUnavailableError extends Error {
+  readonly code = "PAYMENT_PROVIDER_UNAVAILABLE";
+
+  constructor() {
+    super("Payment provider unavailable");
+    this.name = "PaymentProviderUnavailableError";
+  }
+}
+
 /**
- * 支付 Provider 注册表。首版仅 mock；持牌聚合支付（微信 / 支付宝）实现
- * 后续以同一 {@link PaymentProvider} 契约接入，编排层无需改动。
+ * 支付 Provider 注册表。未配置时使用线下支付；mock 仅允许带强密钥的
+ * 非生产环境本地联调，避免配置漂移后静默接受伪造回调。
  */
-export function getPaymentProvider(name?: string): PaymentProvider {
-  const resolved = name ?? process.env.BILLING_PAYMENT_PROVIDER ?? "mock";
+export function getPaymentProvider(
+  name?: string,
+  env: PaymentProviderEnv = process.env,
+): PaymentProvider {
+  const resolved =
+    (name ?? env.BILLING_PAYMENT_PROVIDER ?? "").trim() || "offline";
   switch (resolved) {
-    case "mock":
-      return createMockPaymentProvider({
-        secret: process.env.BILLING_MOCK_WEBHOOK_SECRET,
-      });
+    case "mock": {
+      if (env.NODE_ENV === "production") {
+        throw new PaymentProviderUnavailableError();
+      }
+      try {
+        return createMockPaymentProvider({
+          secret: env.BILLING_MOCK_WEBHOOK_SECRET ?? "",
+        });
+      } catch {
+        throw new PaymentProviderUnavailableError();
+      }
+    }
     case "offline":
       return createOfflinePaymentProvider();
     default:
-      throw new Error(`Unknown payment provider: ${resolved}`);
+      throw new PaymentProviderUnavailableError();
   }
 }

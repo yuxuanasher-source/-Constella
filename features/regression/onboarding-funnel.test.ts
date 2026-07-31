@@ -4,6 +4,7 @@ import { buildBillingStatus } from "@/features/billing/billing-status";
 import { createMemoryBillingRepo } from "@/features/billing/billing-repo-memory";
 import {
   TEST_ACTOR,
+  TEST_PAYMENT_WEBHOOK_SECRET,
   TEST_PLANS,
   TEST_PRICES,
   makeSubscription,
@@ -18,8 +19,9 @@ import { handleWebhook } from "@/features/billing/webhooks";
 import { isActivated } from "@/features/funnel/onboarding";
 import { resolvePaywall } from "@/features/funnel/paywall";
 
-const SECRET = "test-secret";
-const provider = createMockPaymentProvider({ secret: SECRET });
+const provider = createMockPaymentProvider({
+  secret: TEST_PAYMENT_WEBHOOK_SECRET,
+});
 const NOW = new Date("2026-06-13T00:00:00.000Z");
 
 describe("Self-serve funnel → P6 checkout handoff", () => {
@@ -80,7 +82,7 @@ describe("Self-serve funnel → P6 checkout handoff", () => {
         orderId: checkout.order.id,
         amountCents: 99900,
       },
-      SECRET,
+      TEST_PAYMENT_WEBHOOK_SECRET,
     );
     const result = await handleWebhook({ repo, provider, ...payload, now: NOW });
 
