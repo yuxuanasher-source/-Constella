@@ -72,6 +72,7 @@ function resolvePackageFrom(
 describe("production dependency security contract", () => {
   const projectPackageJsonPath = resolve(process.cwd(), "package.json");
   const workspace = readProjectFile("pnpm-workspace.yaml");
+  const lockfile = readProjectFile("pnpm-lock.yaml");
   const nextConfig = readProjectFile("next.config.ts");
   const patchPath = resolve(
     process.cwd(),
@@ -98,12 +99,38 @@ describe("production dependency security contract", () => {
     archiver.packageJsonPath,
     "readdir-glob",
   );
-  const minimatch = resolvePackageFrom(
+  const readdirMinimatch = resolvePackageFrom(
     readdirGlob.packageJsonPath,
     "minimatch",
   );
-  const braceExpansion = resolvePackageFrom(
-    minimatch.packageJsonPath,
+  const readdirBraceExpansion = resolvePackageFrom(
+    readdirMinimatch.packageJsonPath,
+    "brace-expansion",
+  );
+  const archiverGlob = resolvePackageFrom(
+    archiverUtils.packageJsonPath,
+    "glob",
+  );
+  const globMinimatch = resolvePackageFrom(
+    archiverGlob.packageJsonPath,
+    "minimatch",
+  );
+  const globBraceExpansion = resolvePackageFrom(
+    globMinimatch.packageJsonPath,
+    "brace-expansion",
+  );
+
+  const jsdom = resolvePackageFrom(projectPackageJsonPath, "jsdom");
+  const undici = resolvePackageFrom(jsdom.packageJsonPath, "undici");
+  const eslint = resolvePackageFrom(projectPackageJsonPath, "eslint");
+  const eslintRc = resolvePackageFrom(eslint.packageJsonPath, "@eslint/eslintrc");
+  const jsYaml = resolvePackageFrom(eslintRc.packageJsonPath, "js-yaml");
+  const eslintMinimatch = resolvePackageFrom(
+    eslint.packageJsonPath,
+    "minimatch",
+  );
+  const legacyBraceExpansion = resolvePackageFrom(
+    eslintMinimatch.packageJsonPath,
     "brace-expansion",
   );
 
@@ -120,8 +147,73 @@ describe("production dependency security contract", () => {
     expect(uuid.version).toBe("11.1.1");
     expect(archiverUtils.version).toBe("5.0.2");
     expect(readdirGlob.version).toBe("1.1.3");
-    expect(minimatch.version).toBe("9.0.9");
-    expect(braceExpansion.version).toBe("5.0.8");
+    expect(readdirMinimatch.version).toBe("10.2.5");
+    expect(readdirBraceExpansion.version).toBe("5.0.8");
+    expect(archiverGlob.version).toBe("10.5.0");
+    expect(globMinimatch.version).toBe("10.2.5");
+    expect(globBraceExpansion.version).toBe("5.0.8");
+  });
+
+  it("resolves the patched development dependency releases", () => {
+    expect(jsdom.version).toBe("29.1.1");
+    expect(undici.version).toBe("7.28.0");
+    expect(eslintRc.version).toBe("3.3.5");
+    expect(jsYaml.version).toBe("4.3.0");
+  });
+
+  it("limits brace expansion through the CJS maintenance backport", () => {
+    expect(eslintMinimatch.version).toBe("3.1.5");
+    expect(legacyBraceExpansion.version).toBe("1.1.18");
+
+    const source = readFileSync(
+      resolve(dirname(legacyBraceExpansion.packageJsonPath), "index.js"),
+      "utf8",
+    );
+    expect(source).toContain("EXPANSION_MAX_LENGTH");
+    expect(source).toContain("CVE-2026-14257");
+
+    const requireFromLegacyBrace = createRequire(
+      legacyBraceExpansion.packageJsonPath,
+    );
+    const expand = requireFromLegacyBrace("brace-expansion") as (
+      pattern: string,
+    ) => string[];
+    const expansions = expand("{a,b}".repeat(1_500));
+    const expandedLength = expansions.reduce(
+      (length, expansion) => length + expansion.length,
+      0,
+    );
+    expect(expansions.length).toBeLessThan(100_000);
+    expect(expandedLength).toBeLessThanOrEqual(4_000_000);
+  });
+
+  it("locks brace expansion to the two reviewed patched releases", () => {
+    const requireFromEslintRc = createRequire(eslintRc.packageJsonPath);
+    const yaml = requireFromEslintRc("js-yaml") as {
+      load(source: string): { packages?: Record<string, unknown> };
+    };
+    const parsedLockfile = yaml.load(lockfile);
+    const braceVersions = Object.keys(parsedLockfile.packages ?? {})
+      .flatMap((key) => key.match(/^brace-expansion@(.+)$/)?.[1] ?? [])
+      .sort();
+
+    expect(braceVersions).toEqual(["1.1.18", "5.0.8"]);
+  });
+
+  it("ignores only the registry overmatch for the reviewed CJS backport", () => {
+    const requireFromEslintRc = createRequire(eslintRc.packageJsonPath);
+    const yaml = requireFromEslintRc("js-yaml") as {
+      load(source: string): {
+        auditConfig?: { ignoreGhsas?: string[] };
+      };
+    };
+    const parsedWorkspace = yaml.load(workspace);
+
+    expect(parsedWorkspace.auditConfig?.ignoreGhsas).toEqual([
+      "GHSA-mh99-v99m-4gvg",
+    ]);
+    expect(workspace).toContain("brace-expansion@1.1.18");
+    expect(workspace).toContain("EXPANSION_MAX_LENGTH");
   });
 
   it("loads Archiver utils from pnpm's patched package instance", () => {
