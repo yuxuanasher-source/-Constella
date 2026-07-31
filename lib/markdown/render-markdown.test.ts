@@ -21,6 +21,33 @@ describe("renderMarkdownToHtml", () => {
     expect(html).not.toContain(`alt="avatar" onerror="`);
   });
 
+  it("escapes accepted HTTP image sources so quotes cannot create event handlers", () => {
+    const source = `https://example.com/chart.png" onload="alert`;
+    const html = renderMarkdownToHtml(`![chart](${source})`);
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    const image = container.querySelector("img");
+
+    expect(image).not.toBeNull();
+    expect(image?.getAttributeNames()).toEqual(["src", "alt", "style"]);
+    expect(image?.getAttribute("src")).toBe(source);
+    expect(html).toContain(
+      `src="https://example.com/chart.png&quot; onload=&quot;alert"`,
+    );
+  });
+
+  it("keeps strong markers in image alt text inside the attribute", () => {
+    const html = renderMarkdownToHtml(
+      "![**quarterly chart**](https://example.com/chart.png)",
+    );
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    const image = container.querySelector("img");
+
+    expect(image?.getAttribute("alt")).toBe("**quarterly chart**");
+    expect(image?.querySelector("strong")).toBeNull();
+  });
+
   it.each([
     "javascript:alert%281%29",
     "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
@@ -74,6 +101,16 @@ describe("renderMarkdownToHtml", () => {
         "<table><thead><tr><th>Name</th><th>Value</th></tr></thead><tbody><tr><td>Revenue</td><td><strong>100</strong></td></tr></tbody></table>",
         '<p><img src="https://example.com/chart.png" alt="chart" style="max-width:100%" /></p>',
       ].join("\n"),
+    );
+  });
+
+  it("preserves strong emphasis across an inline image", () => {
+    expect(
+      renderMarkdownToHtml(
+        "**before ![chart](https://example.com/chart.png) after**",
+      ),
+    ).toBe(
+      '<p><strong>before <img src="https://example.com/chart.png" alt="chart" style="max-width:100%" /> after</strong></p>',
     );
   });
 

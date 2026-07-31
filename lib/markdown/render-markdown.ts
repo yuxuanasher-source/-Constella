@@ -32,29 +32,93 @@ function isSafeImageSource(value: string): boolean {
   }
 }
 
-function inlineText(value: string): string {
-  return escapeTextHtml(value).replace(
-    /\*\*(.+?)\*\*/g,
-    "<strong>$1</strong>",
-  );
+type InlineToken =
+  | { type: "text"; value: string }
+  | { type: "image"; alt: string; source: string }
+  | { type: "strong-marker" };
+
+function appendTextTokens(tokens: InlineToken[], value: string): void {
+  for (const part of value.split(/(\*\*)/)) {
+    if (!part) continue;
+    tokens.push(
+      part === "**"
+        ? { type: "strong-marker" }
+        : { type: "text", value: part },
+    );
+  }
 }
 
-function inlineMarkdown(value: string): string {
+function tokenizeInlineMarkdown(value: string): InlineToken[] {
   const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
-  let html = "";
+  const tokens: InlineToken[] = [];
   let cursor = 0;
   let match: RegExpExecArray | null;
 
   while ((match = imagePattern.exec(value)) !== null) {
-    html += inlineText(value.slice(cursor, match.index));
-    const source = match[2].trim();
-    if (isSafeImageSource(source)) {
-      html += `<img src="${escapeHtmlAttribute(source)}" alt="${escapeHtmlAttribute(match[1])}" style="max-width:100%" />`;
-    }
+    appendTextTokens(tokens, value.slice(cursor, match.index));
+    tokens.push({ type: "image", alt: match[1], source: match[2].trim() });
     cursor = imagePattern.lastIndex;
   }
 
-  html += inlineText(value.slice(cursor));
+  appendTextTokens(tokens, value.slice(cursor));
+  return tokens;
+}
+
+function renderInlineToken(token: InlineToken): string {
+  if (token.type === "text") return escapeTextHtml(token.value);
+  if (token.type === "strong-marker") return "**";
+  if (!isSafeImageSource(token.source)) return "";
+  return `<img src="${escapeHtmlAttribute(token.source)}" alt="${escapeHtmlAttribute(token.alt)}" style="max-width:100%" />`;
+}
+
+function findClosingStrongMarker(
+  tokens: InlineToken[],
+  openingIndex: number,
+): number {
+  let hasContent = false;
+  for (let i = openingIndex + 1; i < tokens.length; i += 1) {
+    if (tokens[i].type === "strong-marker") {
+      if (hasContent) return i;
+      hasContent = true;
+    } else {
+      hasContent = true;
+    }
+  }
+  return -1;
+}
+
+function inlineMarkdown(value: string): string {
+  const tokens = tokenizeInlineMarkdown(value);
+  let html = "";
+  let i = 0;
+
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (token.type !== "strong-marker") {
+      html += renderInlineToken(token);
+      i += 1;
+      continue;
+    }
+
+    const closingIndex = findClosingStrongMarker(tokens, i);
+    if (closingIndex === -1) {
+      html += renderInlineToken(token);
+      i += 1;
+      continue;
+    }
+
+    html += "<strong>";
+    for (
+      let contentIndex = i + 1;
+      contentIndex < closingIndex;
+      contentIndex += 1
+    ) {
+      html += renderInlineToken(tokens[contentIndex]);
+    }
+    html += "</strong>";
+    i = closingIndex + 1;
+  }
+
   return html;
 }
 
