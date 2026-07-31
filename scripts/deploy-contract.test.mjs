@@ -1024,6 +1024,10 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(verify, /every\(/);
   assert.match(verify, /normalizedArgs/);
   assert.match(ecosystem, /\.\.\.process\.env/);
+  assert.match(
+    ecosystem,
+    /NODE_PATH:\s*join\([\s\S]*\.next\/standalone\/node_modules\/\.pnpm\/node_modules/,
+  );
   assert.match(ciWorkflow, /RELEASE_SHA:\s*\$\{\{ github\.sha \}\}/);
   assert.match(ciWorkflow, /prepare-standalone-release\.mjs/);
   assert.match(ciWorkflow, /release-integrity\.mjs write/);
@@ -1046,6 +1050,10 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   );
   assert.match(artifactRoundtripVerifier, /scripts\/release-integrity\.mjs/);
   assert.match(artifactRoundtripVerifier, /\/api\/health/);
+  assert.match(
+    artifactRoundtripVerifier,
+    /NODE_PATH:\s*join\([\s\S]*\.next\/standalone\/node_modules\/\.pnpm\/node_modules/,
+  );
   assert.match(artifactRoundtripVerifier, /health\?\.release\?\.sha/);
   assert.match(
     artifactRoundtripVerifier,

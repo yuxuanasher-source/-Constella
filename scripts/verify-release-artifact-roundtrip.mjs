@@ -86,7 +86,10 @@ async function stopChild(child) {
   ]);
   if (child.exitCode === null) {
     child.kill("SIGKILL");
-    await new Promise((resolveExit) => child.once("exit", resolveExit));
+    await Promise.race([
+      new Promise((resolveExit) => child.once("exit", resolveExit)),
+      new Promise((resolveTimeout) => setTimeout(resolveTimeout, 5_000)),
+    ]);
   }
 }
 
@@ -126,6 +129,10 @@ try {
       env: {
         ...process.env,
         NODE_ENV: "production",
+        NODE_PATH: join(
+          candidate,
+          ".next/standalone/node_modules/.pnpm/node_modules",
+        ),
         PORT: String(appPort),
         HOSTNAME: "127.0.0.1",
         RELEASE_SHA: expectedSha,
@@ -151,7 +158,9 @@ try {
   });
 
   let health;
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  let healthStatus;
+  const healthDeadline = Date.now() + 30_000;
+  while (Date.now() < healthDeadline) {
     if (appProcess.exitCode !== null) {
       fail(
         `standalone exited before health verification\n${appStdout}\n${appStderr}`,
@@ -159,8 +168,9 @@ try {
     }
     try {
       const response = await fetch(`http://127.0.0.1:${appPort}/api/health`, {
-        signal: AbortSignal.timeout(2_000),
+        signal: AbortSignal.timeout(1_000),
       });
+      healthStatus = response.status;
       health = await response.json();
       if (response.ok && health?.ok === true) break;
     } catch {
@@ -176,7 +186,9 @@ try {
     health?.release?.manifestSha256 !== expectedManifestSha256
   ) {
     fail(
-      `health proof failed: ${JSON.stringify(health)}\n${appStdout}\n${appStderr}`,
+      `health proof failed (${healthStatus ?? "no response"}): ${JSON.stringify(
+        health,
+      )}\n${appStdout}\n${appStderr}`,
     );
   }
 
@@ -192,7 +204,11 @@ try {
 } finally {
   await stopChild(appProcess);
   if (databaseStub) {
-    await new Promise((resolveClose) => databaseStub.close(resolveClose));
+    databaseStub.closeAllConnections?.();
+    await Promise.race([
+      new Promise((resolveClose) => databaseStub.close(resolveClose)),
+      new Promise((resolveTimeout) => setTimeout(resolveTimeout, 5_000)),
+    ]);
   }
   if (worktreeCreated) {
     spawnSync("git", ["worktree", "remove", "--force", candidate], {
