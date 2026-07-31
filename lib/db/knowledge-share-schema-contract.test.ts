@@ -9,6 +9,15 @@ const migrationPath = join(
 );
 
 describe("knowledge share schema contract", () => {
+  it("declares the migration safe for the atomic expand phase", () => {
+    expect(existsSync(migrationPath)).toBe(true);
+    if (!existsSync(migrationPath)) return;
+
+    expect(
+      readFileSync(migrationPath, "utf8").startsWith("-- deploy: expand\n"),
+    ).toBe(true);
+  });
+
   it("defines a dedicated metadata table without storing plaintext tokens", () => {
     expect(existsSync(migrationPath)).toBe(true);
     if (!existsSync(migrationPath)) return;

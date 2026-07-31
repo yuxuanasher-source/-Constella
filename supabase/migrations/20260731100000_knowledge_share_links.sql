@@ -1,3 +1,4 @@
+-- deploy: expand
 -- Expiring, revocable knowledge-base share links.
 -- Plaintext bearer tokens are returned once by the application and are never
 -- persisted. Public reads are performed by a server-side service-role client
