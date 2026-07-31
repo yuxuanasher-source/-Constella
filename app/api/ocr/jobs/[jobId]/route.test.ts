@@ -13,6 +13,7 @@ import {
   createSupabaseAdminClient,
   createSupabaseServerClient,
 } from "@/lib/db/supabase-server";
+import { UsageHardBlockError } from "@/features/billing/usage-reservations";
 
 vi.mock("@/features/ai/ocr-jobs", () => ({
   confirmOcrJob: vi.fn(),
@@ -163,6 +164,32 @@ describe("/api/ocr/jobs/[jobId]", () => {
         maxAttempts: 3,
         errorCode: "provider_failed",
       },
+    });
+  });
+
+  it("maps retry re-arm quota rejection to a stable non-sensitive 429", async () => {
+    vi.mocked(getOcrJob).mockResolvedValue({
+      id: "job-limit",
+      organizationId: "org-1",
+      jobType: "ocr.extract_live_report",
+      status: "failed",
+      attempt: 1,
+      payload: { liveReportId: "report-limit" },
+    });
+    vi.mocked(retryOcrJob).mockRejectedValueOnce(new UsageHardBlockError());
+
+    const response = await POST(
+      new Request("http://localhost/api/ocr/jobs/job-limit", {
+        method: "POST",
+        body: JSON.stringify({ action: "retry" }),
+      }),
+      { params: Promise.resolve({ jobId: "job-limit" }) },
+    );
+
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toEqual({
+      error: "OCR usage limit reached",
+      code: "usage_limit_reached",
     });
   });
 

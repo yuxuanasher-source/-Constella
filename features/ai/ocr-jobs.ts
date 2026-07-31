@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 
 import { writeAuditLog } from "@/lib/audit/audit";
-import { recordUsageEvent } from "@/features/billing/usage-metering";
+import {
+  consumeUsageReservation,
+  isOcrUsageLimitError,
+  releaseUsageReservation,
+  reserveUsageReservation,
+  UsageHardBlockError,
+} from "@/features/billing/usage-reservations";
 import {
   metricSourcesDiverge,
   resolveReportEvidence,
@@ -190,6 +196,9 @@ export async function createOcrJob({
     p_run_at: new Date().toISOString(),
   });
   if (error) {
+    if (isOcrUsageLimitError(error)) {
+      throw new UsageHardBlockError();
+    }
     throw error;
   }
   if (!data || Array.isArray(data) || typeof data !== "object") {
@@ -363,6 +372,7 @@ export async function retryOcrJob({
   if (report.status !== "ocr_ing") {
     throw new Error("OCR job live report is not eligible for retry");
   }
+  await reserveUsageReservation({ client, reservationId: job.id });
   const runAt = now().toISOString();
   const currentMaxAttempts = job.maxAttempts ?? 3;
   const maxAttempts =
@@ -506,14 +516,49 @@ export async function runClaimedOcrJob({
   beforePostTerminalSideEffects?: (result: OcrJobRecord) => Promise<void>;
   beforePostTerminalFailureSideEffects?: (result: OcrJobRecord) => Promise<void>;
 }): Promise<OcrJobRecord> {
+  // The caller authorizes this execution through the actor contract; quota
+  // consumption itself is intentionally bound to the claimed job.
+  void actor;
   const attempt = job.attempt;
   const maxAttempts = job.maxAttempts ?? 3;
   const resolveImage = imageResolver ?? defaultOcrImageResolver;
+  let reservationStatus: "reserved" | "consumed";
+  try {
+    reservationStatus = await reserveUsageReservation({
+      client,
+      reservationId: job.id,
+    });
+  } catch (error) {
+    const hardBlocked = error instanceof UsageHardBlockError;
+    return failOcrJobAttempt({
+      client,
+      job,
+      attempt,
+      maxAttempts,
+      startedAt,
+      errorCode: hardBlocked
+        ? "usage_limit_reached"
+        : "usage_reservation_failed",
+      errorSummary: hardBlocked
+        ? "OCR usage limit reached"
+        : "OCR usage reservation could not be prepared",
+      deferTerminalJobUpdate,
+      beforePostTerminalFailureSideEffects,
+      forceTerminal: hardBlocked,
+    });
+  }
   const preflightReport = await loadLiveReportForOcrAdvance({
     client,
     liveReportId: job.payload.liveReportId,
   });
   if (preflightReport?.status !== "ocr_ing") {
+    if (reservationStatus === "reserved") {
+      await releaseUsageReservation({
+        client,
+        reservationId: job.id,
+        reason: "live_report_not_runnable",
+      });
+    }
     return cancelOcrJobForInactiveReport({
       client,
       job,
@@ -525,6 +570,13 @@ export async function runClaimedOcrJob({
   try {
     providerInput = await resolveImage(job.payload);
   } catch (error) {
+    if (reservationStatus === "reserved") {
+      await releaseUsageReservation({
+        client,
+        reservationId: job.id,
+        reason: "image_source_failed",
+      });
+    }
     return failOcrJobAttempt({
       client,
       job,
@@ -541,7 +593,54 @@ export async function runClaimedOcrJob({
     });
   }
 
-  await beforeProvider?.();
+  try {
+    await beforeProvider?.();
+  } catch (error) {
+    if (reservationStatus === "reserved") {
+      await releaseUsageReservation({
+        client,
+        reservationId: job.id,
+        reason: "provider_preflight_failed",
+      });
+    }
+    return failOcrJobAttempt({
+      client,
+      job,
+      attempt,
+      maxAttempts,
+      startedAt,
+      errorCode: "provider_preflight_failed",
+      errorSummary:
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "OCR provider preflight failed",
+      deferTerminalJobUpdate,
+      beforePostTerminalFailureSideEffects,
+    });
+  }
+
+  try {
+    await consumeUsageReservation({
+      client,
+      reservationId: job.id,
+      metadata: {
+        provider: "tencent_ocr",
+        attempt,
+      },
+    });
+  } catch {
+    return failOcrJobAttempt({
+      client,
+      job,
+      attempt,
+      maxAttempts,
+      startedAt,
+      errorCode: "usage_reservation_failed",
+      errorSummary: "OCR usage reservation could not be consumed",
+      deferTerminalJobUpdate,
+      beforePostTerminalFailureSideEffects,
+    });
+  }
 
   let providerResult: Awaited<ReturnType<TencentOcrProvider["runGeneralBasicOcr"]>>;
   try {
@@ -690,24 +789,69 @@ export async function runClaimedOcrJob({
     reasons,
   });
 
-  await recordUsageEvent({
-    client: client as Parameters<typeof recordUsageEvent>[0]["client"],
-    actor,
-    input: {
-      metric: "ocr",
-      quantity: 1,
-      source: "ocr_job",
-      objectType: "background_job",
-      objectId: job.id,
-      metadata: {
-        provider: "tencent_ocr",
-        requestId: providerResult.requestId,
-        status,
-      },
-    },
-  });
-
   return completedJob;
+}
+
+export async function failClaimedOcrJobBeforeProvider({
+  client,
+  job,
+  startedAt = new Date(),
+  errorCode,
+  errorSummary,
+  deferTerminalJobUpdate = false,
+  beforePostTerminalFailureSideEffects,
+}: {
+  client: OcrJobClient;
+  job: OcrJobRecord;
+  startedAt?: Date;
+  errorCode: string;
+  errorSummary: string;
+  deferTerminalJobUpdate?: boolean;
+  beforePostTerminalFailureSideEffects?: (result: OcrJobRecord) => Promise<void>;
+}): Promise<OcrJobRecord> {
+  let reservationStatus: "reserved" | "consumed";
+  try {
+    reservationStatus = await reserveUsageReservation({
+      client,
+      reservationId: job.id,
+    });
+  } catch (error) {
+    const hardBlocked = error instanceof UsageHardBlockError;
+    return failOcrJobAttempt({
+      client,
+      job,
+      attempt: job.attempt,
+      maxAttempts: job.maxAttempts ?? 3,
+      startedAt,
+      errorCode: hardBlocked
+        ? "usage_limit_reached"
+        : "usage_reservation_failed",
+      errorSummary: hardBlocked
+        ? "OCR usage limit reached"
+        : "OCR usage reservation could not be prepared",
+      deferTerminalJobUpdate,
+      beforePostTerminalFailureSideEffects,
+      forceTerminal: hardBlocked,
+    });
+  }
+  if (reservationStatus === "reserved") {
+    await releaseUsageReservation({
+      client,
+      reservationId: job.id,
+      reason: errorCode,
+    });
+  }
+  return failOcrJobAttempt({
+    client,
+    job,
+    attempt: job.attempt,
+    maxAttempts: job.maxAttempts ?? 3,
+    startedAt,
+    errorCode,
+    errorSummary,
+    deferTerminalJobUpdate,
+    beforePostTerminalFailureSideEffects,
+  });
 }
 
 export async function confirmOcrJob({
@@ -1236,6 +1380,7 @@ async function failOcrJobAttempt({
   errorSummary,
   deferTerminalJobUpdate = false,
   beforePostTerminalFailureSideEffects,
+  forceTerminal = false,
 }: {
   client: OcrJobClient;
   job: OcrJobRecord;
@@ -1246,9 +1391,10 @@ async function failOcrJobAttempt({
   errorSummary: string;
   deferTerminalJobUpdate?: boolean;
   beforePostTerminalFailureSideEffects?: (result: OcrJobRecord) => Promise<void>;
+  forceTerminal?: boolean;
 }): Promise<OcrJobRecord> {
   const safeMessage = sanitizeErrorMessage(errorSummary);
-  const finalAttempt = attempt >= maxAttempts;
+  const finalAttempt = forceTerminal || attempt >= maxAttempts;
   const retryAt = new Date(
     startedAt.getTime() + retryDelayMs(attempt),
   ).toISOString();

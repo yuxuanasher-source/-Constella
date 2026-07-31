@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { UsageHardBlockError } from "@/features/billing/usage-reservations";
 import {
   confirmOcrJob,
   getOcrJob,
@@ -239,6 +240,15 @@ function toSafeJob(job: {
 }
 
 function errorResponse(error: unknown) {
+  if (error instanceof UsageHardBlockError) {
+    return NextResponse.json(
+      {
+        error: "OCR usage limit reached",
+        code: "usage_limit_reached",
+      },
+      { status: 429 },
+    );
+  }
   if (error instanceof Error) {
     const status =
       /^OCR job (?:is not awaiting confirmation|can no longer be confirmed)$/.test(

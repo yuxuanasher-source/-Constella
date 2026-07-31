@@ -3,13 +3,21 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-const migration = readFileSync(
+const originalMigration = readFileSync(
   resolve(
     process.cwd(),
     "supabase/migrations/20260726103000_atomic_ocr_enqueue.sql",
   ),
   "utf8",
 );
+const quotaMigration = readFileSync(
+  resolve(
+    process.cwd(),
+    "supabase/migrations/20260731090000_ocr_usage_reservations.sql",
+  ),
+  "utf8",
+);
+const migration = `${originalMigration}\n${quotaMigration}`;
 
 describe("atomic OCR enqueue migration", () => {
   it("writes the supplied screenshot id into the OCR result row", () => {
@@ -56,5 +64,20 @@ describe("atomic OCR enqueue migration", () => {
     expect(migration).toMatch(
       /v_job\.payload ->> 'screenshotId'[\s\S]*?p_screenshot_id::text/,
     );
+  });
+
+  it("checks for an exact existing job before reserving quota", () => {
+    const existingResult = quotaMigration.indexOf(
+      "from public.ocr_results as result",
+    );
+    const existingReturn = quotaMigration.indexOf("return to_jsonb(v_job)");
+    const quotaCounter = quotaMigration.indexOf(
+      "from public.usage_monthly_counters",
+      existingReturn,
+    );
+
+    expect(existingResult).toBeGreaterThan(-1);
+    expect(existingReturn).toBeGreaterThan(existingResult);
+    expect(quotaCounter).toBeGreaterThan(existingReturn);
   });
 });

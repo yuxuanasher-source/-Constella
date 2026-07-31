@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runOcrWorkerIteration } from "./ocr-worker";
 import type { OcrJobRecord } from "./ocr-jobs";
+import { createTencentOcrProvider } from "./providers/tencent-ocr-provider";
 
 vi.mock("@/features/ai/ocr-image-source", () => ({
   resolveOcrImageInput: vi.fn(async () => ({ imageBase64: "AQID" })),
@@ -21,7 +22,13 @@ vi.mock("@/features/ai/providers/tencent-ocr-provider", () => ({
   readTencentOcrConfigFromEnv: vi.fn(() => ({})),
 }));
 
-function createClient({ jobs = [] }: { jobs?: OcrJobRecord[] } = {}) {
+function createClient({
+  jobs = [],
+  reservationStatus = "reserved",
+}: {
+  jobs?: OcrJobRecord[];
+  reservationStatus?: "reserved" | "consumed";
+} = {}) {
   const claimed = [...jobs];
   const events: Record<string, unknown>[] = [];
   const updates: Record<string, Record<string, unknown>[]> = {};
@@ -37,6 +44,18 @@ function createClient({ jobs = [] }: { jobs?: OcrJobRecord[] } = {}) {
       }
       if (name === "finalize_async_task") {
         return { data: { id: 1, status: args.p_status }, error: null };
+      }
+      if (name === "reserve_usage_reservation") {
+        return {
+          data: { id: args.p_reservation_id, status: reservationStatus },
+          error: null,
+        };
+      }
+      if (name === "consume_usage_reservation") {
+        return { data: { id: args.p_reservation_id, status: "consumed" }, error: null };
+      }
+      if (name === "release_usage_reservation") {
+        return { data: { id: args.p_reservation_id, status: "released" }, error: null };
       }
       return { data: null, error: null };
     }),
@@ -270,6 +289,80 @@ describe("runOcrWorkerIteration", () => {
     );
   });
 
+  it("releases claimed reservations when provider configuration fails before a call", async () => {
+    const { client, rpcs, updates } = createClient({
+      jobs: [claimedJob("job-config")],
+    });
+    vi.mocked(createTencentOcrProvider).mockImplementationOnce(() => {
+      throw new Error("missing provider secret");
+    });
+
+    const result = await runOcrWorkerIteration({
+      client: client as never,
+      workerId: "worker-1",
+      limit: 1,
+      leaseSeconds: 60,
+    });
+
+    expect(result).toMatchObject({ claimed: 1, succeeded: 0, failed: 0 });
+    expect(result.jobs).toEqual([
+      { id: "job-config", status: "queued", attempt: 1 },
+    ]);
+    expect(rpcs).toContainEqual({
+      name: "release_usage_reservation",
+      args: {
+        p_reservation_id: "job-config",
+        p_reason: "provider_unconfigured",
+      },
+    });
+    expect(rpcs).not.toContainEqual(
+      expect.objectContaining({ name: "consume_usage_reservation" }),
+    );
+    expect(rpcs).not.toContainEqual(
+      expect.objectContaining({ name: "finalize_async_task" }),
+    );
+    expect(updates.background_jobs.at(-1)).toEqual(
+      expect.objectContaining({
+        status: "queued",
+        error_code: "provider_unconfigured",
+        locked_at: null,
+        locked_by: null,
+      }),
+    );
+  });
+
+  it("does not release consumed usage when configuration fails on a provider retry", async () => {
+    const { client, rpcs, updates } = createClient({
+      jobs: [claimedJob("job-config-consumed")],
+      reservationStatus: "consumed",
+    });
+    vi.mocked(createTencentOcrProvider).mockImplementationOnce(() => {
+      throw new Error("missing provider secret");
+    });
+
+    const result = await runOcrWorkerIteration({
+      client: client as never,
+      workerId: "worker-1",
+      limit: 1,
+      leaseSeconds: 60,
+    });
+
+    expect(result.jobs).toEqual([
+      { id: "job-config-consumed", status: "queued", attempt: 1 },
+    ]);
+    expect(rpcs).not.toContainEqual(
+      expect.objectContaining({ name: "release_usage_reservation" }),
+    );
+    expect(updates.background_jobs.at(-1)).toEqual(
+      expect.objectContaining({
+        status: "queued",
+        error_code: "provider_unconfigured",
+        locked_at: null,
+        locked_by: null,
+      }),
+    );
+  });
+
   it("renews the lease every 30 seconds while provider work is pending", async () => {
     const { client } = createClient({ jobs: [claimedJob("job-slow")] });
     const provider = {
@@ -327,12 +420,18 @@ describe("runOcrWorkerIteration", () => {
 
   it("does not append a separate terminal event when finalization fails", async () => {
     const { client, events, updates } = createClient({ jobs: [claimedJob("job-1")] });
-    vi.mocked(client.rpc).mockImplementation(async (name, args) => {
+    vi.mocked(client.rpc).mockImplementation(async (name) => {
       if (name === "claim_async_ocr_jobs") {
         return { data: [toRow(claimedJob("job-1"))], error: null };
       }
       if (name === "finalize_async_task") {
         return { data: null, error: new Error("finalize failed") };
+      }
+      if (name === "reserve_usage_reservation") {
+        return { data: { status: "reserved" }, error: null };
+      }
+      if (name === "consume_usage_reservation") {
+        return { data: { status: "consumed" }, error: null };
       }
       return { data: true, error: null };
     });
@@ -374,12 +473,18 @@ describe("runOcrWorkerIteration", () => {
   it("does not write terminal OCR failure side effects before finalization succeeds", async () => {
     const finalFailJob = { ...claimedJob("job-final-fail"), maxAttempts: 1 };
     const { client, updates } = createClient({ jobs: [finalFailJob] });
-    vi.mocked(client.rpc).mockImplementation(async (name, args) => {
+    vi.mocked(client.rpc).mockImplementation(async (name) => {
       if (name === "claim_async_ocr_jobs") {
         return { data: [toRow(finalFailJob)], error: null };
       }
       if (name === "finalize_async_task") {
         return { data: null, error: new Error("finalize failed") };
+      }
+      if (name === "reserve_usage_reservation") {
+        return { data: { status: "reserved" }, error: null };
+      }
+      if (name === "consume_usage_reservation") {
+        return { data: { status: "consumed" }, error: null };
       }
       return { data: true, error: null };
     });

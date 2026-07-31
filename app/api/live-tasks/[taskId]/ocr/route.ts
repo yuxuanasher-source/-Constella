@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { kickQueuedOcrJobsInProcess } from "@/features/ai/ocr-instant-run";
 import { createOcrJob } from "@/features/ai/ocr-jobs";
+import { UsageHardBlockError } from "@/features/billing/usage-reservations";
 import {
   RouteError,
   actorFromContext,
@@ -92,6 +93,15 @@ export async function POST(
       { status: 201 },
     );
   } catch (error) {
+    if (error instanceof UsageHardBlockError) {
+      return NextResponse.json(
+        {
+          error: "OCR usage limit reached",
+          code: "usage_limit_reached",
+        },
+        { status: 429 },
+      );
+    }
     return jsonError(error);
   }
 }

@@ -1,6 +1,7 @@
 import { resolveOcrImageInput } from "@/features/ai/ocr-image-source";
 import {
   claimPlatformOcrJobs,
+  failClaimedOcrJobBeforeProvider,
   runClaimedOcrJob,
   type OcrJobRecord,
 } from "@/features/ai/ocr-jobs";
@@ -87,9 +88,56 @@ export async function runOcrWorkerIteration(input: {
   input.onCurrentJobsChange?.(jobs.length);
 
   try {
-    const provider =
-      input.provider ??
-      createTencentOcrProvider(readTencentOcrConfigFromEnv(process.env));
+    let provider: TencentOcrProvider;
+    try {
+      provider =
+        input.provider ??
+        createTencentOcrProvider(readTencentOcrConfigFromEnv(process.env));
+    } catch (error) {
+      const completedJobs: OcrWorkerJobSummary[] = [];
+      const failures: OcrWorkerFailureSummary[] = [];
+      for (const job of jobs) {
+        try {
+          const result = await failClaimedOcrJobBeforeProvider({
+            client: input.client,
+            job,
+            startedAt: now(),
+            errorCode: "provider_unconfigured",
+            errorSummary: sanitizeWorkerError(error),
+            deferTerminalJobUpdate: true,
+            beforePostTerminalFailureSideEffects: async (terminalJob) => {
+              await finalizeOcrTask({
+                client: input.client,
+                job,
+                workerId: input.workerId,
+                status: "failed",
+                errorCode: terminalJob.errorCode ?? "provider_unconfigured",
+                metadata: { errorMessage: terminalJob.errorMessage },
+                now,
+              });
+            },
+          });
+          completedJobs.push({
+            id: result.id,
+            status: result.status,
+            attempt: result.attempt,
+          });
+        } catch (failure) {
+          failures.push({
+            jobId: job.id,
+            errorCode: "provider_configuration_cleanup_failed",
+            errorMessage: sanitizeWorkerError(failure),
+          });
+        }
+      }
+      return {
+        claimed: jobs.length,
+        succeeded: 0,
+        failed: failures.length,
+        jobs: completedJobs,
+        failures,
+      };
+    }
     const imageResolver =
       input.imageResolver ??
       ((payload: OcrJobRecord["payload"]) =>
