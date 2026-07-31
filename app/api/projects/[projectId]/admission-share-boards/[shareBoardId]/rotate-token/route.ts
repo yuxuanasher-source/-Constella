@@ -10,6 +10,7 @@ import {
   jsonError,
   RouteError,
 } from "@/features/applications/application-route-utils";
+import { getPublicRequestOrigin } from "@/lib/http/public-request-origin";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function POST(
@@ -32,7 +33,7 @@ export async function POST(
 
     const shareUrl = new URL(
       `/share/admission/${result.token}`,
-      process.env.NEXT_PUBLIC_APP_URL ?? request.url,
+      getPublicRequestOrigin(request),
     );
     return NextResponse.json({ shareUrl: shareUrl.toString() });
   } catch (error) {

@@ -92,6 +92,26 @@ describe("rotate admission share-board token route", () => {
     );
   });
 
+  it("uses the reverse-proxy public origin when replacing a share link", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "http://public.example:3000";
+
+    const response = await POST(
+      new Request("http://127.0.0.1:3000/api", {
+        method: "POST",
+        headers: {
+          "x-forwarded-host": "public.example",
+          "x-forwarded-proto": "http",
+        },
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      shareUrl: "http://public.example/share/admission/new-plain-token",
+    });
+  });
+
   it("blocks non-MCN roles before generating a replacement token", async () => {
     vi.mocked(getAdmissionRouteContext).mockResolvedValue({
       ...context,

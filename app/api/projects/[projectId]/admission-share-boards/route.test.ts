@@ -275,6 +275,44 @@ describe("project admission share-board route", () => {
     );
   });
 
+  it("uses the reverse-proxy public origin instead of an internal configured port", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "http://public.example:3000";
+    try {
+      const response = await POST(
+        new Request(
+          "http://127.0.0.1:3000/api/projects/project-1/admission-share-boards",
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-forwarded-host": "public.example",
+              "x-forwarded-proto": "http",
+            },
+            body: JSON.stringify({
+              mode: "preview",
+              items: [
+                {
+                  applicationId: "app-1",
+                  recordingSubmissionId: "recording-v2",
+                  recordingVersion: 2,
+                  sortOrder: 0,
+                },
+              ],
+            }),
+          },
+        ),
+        { params },
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        shareUrl: "http://public.example/share/admission/plain-token",
+      });
+    } finally {
+      delete process.env.NEXT_PUBLIC_APP_URL;
+    }
+  });
+
   it("returns itemized RPC-race selection conflicts as 409", async () => {
     vi.mocked(createAdmissionShareBoard).mockRejectedValue(
       new AdmissionShareSelectionError([
