@@ -14,6 +14,7 @@
     "type-check": "tsc --noEmit",
     "test": "vitest run",
     "test:api-contracts": "vitest run app/api/api-route-contracts.test.ts",
+    "test:ci-contracts": "vitest run scripts/ci-workflow-contract.test.ts",
     "test:api-integration-smoke": "node scripts/api-integration-smoke.mjs",
     "test:manual-acceptance-smoke": "node scripts/manual-acceptance-smoke.mjs",
     "test:deploy-contract": "node --test scripts/deploy-contract.test.mjs",

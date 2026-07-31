@@ -22,7 +22,9 @@ permissions:
 jobs:
   ocr-runner:
     name: OCR runner (every 5 minutes)
-    runs-on: [self-hosted, linux, x64, constella-ci]
+    # These jobs only make authenticated HTTPS requests and need no host access.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *') }}
     steps:
@@ -31,21 +33,23 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           OCR_RUNNER_TOKEN: ${{ secrets.OCR_RUNNER_TOKEN }}
         run: |
-          status=$(curl -sS -o response.json -w "%{http_code}" \
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/ocr/run" \
             -H "Authorization: Bearer ${OCR_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
             -d '{"limit":10}')
-          cat response.json
-          echo
-          if [ "$status" != "200" ]; then
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
             echo "OCR runner request failed with HTTP $status" >&2
             exit 1
           fi
+          echo "OCR runner completed with HTTP $status"
 
   recording-ai-runner:
     name: Recording AI runner (every 30 minutes)
-    runs-on: [self-hosted, linux, x64, constella-ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/30 * * * *') }}
     steps:
@@ -54,21 +58,23 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           RECORDING_AI_RUNNER_TOKEN: ${{ secrets.RECORDING_AI_RUNNER_TOKEN }}
         run: |
-          status=$(curl -sS -o response.json -w "%{http_code}" \
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/recording-ai/run" \
             -H "Authorization: Bearer ${RECORDING_AI_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
             -d '{"limit":5}')
-          cat response.json
-          echo
-          if [ "$status" != "200" ]; then
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
             echo "Recording AI runner request failed with HTTP $status" >&2
             exit 1
           fi
+          echo "Recording AI runner completed with HTTP $status"
 
   recording-intelligence-learn:
     name: Recording intelligence calibration (daily)
-    runs-on: [self-hosted, linux, x64, constella-ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
     steps:
@@ -77,21 +83,23 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           RECORDING_AI_RUNNER_TOKEN: ${{ secrets.RECORDING_AI_RUNNER_TOKEN }}
         run: |
-          status=$(curl -sS -o response.json -w "%{http_code}" \
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/recording-intelligence/learn" \
             -H "Authorization: Bearer ${RECORDING_AI_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
             -d '{}')
-          cat response.json
-          echo
-          if [ "$status" != "200" ]; then
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
             echo "Recording intelligence learning request failed with HTTP $status" >&2
             exit 1
           fi
+          echo "Recording intelligence learning completed with HTTP $status"
 
   anomaly-runner:
     name: Anomaly scan runner (every 30 minutes)
-    runs-on: [self-hosted, linux, x64, constella-ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/30 * * * *') }}
     steps:
@@ -100,21 +108,23 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           ANOMALY_RUNNER_TOKEN: ${{ secrets.ANOMALY_RUNNER_TOKEN }}
         run: |
-          status=$(curl -sS -o response.json -w "%{http_code}" \
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/anomalies/run" \
             -H "Authorization: Bearer ${ANOMALY_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
             -d '{}')
-          cat response.json
-          echo
-          if [ "$status" != "200" ]; then
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
             echo "Anomaly scan runner request failed with HTTP $status" >&2
             exit 1
           fi
+          echo "Anomaly scan runner completed with HTTP $status"
 
   account-metrics-sync-runner:
     name: Account metrics sync runner (daily)
-    runs-on: [self-hosted, linux, x64, constella-ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     # 平台指标网关（PLATFORM_METRICS_ENDPOINT）就绪前保持关闭，避免 400 变红
     if: ${{ vars.APP_BASE_URL != '' && vars.PLATFORM_METRICS_SYNC_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
     steps:
@@ -123,21 +133,23 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           ACCOUNT_LIBRARY_RUNNER_TOKEN: ${{ secrets.ACCOUNT_LIBRARY_RUNNER_TOKEN }}
         run: |
-          status=$(curl -sS -o response.json -w "%{http_code}" \
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/account-library/metrics-sync/run" \
             -H "Authorization: Bearer ${ACCOUNT_LIBRARY_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
             -d '{}')
-          cat response.json
-          echo
-          if [ "$status" != "200" ]; then
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
             echo "Account metrics sync runner request failed with HTTP $status" >&2
             exit 1
           fi
+          echo "Account metrics sync runner completed with HTTP $status"
 
   account-idle-scan-runner:
     name: Account idle scan runner (daily)
-    runs-on: [self-hosted, linux, x64, constella-ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
     steps:
@@ -146,14 +158,15 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           ACCOUNT_LIBRARY_RUNNER_TOKEN: ${{ secrets.ACCOUNT_LIBRARY_RUNNER_TOKEN }}
         run: |
-          status=$(curl -sS -o response.json -w "%{http_code}" \
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/account-library/idle-scan/run" \
             -H "Authorization: Bearer ${ACCOUNT_LIBRARY_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
             -d '{}')
-          cat response.json
-          echo
-          if [ "$status" != "200" ]; then
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
             echo "Account idle scan runner request failed with HTTP $status" >&2
             exit 1
           fi
+          echo "Account idle scan runner completed with HTTP $status"
