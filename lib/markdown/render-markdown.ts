@@ -1,26 +1,60 @@
 // 纯函数 Markdown → HTML 渲染（标题/表格/列表/引用/加粗/图片/段落）。
 // 服务端分享页与客户端导出（PDF / Word）共用，保证呈现一致。
 
-function escapeHtml(value: string): string {
+function escapeTextHtml(value: string): string {
   return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
 
-function inlineMarkdown(value: string): string {
-  // 图片优先，再加粗。图片 src 仅允许 http(s)/data，避免注入。
-  let html = escapeHtml(value);
-  html = html.replace(
-    /!\[([^\]]*)\]\(([^)]+)\)/g,
-    (_m, alt: string, src: string) => {
-      const safe = /^(https?:|data:image\/)/i.test(src.trim()) ? src.trim() : "";
-      return safe
-        ? `<img src="${safe}" alt="${alt}" style="max-width:100%" />`
-        : "";
-    },
+function escapeHtmlAttribute(value: string): string {
+  return escapeTextHtml(value)
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+const RASTER_BASE64_DATA_URL =
+  /^data:image\/(?:png|jpe?g|gif|webp);base64,([a-z0-9+/]+={0,2})$/i;
+
+function isSafeImageSource(value: string): boolean {
+  const source = value.trim();
+  const dataUrl = source.match(RASTER_BASE64_DATA_URL);
+  if (dataUrl) {
+    return dataUrl[1].length % 4 === 0;
+  }
+
+  try {
+    const protocol = new URL(source).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function inlineText(value: string): string {
+  return escapeTextHtml(value).replace(
+    /\*\*(.+?)\*\*/g,
+    "<strong>$1</strong>",
   );
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
+function inlineMarkdown(value: string): string {
+  const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  let html = "";
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = imagePattern.exec(value)) !== null) {
+    html += inlineText(value.slice(cursor, match.index));
+    const source = match[2].trim();
+    if (isSafeImageSource(source)) {
+      html += `<img src="${escapeHtmlAttribute(source)}" alt="${escapeHtmlAttribute(match[1])}" style="max-width:100%" />`;
+    }
+    cursor = imagePattern.lastIndex;
+  }
+
+  html += inlineText(value.slice(cursor));
   return html;
 }
 
