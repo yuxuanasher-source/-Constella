@@ -21,13 +21,25 @@ export class InvalidKnowledgeShareInputError extends Error {
   }
 }
 
+export type KnowledgeShareRequestStatus =
+  | "active"
+  | "pending"
+  | "failed"
+  | "revoked"
+  | "expired";
+
 export class DuplicateKnowledgeShareRequestError extends Error {
   readonly existingShareId?: string;
+  readonly shareStatus?: KnowledgeShareRequestStatus;
 
-  constructor(existingShareId?: string) {
+  constructor(
+    existingShareId?: string,
+    shareStatus?: KnowledgeShareRequestStatus,
+  ) {
     super("Knowledge share request already processed");
     this.name = "DuplicateKnowledgeShareRequestError";
     this.existingShareId = existingShareId;
+    this.shareStatus = shareStatus;
   }
 }
 
@@ -355,13 +367,19 @@ export function createKnowledgeShareRepository(
       if (error?.code === "23505") {
         const { data: existing, error: existingError } = await client
           .from("knowledge_share_links")
-          .select("id")
+          .select("id, status, revoked_at, expires_at")
           .eq("organization_id", input.organizationId)
           .eq("created_by", input.createdBy)
           .eq("request_key", input.requestKey)
           .maybeSingle();
         if (!existingError && existing?.id) {
-          throw new DuplicateKnowledgeShareRequestError(String(existing.id));
+          const shareStatus = classifyKnowledgeShareRequestStatus(existing);
+          if (shareStatus) {
+            throw new DuplicateKnowledgeShareRequestError(
+              String(existing.id),
+              shareStatus,
+            );
+          }
         }
         throw error;
       }
@@ -475,6 +493,33 @@ export function createKnowledgeShareRepository(
         : null;
     },
   };
+}
+
+function classifyKnowledgeShareRequestStatus(existing: {
+  status?: unknown;
+  revoked_at?: unknown;
+  expires_at?: unknown;
+}): KnowledgeShareRequestStatus | null {
+  if (typeof existing.revoked_at === "string" && existing.revoked_at) {
+    return "revoked";
+  }
+  if (typeof existing.expires_at === "string") {
+    const expiresAt = new Date(existing.expires_at);
+    if (
+      Number.isFinite(expiresAt.getTime()) &&
+      expiresAt.getTime() <= Date.now()
+    ) {
+      return "expired";
+    }
+  }
+  if (
+    existing.status === "active" ||
+    existing.status === "pending" ||
+    existing.status === "failed"
+  ) {
+    return existing.status;
+  }
+  return null;
 }
 
 function normalizeCreateInput(input: CreateKnowledgeShareInput): {

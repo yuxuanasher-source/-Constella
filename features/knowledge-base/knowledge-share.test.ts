@@ -299,7 +299,15 @@ describe("knowledge share lifecycle", () => {
     };
     lookup.select.mockReturnValue(lookup);
     lookup.eq.mockReturnValue(lookup);
-    lookup.maybeSingle.mockResolvedValue({ data: { id: SHARE_ID }, error: null });
+    lookup.maybeSingle.mockResolvedValue({
+      data: {
+        id: SHARE_ID,
+        status: "active",
+        revoked_at: null,
+        expires_at: "2999-01-01T00:00:00.000Z",
+      },
+      error: null,
+    });
     const client = {
       from: vi
         .fn()
@@ -315,6 +323,7 @@ describe("knowledge share lifecycle", () => {
     ).rejects.toMatchObject({
       name: "DuplicateKnowledgeShareRequestError",
       existingShareId: SHARE_ID,
+      shareStatus: "active",
     });
     expect(lookup.eq).toHaveBeenNthCalledWith(1, "organization_id", ORG_ID);
     expect(lookup.eq).toHaveBeenNthCalledWith(2, "created_by", USER_ID);
@@ -324,6 +333,48 @@ describe("knowledge share lifecycle", () => {
       "request-duplicate",
     );
   });
+
+  it.each([
+    ["active", { status: "active", revoked_at: null, expires_at: "2999-01-01T00:00:00.000Z" }],
+    ["pending", { status: "pending", revoked_at: null, expires_at: "2999-01-01T00:00:00.000Z" }],
+    ["failed", { status: "failed", revoked_at: null, expires_at: "2999-01-01T00:00:00.000Z" }],
+    ["revoked", { status: "active", revoked_at: "2026-07-31T12:00:00.000Z", expires_at: "2000-01-01T00:00:00.000Z" }],
+    ["expired", { status: "active", revoked_at: null, expires_at: "2000-01-01T00:00:00.000Z" }],
+  ] as const)(
+    "classifies duplicate request metadata as %s using safe fields only",
+    async (shareStatus, metadata) => {
+      const uniqueError = { code: "23505", message: "duplicate key" };
+      const lookup = {
+        select: vi.fn(),
+        eq: vi.fn(),
+        maybeSingle: vi.fn(),
+      };
+      lookup.select.mockReturnValue(lookup);
+      lookup.eq.mockReturnValue(lookup);
+      lookup.maybeSingle.mockResolvedValue({
+        data: { id: SHARE_ID, ...metadata },
+        error: null,
+      });
+      const client = {
+        from: vi
+          .fn()
+          .mockReturnValueOnce({
+            insert: vi.fn().mockResolvedValue({ error: uniqueError }),
+          })
+          .mockReturnValueOnce(lookup),
+      };
+      const repo = createKnowledgeShareRepository(client as never);
+
+      await expect(repo.insertPending(pendingShareInput())).rejects.toMatchObject({
+        name: "DuplicateKnowledgeShareRequestError",
+        existingShareId: SHARE_ID,
+        shareStatus,
+      });
+      expect(lookup.select).toHaveBeenCalledWith(
+        "id, status, revoked_at, expires_at",
+      );
+    },
+  );
 
   it("does not classify an unrelated unique violation as an idempotent retry", async () => {
     const uniqueError = { code: "23505", message: "token hash collision" };

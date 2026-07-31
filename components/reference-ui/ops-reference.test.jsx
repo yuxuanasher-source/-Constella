@@ -1016,6 +1016,7 @@ describe("knowledge-base expiring share controls", () => {
             error: "Share request already processed",
             code: "share_request_already_processed",
             shareId: "33333333-3333-4333-8333-333333333333",
+            shareStatus: "active",
           }),
           { status: 409 },
         );
@@ -1060,6 +1061,136 @@ describe("knowledge-base expiring share controls", () => {
     expect(requestKeys[1]).toBe(requestKeys[0]);
     expect(listAttempts).toBeGreaterThanOrEqual(2);
   }, 15_000);
+
+  it("keeps the same request key while a duplicate share is pending", async () => {
+    let createAttempts = 0;
+    let listAttempts = 0;
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null }), { status: 200 });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        listAttempts += 1;
+        return new Response(JSON.stringify({ shares: [] }), { status: 200 });
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        createAttempts += 1;
+        if (createAttempts === 1) throw new TypeError("Failed to fetch");
+        return new Response(
+          JSON.stringify({
+            error: "Share request already processed",
+            code: "share_request_already_processed",
+            shareId: "33333333-3333-4333-8333-333333333333",
+            shareStatus: "pending",
+          }),
+          { status: 409 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+      if (attempt === 0) {
+        await screen.findByText(/分享失败/);
+      } else {
+        await screen.findByText("分享请求仍在处理中，请稍后重试。");
+      }
+    }
+
+    const requestKeys = fetchMock.mock.calls
+      .filter(
+        ([url, init]) =>
+          String(url) === "/api/knowledge-base/share" &&
+          init?.method === "POST",
+      )
+      .map(([, init]) => init.headers["Idempotency-Key"]);
+    expect(requestKeys).toHaveLength(3);
+    expect(new Set(requestKeys).size).toBe(1);
+    expect(listAttempts).toBe(1);
+    expect(screen.queryByText(/撤销对应分享/)).not.toBeInTheDocument();
+  }, 15_000);
+
+  it.each([
+    ["failed", "上次分享生成失败，可重新生成。"],
+    ["revoked", "上次分享已撤销，可重新生成。"],
+    ["expired", "上次分享已过期，可重新生成。"],
+  ])(
+    "rotates the request key after a duplicate share is %s",
+    async (shareStatus, expectedMessage) => {
+      let createAttempts = 0;
+      let listAttempts = 0;
+      const fetchMock = vi.fn(async (input, init = {}) => {
+        const url = String(input);
+        const method = init.method || "GET";
+        if (url === "/api/knowledge-base" && method === "GET") {
+          return new Response(JSON.stringify({ store: null }), { status: 200 });
+        }
+        if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+          listAttempts += 1;
+          return new Response(JSON.stringify({ shares: [] }), { status: 200 });
+        }
+        if (url === "/api/knowledge-base/share" && method === "POST") {
+          createAttempts += 1;
+          if (createAttempts === 1) {
+            return new Response(JSON.stringify({ error: "Sharing unavailable" }), {
+              status: 503,
+            });
+          }
+          if (createAttempts === 2) {
+            return new Response(
+              JSON.stringify({
+                error: "Share request already processed",
+                code: "share_request_already_processed",
+                shareId: "33333333-3333-4333-8333-333333333333",
+                shareStatus,
+              }),
+              { status: 409 },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              id: "55555555-5555-4555-8555-555555555555",
+              url: `https://app.example.test/share/kb/${shareStatus}-retry-token`,
+              expiresAt: "2026-08-07T12:00:00.000Z",
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<OpsReferenceApp initialRoute="knowledge" />);
+      fireEvent.click(await screen.findByText("📖 使用教程"));
+      fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+      await screen.findByText(/分享失败/);
+      fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+      await screen.findByText(expectedMessage);
+      expect(screen.queryByText(/撤销对应分享/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+      await screen.findByDisplayValue(
+        `https://app.example.test/share/kb/${shareStatus}-retry-token`,
+      );
+
+      const requestKeys = fetchMock.mock.calls
+        .filter(
+          ([url, init]) =>
+            String(url) === "/api/knowledge-base/share" &&
+            init?.method === "POST",
+        )
+        .map(([, init]) => init.headers["Idempotency-Key"]);
+      expect(requestKeys[1]).toBe(requestKeys[0]);
+      expect(requestKeys[2]).not.toBe(requestKeys[1]);
+      expect(listAttempts).toBe(1);
+    },
+    15_000,
+  );
 
   it("shows the current document's active shares and revokes in place", async () => {
     let revoked = false;
@@ -1470,6 +1601,163 @@ describe("knowledge-base expiring share controls", () => {
       screen.getByText("分享链接已生成并复制到剪贴板。"),
     ).toBeInTheDocument();
     expect(screen.queryByText("撤销失败，请稍后重试。")).not.toBeInTheDocument();
+  }, 15_000);
+
+  it("serializes same-document revokes and removes both rows in order", async () => {
+    let resolveFirstRevoke;
+    const firstRevoke = new Promise((resolve) => {
+      resolveFirstRevoke = resolve;
+    });
+    const revokeUrls = [];
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null }), { status: 200 });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        return new Response(
+          JSON.stringify({
+            shares: [
+              {
+                id: "33333333-3333-4333-8333-333333333333",
+                title: "📖 使用教程",
+                createdAt: "2026-07-31T12:00:00.000Z",
+                expiresAt: "2026-08-07T12:00:00.000Z",
+              },
+              {
+                id: "55555555-5555-4555-8555-555555555555",
+                title: "📖 使用教程",
+                createdAt: "2026-07-30T12:00:00.000Z",
+                expiresAt: "2026-08-06T12:00:00.000Z",
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            id: "33333333-3333-4333-8333-333333333333",
+            url: "https://app.example.test/share/kb/serial-x-token",
+            expiresAt: "2026-08-07T12:00:00.000Z",
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("/revoke") && method === "POST") {
+        revokeUrls.push(url);
+        return revokeUrls.length === 1
+          ? firstRevoke
+          : new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    const xRow = await screen.findByTestId(
+      "knowledge-share-33333333-3333-4333-8333-333333333333",
+    );
+    const yRow = await screen.findByTestId(
+      "knowledge-share-55555555-5555-4555-8555-555555555555",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    await screen.findByDisplayValue(
+      "https://app.example.test/share/kb/serial-x-token",
+    );
+
+    fireEvent.click(within(yRow).getByRole("button", { name: "撤销" }));
+    const blockedXRevoke = within(xRow).getByRole("button", { name: "撤销" });
+    expect(blockedXRevoke).toBeDisabled();
+    fireEvent.click(blockedXRevoke);
+    expect(revokeUrls).toHaveLength(1);
+
+    await act(async () => {
+      resolveFirstRevoke(
+        new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      );
+    });
+    await waitFor(() => expect(yRow).not.toBeInTheDocument());
+    expect(screen.getByLabelText("分享链接")).toHaveValue(
+      "https://app.example.test/share/kb/serial-x-token",
+    );
+
+    fireEvent.click(within(xRow).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(xRow).not.toBeInTheDocument());
+    expect(screen.queryByLabelText("分享链接")).not.toBeInTheDocument();
+    expect(revokeUrls).toEqual([
+      "/api/knowledge-base/share/55555555-5555-4555-8555-555555555555/revoke",
+      "/api/knowledge-base/share/33333333-3333-4333-8333-333333333333/revoke",
+    ]);
+  }, 15_000);
+
+  it("keeps the current share display when a replacement create fails", async () => {
+    let createAttempts = 0;
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null }), { status: 200 });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        return new Response(JSON.stringify({ shares: [] }), { status: 200 });
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        createAttempts += 1;
+        if (createAttempts === 2) {
+          return new Response(JSON.stringify({ error: "Sharing unavailable" }), {
+            status: 503,
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            id: "33333333-3333-4333-8333-333333333333",
+            url: "https://app.example.test/share/kb/preserved-x-token",
+            expiresAt: "2026-08-07T12:00:00.000Z",
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("33333333-3333-4333-8333-333333333333/revoke")) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    await screen.findByDisplayValue(
+      "https://app.example.test/share/kb/preserved-x-token",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    await screen.findByText("分享失败：Sharing unavailable");
+
+    expect(screen.getByLabelText("分享链接")).toHaveValue(
+      "https://app.example.test/share/kb/preserved-x-token",
+    );
+    expect(
+      screen.getByText((content) => /^有效期至：.*2026.*8.*7/.test(content)),
+    ).toBeInTheDocument();
+    const xRow = screen.getByTestId(
+      "knowledge-share-33333333-3333-4333-8333-333333333333",
+    );
+    fireEvent.click(within(xRow).getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(xRow).not.toBeInTheDocument());
+    expect(screen.queryByLabelText("分享链接")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^有效期至：/)).not.toBeInTheDocument();
   }, 15_000);
 });
 

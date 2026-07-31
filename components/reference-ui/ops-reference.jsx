@@ -29326,6 +29326,15 @@ async function kbShareDoc(doc, expiresInDays, requestKey) {
     error.code = typeof payload.code === "string" ? payload.code : undefined;
     error.shareId =
       typeof payload.shareId === "string" ? payload.shareId : undefined;
+    error.shareStatus = [
+      "active",
+      "pending",
+      "failed",
+      "revoked",
+      "expired",
+    ].includes(payload.shareStatus)
+      ? payload.shareStatus
+      : undefined;
     throw error;
   }
   const payload = await res.json();
@@ -29778,9 +29787,6 @@ function ScreenKnowledge() {
                     onClick={async () => {
                       shareDisplayEpochRef.current += 1;
                       setDocMsg("");
-                      setShareUrl("");
-                      setShareUrlShareId(null);
-                      setShareExpiresAt("");
                       setShareBusy(true);
                       const pendingAttempt = pendingShareAttemptRef.current;
                       const attempt =
@@ -29846,18 +29852,37 @@ function ScreenKnowledge() {
                           e?.code === "share_request_already_processed" &&
                           e?.shareId
                         ) {
-                          const refreshedShares = await kbListActiveShares(
-                            selected.id,
-                          ).catch(() => null);
-                          if (!isCurrentShareAttempt(attempt)) return;
-                          terminalAttempt = true;
-                          if (refreshedShares) {
-                            setActiveShares(refreshedShares);
+                          if (e.shareStatus === "active") {
+                            const refreshedShares = await kbListActiveShares(
+                              selected.id,
+                            ).catch(() => null);
+                            if (!isCurrentShareAttempt(attempt)) return;
+                            terminalAttempt = true;
+                            if (refreshedShares) {
+                              setActiveShares(refreshedShares);
+                            }
+                            setFocusedShareId(e.shareId);
+                            setDocMsg(
+                              "该请求已处理，但原链接无法恢复，请撤销对应分享并重新生成。",
+                            );
+                          } else if (e.shareStatus === "pending") {
+                            setDocMsg("分享请求仍在处理中，请稍后重试。");
+                          } else if (
+                            e.shareStatus === "failed" ||
+                            e.shareStatus === "revoked" ||
+                            e.shareStatus === "expired"
+                          ) {
+                            terminalAttempt = true;
+                            setDocMsg(
+                              e.shareStatus === "failed"
+                                ? "上次分享生成失败，可重新生成。"
+                                : e.shareStatus === "revoked"
+                                  ? "上次分享已撤销，可重新生成。"
+                                  : "上次分享已过期，可重新生成。",
+                            );
+                          } else {
+                            setDocMsg("分享请求状态暂不可确认，请稍后重试。");
                           }
-                          setFocusedShareId(e.shareId);
-                          setDocMsg(
-                            "该请求已处理，但原链接无法恢复，请撤销对应分享并重新生成。",
-                          );
                         } else {
                           setDocMsg(
                             e?.message === "Tencent COS is not configured"
@@ -30055,8 +30080,9 @@ function ScreenKnowledge() {
                           <Button
                             size="sm"
                             kind="danger"
-                            disabled={revokingShareId === share.id}
+                            disabled={Boolean(revokingShareId)}
                             onClick={async () => {
+                              if (activeRevokeOperationRef.current) return;
                               const operation = {
                                 documentId: selected.id,
                                 shareId: share.id,

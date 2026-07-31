@@ -216,7 +216,10 @@ describe("knowledge share route", () => {
   it("returns a stable duplicate code and existing share id without bearer material", async () => {
     const duplicate = Object.assign(
       new DuplicateKnowledgeShareRequestError(),
-      { existingShareId: "44444444-4444-4444-8444-444444444444" },
+      {
+        existingShareId: "44444444-4444-4444-8444-444444444444",
+        shareStatus: "active",
+      },
     );
     vi.mocked(createKnowledgeShare).mockRejectedValue(duplicate);
 
@@ -233,9 +236,9 @@ describe("knowledge share route", () => {
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
-      error: "Share request already processed",
       code: "share_request_already_processed",
       shareId: "44444444-4444-4444-8444-444444444444",
+      shareStatus: "active",
     });
   });
 
@@ -380,6 +383,10 @@ describe("knowledge share route", () => {
     expect(payload.url).toBe(`https://app.example.test/share/kb/${token}`);
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain(token);
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain("database secret");
+    expect(consoleError).toHaveBeenCalledWith(
+      "Knowledge share audit failed",
+      { shareId: "33333333-3333-4333-8333-333333333333", phase: "create" },
+    );
     consoleError.mockRestore();
   });
 

@@ -185,9 +185,9 @@ export async function POST(request: Request) {
     if (error instanceof DuplicateKnowledgeShareRequestError) {
       return NextResponse.json(
         {
-          error: "Share request already processed",
           code: "share_request_already_processed",
           shareId: error.existingShareId,
+          shareStatus: error.shareStatus,
         },
         { status: 409 },
       );
