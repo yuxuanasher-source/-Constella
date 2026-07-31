@@ -8,10 +8,7 @@ import {
   evaluateHermesSkillGrantsForActor,
   toHermesSkillGrantAuditEvent,
 } from "./skill-governance";
-import {
-  loadHermesSkillSigningKeyFromEnv,
-  signHermesSkillApproval,
-} from "./skill-signing";
+import { loadHermesSkillSigningKeyFromEnv, signHermesSkillApproval } from "./skill-signing";
 
 describe("Hermes Skill governance", () => {
   it("pins the product Skill catalog to the official fork builtin manifest", () => {
@@ -88,13 +85,11 @@ describe("Hermes Skill governance", () => {
       "business-context",
       "settlement-analysis",
     ]);
-    expect(streamer.enabledSkillVersions.map((skill) => skill.skillId)).toEqual(
-      ["business-context"],
-    );
+    expect(streamer.enabledSkillVersions.map((skill) => skill.skillId)).toEqual([
+      "business-context",
+    ]);
     expect(
-      finance.decisions.find(
-        (decision) => decision.skillId === "project-review",
-      ),
+      finance.decisions.find((decision) => decision.skillId === "project-review"),
     ).toMatchObject({
       granted: false,
       reason: "role_not_allowed",
@@ -186,21 +181,9 @@ describe("Hermes Skill governance", () => {
       },
       approvedDraftRows: [
         approved,
-        {
-          ...approved,
-          id: "55555555-5555-4555-8555-555555555556",
-          status: "rejected",
-        },
-        {
-          ...approved,
-          id: "55555555-5555-4555-8555-555555555557",
-          signature: null,
-        },
-        {
-          ...approved,
-          id: "55555555-5555-4555-8555-555555555558",
-          bundle_sha256: "b".repeat(64),
-        },
+        { ...approved, id: "55555555-5555-4555-8555-555555555556", status: "rejected" },
+        { ...approved, id: "55555555-5555-4555-8555-555555555557", signature: null },
+        { ...approved, id: "55555555-5555-4555-8555-555555555558", bundle_sha256: "b".repeat(64) },
       ],
       publicKeys: { [key.keyId]: key.publicKeyPem },
     });
@@ -211,9 +194,7 @@ describe("Hermes Skill governance", () => {
       bundleSha256,
     });
     expect(
-      evaluation.decisions.find(
-        (decision) => decision.skillId === "risk-review",
-      ),
+      evaluation.decisions.find((decision) => decision.skillId === "risk-review"),
     ).toMatchObject({ granted: true, reason: "granted" });
     expect(evaluation.skillGrantsHash).toBe(
       computeHermesSkillGrantsHash(evaluation.enabledSkillVersions),
@@ -223,10 +204,7 @@ describe("Hermes Skill governance", () => {
 
 function testSigningKey(keyId: string) {
   const { privateKey } = generateKeyPairSync("ed25519");
-  const privateKeyPem = privateKey.export({
-    type: "pkcs8",
-    format: "pem",
-  }) as string;
+  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
   const signingKey = loadHermesSkillSigningKeyFromEnv({
     XINGYAO_HERMES_SKILL_SIGNING_PRIVATE_KEY: privateKeyPem,
     XINGYAO_HERMES_SKILL_SIGNING_KEY_ID: keyId,

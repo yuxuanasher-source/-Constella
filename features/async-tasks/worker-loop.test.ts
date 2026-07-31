@@ -211,11 +211,7 @@ describe("async task worker loop", () => {
       runOnce: vi.fn(() => claim.promise),
       getCurrentJobs: () => currentJobs,
       heartbeat: vi.fn(async (status, currentJobCount, protectionState) => {
-        heartbeats.push({
-          status,
-          currentJobs: currentJobCount,
-          protectionState,
-        });
+        heartbeats.push({ status, currentJobs: currentJobCount, protectionState });
         return "running";
       }) as WorkerLoopOptions["heartbeat"],
       sleep: vi.fn(async () => {
@@ -292,9 +288,7 @@ describe("async task worker loop", () => {
 
   it("keeps claims paused and does not overlap when the initial heartbeat never settles", async () => {
     vi.useFakeTimers();
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const controller = new AbortController();
     const initialHeartbeat = createDeferred<"running">();
     const options = createOptions({
@@ -310,9 +304,7 @@ describe("async task worker loop", () => {
     const loop = runWorkerLoop(options);
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(consoleError).toHaveBeenCalledWith(
-      "Async worker heartbeat timed out",
-    );
+    expect(consoleError).toHaveBeenCalledWith("Async worker heartbeat timed out");
     expect(options.heartbeat).toHaveBeenCalledTimes(1);
     expect(options.runOnce).not.toHaveBeenCalled();
 
@@ -327,9 +319,7 @@ describe("async task worker loop", () => {
 
   it("resumes claims and later heartbeats after a timed-out heartbeat eventually settles running", async () => {
     vi.useFakeTimers();
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const controller = new AbortController();
     const claim = createDeferred<number>();
     const initialHeartbeat = createDeferred<"running">();
@@ -354,9 +344,7 @@ describe("async task worker loop", () => {
     const loop = runWorkerLoop(options);
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(consoleError).toHaveBeenCalledWith(
-      "Async worker heartbeat timed out",
-    );
+    expect(consoleError).toHaveBeenCalledWith("Async worker heartbeat timed out");
     expect(options.heartbeat).toHaveBeenCalledTimes(1);
     expect(options.runOnce).not.toHaveBeenCalled();
 
@@ -406,9 +394,7 @@ describe("async task worker loop", () => {
 
   it("blocks new claims after a pump heartbeat timeout until the timed-out attempt settles", async () => {
     vi.useFakeTimers();
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const controller = new AbortController();
     const claim = createDeferred<number>();
     const timedOutHeartbeat = createDeferred<"running">();
@@ -435,9 +421,7 @@ describe("async task worker loop", () => {
     expect(options.heartbeat).toHaveBeenCalledTimes(2);
 
     await vi.advanceTimersByTimeAsync(10);
-    expect(consoleError).toHaveBeenCalledWith(
-      "Async worker heartbeat timed out",
-    );
+    expect(consoleError).toHaveBeenCalledWith("Async worker heartbeat timed out");
     expect(options.heartbeat).toHaveBeenCalledTimes(2);
 
     await vi.advanceTimersByTimeAsync(29_999);
@@ -495,9 +479,7 @@ describe("async task worker loop", () => {
 
   it("logs failed heartbeats and retries on the next interval without aborting work", async () => {
     vi.useFakeTimers();
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const controller = new AbortController();
     const claim = createDeferred<number>();
     const options = createOptions({
@@ -546,9 +528,7 @@ describe("async task worker loop", () => {
 
   it("retains paused desired state after a failed heartbeat", async () => {
     vi.useFakeTimers();
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const controller = new AbortController();
     const firstSleep = createDeferred<void>();
     const secondSleep = createDeferred<void>();

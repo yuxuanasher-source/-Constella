@@ -8,10 +8,7 @@ import {
   resolveApprovedHermesSkillGrantsForActor,
   validateHermesSkillBundle,
 } from "./approved-skill-registry";
-import {
-  loadHermesSkillSigningKeyFromEnv,
-  signHermesSkillApproval,
-} from "./skill-signing";
+import { loadHermesSkillSigningKeyFromEnv, signHermesSkillApproval } from "./skill-signing";
 
 const ORG_ID = "11111111-1111-4111-8111-111111111111";
 const USER_ID = "22222222-2222-4222-8222-222222222222";
@@ -33,9 +30,7 @@ describe("Hermes approved Skill registry", () => {
       expect(pinned?.bundleSha256).toBe(
         computeHermesSkillBundleSha256(artifact.bundle),
       );
-      expect(
-        validateHermesSkillBundle(artifact.bundle, pinned?.bundleSha256),
-      ).toMatchObject({
+      expect(validateHermesSkillBundle(artifact.bundle, pinned?.bundleSha256)).toMatchObject({
         ok: true,
         files: [{ path: "SKILL.md" }],
       });
@@ -46,22 +41,10 @@ describe("Hermes approved Skill registry", () => {
     ["traversal", bundle([{ path: "../SKILL.md", content: "x" }])],
     ["absolute", bundle([{ path: "/tmp/SKILL.md", content: "x" }])],
     ["symlink", bundle([{ path: "SKILL.md", content: "x", type: "symlink" }])],
-    [
-      "hardlink",
-      bundle([{ path: "SKILL.md", content: "x", type: "hardlink" }]),
-    ],
-    [
-      "executable",
-      bundle([{ path: "SKILL.md", content: "x", mode: "100755" }]),
-    ],
-    [
-      "numeric executable",
-      bundle([{ path: "SKILL.md", content: "x", mode: 493 }]),
-    ],
-    [
-      "invalid mode format",
-      bundle([{ path: "SKILL.md", content: "x", mode: "493" }]),
-    ],
+    ["hardlink", bundle([{ path: "SKILL.md", content: "x", type: "hardlink" }])],
+    ["executable", bundle([{ path: "SKILL.md", content: "x", mode: "100755" }])],
+    ["numeric executable", bundle([{ path: "SKILL.md", content: "x", mode: 493 }])],
+    ["invalid mode format", bundle([{ path: "SKILL.md", content: "x", mode: "493" }])],
     ["script", bundle([{ path: "scripts/run.sh", content: "echo hi" }])],
     ["native", bundle([{ path: "addon.node", content: "x" }])],
     ["wasm", bundle([{ path: "tool.wasm", content: "x" }])],
@@ -116,37 +99,13 @@ describe("Hermes approved Skill registry", () => {
       },
       rows: [
         row,
-        {
-          ...row,
-          id: "33333333-3333-4333-8333-333333333333",
-          status: "rejected",
-        },
-        {
-          ...row,
-          id: "33333333-3333-4333-8333-333333333334",
-          status: "superseded",
-        },
-        {
-          ...row,
-          id: "33333333-3333-4333-8333-333333333335",
-          status: "revoked",
-        },
+        { ...row, id: "33333333-3333-4333-8333-333333333333", status: "rejected" },
+        { ...row, id: "33333333-3333-4333-8333-333333333334", status: "superseded" },
+        { ...row, id: "33333333-3333-4333-8333-333333333335", status: "revoked" },
         { ...row, id: "33333333-3333-4333-8333-333333333336", signature: null },
-        {
-          ...row,
-          id: "33333333-3333-4333-8333-333333333337",
-          bundle_sha256: "b".repeat(64),
-        },
-        {
-          ...row,
-          id: "33333333-3333-4333-8333-333333333338",
-          organization_id: "44444444-4444-4444-8444-444444444444",
-        },
-        {
-          ...row,
-          id: "33333333-3333-4333-8333-333333333339",
-          owner_user_id: "55555555-5555-4555-8555-555555555555",
-        },
+        { ...row, id: "33333333-3333-4333-8333-333333333337", bundle_sha256: "b".repeat(64) },
+        { ...row, id: "33333333-3333-4333-8333-333333333338", organization_id: "44444444-4444-4444-8444-444444444444" },
+        { ...row, id: "33333333-3333-4333-8333-333333333339", owner_user_id: "55555555-5555-4555-8555-555555555555" },
       ],
       publicKeys: { [key.keyId]: key.publicKeyPem },
     });
@@ -225,10 +184,7 @@ function approvedRow(overrides: Record<string, unknown> = {}) {
 
 function testSigningKey(keyId: string) {
   const { privateKey } = generateKeyPairSync("ed25519");
-  const privateKeyPem = privateKey.export({
-    type: "pkcs8",
-    format: "pem",
-  }) as string;
+  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
   const signingKey = loadHermesSkillSigningKeyFromEnv({
     XINGYAO_HERMES_SKILL_SIGNING_PRIVATE_KEY: privateKeyPem,
     XINGYAO_HERMES_SKILL_SIGNING_KEY_ID: keyId,
