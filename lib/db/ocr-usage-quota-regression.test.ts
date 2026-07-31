@@ -20,52 +20,95 @@ describe.runIf(Boolean(container))("OCR usage quota PostgreSQL regression", () =
     ).toBe("false|false|false|true");
   });
 
-  it("lists only stale reserved usage for service-role review", () => {
+  it("uses the current reservation attempt and rejects stale state races", () => {
     const dbContainer = container ?? "";
+    const planId = "b3000000-0000-4000-8000-000000000000";
     const orgId = "b3000000-0000-4000-8000-000000000001";
     const staleId = "b3000000-0000-4000-8000-000000000002";
-    const recentId = "b3000000-0000-4000-8000-000000000003";
+    const rearmedId = "b3000000-0000-4000-8000-000000000003";
     const releasedId = "b3000000-0000-4000-8000-000000000004";
-    const cleanupSql = `delete from public.organizations where id = '${orgId}'::uuid;`;
+    const cleanupSql = `
+      delete from public.organizations where id = '${orgId}'::uuid;
+      delete from public.billing_plans where id = '${planId}'::uuid;
+    `;
 
     expect(
       runSqlText(
         dbContainer,
-        `select has_function_privilege(
-          'authenticated',
-          'public.list_stale_usage_reservations(timestamptz,integer)',
-          'EXECUTE'
-        );`,
+        `select
+          has_function_privilege(
+            'authenticated',
+            'public.list_stale_usage_reservations(timestamptz,integer)',
+            'EXECUTE'
+          )::text || '|' ||
+          has_function_privilege(
+            'authenticated',
+            'public.mark_stale_usage_reservation_reviewed(uuid,timestamptz,timestamptz,timestamptz)',
+            'EXECUTE'
+          )::text || '|' ||
+          has_function_privilege(
+            'authenticated',
+            'public.reset_stale_usage_reservation_review(uuid,timestamptz,timestamptz,timestamptz)',
+            'EXECUTE'
+          )::text;`,
       ),
-    ).toBe("f");
+    ).toBe("false|false|false");
 
     runSql(
       dbContainer,
       `${cleanupSql}
+       insert into public.billing_plans (id, code, tier, name, included_ocr)
+       values (
+         '${planId}'::uuid, 'stale-usage-review', 'pro',
+         'Stale Usage Review', 2
+       );
        insert into public.organizations (id, name, code)
        values ('${orgId}'::uuid, 'Stale Usage Review', 'stale-usage-review');
+       insert into public.organization_subscriptions (
+         organization_id, plan_id, status, billing_cycle,
+         current_period_start, current_period_end
+       ) values (
+         '${orgId}'::uuid, '${planId}'::uuid, 'active', 'monthly',
+         current_date - 1, current_date + 1
+       )
+       on conflict (organization_id) do update
+       set plan_id = excluded.plan_id,
+           status = excluded.status,
+           billing_cycle = excluded.billing_cycle,
+           current_period_start = excluded.current_period_start,
+           current_period_end = excluded.current_period_end;
+       insert into public.usage_monthly_counters (
+         organization_id, metric, period_month, used_quantity,
+         included_quantity, addon_quantity
+       ) values (
+         '${orgId}'::uuid, 'ocr', date_trunc('month', current_date)::date,
+         1, 2, 0
+       );
        insert into public.usage_reservations (
          id, organization_id, metric, quantity, period_month, source,
-         object_type, object_id, status, released_at, created_at
+         object_type, object_id, status, released_at, created_at, reserved_at
        ) values
          (
            '${staleId}'::uuid, '${orgId}'::uuid, 'ocr', 1,
            date_trunc('month', current_date)::date, 'ocr_job',
            'background_job', '${staleId}', 'reserved', null,
-           now() - interval '48 hours'
+           '2000-01-01T00:00:00Z', now() - interval '48 hours'
          ),
          (
-           '${recentId}'::uuid, '${orgId}'::uuid, 'ocr', 1,
+           '${rearmedId}'::uuid, '${orgId}'::uuid, 'ocr', 1,
            date_trunc('month', current_date)::date, 'ocr_job',
-           'background_job', '${recentId}', 'reserved', null,
-           now() - interval '1 hour'
+           'background_job', '${rearmedId}', 'released', now(),
+           '2000-01-01T00:00:00Z', '2000-01-01T00:00:00Z'
          ),
          (
            '${releasedId}'::uuid, '${orgId}'::uuid, 'ocr', 1,
            date_trunc('month', current_date)::date, 'ocr_job',
            'background_job', '${releasedId}', 'released', now(),
-           now() - interval '72 hours'
-         );`,
+           '2000-01-01T00:00:00Z', '2000-01-01T00:00:00Z'
+         );
+       ${serviceRoleSql(
+         `select public.reserve_usage_reservation('${rearmedId}'::uuid);`,
+       )}`,
     );
     try {
       expect(
@@ -82,6 +125,44 @@ describe.runIf(Boolean(container))("OCR usage quota PostgreSQL regression", () =
         ),
       ).toBe(`${staleId}|${orgId}|ocr_job|true`);
 
+      expect(
+        runSqlText(
+          dbContainer,
+          serviceRoleQuerySql(
+            `select count(*)::text
+             from public.mark_stale_usage_reservation_reviewed(
+               '${rearmedId}'::uuid,
+               '2000-01-01T00:00:00Z'::timestamptz,
+               null,
+               now() - interval '24 hours'
+             );`,
+          ),
+        ),
+      ).toBe("0");
+      expect(
+        runSqlText(
+          dbContainer,
+          serviceRoleQuerySql(
+            `select count(*)::text
+             from public.mark_stale_usage_reservation_reviewed(
+               '${releasedId}'::uuid,
+               '2000-01-01T00:00:00Z'::timestamptz,
+               null,
+               now() - interval '24 hours'
+             );`,
+          ),
+        ),
+      ).toBe("0");
+      expect(
+        runSqlText(
+          dbContainer,
+          `select status || '|' || (reserved_at > now() - interval '1 minute')::text || '|' ||
+             (last_reviewed_at is null)::text
+           from public.usage_reservations
+           where id = '${rearmedId}'::uuid;`,
+        ),
+      ).toBe("reserved|true|true");
+
       const authenticatedReview = runSqlCapture(
         dbContainer,
         `begin;
@@ -91,6 +172,101 @@ describe.runIf(Boolean(container))("OCR usage quota PostgreSQL regression", () =
       );
       expect(authenticatedReview.code).not.toBe(0);
       expect(authenticatedReview.stderr).toContain("42501");
+    } finally {
+      runSql(dbContainer, cleanupSql);
+    }
+  });
+
+  it("progresses beyond the first 500 without releasing or consuming reservations", () => {
+    const dbContainer = container ?? "";
+    const orgId = "b4000000-0000-4000-8000-000000000001";
+    const cleanupSql = `delete from public.organizations where id = '${orgId}'::uuid;`;
+
+    runSql(
+      dbContainer,
+      `${cleanupSql}
+       insert into public.organizations (id, name, code)
+       values ('${orgId}'::uuid, 'Stale Review Rotation', 'stale-review-rotation');
+       insert into public.usage_monthly_counters (
+         organization_id, metric, period_month, used_quantity,
+         included_quantity, addon_quantity
+       ) values (
+         '${orgId}'::uuid, 'ocr', date_trunc('month', current_date)::date,
+         501, 501, 0
+       );
+       insert into public.usage_reservations (
+         id, organization_id, metric, quantity, period_month, source,
+         object_type, object_id, status, created_at, reserved_at
+       )
+       select
+         gen_random_uuid(), '${orgId}'::uuid, 'ocr', 1,
+         date_trunc('month', current_date)::date, 'ocr_job',
+         'background_job', series::text, 'reserved',
+         now() - interval '72 hours', now() - interval '72 hours'
+       from generate_series(1, 501) as series;`,
+    );
+
+    try {
+      expect(
+        runSqlText(
+          dbContainer,
+          serviceRoleQuerySql(
+            `with candidates as materialized (
+               select *
+               from public.list_stale_usage_reservations(
+                 now() - interval '24 hours', 500
+               )
+             )
+             select count(*)::text
+             from candidates as candidate
+             cross join lateral public.mark_stale_usage_reservation_reviewed(
+               candidate.reservation_id,
+               candidate.reserved_at,
+               candidate.last_reviewed_at,
+               now() - interval '24 hours'
+             ) as marked;`,
+          ),
+        ),
+      ).toBe("500");
+
+      expect(
+        runSqlText(
+          dbContainer,
+          serviceRoleQuerySql(
+            `with candidates as materialized (
+               select *
+               from public.list_stale_usage_reservations(
+                 now() - interval '24 hours', 500
+               )
+             )
+             select count(*)::text
+             from candidates as candidate
+             cross join lateral public.mark_stale_usage_reservation_reviewed(
+               candidate.reservation_id,
+               candidate.reserved_at,
+               candidate.last_reviewed_at,
+               now() - interval '24 hours'
+             ) as marked;`,
+          ),
+        ),
+      ).toBe("1");
+
+      expect(
+        runSqlText(
+          dbContainer,
+          `select
+             count(*) filter (where status = 'reserved')::text || '|' ||
+             count(*) filter (where last_reviewed_at is not null)::text || '|' ||
+             (select used_quantity::text
+              from public.usage_monthly_counters
+              where organization_id = '${orgId}'::uuid and metric = 'ocr') || '|' ||
+             (select count(*)::text
+              from public.usage_events
+              where organization_id = '${orgId}'::uuid)
+           from public.usage_reservations
+           where organization_id = '${orgId}'::uuid;`,
+        ),
+      ).toBe("501|501|501|0");
     } finally {
       runSql(dbContainer, cleanupSql);
     }

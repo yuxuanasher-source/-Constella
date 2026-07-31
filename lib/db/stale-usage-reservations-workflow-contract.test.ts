@@ -37,7 +37,7 @@ describe("stale usage reservation workflow contract", () => {
     expect(workflow).toContain("--max-time 240");
     expect(workflow).toContain('--output "$response_file"');
     expect(workflow).toContain(
-      "/api/billing/jobs/stale-usage-reservations",
+      "/api/billing/jobs/stale-usage-reservations?limit=500",
     );
     expect(workflow).toContain(
       '--header "x-cron-secret: ${BILLING_CRON_SECRET}"',

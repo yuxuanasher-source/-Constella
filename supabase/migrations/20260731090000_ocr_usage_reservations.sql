@@ -12,6 +12,8 @@ create table public.usage_reservations (
   released_at timestamptz,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
+  reserved_at timestamptz not null default now(),
+  last_reviewed_at timestamptz,
   unique (organization_id, metric, source, object_id),
   constraint usage_reservations_terminal_timestamp check (
     (status = 'reserved' and consumed_at is null and released_at is null)
@@ -22,6 +24,14 @@ create table public.usage_reservations (
 
 create index usage_reservations_org_status_idx
   on public.usage_reservations (organization_id, status, created_at);
+
+create index usage_reservations_stale_review_idx
+  on public.usage_reservations (
+    status,
+    last_reviewed_at asc nulls first,
+    reserved_at,
+    id
+  );
 
 alter table public.usage_reservations enable row level security;
 
@@ -251,6 +261,8 @@ begin
   set
     status = 'reserved',
     released_at = null,
+    reserved_at = now(),
+    last_reviewed_at = null,
     metadata = metadata || jsonb_build_object('reservedAgainAt', now())
   where id = v_reservation.id
   returning * into v_reservation;
@@ -267,7 +279,8 @@ returns table (
   reservation_id uuid,
   organization_id uuid,
   source text,
-  created_at timestamptz,
+  reserved_at timestamptz,
+  last_reviewed_at timestamptz,
   age_seconds bigint
 )
 language plpgsql
@@ -295,13 +308,144 @@ begin
     reservation.id,
     reservation.organization_id,
     reservation.source,
-    reservation.created_at,
-    extract(epoch from (now() - reservation.created_at))::bigint
+    reservation.reserved_at,
+    reservation.last_reviewed_at,
+    extract(epoch from (now() - reservation.reserved_at))::bigint
   from public.usage_reservations as reservation
   where reservation.status = 'reserved'
-    and reservation.created_at <= p_before
-  order by reservation.created_at, reservation.id
+    and reservation.reserved_at <= p_before
+    and (
+      reservation.last_reviewed_at is null
+      or reservation.last_reviewed_at <= p_before
+    )
+  order by
+    reservation.last_reviewed_at asc nulls first,
+    reservation.reserved_at,
+    reservation.id
   limit p_limit;
+end;
+$$;
+
+create or replace function public.mark_stale_usage_reservation_reviewed(
+  p_reservation_id uuid,
+  p_expected_reserved_at timestamptz,
+  p_expected_last_reviewed_at timestamptz,
+  p_before timestamptz
+)
+returns table (
+  reservation_id uuid,
+  organization_id uuid,
+  source text,
+  reserved_at timestamptz,
+  previous_reviewed_at timestamptz,
+  reviewed_at timestamptz,
+  age_seconds bigint
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_reservation public.usage_reservations%rowtype;
+  v_reviewed_at timestamptz := now();
+begin
+  if coalesce(auth.role(), '') <> 'service_role' then
+    raise exception 'Usage reservation review requires the service role'
+      using errcode = '42501';
+  end if;
+  if p_reservation_id is null
+    or p_expected_reserved_at is null
+    or p_before is null
+    or p_before > v_reviewed_at
+  then
+    raise exception 'Usage reservation review input is invalid'
+      using errcode = '22023';
+  end if;
+
+  select reservation.*
+  into v_reservation
+  from public.usage_reservations as reservation
+  where reservation.id = p_reservation_id
+  for update;
+
+  if not found then
+    return;
+  end if;
+  if v_reservation.status <> 'reserved'
+    or v_reservation.reserved_at is distinct from p_expected_reserved_at
+    or v_reservation.last_reviewed_at is distinct from p_expected_last_reviewed_at
+    or v_reservation.reserved_at > p_before
+    or (
+      v_reservation.last_reviewed_at is not null
+      and v_reservation.last_reviewed_at > p_before
+    )
+  then
+    return;
+  end if;
+
+  update public.usage_reservations
+  set last_reviewed_at = v_reviewed_at
+  where id = v_reservation.id;
+
+  return query
+  select
+    v_reservation.id,
+    v_reservation.organization_id,
+    v_reservation.source,
+    v_reservation.reserved_at,
+    v_reservation.last_reviewed_at,
+    v_reviewed_at,
+    extract(epoch from (v_reviewed_at - v_reservation.reserved_at))::bigint;
+end;
+$$;
+
+create or replace function public.reset_stale_usage_reservation_review(
+  p_reservation_id uuid,
+  p_expected_reserved_at timestamptz,
+  p_failed_reviewed_at timestamptz,
+  p_previous_reviewed_at timestamptz
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_reservation public.usage_reservations%rowtype;
+begin
+  if coalesce(auth.role(), '') <> 'service_role' then
+    raise exception 'Usage reservation review requires the service role'
+      using errcode = '42501';
+  end if;
+  if p_reservation_id is null
+    or p_expected_reserved_at is null
+    or p_failed_reviewed_at is null
+    or p_failed_reviewed_at > now()
+    or p_previous_reviewed_at > p_failed_reviewed_at
+  then
+    raise exception 'Usage reservation review reset input is invalid'
+      using errcode = '22023';
+  end if;
+
+  select reservation.*
+  into v_reservation
+  from public.usage_reservations as reservation
+  where reservation.id = p_reservation_id
+  for update;
+
+  if not found
+    or v_reservation.status <> 'reserved'
+    or v_reservation.reserved_at is distinct from p_expected_reserved_at
+    or v_reservation.last_reviewed_at is distinct from p_failed_reviewed_at
+  then
+    return false;
+  end if;
+
+  update public.usage_reservations
+  set last_reviewed_at = p_previous_reviewed_at
+  where id = v_reservation.id;
+
+  return true;
 end;
 $$;
 
@@ -320,6 +464,22 @@ to service_role;
 revoke all on function public.list_stale_usage_reservations(timestamptz, integer)
 from public, anon, authenticated, service_role;
 grant execute on function public.list_stale_usage_reservations(timestamptz, integer)
+to service_role;
+revoke all on function public.mark_stale_usage_reservation_reviewed(
+  uuid, timestamptz, timestamptz, timestamptz
+)
+from public, anon, authenticated, service_role;
+grant execute on function public.mark_stale_usage_reservation_reviewed(
+  uuid, timestamptz, timestamptz, timestamptz
+)
+to service_role;
+revoke all on function public.reset_stale_usage_reservation_review(
+  uuid, timestamptz, timestamptz, timestamptz
+)
+from public, anon, authenticated, service_role;
+grant execute on function public.reset_stale_usage_reservation_review(
+  uuid, timestamptz, timestamptz, timestamptz
+)
 to service_role;
 
 create or replace function public.enqueue_ocr_job(
@@ -537,6 +697,7 @@ begin
     object_type,
     object_id,
     status,
+    reserved_at,
     metadata
   )
   values (
@@ -549,6 +710,7 @@ begin
     'background_job',
     p_job_id::text,
     'reserved',
+    now(),
     jsonb_build_object('liveReportId', p_live_report_id)
   );
 

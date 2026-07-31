@@ -147,11 +147,21 @@ describe("atomic OCR enqueue schema contract", () => {
       /used_quantity \+ v_reservation\.quantity[\s\S]*ocr_usage_limit_reached[\s\S]*used_quantity = used_quantity \+ v_reservation\.quantity/,
     );
     expect(migration).toMatch(
-      /status = 'reserved'[\s\S]*released_at = null/,
+      /status = 'reserved'[\s\S]*released_at = null[\s\S]*reserved_at = now\(\)[\s\S]*last_reviewed_at = null/,
     );
   });
 
-  it("lists stale reservations for service-role review without mutating them", () => {
+  it("tracks the current reservation attempt and review progression", () => {
+    expect(migration).toMatch(
+      /reserved_at timestamptz not null default now\(\)/,
+    );
+    expect(migration).toContain("last_reviewed_at timestamptz");
+    expect(migration).toMatch(
+      /insert into public\.usage_reservations \([\s\S]*reserved_at[\s\S]*\)\s*values \([\s\S]*now\(\)/,
+    );
+  });
+
+  it("rotates stale reservations for service-role review without mutating quota state", () => {
     expect(migration).toMatch(
       /function public\.list_stale_usage_reservations\(\s*p_before timestamptz,\s*p_limit integer\s*\)[\s\S]*security definer[\s\S]*set search_path = ''/,
     );
@@ -159,7 +169,7 @@ describe("atomic OCR enqueue schema contract", () => {
       /list_stale_usage_reservations\([\s\S]*auth\.role\(\)[\s\S]*service_role/,
     );
     expect(migration).toMatch(
-      /where reservation\.status = 'reserved'[\s\S]*reservation\.created_at <= p_before[\s\S]*order by reservation\.created_at, reservation\.id[\s\S]*limit p_limit/,
+      /where reservation\.status = 'reserved'[\s\S]*reservation\.reserved_at <= p_before[\s\S]*reservation\.last_reviewed_at is null[\s\S]*reservation\.last_reviewed_at <= p_before[\s\S]*order by\s*reservation\.last_reviewed_at asc nulls first,\s*reservation\.reserved_at,\s*reservation\.id[\s\S]*limit p_limit/,
     );
     expect(migration).toMatch(
       /revoke all on function public\.list_stale_usage_reservations\(timestamptz, integer\)[\s\S]*from public, anon, authenticated, service_role[\s\S]*grant execute on function public\.list_stale_usage_reservations\(timestamptz, integer\)[\s\S]*to service_role/,
@@ -168,15 +178,64 @@ describe("atomic OCR enqueue schema contract", () => {
     const functionStart = migration.indexOf(
       "function public.list_stale_usage_reservations(",
     );
-    const functionEnd = migration.indexOf("revoke all on function", functionStart);
+    const functionEnd = migration.indexOf(
+      "function public.mark_stale_usage_reservation_reviewed(",
+      functionStart,
+    );
     const functionSql = migration.slice(functionStart, functionEnd);
     expect(functionStart).toBeGreaterThan(-1);
     expect(functionSql).toContain("reservation_id uuid");
     expect(functionSql).toContain("organization_id uuid");
     expect(functionSql).toContain("source text");
-    expect(functionSql).toContain("created_at timestamptz");
+    expect(functionSql).toContain("reserved_at timestamptz");
+    expect(functionSql).toContain("last_reviewed_at timestamptz");
     expect(functionSql).toContain("age_seconds bigint");
     expect(functionSql).not.toContain("metadata");
     expect(functionSql).not.toMatch(/\b(update|delete|release_usage_reservation)\b/);
+  });
+
+  it("marks only the listed reservation attempt and review version", () => {
+    expect(migration).toMatch(
+      /function public\.mark_stale_usage_reservation_reviewed\([\s\S]*security definer[\s\S]*set search_path = ''/,
+    );
+    expect(migration).toMatch(
+      /mark_stale_usage_reservation_reviewed\([\s\S]*auth\.role\(\)[\s\S]*service_role[\s\S]*from public\.usage_reservations[\s\S]*for update/,
+    );
+    expect(migration).toMatch(
+      /v_reservation\.status <> 'reserved'[\s\S]*v_reservation\.reserved_at is distinct from p_expected_reserved_at[\s\S]*v_reservation\.last_reviewed_at is distinct from p_expected_last_reviewed_at/,
+    );
+    expect(migration).toMatch(
+      /v_reservation\.reserved_at > p_before[\s\S]*v_reservation\.last_reviewed_at > p_before[\s\S]*update public\.usage_reservations[\s\S]*last_reviewed_at = v_reviewed_at/,
+    );
+    expect(migration).toMatch(
+      /revoke all on function public\.mark_stale_usage_reservation_reviewed\(\s*uuid, timestamptz, timestamptz, timestamptz\s*\)[\s\S]*from public, anon, authenticated, service_role[\s\S]*grant execute on function public\.mark_stale_usage_reservation_reviewed\(\s*uuid, timestamptz, timestamptz, timestamptz\s*\)[\s\S]*to service_role/,
+    );
+
+    const functionStart = migration.indexOf(
+      "function public.mark_stale_usage_reservation_reviewed(",
+    );
+    const functionEnd = migration.indexOf(
+      "function public.reset_stale_usage_reservation_review(",
+      functionStart,
+    );
+    const functionSql = migration.slice(functionStart, functionEnd);
+    expect(functionStart).toBeGreaterThan(-1);
+    expect(functionSql).not.toContain("metadata");
+    expect(functionSql).not.toMatch(/status\s*=|used_quantity|usage_events/);
+  });
+
+  it("conditionally restores review progression after audit failure", () => {
+    expect(migration).toMatch(
+      /function public\.reset_stale_usage_reservation_review\([\s\S]*security definer[\s\S]*set search_path = ''/,
+    );
+    expect(migration).toMatch(
+      /reset_stale_usage_reservation_review\([\s\S]*auth\.role\(\)[\s\S]*service_role[\s\S]*from public\.usage_reservations[\s\S]*for update/,
+    );
+    expect(migration).toMatch(
+      /v_reservation\.status <> 'reserved'[\s\S]*v_reservation\.reserved_at is distinct from p_expected_reserved_at[\s\S]*v_reservation\.last_reviewed_at is distinct from p_failed_reviewed_at[\s\S]*last_reviewed_at = p_previous_reviewed_at/,
+    );
+    expect(migration).toMatch(
+      /revoke all on function public\.reset_stale_usage_reservation_review\(\s*uuid, timestamptz, timestamptz, timestamptz\s*\)[\s\S]*from public, anon, authenticated, service_role[\s\S]*grant execute on function public\.reset_stale_usage_reservation_review\(\s*uuid, timestamptz, timestamptz, timestamptz\s*\)[\s\S]*to service_role/,
+    );
   });
 });

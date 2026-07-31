@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Trigger read-only reservation review
+      - name: Trigger controlled reservation review
         env:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           BILLING_CRON_SECRET: ${{ secrets.BILLING_CRON_SECRET }}
@@ -43,7 +43,7 @@ jobs:
             --output "$response_file" \
             --write-out "%{http_code}" \
             --request POST \
-            "${APP_BASE_URL%/}/api/billing/jobs/stale-usage-reservations" \
+            "${APP_BASE_URL%/}/api/billing/jobs/stale-usage-reservations?limit=500" \
             --header "x-cron-secret: ${BILLING_CRON_SECRET}")"
 
           if [[ ! "$status" =~ ^2[0-9]{2}$ ]]; then

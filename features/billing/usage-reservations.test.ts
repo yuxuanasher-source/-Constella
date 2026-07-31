@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   consumeUsageReservation,
   listStaleUsageReservations,
+  markStaleUsageReservationReviewed,
   releaseUsageReservation,
+  resetStaleUsageReservationReview,
   reserveUsageReservation,
 } from "./usage-reservations";
 
@@ -100,7 +102,8 @@ describe("usage reservations", () => {
           reservation_id: "reservation-1",
           organization_id: "org-1",
           source: "ocr_job",
-          created_at: "2026-07-29T08:00:00.000Z",
+          reserved_at: "2026-07-29T08:00:00.000Z",
+          last_reviewed_at: null,
           age_seconds: 100_000,
         },
       ],
@@ -118,7 +121,8 @@ describe("usage reservations", () => {
         reservationId: "reservation-1",
         organizationId: "org-1",
         source: "ocr_job",
-        createdAt: "2026-07-29T08:00:00.000Z",
+        reservedAt: "2026-07-29T08:00:00.000Z",
+        lastReviewedAt: null,
         ageSeconds: 100_000,
       },
     ]);
@@ -128,6 +132,90 @@ describe("usage reservations", () => {
     });
     expect(JSON.stringify(await vi.mocked(client.rpc).mock.results[0]?.value)).not.toContain(
       "metadata",
+    );
+  });
+
+  it("marks a stale reservation only against the listed attempt and review version", async () => {
+    const client = createClient();
+    vi.mocked(client.rpc).mockResolvedValueOnce({
+      data: [
+        {
+          reservation_id: "reservation-1",
+          organization_id: "org-1",
+          source: "ocr_job",
+          reserved_at: "2026-07-29T08:00:00.000Z",
+          previous_reviewed_at: null,
+          reviewed_at: "2026-07-31T12:00:00.000Z",
+          age_seconds: 187_200,
+        },
+      ],
+      error: null,
+    });
+
+    await expect(
+      markStaleUsageReservationReviewed({
+        client,
+        reservationId: "reservation-1",
+        expectedReservedAt: "2026-07-29T08:00:00.000Z",
+        expectedLastReviewedAt: null,
+        before: "2026-07-30T12:00:00.000Z",
+      }),
+    ).resolves.toEqual({
+      reservationId: "reservation-1",
+      organizationId: "org-1",
+      source: "ocr_job",
+      reservedAt: "2026-07-29T08:00:00.000Z",
+      previousReviewedAt: null,
+      reviewedAt: "2026-07-31T12:00:00.000Z",
+      ageSeconds: 187_200,
+    });
+    expect(client.rpc).toHaveBeenCalledWith(
+      "mark_stale_usage_reservation_reviewed",
+      {
+        p_reservation_id: "reservation-1",
+        p_expected_reserved_at: "2026-07-29T08:00:00.000Z",
+        p_expected_last_reviewed_at: null,
+        p_before: "2026-07-30T12:00:00.000Z",
+      },
+    );
+  });
+
+  it("returns null when a concurrent state change prevents review marking", async () => {
+    const client = createClient();
+    vi.mocked(client.rpc).mockResolvedValueOnce({ data: [], error: null });
+
+    await expect(
+      markStaleUsageReservationReviewed({
+        client,
+        reservationId: "reservation-race",
+        expectedReservedAt: "2026-07-29T08:00:00.000Z",
+        expectedLastReviewedAt: null,
+        before: "2026-07-30T12:00:00.000Z",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("conditionally restores review progression after an audit failure", async () => {
+    const client = createClient();
+    vi.mocked(client.rpc).mockResolvedValueOnce({ data: true, error: null });
+
+    await expect(
+      resetStaleUsageReservationReview({
+        client,
+        reservationId: "reservation-1",
+        expectedReservedAt: "2026-07-29T08:00:00.000Z",
+        failedReviewedAt: "2026-07-31T12:00:00.000Z",
+        previousReviewedAt: null,
+      }),
+    ).resolves.toBe(true);
+    expect(client.rpc).toHaveBeenCalledWith(
+      "reset_stale_usage_reservation_review",
+      {
+        p_reservation_id: "reservation-1",
+        p_expected_reserved_at: "2026-07-29T08:00:00.000Z",
+        p_failed_reviewed_at: "2026-07-31T12:00:00.000Z",
+        p_previous_reviewed_at: null,
+      },
     );
   });
 
