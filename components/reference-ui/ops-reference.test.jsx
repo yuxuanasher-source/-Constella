@@ -3327,13 +3327,15 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "厂家分享看板" }));
 
     expect(
-      screen.getByRole("heading", { name: "选播准入" }),
+      await screen.findByRole("heading", { name: "选播准入" }),
     ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByPlaceholderText("项目 / 主播 / 报名编号"),
+      ).toHaveValue("project-alpha"),
+    );
     expect(
-      screen.getByPlaceholderText("项目 / 主播 / 报名编号"),
-    ).toHaveValue("project-alpha");
-    expect(
-      screen.getByText("Alpha Launch · 录屏明细"),
+      await screen.findByText("Alpha Launch · 录屏明细"),
     ).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([url]) =>
