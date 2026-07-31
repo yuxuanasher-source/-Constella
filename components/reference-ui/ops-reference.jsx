@@ -29371,6 +29371,7 @@ function ScreenKnowledge() {
   const [menu, setMenu] = React.useState(null);
   const [moveId, setMoveId] = React.useState(null);
   const [shareUrl, setShareUrl] = React.useState("");
+  const [shareUrlShareId, setShareUrlShareId] = React.useState(null);
   const [shareExpiresAt, setShareExpiresAt] = React.useState("");
   const [shareExpiryDays, setShareExpiryDays] = React.useState(7);
   const [activeShares, setActiveShares] = React.useState([]);
@@ -29388,6 +29389,7 @@ function ScreenKnowledge() {
   const activeShareRowRefs = React.useRef(new Map());
   const revokeOperationEpochRef = React.useRef(0);
   const activeRevokeOperationRef = React.useRef(null);
+  const shareDisplayEpochRef = React.useRef(0);
 
   // 加载：优先腾讯云 COS 真源，拿不到则用本地缓存。
   React.useEffect(() => {
@@ -29471,9 +29473,11 @@ function ScreenKnowledge() {
   // 切换文档时清空上一篇的分享链接 / 提示。
   React.useEffect(() => {
     revokeOperationEpochRef.current += 1;
+    shareDisplayEpochRef.current += 1;
     activeRevokeOperationRef.current = null;
     setRevokingShareId(null);
     setShareUrl("");
+    setShareUrlShareId(null);
     setShareExpiresAt("");
     setShareExpiryDays(7);
     setFocusedShareId(null);
@@ -29772,8 +29776,10 @@ function ScreenKnowledge() {
                     icon={<Icon.Upload size={13} />}
                     disabled={shareBusy}
                     onClick={async () => {
+                      shareDisplayEpochRef.current += 1;
                       setDocMsg("");
                       setShareUrl("");
+                      setShareUrlShareId(null);
                       setShareExpiresAt("");
                       setShareBusy(true);
                       const pendingAttempt = pendingShareAttemptRef.current;
@@ -29807,7 +29813,9 @@ function ScreenKnowledge() {
                           return;
                         }
                         terminalAttempt = true;
+                        shareDisplayEpochRef.current += 1;
                         setShareUrl(result.url);
+                        setShareUrlShareId(result.id);
                         setShareExpiresAt(result.expiresAt || "");
                         setActiveShares((shares) => [
                           {
@@ -30053,6 +30061,7 @@ function ScreenKnowledge() {
                                 documentId: selected.id,
                                 shareId: share.id,
                                 epoch: ++revokeOperationEpochRef.current,
+                                displayEpoch: shareDisplayEpochRef.current,
                               };
                               activeRevokeOperationRef.current = operation;
                               setRevokingShareId(share.id);
@@ -30062,17 +30071,25 @@ function ScreenKnowledge() {
                                 setActiveShares((shares) =>
                                   shares.filter((item) => item.id !== share.id),
                                 );
-                                setDocMsg("分享链接已撤销。");
                                 if (
-                                  shareUrl &&
-                                  share.id === activeShares[0]?.id
+                                  operation.displayEpoch ===
+                                  shareDisplayEpochRef.current
                                 ) {
-                                  setShareUrl("");
-                                  setShareExpiresAt("");
+                                  setDocMsg("分享链接已撤销。");
+                                  if (share.id === shareUrlShareId) {
+                                    setShareUrl("");
+                                    setShareUrlShareId(null);
+                                    setShareExpiresAt("");
+                                  }
                                 }
                               } catch {
                                 if (!isCurrentRevokeOperation(operation)) return;
-                                setDocMsg("撤销失败，请稍后重试。");
+                                if (
+                                  operation.displayEpoch ===
+                                  shareDisplayEpochRef.current
+                                ) {
+                                  setDocMsg("撤销失败，请稍后重试。");
+                                }
                               } finally {
                                 if (isCurrentRevokeOperation(operation)) {
                                   activeRevokeOperationRef.current = null;

@@ -638,6 +638,63 @@ describe("knowledge-base expiring share controls", () => {
     );
   };
 
+  const createSameDocumentRevokeRace = () => {
+    let createAttempts = 0;
+    let resolveRevoke;
+    const deferredRevoke = new Promise((resolve) => {
+      resolveRevoke = resolve;
+    });
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null }), { status: 200 });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        return new Response(
+          JSON.stringify({
+            shares: [
+              {
+                id: "33333333-3333-4333-8333-333333333333",
+                title: "📖 使用教程",
+                createdAt: "2026-07-31T12:00:00.000Z",
+                expiresAt: "2026-08-07T12:00:00.000Z",
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        createAttempts += 1;
+        const isFirst = createAttempts === 1;
+        return new Response(
+          JSON.stringify({
+            id: isFirst
+              ? "33333333-3333-4333-8333-333333333333"
+              : "55555555-5555-4555-8555-555555555555",
+            url: isFirst
+              ? "https://app.example.test/share/kb/revoke-x-token"
+              : "https://app.example.test/share/kb/create-y-token",
+            expiresAt: isFirst
+              ? "2026-08-07T12:00:00.000Z"
+              : "2026-08-14T12:00:00.000Z",
+          }),
+          { status: 200 },
+        );
+      }
+      if (
+        url ===
+          "/api/knowledge-base/share/33333333-3333-4333-8333-333333333333/revoke" &&
+        method === "POST"
+      ) {
+        return deferredRevoke;
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    return { fetchMock, resolveRevoke };
+  };
+
   afterEach(() => {
     window.localStorage.clear();
     vi.unstubAllGlobals();
@@ -1312,6 +1369,107 @@ describe("knowledge-base expiring share controls", () => {
         ),
       ).not.toBeInTheDocument(),
     );
+  }, 15_000);
+
+  it("preserves a newer same-document share result when an older revoke succeeds", async () => {
+    const { fetchMock, resolveRevoke } = createSameDocumentRevokeRace();
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    await screen.findByTestId(
+      "knowledge-share-33333333-3333-4333-8333-333333333333",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    await screen.findByDisplayValue(
+      "https://app.example.test/share/kb/revoke-x-token",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    await screen.findByDisplayValue(
+      "https://app.example.test/share/kb/create-y-token",
+    );
+    expect(
+      await screen.findByText("分享链接已生成并复制到剪贴板。"),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      resolveRevoke(
+        new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      );
+    });
+
+    expect(screen.getByLabelText("分享链接")).toHaveValue(
+      "https://app.example.test/share/kb/create-y-token",
+    );
+    expect(
+      screen.getByText((content) =>
+        /^有效期至：.*2026.*8.*14/.test(content),
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("分享链接已生成并复制到剪贴板。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId(
+        "knowledge-share-33333333-3333-4333-8333-333333333333",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId(
+        "knowledge-share-55555555-5555-4555-8555-555555555555",
+      ),
+    ).toBeInTheDocument();
+  }, 15_000);
+
+  it("preserves a newer same-document share result when an older revoke fails", async () => {
+    const { fetchMock, resolveRevoke } = createSameDocumentRevokeRace();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    await screen.findByTestId(
+      "knowledge-share-33333333-3333-4333-8333-333333333333",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    await screen.findByDisplayValue(
+      "https://app.example.test/share/kb/revoke-x-token",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    await screen.findByDisplayValue(
+      "https://app.example.test/share/kb/create-y-token",
+    );
+    await screen.findByText("分享链接已生成并复制到剪贴板。");
+
+    await act(async () => {
+      resolveRevoke(
+        new Response(JSON.stringify({ error: "failed" }), { status: 500 }),
+      );
+    });
+
+    expect(screen.getByLabelText("分享链接")).toHaveValue(
+      "https://app.example.test/share/kb/create-y-token",
+    );
+    expect(
+      screen.getByText((content) =>
+        /^有效期至：.*2026.*8.*14/.test(content),
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("分享链接已生成并复制到剪贴板。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("撤销失败，请稍后重试。")).not.toBeInTheDocument();
   }, 15_000);
 });
 
