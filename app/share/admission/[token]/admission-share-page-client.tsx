@@ -557,13 +557,13 @@ export default function AdmissionSharePageClient({
             }
           }
         }
-        // The board request may create the HttpOnly session that protects
-        // formal drafts, so draft hydration follows it. Preview links never
-        // touch the draft route.
+        // New responses hydrate the board and drafts together. The fallback
+        // keeps the client compatible with an older server during rollout.
         const response = await loadAdmissionShareBoard(token);
         const remoteDrafts =
           response.shareBoard.mode === "formal_review"
-            ? await loadAdmissionShareDrafts(token)
+            ? (response.reviewDrafts ??
+              (await loadAdmissionShareDrafts(token)))
             : [];
         if (!mountedRef.current || loadEpoch !== loadEpochRef.current) {
           return;

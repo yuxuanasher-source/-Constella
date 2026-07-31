@@ -25,6 +25,7 @@ export type VendorCheckpointOption = {
 export type PublicAdmissionShareBoardResponse = {
   shareBoard: import("@/features/applications/admission-share-board").PublicAdmissionShareBoard;
   vendorCheckpoints: VendorCheckpointOption[];
+  reviewDrafts?: AdmissionShareReviewDraftDto[];
 };
 
 export type AdmissionShareReviewSubmitResult = {
