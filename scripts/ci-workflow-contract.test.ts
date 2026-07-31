@@ -66,19 +66,59 @@ describe("CI workflow contracts", () => {
     const expectedPins = new Map([
       ["actions/checkout", "11d5960a326750d5838078e36cf38b85af677262"],
       ["actions/setup-node", "49933ea5288caeca8642d1e84afbd3f7d6820020"],
+      ["actions/upload-artifact", "ea165f8d65b6e75b540449e92b4886f43607fa02"],
       ["pnpm/action-setup", "b906affcce14559ad1aafd4ab0e942779e9f58b1"],
     ]);
     const usages = [
       ...ciWorkflow.matchAll(/uses:\s+([^@\s]+)@([^\s#]+)\s+# v4/g),
     ];
 
-    expect(usages).toHaveLength(6);
+    expect(usages).toHaveLength(7);
     for (const [, action, revision] of usages) {
       expect(expectedPins.has(action)).toBe(true);
       expect(revision).toMatch(/^[0-9a-f]{40}$/);
       expect(revision).toBe(expectedPins.get(action));
     }
     expect(ciWorkflow).not.toMatch(/uses:\s+[^@\s]+@v\d/);
+  });
+
+  it("does not persist checkout credentials in either hosted job", () => {
+    expect(
+      ciWorkflow.match(
+        /uses:\s+actions\/checkout@[0-9a-f]{40}\s+# v4\s+with:\s+persist-credentials:\s+false/g,
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("publishes only a default-branch artifact that survives a full runtime round trip", () => {
+    const defaultBranchArtifactGuard =
+      "if: github.event_name == 'push' && github.ref == 'refs/heads/codex/full-project-ui'";
+
+    expect(
+      ciWorkflow.match(
+        new RegExp(
+          defaultBranchArtifactGuard.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+          "g",
+        ),
+      ),
+    ).toHaveLength(3);
+    expect(ciWorkflow).toContain(
+      "- name: Verify reviewed release artifact round trip",
+    );
+    expect(ciWorkflow).toContain(
+      'node "$candidate/scripts/extract-release-artifact.mjs"',
+    );
+    expect(ciWorkflow).toContain(
+      'node "$candidate/scripts/release-integrity.mjs" verify',
+    );
+    expect(ciWorkflow).toContain('.listen(54321, "127.0.0.1")');
+    expect(ciWorkflow).toContain(
+      "NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321",
+    );
+    expect(ciWorkflow).toContain("XINGYAO_HERMES_LEGACY_RUNTIME_ENABLED=true");
+    expect(ciWorkflow).toContain("node .next/standalone/server.js");
+    expect(ciWorkflow).toContain("http://127.0.0.1:3999/api/health");
+    expect(ciWorkflow).toContain("- name: Upload reviewed release artifact");
   });
 });
 
