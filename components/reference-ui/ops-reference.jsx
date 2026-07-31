@@ -74,8 +74,16 @@ import {
 const ScreenKnowledge = lazy(
   () => import("./scenes/knowledge-base-scene"),
 );
-const ScreenAdmission = lazy(() => import("./scenes/admission-scene"));
-const ScreenSettlement = lazy(() => import("./scenes/settlement-scene"));
+const ScreenAdmission = lazy(async () => {
+  const scene = await import("./scenes/admission-scene");
+  scene.configureAdmissionScene(ADMISSION_SCENE_DEPENDENCIES);
+  return scene;
+});
+const ScreenSettlement = lazy(async () => {
+  const scene = await import("./scenes/settlement-scene");
+  scene.configureSettlementScene(SETTLEMENT_SCENE_DEPENDENCIES);
+  return scene;
+});
 
 // ===== src\ui.jsx =====
 // ——— Reusable UI atoms ——————————————————————————————————————
@@ -29336,7 +29344,6 @@ function OpsReferenceInner({
                 }
               >
                 <ScreenAdmission
-                  dependencies={ADMISSION_SCENE_DEPENDENCIES}
                   focusRequest={admissionFocusRequest}
                 />
               </Suspense>
@@ -29384,10 +29391,7 @@ function OpsReferenceInner({
                   </div>
                 }
               >
-                <ScreenSettlement
-                  dependencies={SETTLEMENT_SCENE_DEPENDENCIES}
-                  go={go}
-                />
+                <ScreenSettlement go={go} />
               </Suspense>
             )}
             {route === "marketplace" && <ScreenMarketplace />}

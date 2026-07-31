@@ -5792,7 +5792,7 @@ describe("OpsReferenceApp admission smoke", () => {
     );
 
     expect(await screen.findByText("组织审核校准")).toBeInTheDocument();
-    expect(screen.getByText("AI / MCN 一致率")).toBeInTheDocument();
+    expect(await screen.findByText("AI / MCN 一致率")).toBeInTheDocument();
     expect(screen.getByText("85.0%")).toBeInTheDocument();
     expect(screen.getByText("一审漏判率")).toBeInTheDocument();
     expect(screen.getByText("20.0%")).toBeInTheDocument();

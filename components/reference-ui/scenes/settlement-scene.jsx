@@ -254,7 +254,15 @@ let Avatar,
   warnBackgroundRefreshFailure,
   yuanInputToCents;
 
-export default function ScreenSettlement({ dependencies, go }) {
+let configuredSettlementDependencies = null;
+
+export function configureSettlementScene(dependencies) {
+  if (configuredSettlementDependencies) {
+    if (configuredSettlementDependencies !== dependencies) {
+      throw new Error("Settlement scene dependencies cannot be reconfigured");
+    }
+    return;
+  }
   ({
     Avatar,
     BATCH_DETAIL_ITEMS,
@@ -322,6 +330,13 @@ export default function ScreenSettlement({ dependencies, go }) {
     warnBackgroundRefreshFailure,
     yuanInputToCents,
   } = dependencies);
+  configuredSettlementDependencies = dependencies;
+}
+
+export default function ScreenSettlement({ go }) {
+  if (!configuredSettlementDependencies) {
+    throw new Error("Settlement scene dependencies are not configured");
+  }
   const projects = useOpsProjects();
   const { projects: projectData, settlementPool: settlementPoolData } =
     React.useContext(OpsLiveDataContext);

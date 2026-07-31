@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const referenceSource = fs.readFileSync(
@@ -47,12 +47,38 @@ describe("OpsReferenceApp scene splitting", () => {
         "utf8",
       );
 
+      expect(referenceSource).toContain(`import("./scenes/${route}-scene")`);
       expect(referenceSource).toContain(
-        `lazy(() => import("./scenes/${route}-scene"))`,
+        `scene.configure${exportName.replace("Screen", "")}Scene(`,
       );
       expect(referenceSource).toContain(`aria-label="${fallback}"`);
       expect(referenceSource).not.toContain(`function ${exportName}`);
       expect(sceneSource).toContain(`export default function ${exportName}`);
+    },
+  );
+
+  it.each([
+    {
+      configureName: "configureAdmissionScene",
+      file: "./scenes/admission-scene.jsx",
+    },
+    {
+      configureName: "configureSettlementScene",
+      file: "./scenes/settlement-scene.jsx",
+    },
+  ])(
+    "configures $configureName once and rejects an inconsistent rebind",
+    async ({ configureName, file }) => {
+      vi.resetModules();
+      const scene =
+        file === "./scenes/admission-scene.jsx"
+          ? await import("./scenes/admission-scene.jsx")
+          : await import("./scenes/settlement-scene.jsx");
+      const dependencies = Object.freeze({});
+
+      expect(() => scene[configureName](dependencies)).not.toThrow();
+      expect(() => scene[configureName](dependencies)).not.toThrow();
+      expect(() => scene[configureName]({})).toThrow(/cannot be reconfigured/);
     },
   );
 });

@@ -28,7 +28,15 @@ let AdmissionCalibrationDashboard,
   warnBackgroundRefreshFailure,
   yuanInputToCents;
 
-export default function ScreenAdmission({ dependencies, focusRequest = null }) {
+let configuredAdmissionDependencies = null;
+
+export function configureAdmissionScene(dependencies) {
+  if (configuredAdmissionDependencies) {
+    if (configuredAdmissionDependencies !== dependencies) {
+      throw new Error("Admission scene dependencies cannot be reconfigured");
+    }
+    return;
+  }
   ({
     AdmissionCalibrationDashboard,
     AdmissionShareCenter,
@@ -56,6 +64,13 @@ export default function ScreenAdmission({ dependencies, focusRequest = null }) {
     warnBackgroundRefreshFailure,
     yuanInputToCents,
   } = dependencies);
+  configuredAdmissionDependencies = dependencies;
+}
+
+export default function ScreenAdmission({ focusRequest = null }) {
+  if (!configuredAdmissionDependencies) {
+    throw new Error("Admission scene dependencies are not configured");
+  }
   const applications = useOpsApplications();
   const { applications: applicationData } =
     React.useContext(OpsLiveDataContext);
