@@ -35,18 +35,42 @@ sudo install -o root -g "$(id -gn)" -m 0640 /dev/null \
 sudoedit /etc/jingying-cabin/production.env
 ```
 
-Enable the PostgREST admin server on loopback only. Its `ready` endpoint proves
-the connection pool and schema cache are healthy; its `metrics` endpoint gives
-the successful schema-cache load counter used to prove that a post-migration
-generation is newer than the pre-migration generation:
+Enable the PostgREST admin server so only the deployment host can reach it. Its
+`ready` endpoint proves the connection pool and schema cache are healthy; its
+`metrics` endpoint gives the successful schema-cache load counter used to prove
+that a post-migration generation is newer than the pre-migration generation.
+
+For a host-native PostgREST process, bind the admin server directly to loopback:
 
 ```bash
 PGRST_ADMIN_SERVER_HOST=127.0.0.1
 PGRST_ADMIN_SERVER_PORT=3001
 ```
 
-Do not publish the admin port through the public reverse proxy. The protected
-application env file contains the two loopback URLs:
+For Docker, the process must listen on the container interface, while Docker
+publishes that port on host loopback only:
+
+```yaml
+services:
+  postgrest:
+    environment:
+      PGRST_ADMIN_SERVER_HOST: "0.0.0.0"
+      PGRST_ADMIN_SERVER_PORT: "3001"
+    ports:
+      - "127.0.0.1:3001:3001"
+```
+
+Do not use a public host binding, host networking, or the public reverse proxy
+for this admin port. Restart PostgREST after this non-reloadable setting changes,
+then prove host access before the maintenance window:
+
+```bash
+curl --fail --silent --show-error http://127.0.0.1:3001/ready >/dev/null
+curl --fail --silent --show-error http://127.0.0.1:3001/metrics |
+  grep 'pgrst_schema_cache_loads_total{status="SUCCESS"}'
+```
+
+The protected application env file contains the two loopback URLs:
 
 ```bash
 POSTGREST_READY_URL=http://127.0.0.1:3001/ready
