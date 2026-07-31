@@ -13,26 +13,32 @@ SOURCE_REPO="${SOURCE_REPO:-/var/www/jingying-cabin}"
 RELEASE_ROOT="${RELEASE_ROOT:-/var/cache/jingying-cabin-releases}"
 CURRENT_LINK="${CURRENT_LINK:-/var/www/jingying-cabin-current}"
 ENV_FILE="${ENV_FILE:-/etc/jingying-cabin/production.env}"
-LOCK_FILE="${LOCK_FILE:-/var/cache/jingying-cabin-releases/.jingying-cabin.deploy.lock}"
+readonly LOCK_FILE="/var/lock/jingying-cabin/deploy.lock"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"
 BRANCH="${BRANCH:-codex/full-project-ui}"
 EXPECTED_SHA="${EXPECTED_SHA:-}"
+EXPECTED_RELEASE_MANIFEST_SHA256="${EXPECTED_RELEASE_MANIFEST_SHA256:-}"
 DB_CONTAINER="${DB_CONTAINER:-supabase-db}"
 DB_NAME="${DB_NAME:-postgres}"
 PM2_NAME="${PM2_NAME:-jingying-cabin}"
 PM2_TIMEOUT_SECONDS="${PM2_TIMEOUT_SECONDS:-30}"
+DATABASE_LEASE_WAIT_SECONDS="${DATABASE_LEASE_WAIT_SECONDS:-60}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 POSTGREST_READY_URL="${POSTGREST_READY_URL:-}"
 POSTGREST_METRICS_URL="${POSTGREST_METRICS_URL:-}"
+POSTGREST_SCHEMA_CACHE_URL="${POSTGREST_SCHEMA_CACHE_URL:-}"
 
 BOOTSTRAP_SENTINEL="__atomic_release_bootstrap_v1__"
 BOOTSTRAP_VERSION="bootstrap-v1"
+BOOTSTRAP_CONTENT_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
 MIGRATION_LOCK_KEY="jingying-cabin:deploy-migrations:v1"
+MIGRATION_LEASE_KEY="jingying-cabin:deploy-lease:v2"
 
 TARGET_SHA=""
 release_dir=""
 previous_target=""
 previous_sha=""
+previous_manifest_sha=""
 migration_manifest=""
 release_cleanup_manifest=""
 candidate_cleanup_intended=0
@@ -43,10 +49,16 @@ custom_ledger_state=""
 declare -a PENDING_MIGRATIONS=()
 declare -a BOOTSTRAP_FILENAMES=()
 declare -A MIGRATION_VERSIONS=()
+declare -A MIGRATION_HASHES=()
 declare -A SUPABASE_LEDGER_VERSIONS=()
 declare -A CUSTOM_LEDGER_FILES=()
+declare -A CUSTOM_LEDGER_HASHES=()
 declare -A PENDING_VERSIONS=()
 LOCK_FD=""
+DB_LEASE_INPUT_FD=""
+DB_LEASE_OUTPUT_FD=""
+DB_LEASE_PID=""
+DB_LEASE_ACTIVE=0
 
 log() { printf '\033[1;36m[deploy]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[deploy]\033[0m %s\n' "$*" >&2; }
@@ -115,9 +127,11 @@ load_runtime_env() {
   local saved_source="$SOURCE_REPO" saved_root="$RELEASE_ROOT"
   local saved_current="$CURRENT_LINK" saved_env="$ENV_FILE"
   local saved_keep="$KEEP_RELEASES" saved_branch="$BRANCH"
-  local saved_expected="$EXPECTED_SHA" saved_lock="$LOCK_FILE"
+  local saved_expected="$EXPECTED_SHA"
+  local saved_expected_manifest="$EXPECTED_RELEASE_MANIFEST_SHA256"
   local saved_db="$DB_CONTAINER" saved_db_name="$DB_NAME" saved_pm2="$PM2_NAME"
   local saved_pm2_timeout="$PM2_TIMEOUT_SECONDS"
+  local saved_database_lease_wait="$DATABASE_LEASE_WAIT_SECONDS"
 
   set -a
   # shellcheck disable=SC1090 -- path was validated as a secure regular file.
@@ -131,14 +145,16 @@ load_runtime_env() {
   KEEP_RELEASES="$saved_keep"
   BRANCH="$saved_branch"
   EXPECTED_SHA="$saved_expected"
-  LOCK_FILE="$saved_lock"
+  EXPECTED_RELEASE_MANIFEST_SHA256="$saved_expected_manifest"
   DB_CONTAINER="$saved_db"
   DB_NAME="$saved_db_name"
   PM2_NAME="$saved_pm2"
   PM2_TIMEOUT_SECONDS="$saved_pm2_timeout"
+  DATABASE_LEASE_WAIT_SECONDS="$saved_database_lease_wait"
   export ENV_FILE
   POSTGREST_READY_URL="${POSTGREST_READY_URL:-}"
   POSTGREST_METRICS_URL="${POSTGREST_METRICS_URL:-}"
+  POSTGREST_SCHEMA_CACHE_URL="${POSTGREST_SCHEMA_CACHE_URL:-}"
   HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 }
 
@@ -213,6 +229,8 @@ validate_rollback_runtime() {
   [[ "$pnpm_version" == "10.12.1" ]] || die "pnpm must be exactly 10.12.1 (found $pnpm_version)"
   [[ "$PM2_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
     die "PM2_TIMEOUT_SECONDS must be a positive integer"
+  [[ "$DATABASE_LEASE_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+    die "DATABASE_LEASE_WAIT_SECONDS must be a positive integer"
 }
 
 validate_runtime() {
@@ -222,26 +240,33 @@ validate_runtime() {
   done
 }
 
-acquire_deploy_lock() {
+acquire_deploy_lock_at() {
+  local requested_lock="$1"
   local lock_parent path_identity fd_identity
-  require_absolute_path "LOCK_FILE" "$LOCK_FILE"
-  LOCK_FILE="$(lexical_path "$LOCK_FILE")"
-  reject_dangerous_path "LOCK_FILE" "$LOCK_FILE"
-  lock_parent="$(physical_path "$(dirname "$LOCK_FILE")")"
+  require_absolute_path "LOCK_FILE" "$requested_lock"
+  requested_lock="$(lexical_path "$requested_lock")"
+  reject_dangerous_path "LOCK_FILE" "$requested_lock"
+  lock_parent="$(physical_path "$(dirname "$requested_lock")")"
   validate_owner_and_mode "deploy lock parent" "$lock_parent" dir
-  LOCK_FILE="$lock_parent/$(basename "$LOCK_FILE")"
-  if [[ -e "$LOCK_FILE" || -L "$LOCK_FILE" ]]; then
-    validate_owner_and_mode "deploy lock" "$LOCK_FILE" file
+  requested_lock="$lock_parent/$(basename "$requested_lock")"
+  if [[ -e "$requested_lock" || -L "$requested_lock" ]]; then
+    validate_owner_and_mode "deploy lock" "$requested_lock" file
   else
-    ( umask 077; : > "$LOCK_FILE" ) || die "cannot create deploy lock: $LOCK_FILE"
-    validate_owner_and_mode "deploy lock" "$LOCK_FILE" file
+    ( umask 077; : > "$requested_lock" ) ||
+      die "cannot create deploy lock: $requested_lock"
+    validate_owner_and_mode "deploy lock" "$requested_lock" file
   fi
-  exec {LOCK_FD}<>"$LOCK_FILE" || die "cannot open deploy lock: $LOCK_FILE"
-  path_identity="$(stat -Lc '%d:%i' -- "$LOCK_FILE")"
+  exec {LOCK_FD}<>"$requested_lock" ||
+    die "cannot open deploy lock: $requested_lock"
+  path_identity="$(stat -Lc '%d:%i' -- "$requested_lock")"
   fd_identity="$(stat -Lc '%d:%i' -- "/proc/$$/fd/$LOCK_FD")" ||
     die "cannot verify physical deploy lock descriptor"
   [[ "$path_identity" == "$fd_identity" ]] || die "deploy lock path changed while opening"
-  flock -n "$LOCK_FD" || die "another deployment already holds $LOCK_FILE"
+  flock -n "$LOCK_FD" || die "another deployment already holds $requested_lock"
+}
+
+acquire_deploy_lock() {
+  acquire_deploy_lock_at "$LOCK_FILE"
 }
 
 validate_source_repo() {
@@ -267,21 +292,23 @@ validate_release_path() {
 }
 
 validate_release_capabilities() {
-  local target="$1" sha="$2"
+  local target="$1" sha="$2" manifest_sha256="$3"
   validate_release_path "$target"
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] ||
+    die "release SHA must be a lowercase full SHA: $sha"
+  [[ "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "release manifest SHA-256 is invalid for $sha"
   [[ "$(basename "$target")" == "$sha" ]] || die "release SHA/path mismatch: $target"
   [[ -f "$target/ecosystem.config.cjs" ]] || die "release lacks ecosystem config: $target"
   [[ -x "$target/scripts/verify-release.sh" ]] || die "release lacks executable verifier: $target"
-  [[ -f "$target/scripts/release-integrity.mjs" ]] ||
-    die "release lacks integrity verifier: $target"
   [[ -f "$target/.release-integrity.json" ]] ||
     die "release lacks build integrity manifest: $target"
   [[ -f "$target/app/api/health/route.ts" ]] || die "release lacks health source: $target"
   grep -Fq 'process.env.RELEASE_SHA' "$target/app/api/health/route.ts" ||
     die "release health route lacks full RELEASE_SHA capability: $target"
-  assert_release_git_state "$target" "$sha"
-  node "$target/scripts/release-integrity.mjs" verify "$target" "$sha" ||
-    die "release build integrity verification failed: $target"
+  node "$DEPLOY_SCRIPT_DIR/release-integrity.mjs" verify \
+    "$target" "$sha" "$manifest_sha256" ||
+    die "release runtime integrity verification failed: $target"
 }
 
 assert_release_git_state() {
@@ -297,7 +324,7 @@ assert_release_git_state() {
 }
 
 pm2_bounded() {
-  timeout --signal=TERM "${PM2_TIMEOUT_SECONDS}s" pm2 "$@"
+  timeout --signal=TERM --kill-after=5s "${PM2_TIMEOUT_SECONDS}s" pm2 "$@"
 }
 
 load_previous_release() {
@@ -306,7 +333,44 @@ load_previous_release() {
   previous_target="$(physical_path "$CURRENT_LINK")"
   [[ -d "$previous_target" ]] || die "CURRENT_LINK target does not exist: $previous_target"
   previous_sha="$(basename "$previous_target")"
-  validate_release_capabilities "$previous_target" "$previous_sha"
+  previous_manifest_sha="$(
+    read_pm2_release_manifest_sha "$previous_target" "$previous_sha"
+  )" || die "cannot recover the trusted manifest SHA-256 for the current release"
+  validate_release_capabilities \
+    "$previous_target" "$previous_sha" "$previous_manifest_sha"
+}
+
+read_pm2_release_manifest_sha() {
+  local target="$1" sha="$2" pm2_snapshot
+  pm2_snapshot="$(pm2_bounded jlist)" || return 1
+  PM2_TARGET="$target" PM2_RELEASE_SHA="$sha" PM2_NAME="$PM2_NAME" node -e '
+    const fs = require("node:fs");
+    let entries;
+    let target;
+    try {
+      entries = JSON.parse(fs.readFileSync(0, "utf8"));
+      target = fs.realpathSync(process.env.PM2_TARGET);
+    } catch {
+      process.exit(1);
+    }
+    if (!Array.isArray(entries)) process.exit(1);
+    const matching = entries.filter((entry) => entry?.name === process.env.PM2_NAME);
+    if (matching.length === 0) process.exit(1);
+    const hashes = new Set();
+    for (const entry of matching) {
+      const env = entry?.pm2_env;
+      if (!env || typeof env !== "object" || Array.isArray(env)) process.exit(1);
+      if (
+        env.RELEASE_SHA !== process.env.PM2_RELEASE_SHA ||
+        typeof env.pm_cwd !== "string" ||
+        fs.realpathSync(env.pm_cwd) !== target ||
+        !/^[0-9a-f]{64}$/.test(env.RELEASE_MANIFEST_SHA256 ?? "")
+      ) process.exit(1);
+      hashes.add(env.RELEASE_MANIFEST_SHA256);
+    }
+    if (hashes.size !== 1) process.exit(1);
+    process.stdout.write([...hashes][0]);
+  ' <<< "$pm2_snapshot"
 }
 
 safe_remove_release_dir() {
@@ -355,7 +419,16 @@ pm2_references_release() {
       process.exit(2);
     }
     if (!Array.isArray(entries)) process.exit(2);
-    const referenced = entries.some(({ pm2_env: env = {} }) => {
+    const referenced = entries.some((entry) => {
+      if (!entry || typeof entry !== "object") {
+        process.exitCode = 2;
+        return false;
+      }
+      const env = entry.pm2_env;
+      if (!env || typeof env !== "object" || Array.isArray(env)) {
+        process.exitCode = 2;
+        return false;
+      }
       if (typeof env.pm_cwd !== "string") {
         process.exitCode = 2;
         return false;
@@ -386,6 +459,73 @@ db_q() {
   db -Atqc "$1"
 }
 
+terminate_database_deploy_lease() {
+  local attempt
+  [[ -n "$DB_LEASE_PID" ]] || return 0
+  kill -TERM "$DB_LEASE_PID" >/dev/null 2>&1 || true
+  for attempt in {1..5}; do
+    kill -0 "$DB_LEASE_PID" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if kill -0 "$DB_LEASE_PID" >/dev/null 2>&1; then
+    kill -KILL "$DB_LEASE_PID" >/dev/null 2>&1 || true
+  fi
+  wait "$DB_LEASE_PID" >/dev/null 2>&1 || true
+  DB_LEASE_PID=""
+  DB_LEASE_ACTIVE=0
+}
+
+acquire_database_deploy_lease() {
+  local marker="" attempt
+  [[ "$DB_LEASE_ACTIVE" -eq 0 ]] || die "database deploy lease is already active"
+  coproc DEPLOY_DB_LEASE_PROCESS { db -Atq; }
+  DB_LEASE_OUTPUT_FD="${DEPLOY_DB_LEASE_PROCESS[0]}"
+  DB_LEASE_INPUT_FD="${DEPLOY_DB_LEASE_PROCESS[1]}"
+  DB_LEASE_PID="$DEPLOY_DB_LEASE_PROCESS_PID"
+  for ((attempt = 1; attempt <= DATABASE_LEASE_WAIT_SECONDS; attempt += 1)); do
+    if ! printf "select case when pg_try_advisory_lock(hashtextextended('%s', 0)) then 'DEPLOY_LEASE_ACQUIRED' else 'DEPLOY_LEASE_BUSY' end;\n" \
+      "$MIGRATION_LEASE_KEY" >&"$DB_LEASE_INPUT_FD"; then
+      terminate_database_deploy_lease
+      die "cannot request database deploy lease"
+    fi
+    if ! IFS= read -r marker <&"$DB_LEASE_OUTPUT_FD"; then
+      terminate_database_deploy_lease
+      die "database deploy lease returned no response"
+    fi
+    if [[ "$marker" == "DEPLOY_LEASE_ACQUIRED" ]]; then
+      DB_LEASE_ACTIVE=1
+      return 0
+    fi
+    [[ "$marker" == "DEPLOY_LEASE_BUSY" ]] || {
+      terminate_database_deploy_lease
+      die "database deploy lease returned an invalid response: $marker"
+    }
+    [[ "$attempt" -lt "$DATABASE_LEASE_WAIT_SECONDS" ]] && sleep 1
+  done
+  terminate_database_deploy_lease
+  die "database deploy lease remained busy for ${DATABASE_LEASE_WAIT_SECONDS}s"
+}
+
+release_database_deploy_lease() {
+  local marker="" status=0
+  [[ "$DB_LEASE_ACTIVE" -eq 1 ]] || return 0
+  if ! printf "select case when pg_advisory_unlock(hashtextextended('%s', 0)) then 'DEPLOY_LEASE_RELEASED' else 'DEPLOY_LEASE_MISSING' end;\n\\q\n" \
+    "$MIGRATION_LEASE_KEY" >&"$DB_LEASE_INPUT_FD"; then
+    status=1
+  elif ! IFS= read -r marker <&"$DB_LEASE_OUTPUT_FD" ||
+    [[ "$marker" != "DEPLOY_LEASE_RELEASED" ]]; then
+    status=1
+  fi
+  if [[ "$status" -eq 0 ]]; then
+    wait "$DB_LEASE_PID" || status=$?
+    DB_LEASE_PID=""
+    DB_LEASE_ACTIVE=0
+  else
+    terminate_database_deploy_lease
+  fi
+  return "$status"
+}
+
 write_migration_manifest() {
   local migrations_dir="$1" output="$2" unsorted
   unsorted="${output}.unsorted"
@@ -404,14 +544,18 @@ write_migration_manifest() {
 }
 
 parse_migration_identity() {
-  local file="$1" base version
+  local file="$1" base version content_sha256
   base="$(basename "$file")"
   [[ "$base" =~ ^([0-9]{14})_([0-9A-Za-z_.-]+)\.sql$ ]] ||
     die "migration filename must begin with an exact 14-digit version: $base"
   version="${BASH_REMATCH[1]}"
   [[ -z "${MIGRATION_VERSIONS[$version]:-}" ]] ||
     die "duplicate migration version $version: $base and ${MIGRATION_VERSIONS[$version]}"
+  content_sha256="$(sha256sum "$file" | awk '{print $1}')"
+  [[ "$content_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "cannot hash migration content: $base"
   MIGRATION_VERSIONS[$version]="$base"
+  MIGRATION_HASHES[$version]="$content_sha256"
 }
 
 validate_expand_header() {
@@ -421,18 +565,21 @@ validate_expand_header() {
 }
 
 validate_postgrest_admin_urls() {
-  node - "$POSTGREST_READY_URL" "$POSTGREST_METRICS_URL" <<'NODE'
-const [readyInput, metricsInput] = process.argv.slice(2);
+  node - "$POSTGREST_READY_URL" "$POSTGREST_METRICS_URL" \
+    "$POSTGREST_SCHEMA_CACHE_URL" <<'NODE'
+const [readyInput, metricsInput, schemaCacheInput] = process.argv.slice(2);
 let ready;
 let metrics;
+let schemaCache;
 try {
   ready = new URL(readyInput);
   metrics = new URL(metricsInput);
+  schemaCache = new URL(schemaCacheInput);
 } catch {
   process.exit(1);
 }
 const loopbackHosts = new Set(["127.0.0.1", "[::1]", "::1", "localhost"]);
-const safe = [ready, metrics].every(
+const safe = [ready, metrics, schemaCache].every(
   (url) =>
     url.protocol === "http:" &&
     loopbackHosts.has(url.hostname) &&
@@ -443,9 +590,10 @@ const safe = [ready, metrics].every(
 );
 if (
   !safe ||
-  ready.origin !== metrics.origin ||
+  new Set([ready.origin, metrics.origin, schemaCache.origin]).size !== 1 ||
   ready.pathname !== "/ready" ||
-  metrics.pathname !== "/metrics"
+  metrics.pathname !== "/metrics" ||
+  schemaCache.pathname !== "/schema_cache"
 ) {
   process.exit(1);
 }
@@ -455,12 +603,15 @@ NODE
 preflight_migration_ledgers() {
   local file base version supabase_present custom_present public_legacy_present
   local sentinel_count security_ok supabase_applied custom_filename custom_version
-  local supabase_rows custom_rows row_filename row_version
+  local custom_hash expected_hash
+  local supabase_rows custom_rows row_filename row_version row_hash
   PENDING_MIGRATIONS=()
   BOOTSTRAP_FILENAMES=()
   MIGRATION_VERSIONS=()
+  MIGRATION_HASHES=()
   SUPABASE_LEDGER_VERSIONS=()
   CUSTOM_LEDGER_FILES=()
+  CUSTOM_LEDGER_HASHES=()
   PENDING_VERSIONS=()
 
   [[ "$DB_NAME" =~ ^[0-9A-Za-z_-]+$ ]] || die "DB_NAME contains unsafe characters"
@@ -511,15 +662,17 @@ preflight_migration_ledgers() {
     ")"
     [[ "$security_ok" == "t" ]] ||
       die "internal deploy ledger owner, RLS, or ACL is unsafe; follow docs/runbooks/atomic-release-bootstrap.md"
-    sentinel_count="$(db_q "select count(*) from deploy_internal.schema_migrations where filename='$BOOTSTRAP_SENTINEL' and version='$BOOTSTRAP_VERSION'")"
+    sentinel_count="$(db_q "select count(*) from deploy_internal.schema_migrations where filename='$BOOTSTRAP_SENTINEL' and version='$BOOTSTRAP_VERSION' and content_sha256='$BOOTSTRAP_CONTENT_SHA256'")"
     [[ "$sentinel_count" == "1" ]] ||
       die "deploy ledger lacks exactly one trusted bootstrap sentinel"
     custom_ledger_state="trusted"
-    custom_rows="$(db_q "select filename || E'\\t' || version from deploy_internal.schema_migrations order by version, filename")" ||
+    custom_rows="$(db_q "select filename || E'\\t' || version || E'\\t' || content_sha256 from deploy_internal.schema_migrations order by version, filename")" ||
       die "cannot read custom migration ledger"
-    while IFS=$'\t' read -r row_filename row_version; do
+    while IFS=$'\t' read -r row_filename row_version row_hash; do
       [[ -z "$row_filename" ]] && continue
-      if [[ "$row_filename" == "$BOOTSTRAP_SENTINEL" && "$row_version" == "$BOOTSTRAP_VERSION" ]]; then
+      if [[ "$row_filename" == "$BOOTSTRAP_SENTINEL" &&
+        "$row_version" == "$BOOTSTRAP_VERSION" &&
+        "$row_hash" == "$BOOTSTRAP_CONTENT_SHA256" ]]; then
         continue
       fi
       [[ "$row_filename" =~ ^([0-9]{14})_([0-9A-Za-z_.-]+)\.sql$ ]] ||
@@ -528,11 +681,14 @@ preflight_migration_ledgers() {
         die "custom ledger version/filename mismatch: $row_filename / $row_version"
       [[ "${MIGRATION_VERSIONS[$row_version]:-}" == "$row_filename" ]] ||
         die "custom ledger row has no exact candidate mapping: $row_filename"
+      [[ "$row_hash" == "${MIGRATION_HASHES[$row_version]:-}" ]] ||
+        die "migration content hash drifted for $row_filename"
       [[ -n "${SUPABASE_LEDGER_VERSIONS[$row_version]:-}" ]] ||
         die "custom ledger row is absent from Supabase ledger: $row_filename"
       [[ -z "${CUSTOM_LEDGER_FILES[$row_version]:-}" ]] ||
         die "duplicate custom ledger version: $row_version"
       CUSTOM_LEDGER_FILES[$row_version]="$row_filename"
+      CUSTOM_LEDGER_HASHES[$row_version]="$row_hash"
     done <<< "$custom_rows"
   else
     custom_ledger_state="absent"
@@ -545,10 +701,14 @@ preflight_migration_ledgers() {
     [[ -n "${SUPABASE_LEDGER_VERSIONS[$version]:-}" ]] && supabase_applied="t"
     if [[ "$custom_ledger_state" == "trusted" ]]; then
       custom_filename="${CUSTOM_LEDGER_FILES[$version]:-}"
+      custom_hash="${CUSTOM_LEDGER_HASHES[$version]:-}"
+      expected_hash="${MIGRATION_HASHES[$version]}"
       custom_version="f"
       [[ "$custom_filename" == "$base" ]] && custom_version="t"
       [[ "$supabase_applied" == "$custom_version" ]] ||
         die "migration ledger mismatch for version $version: supabase=$supabase_applied custom=$custom_filename"
+      [[ "$supabase_applied" != "t" || "$custom_hash" == "$expected_hash" ]] ||
+        die "migration content hash mismatch for version $version"
     else
       custom_version="$supabase_applied"
       [[ "$supabase_applied" == "t" ]] && BOOTSTRAP_FILENAMES+=("$base")
@@ -562,14 +722,12 @@ preflight_migration_ledgers() {
   for file in "${PENDING_MIGRATIONS[@]}"; do
     validate_expand_header "$file"
   done
-  if (( ${#PENDING_MIGRATIONS[@]} > 0 )); then
-    validate_postgrest_admin_urls ||
-      die "loopback PostgREST /ready and /metrics URLs on one admin origin are required"
-  fi
+  validate_postgrest_admin_urls ||
+    die "loopback PostgREST /ready, /metrics, and /schema_cache URLs on one admin origin are required"
 }
 
 read_postgrest_schema_cache_generation() {
-  timeout --signal=TERM 10s curl --fail --silent --show-error \
+  timeout --signal=TERM --kill-after=5s 10s curl --fail --silent --show-error \
     --connect-timeout 2 --max-time 5 "$POSTGREST_METRICS_URL" |
     node -e '
       const fs = require("node:fs");
@@ -583,16 +741,54 @@ read_postgrest_schema_cache_generation() {
     '
 }
 
+postgrest_schema_cache_contains_probe() {
+  local probe_name="$1"
+  timeout --signal=TERM --kill-after=5s 10s curl --fail --silent --show-error \
+    --connect-timeout 2 --max-time 5 "$POSTGREST_SCHEMA_CACHE_URL" |
+    node -e '
+      const fs = require("node:fs");
+      const probe = process.argv[1];
+      let root;
+      try {
+        root = JSON.parse(fs.readFileSync(0, "utf8"));
+      } catch {
+        process.exit(1);
+      }
+      const expected = new Set([probe, `public.${probe}`]);
+      const seen = new Set();
+      const pending = [root];
+      while (pending.length > 0) {
+        const value = pending.pop();
+        if (typeof value === "string") {
+          if (expected.has(value)) process.exit(0);
+          continue;
+        }
+        if (!value || typeof value !== "object" || seen.has(value)) continue;
+        seen.add(value);
+        if (Array.isArray(value)) {
+          pending.push(...value);
+          continue;
+        }
+        for (const [key, child] of Object.entries(value)) {
+          if (expected.has(key)) process.exit(0);
+          pending.push(child);
+        }
+      }
+      process.exit(1);
+    ' "$probe_name"
+}
+
 wait_for_postgrest_schema_cache() {
-  local before_generation="$1" attempt after_generation=""
+  local before_generation="$1" probe_name="$2" attempt after_generation=""
   for attempt in {1..25}; do
-    if timeout --signal=TERM 5s curl --fail --silent --show-error \
+    if timeout --signal=TERM --kill-after=5s 5s curl --fail --silent --show-error \
       --connect-timeout 2 --max-time 3 "$POSTGREST_READY_URL" >/dev/null; then
       after_generation="$(read_postgrest_schema_cache_generation || true)"
       if node -e '
         const [before, after] = process.argv.slice(1).map(Number);
         process.exit(Number.isFinite(before) && Number.isFinite(after) && after > before ? 0 : 1);
-      ' "$before_generation" "$after_generation"; then
+      ' "$before_generation" "$after_generation" &&
+        postgrest_schema_cache_contains_probe "$probe_name"; then
         return 0
       fi
     fi
@@ -619,6 +815,7 @@ $deploy_roles$;
 create table if not exists deploy_internal.schema_migrations (
   filename text primary key,
   version text not null unique,
+  content_sha256 text not null check (content_sha256 ~ '^[0-9a-f]{64}$'),
   applied_at timestamptz not null default now()
 );
 alter table deploy_internal.schema_migrations enable row level security;
@@ -684,6 +881,8 @@ begin
     from deploy_internal.schema_migrations
     where filename = '__atomic_release_bootstrap_v1__'
       and version = 'bootstrap-v1'
+      and content_sha256 =
+        '0000000000000000000000000000000000000000000000000000000000000000'
   ) <> 1 then
     raise exception 'internal deploy ledger bootstrap sentinel is invalid';
   end if;
@@ -701,6 +900,7 @@ begin
     left join expected_deploy_migrations expected
       on expected.version = internal.version
      and expected.filename = internal.filename
+     and expected.content_sha256 = internal.content_sha256
     left join supabase_migrations.schema_migrations native
       on native.version = internal.version
     where internal.filename <> '__atomic_release_bootstrap_v1__'
@@ -715,6 +915,7 @@ begin
     left join deploy_internal.schema_migrations internal
       on internal.version = expected.version
      and internal.filename = expected.filename
+     and internal.content_sha256 = expected.content_sha256
     where internal.version is null
   ) then
     raise exception 'Supabase ledger row is absent from the internal deploy ledger';
@@ -725,32 +926,37 @@ SQL
 }
 
 apply_migrations() {
-  local file base version name output applied=0 schema_cache_before=""
-  if (( ${#PENDING_MIGRATIONS[@]} > 0 )); then
-    schema_cache_before="$(read_postgrest_schema_cache_generation)" ||
-      die "cannot read the pre-migration PostgREST schema-cache generation"
-    [[ "$schema_cache_before" =~ ^[-+]?[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]] ||
-      die "invalid pre-migration PostgREST schema-cache generation"
-  fi
+  local file base version name content_sha256 output applied=0 schema_cache_before=""
+  local schema_probe=""
+  [[ "$DB_LEASE_ACTIVE" -eq 1 ]] ||
+    die "database deploy lease must cover the migration batch and schema-cache proof"
+  [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+    die "TARGET_SHA must be set before applying migrations"
+  schema_probe="deploy_schema_probe_${TARGET_SHA}"
+  schema_cache_before="$(read_postgrest_schema_cache_generation)" ||
+    die "cannot read the pre-migration PostgREST schema-cache generation"
+  [[ "$schema_cache_before" =~ ^[-+]?[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]] ||
+    die "invalid pre-migration PostgREST schema-cache generation"
 
   output="$({
     printf 'begin;\n'
     printf "select pg_advisory_xact_lock(hashtextextended('%s', 0));\n" "$MIGRATION_LOCK_KEY"
     printf 'lock table supabase_migrations.schema_migrations in share row exclusive mode;\n'
-    printf 'create temporary table expected_deploy_migrations (version text primary key, filename text not null unique, name text not null) on commit drop;\n'
+    printf 'create temporary table expected_deploy_migrations (version text primary key, filename text not null unique, name text not null, content_sha256 text not null) on commit drop;\n'
     while IFS= read -r -d '' file; do
       base="$(basename "$file")"
       version="${base%%_*}"
       name="${base#*_}"
       name="${name%.sql}"
-      printf "insert into expected_deploy_migrations(version, filename, name) values ('%s', '%s', '%s');\n" \
-        "$version" "$base" "$name"
+      content_sha256="${MIGRATION_HASHES[$version]}"
+      printf "insert into expected_deploy_migrations(version, filename, name, content_sha256) values ('%s', '%s', '%s', '%s');\n" \
+        "$version" "$base" "$name" "$content_sha256"
     done < "$migration_manifest"
     emit_internal_ledger_security_sql
     printf 'lock table deploy_internal.schema_migrations in share row exclusive mode;\n'
-    printf "insert into deploy_internal.schema_migrations(filename, version) select expected.filename, expected.version from expected_deploy_migrations expected join supabase_migrations.schema_migrations native using (version) on conflict (version) do nothing;\n"
-    printf "insert into deploy_internal.schema_migrations(filename, version) values ('%s', '%s') on conflict (filename) do nothing;\n" \
-      "$BOOTSTRAP_SENTINEL" "$BOOTSTRAP_VERSION"
+    printf "insert into deploy_internal.schema_migrations(filename, version, content_sha256) select expected.filename, expected.version, expected.content_sha256 from expected_deploy_migrations expected join supabase_migrations.schema_migrations native using (version) on conflict (version) do nothing;\n"
+    printf "insert into deploy_internal.schema_migrations(filename, version, content_sha256) values ('%s', '%s', '%s') on conflict (filename) do nothing;\n" \
+      "$BOOTSTRAP_SENTINEL" "$BOOTSTRAP_VERSION" "$BOOTSTRAP_CONTENT_SHA256"
     emit_locked_ledger_assertion_sql
 
     while IFS= read -r -d '' file; do
@@ -758,31 +964,35 @@ apply_migrations() {
       version="${base%%_*}"
       name="${base#*_}"
       name="${name%.sql}"
+      content_sha256="${MIGRATION_HASHES[$version]}"
       if [[ -n "${PENDING_VERSIONS[$version]:-}" ]]; then
         printf "select not exists(select 1 from supabase_migrations.schema_migrations where version='%s') as should_apply \\gset\n" "$version"
         printf '\\if :should_apply\n'
         cat "$file"
-        printf "\ninsert into deploy_internal.schema_migrations(filename, version) values ('%s', '%s') on conflict (version) do nothing;\n" "$base" "$version"
+        printf "\ninsert into deploy_internal.schema_migrations(filename, version, content_sha256) values ('%s', '%s', '%s') on conflict (version) do nothing;\n" "$base" "$version" "$content_sha256"
         printf "insert into supabase_migrations.schema_migrations(version, name) values ('%s', '%s');\n" "$version" "$name"
         printf "select 'APPLIED:%s';\n" "$base"
         printf '\\else\n'
         printf "select 'SKIPPED:%s';\n" "$base"
         printf '\\endif\n'
       else
-        printf "do \\\$\\\$ begin if not exists(select 1 from supabase_migrations.schema_migrations where version='%s') then raise exception 'previously applied migration disappeared: %s'; end if; end \\\$\\\$;\n" "$version" "$base"
+        printf "do \$\$ begin if not exists(select 1 from supabase_migrations.schema_migrations where version='%s') then raise exception 'previously applied migration disappeared: %s'; end if; end \$\$;\n" "$version" "$base"
         printf "select 'SKIPPED:%s';\n" "$base"
       fi
     done < "$migration_manifest"
     emit_locked_ledger_assertion_sql
+    printf "do \$deploy_probe\$ declare probe record; role_name text; begin "
+    printf "for probe in select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'v' and c.relname like 'deploy_schema_probe_%%' and c.relname <> '%s' loop execute format('drop view public.%%I', probe.relname); end loop; " "$schema_probe"
+    printf "execute format('create or replace view public.%%I as select %%L::text as release_sha', '%s', '%s'); " "$schema_probe" "$TARGET_SHA"
+    printf "execute format('revoke all on public.%%I from public', '%s'); " "$schema_probe"
+    printf "foreach role_name in array array['anon', 'authenticated', 'service_role'] loop if exists(select 1 from pg_roles where rolname = role_name) then execute format('revoke all on public.%%I from %%I', '%s', role_name); end if; end loop; end \$deploy_probe\$;\n" "$schema_probe"
     printf "select pg_notify('pgrst', 'reload schema');\n"
     printf 'commit;\n'
   } | db -Atq)" || die "serialized migration batch failed"
 
   applied="$(grep -c '^APPLIED:' <<< "$output" || true)"
-  if (( applied > 0 )); then
-    wait_for_postgrest_schema_cache "$schema_cache_before" ||
-      die "PostgREST did not expose a new ready schema-cache generation within 25 seconds"
-  fi
+  wait_for_postgrest_schema_cache "$schema_cache_before" "$schema_probe" ||
+    die "PostgREST did not expose this target's schema probe in a newer ready cache within 25 seconds"
   log "Migrations complete ($applied newly applied)"
 }
 
@@ -800,7 +1010,8 @@ atomic_switch_current() {
 rollback_current() {
   local rollback_link="${CURRENT_LINK}.rollback"
   [[ -n "$previous_target" && -n "$previous_sha" ]] || die "no validated previous release is available"
-  validate_release_capabilities "$previous_target" "$previous_sha"
+  validate_release_capabilities \
+    "$previous_target" "$previous_sha" "$previous_manifest_sha"
   if [[ -e "$rollback_link" || -L "$rollback_link" ]]; then
     [[ -L "$rollback_link" ]] || die "rollback temporary path is not a symlink: $rollback_link"
     rm -- "$rollback_link"
@@ -811,8 +1022,9 @@ rollback_current() {
 }
 
 reload_pm2() {
-  local sha="$1"
+  local sha="$1" manifest_sha256="$2"
   CURRENT_LINK="$CURRENT_LINK" PM2_NAME="$PM2_NAME" RELEASE_SHA="$sha" \
+    RELEASE_MANIFEST_SHA256="$manifest_sha256" \
     pm2_bounded startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --update-env
 }
 
@@ -821,10 +1033,11 @@ save_pm2() {
 }
 
 verify_release() {
-  local sha="$1"
+  local sha="$1" manifest_sha256="$2"
+  validate_release_capabilities "$CURRENT_LINK" "$sha" "$manifest_sha256"
   CURRENT_LINK="$CURRENT_LINK" RELEASE_ROOT="$RELEASE_ROOT" PM2_NAME="$PM2_NAME" \
     PM2_TIMEOUT_SECONDS="$PM2_TIMEOUT_SECONDS" HEALTH_URL="$HEALTH_URL" \
-    "$CURRENT_LINK/scripts/verify-release.sh" "$sha"
+    "$CURRENT_LINK/scripts/verify-release.sh" "$sha" "$manifest_sha256"
 }
 
 rollback_after_activation_failure() {
@@ -834,11 +1047,11 @@ rollback_after_activation_failure() {
     warn "Rollback symlink failed; preserving both releases for recovery"
     return 1
   fi
-  if ! reload_pm2 "$previous_sha"; then
+  if ! reload_pm2 "$previous_sha" "$previous_manifest_sha"; then
     warn "Previous PM2 reload failed; preserving both releases for recovery"
     return 1
   fi
-  if ! verify_release "$previous_sha"; then
+  if ! verify_release "$previous_sha" "$previous_manifest_sha"; then
     warn "Previous release exact verification failed; preserving both releases for recovery"
     return 1
   fi
@@ -900,6 +1113,10 @@ on_exit() {
         candidate_cleanup_intended=0
       fi
     fi
+    if [[ "$DB_LEASE_ACTIVE" -eq 1 ]]; then
+      release_database_deploy_lease ||
+        warn "database deploy lease connection required forced termination"
+    fi
     if [[ "$candidate_cleanup_intended" -eq 1 && "$candidate_pm2_may_be_active" -eq 0 && -n "$release_dir" ]]; then
       safe_remove_release_dir "$release_dir" "$candidate_activation_attempted" ||
         warn "candidate preserved for manual inspection: $release_dir"
@@ -914,6 +1131,8 @@ main() {
   trap on_exit EXIT
   [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] ||
     die "EXPECTED_SHA must be the reviewed full lowercase Git SHA"
+  [[ "$EXPECTED_RELEASE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "EXPECTED_RELEASE_MANIFEST_SHA256 must come from the trusted CI artifact"
   validate_runtime
   validate_secure_env_file
   load_runtime_env
@@ -948,11 +1167,21 @@ main() {
       RELEASE_SHA="$TARGET_SHA" pnpm run build
   ) 2>&1 | tee "$RELEASE_ROOT/$TARGET_SHA-build.log"
   assert_release_git_state "$release_dir" "$TARGET_SHA"
-  node "$release_dir/scripts/release-integrity.mjs" write "$release_dir" "$TARGET_SHA"
-  node "$release_dir/scripts/release-integrity.mjs" verify "$release_dir" "$TARGET_SHA"
+  node "$release_dir/scripts/prepare-standalone-release.mjs" \
+    "$release_dir" "$TARGET_SHA"
+  node "$release_dir/scripts/release-integrity.mjs" write \
+    "$release_dir" "$TARGET_SHA"
+  actual_manifest_sha256="$(
+    sha256sum "$release_dir/.release-integrity.json" | awk '{print $1}'
+  )"
+  [[ "$actual_manifest_sha256" == "$EXPECTED_RELEASE_MANIFEST_SHA256" ]] ||
+    die "server-built release manifest differs from the trusted CI artifact"
+  validate_release_capabilities \
+    "$release_dir" "$TARGET_SHA" "$EXPECTED_RELEASE_MANIFEST_SHA256"
 
   migration_manifest="$(mktemp "$RELEASE_ROOT/.migrations.$TARGET_SHA.XXXXXX")"
   write_migration_manifest "$release_dir/supabase/migrations" "$migration_manifest"
+  acquire_database_deploy_lease
   preflight_migration_ledgers
   apply_migrations
 
@@ -960,7 +1189,9 @@ main() {
   atomic_switch_current
   candidate_activation_attempted=1
   candidate_pm2_may_be_active=1
-  if ! reload_pm2 "$TARGET_SHA" || ! verify_release "$TARGET_SHA" || ! save_pm2; then
+  if ! reload_pm2 "$TARGET_SHA" "$EXPECTED_RELEASE_MANIFEST_SHA256" ||
+    ! verify_release "$TARGET_SHA" "$EXPECTED_RELEASE_MANIFEST_SHA256" ||
+    ! save_pm2; then
     if rollback_after_activation_failure; then
       safe_remove_release_dir "$release_dir" || warn "rolled-back candidate was preserved"
       candidate_cleanup_intended=0
@@ -969,6 +1200,8 @@ main() {
     fi
     die "new application release failed activation and was not persisted"
   fi
+  release_database_deploy_lease ||
+    warn "release is persisted; database deploy lease required forced termination"
 
   candidate_pm2_may_be_active=0
   current_switched=0

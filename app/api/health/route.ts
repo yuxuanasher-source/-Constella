@@ -47,7 +47,10 @@ function healthResponse(dbOk: boolean, db: boolean) {
         ok,
         db,
         hermesRuntime,
-        release: { sha: process.env.RELEASE_SHA ?? null },
+        release: {
+          sha: process.env.RELEASE_SHA ?? null,
+          manifestSha256: process.env.RELEASE_MANIFEST_SHA256 ?? null,
+        },
       },
       { status: ok ? 200 : 503 },
     );
@@ -57,7 +60,10 @@ function healthResponse(dbOk: boolean, db: boolean) {
         ok: false,
         db,
         hermesRuntime: hermesRuntimeConfigurationErrorHealth(),
-        release: { sha: process.env.RELEASE_SHA ?? null },
+        release: {
+          sha: process.env.RELEASE_SHA ?? null,
+          manifestSha256: process.env.RELEASE_MANIFEST_SHA256 ?? null,
+        },
       },
       { status: 503 },
     );

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -17,23 +18,36 @@ function run(command, args, cwd) {
   return spawnSync(command, args, { cwd, encoding: "utf8" });
 }
 
+function sha256(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
 describe("release integrity manifest", () => {
-  it("binds a clean Git SHA to server and static build output", () => {
+  it("binds a standalone runtime to an external digest without Git at rollback time", () => {
     const root = mkdtempSync(join(tmpdir(), "release-integrity-"));
     try {
-      mkdirSync(join(root, ".next/server"), { recursive: true });
-      mkdirSync(join(root, ".next/static"), { recursive: true });
-      writeFileSync(join(root, "tracked.txt"), "reviewed source\n");
-      for (const relativePath of [
-        ".next/BUILD_ID",
-        ".next/build-manifest.json",
-        ".next/prerender-manifest.json",
-        ".next/required-server-files.json",
-        ".next/routes-manifest.json",
-        ".next/server/app.js",
-        ".next/static/chunk.js",
-      ]) {
-        writeFileSync(join(root, relativePath), `${relativePath}\n`);
+      mkdirSync(join(root, ".next/standalone/node_modules/next"), {
+        recursive: true,
+      });
+      mkdirSync(join(root, "scripts"), { recursive: true });
+      mkdirSync(join(root, "supabase/migrations"), { recursive: true });
+      const fixtureFiles = {
+        ".next/standalone/server.js": "server\n",
+        ".next/standalone/node_modules/next/runtime.js": "next runtime\n",
+        "ecosystem.config.cjs": "module.exports = {};\n",
+        "scripts/create-xingyao-hermes-rollback.sh": "#!/usr/bin/env bash\n",
+        "scripts/deploy.sh": "#!/usr/bin/env bash\n",
+        "scripts/prepare-standalone-release.mjs": "process.exit(0);\n",
+        "scripts/release-integrity.mjs": "process.exit(0);\n",
+        "scripts/validate-expand-migration.mjs": "process.exit(0);\n",
+        "scripts/verify-release.sh": "#!/usr/bin/env bash\n",
+        "scripts/verify-xingyao-hermes-rollback-package.mjs":
+          "process.exit(0);\n",
+        "supabase/migrations/20260731000000_fixture.sql":
+          "-- deploy: expand\nselect 1;\n",
+      };
+      for (const [relativePath, content] of Object.entries(fixtureFiles)) {
+        writeFileSync(join(root, relativePath), content);
       }
 
       expect(run("git", ["init", "--quiet"], root).status).toBe(0);
@@ -44,7 +58,7 @@ describe("release integrity manifest", () => {
       expect(
         run("git", ["config", "user.name", "Release Test"], root).status,
       ).toBe(0);
-      expect(run("git", ["add", "tracked.txt"], root).status).toBe(0);
+      expect(run("git", ["add", "."], root).status).toBe(0);
       expect(
         run("git", ["commit", "--quiet", "-m", "fixture"], root).status,
       ).toBe(0);
@@ -56,32 +70,53 @@ describe("release integrity manifest", () => {
         root,
       );
       expect(written.status, written.stderr).toBe(0);
+      const manifestPath = join(root, ".release-integrity.json");
+      const manifestSha256 = sha256(manifestPath);
+      expect(JSON.parse(readFileSync(manifestPath, "utf8")).sha).toBe(sha);
       expect(
-        JSON.parse(readFileSync(join(root, ".release-integrity.json"), "utf8"))
-          .sha,
-      ).toBe(sha);
-      expect(
-        run(process.execPath, [verifier, "verify", root, sha], root).status,
+        run(
+          process.execPath,
+          [verifier, "verify", root, sha, manifestSha256],
+          root,
+        ).status,
       ).toBe(0);
 
-      writeFileSync(join(root, ".next/server/app.js"), "tampered build\n");
-      const tamperedBuild = run(
+      writeFileSync(
+        join(root, ".next/standalone/node_modules/next/runtime.js"),
+        "tampered runtime\n",
+      );
+      const tamperedRuntime = run(
         process.execPath,
-        [verifier, "verify", root, sha],
+        [verifier, "verify", root, sha, manifestSha256],
         root,
       );
-      expect(tamperedBuild.status).not.toBe(0);
-      expect(tamperedBuild.stderr).toMatch(/build output differs/i);
+      expect(tamperedRuntime.status).not.toBe(0);
+      expect(tamperedRuntime.stderr).toMatch(/runtime artifact differs/i);
 
-      writeFileSync(join(root, ".next/server/app.js"), ".next/server/app.js\n");
-      writeFileSync(join(root, "tracked.txt"), "tampered source\n");
-      const tamperedSource = run(
+      writeFileSync(
+        join(root, ".next/standalone/node_modules/next/runtime.js"),
+        "next runtime\n",
+      );
+      writeFileSync(join(root, "ecosystem.config.cjs"), "tampered source\n");
+      expect(
+        run(
+          process.execPath,
+          [verifier, "verify", root, sha, manifestSha256],
+          root,
+        ).status,
+      ).not.toBe(0);
+      writeFileSync(
+        join(root, "ecosystem.config.cjs"),
+        "module.exports = {};\n",
+      );
+
+      rmSync(join(root, ".git"), { recursive: true, force: true });
+      const sourceIndependent = run(
         process.execPath,
-        [verifier, "verify", root, sha],
+        [verifier, "verify", root, sha, manifestSha256],
         root,
       );
-      expect(tamperedSource.status).not.toBe(0);
-      expect(tamperedSource.stderr).toMatch(/Git state/i);
+      expect(sourceIndependent.status, sourceIndependent.stderr).toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -36,7 +36,16 @@ jobs:
         run: pnpm test
 
       - name: Build
+        env:
+          RELEASE_SHA: ${{ github.sha }}
         run: pnpm build
+
+      - name: Produce reviewed release manifest hash
+        run: |
+          node scripts/prepare-standalone-release.mjs "$GITHUB_WORKSPACE" "$GITHUB_SHA"
+          node scripts/release-integrity.mjs write "$GITHUB_WORKSPACE" "$GITHUB_SHA"
+          manifest_sha256="$(sha256sum .release-integrity.json | awk '{print $1}')"
+          printf 'Release manifest SHA-256: `%s`\n' "$manifest_sha256" >> "$GITHUB_STEP_SUMMARY"
 
   database-regression:
     runs-on: [self-hosted, linux, x64, constella-ci]

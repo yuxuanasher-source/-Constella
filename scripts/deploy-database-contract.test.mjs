@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -86,6 +92,8 @@ function psql(database, sql) {
       "20260731115959_atomic_deploy_contract_probe.sql",
     );
     const manifest = join(sandbox, "migrations.manifest");
+    const generationCalls = join(sandbox, "schema-generation-calls.log");
+    const targetSha = "f".repeat(40);
     let created = false;
 
     expect(database).toMatch(/^codex_atomic_[0-9_]+$/);
@@ -130,8 +138,9 @@ function psql(database, sql) {
       );
       writeFileSync(
         manifest,
-        Buffer.concat([Buffer.from(migration), Buffer.from([0])]),
+        Buffer.concat([Buffer.from(shellPath(migration)), Buffer.from([0])]),
       );
+      writeFileSync(generationCalls, "");
 
       const deploymentArgs = [
         "-c",
@@ -141,14 +150,23 @@ function psql(database, sql) {
           `export DB_NAME=${shellQuote(database)}`,
           "export POSTGREST_READY_URL=http://127.0.0.1:1/ready",
           "export POSTGREST_METRICS_URL=http://127.0.0.1:1/metrics",
+          "export POSTGREST_SCHEMA_CACHE_URL=http://127.0.0.1:1/schema_cache",
           `export NODE_EXE=${shellQuote(shellPath(process.execPath))}`,
+          `export GENERATION_CALLS=${shellQuote(shellPath(generationCalls))}`,
           `source ${shellQuote(shellPath(deployScript))}`,
+          `TARGET_SHA=${targetSha}`,
           'node() { "$NODE_EXE" "$@"; }',
           "read_postgrest_schema_cache_generation() { printf '41'; }",
-          "wait_for_postgrest_schema_cache() { [[ \"$1\" == '41' ]]; }",
+          "wait_for_postgrest_schema_cache() {",
+          "  [[ \"$1\" == '41' ]]",
+          `  [[ "$2" == 'deploy_schema_probe_${targetSha}' ]]`,
+          '  printf \'%s\\n\' "$$" >> "$GENERATION_CALLS"',
+          "}",
           `migration_manifest=${shellQuote(shellPath(manifest))}`,
+          "acquire_database_deploy_lease",
           "preflight_migration_ledgers",
           "apply_migrations",
+          "release_database_deploy_lease",
         ].join("\n"),
       ];
       const deployments = await Promise.all([
@@ -170,6 +188,9 @@ function psql(database, sql) {
           .join("\n")
           .match(/Migrations complete \(0 newly applied\)/g),
       ).toHaveLength(1);
+      expect(
+        readFileSync(generationCalls, "utf8").trim().split(/\r?\n/),
+      ).toHaveLength(2);
 
       const state = psql(
         database,
@@ -186,6 +207,9 @@ function psql(database, sql) {
               from supabase_migrations.schema_migrations
               where version = '20260731115959'
             ),
+            to_regclass(
+              'public.deploy_schema_probe_${targetSha}'
+            ) is not null,
             (
               select c.relrowsecurity and c.relforcerowsecurity
               from pg_class c
@@ -202,7 +226,7 @@ function psql(database, sql) {
         `,
       );
       expect(state.status, state.stderr).toBe(0);
-      expect(state.stdout.trim()).toBe("t|t|t|t|t|t|t");
+      expect(state.stdout.trim()).toBe("t|t|t|t|t|t|t|t");
 
       const forged = psql(
         database,
@@ -214,6 +238,34 @@ function psql(database, sql) {
       );
       expect(forged.status).not.toBe(0);
       expect(forged.stderr).toMatch(/permission denied|row-level security/i);
+
+      writeFileSync(
+        migration,
+        [
+          "-- deploy: expand",
+          "create table public.atomic_deploy_contract_probe (",
+          "  id bigint primary key,",
+          "  drifted text",
+          ");",
+          "",
+        ].join("\n"),
+      );
+      const driftRejected = run(bashBin, [
+        "-c",
+        [
+          "set -Eeuo pipefail",
+          `export DB_CONTAINER=${shellQuote(container)}`,
+          `export DB_NAME=${shellQuote(database)}`,
+          "export POSTGREST_READY_URL=http://127.0.0.1:1/ready",
+          "export POSTGREST_METRICS_URL=http://127.0.0.1:1/metrics",
+          "export POSTGREST_SCHEMA_CACHE_URL=http://127.0.0.1:1/schema_cache",
+          `source ${shellQuote(shellPath(deployScript))}`,
+          `migration_manifest=${shellQuote(shellPath(manifest))}`,
+          "preflight_migration_ledgers",
+        ].join("\n"),
+      ]);
+      expect(driftRejected.status).not.toBe(0);
+      expect(driftRejected.stderr).toMatch(/content hash drifted/i);
 
       expect(
         psql(

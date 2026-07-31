@@ -27,8 +27,10 @@ Run as the deployment user, using root only for ownership setup:
 ```bash
 sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0750 \
   /var/cache/jingying-cabin-releases
+sudo install -d -o root -g "$(id -gn)" -m 0750 \
+  /var/lock/jingying-cabin
 sudo install -o "$(id -un)" -g "$(id -gn)" -m 0600 /dev/null \
-  /var/cache/jingying-cabin-releases/.jingying-cabin.deploy.lock
+  /var/lock/jingying-cabin/deploy.lock
 sudo install -d -o root -g "$(id -gn)" -m 0750 /etc/jingying-cabin
 sudo install -o root -g "$(id -gn)" -m 0640 /dev/null \
   /etc/jingying-cabin/production.env
@@ -39,6 +41,9 @@ Enable the PostgREST admin server so only the deployment host can reach it. Its
 `ready` endpoint proves the connection pool and schema cache are healthy; its
 `metrics` endpoint gives the successful schema-cache load counter used to prove
 that a post-migration generation is newer than the pre-migration generation.
+The admin-only `schema_cache` endpoint must also expose the release-specific
+probe view created in the serialized migration transaction. All three signals
+must agree; a counter increment from an unrelated reload is insufficient.
 
 For a host-native PostgREST process, bind the admin server directly to loopback:
 
@@ -68,13 +73,16 @@ then prove host access before the maintenance window:
 curl --fail --silent --show-error http://127.0.0.1:3001/ready >/dev/null
 curl --fail --silent --show-error http://127.0.0.1:3001/metrics |
   grep 'pgrst_schema_cache_loads_total{status="SUCCESS"}'
+curl --fail --silent --show-error http://127.0.0.1:3001/schema_cache |
+  node -e 'JSON.parse(require("node:fs").readFileSync(0, "utf8"))'
 ```
 
-The protected application env file contains the two loopback URLs:
+The protected application env file contains the three loopback URLs:
 
 ```bash
 POSTGREST_READY_URL=http://127.0.0.1:3001/ready
 POSTGREST_METRICS_URL=http://127.0.0.1:3001/metrics
+POSTGREST_SCHEMA_CACHE_URL=http://127.0.0.1:3001/schema_cache
 ```
 
 Neither the env file nor any parent deployment path may be group/world writable.
@@ -100,17 +108,45 @@ SQL
 If `supabase_migrations.schema_migrations` is absent, stop. There is no trusted
 ledger and deployment must remain fail-closed.
 
-For a legacy `public.deploy_migrations`, first compare every 14-digit filename
-prefix with the exact Supabase `version`. Resolve any mismatch from database
-backup and release evidence; never infer applied state from table existence.
-Only after an exact match, move and harden the legacy ledger in one transaction:
+For a legacy `public.deploy_migrations`, build the expected ledger from the
+reviewed candidate files, including their SHA-256 content hashes. This bootstrap
+target must contain no pending migration, so the candidate, Supabase, and legacy
+ledgers must match in both directions. Resolve any mismatch from database backup
+and release evidence; never infer applied state from table existence or filename
+alone.
 
 ```bash
+TARGET_SHA=<reviewed-full-40-character-ci-sha>
+CANDIDATE_MIGRATIONS="/var/cache/jingying-cabin-releases/$TARGET_SHA/supabase/migrations"
+EXPECTED_ROWS="$(
+  find "$CANDIDATE_MIGRATIONS" -mindepth 1 -maxdepth 1 -type f -name '*.sql' \
+    -print0 |
+    sort -z |
+    while IFS= read -r -d '' file; do
+      base="$(basename "$file")"
+      [[ "$base" =~ ^([0-9]{14})_[0-9A-Za-z_.-]+\.sql$ ]] || exit 1
+      version="${BASH_REMATCH[1]}"
+      content_sha256="$(sha256sum "$file" | awk '{print $1}')"
+      [[ "$content_sha256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+      printf "('%s','%s','%s')," "$version" "$base" "$content_sha256"
+    done
+)"
+EXPECTED_ROWS="${EXPECTED_ROWS%,}"
+[[ -n "$EXPECTED_ROWS" ]]
+
 DB_CONTAINER="${DB_CONTAINER:-supabase-db}"
 docker inspect "$DB_CONTAINER"
-docker exec -i "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres <<'SQL'
+docker exec -i "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 \
+  -v "expected_rows=$EXPECTED_ROWS" -U postgres -d postgres <<'SQL'
 begin;
 select pg_advisory_xact_lock(hashtextextended('jingying-cabin:deploy-migrations:v1', 0));
+create temporary table expected_bootstrap_migrations (
+  version text primary key,
+  filename text not null unique,
+  content_sha256 text not null
+) on commit drop;
+insert into expected_bootstrap_migrations(version, filename, content_sha256)
+values :expected_rows;
 alter table public.deploy_migrations add column if not exists version text;
 update public.deploy_migrations
 set version = substring(filename from '^([0-9]{14})_')
@@ -120,14 +156,39 @@ begin
   if exists (
     select 1
     from public.deploy_migrations d
+    left join expected_bootstrap_migrations e
+      on e.version = d.version and e.filename = d.filename
     left join supabase_migrations.schema_migrations s on s.version = d.version
-    where d.filename not like '\_\_%' escape '\' and
-      (d.version is null or s.version is null)
+    where d.filename not like '\_\_%' escape '\'
+      and (d.version is null or e.version is null or s.version is null)
+  ) or exists (
+    select 1
+    from supabase_migrations.schema_migrations s
+    left join expected_bootstrap_migrations e using (version)
+    left join public.deploy_migrations d
+      on d.version = e.version and d.filename = e.filename
+    where e.version is null or d.version is null
+  ) or exists (
+    select 1
+    from expected_bootstrap_migrations e
+    left join supabase_migrations.schema_migrations s using (version)
+    left join public.deploy_migrations d
+      on d.version = e.version and d.filename = e.filename
+    where s.version is null or d.version is null
   ) then
-    raise exception 'legacy deploy ledger does not exactly match Supabase ledger';
+    raise exception 'candidate, legacy, and Supabase ledgers do not match exactly in both directions';
   end if;
 end $$;
+alter table public.deploy_migrations add column if not exists content_sha256 text;
+update public.deploy_migrations d
+set content_sha256 = e.content_sha256
+from expected_bootstrap_migrations e
+where e.version = d.version and e.filename = d.filename;
 alter table public.deploy_migrations alter column version set not null;
+alter table public.deploy_migrations alter column content_sha256 set not null;
+alter table public.deploy_migrations
+  add constraint deploy_migrations_content_sha256_check
+  check (content_sha256 ~ '^[0-9a-f]{64}$');
 create unique index if not exists deploy_migrations_version_key
   on public.deploy_migrations(version);
 create schema if not exists deploy_internal authorization postgres;
@@ -153,8 +214,12 @@ end
 $roles$;
 alter table deploy_internal.schema_migrations enable row level security;
 alter table deploy_internal.schema_migrations force row level security;
-insert into deploy_internal.schema_migrations(filename, version)
-values ('__atomic_release_bootstrap_v1__', 'bootstrap-v1')
+insert into deploy_internal.schema_migrations(filename, version, content_sha256)
+values (
+  '__atomic_release_bootstrap_v1__',
+  'bootstrap-v1',
+  '0000000000000000000000000000000000000000000000000000000000000000'
+)
 on conflict (filename) do nothing;
 commit;
 SQL
@@ -164,7 +229,8 @@ If `deploy_internal.schema_migrations` already exists, stop unless it is owned b
 `postgres`, is an ordinary table with both RLS and forced RLS enabled, has no
 ACL entry for any non-owner, contains exactly one bootstrap sentinel, and every
 non-sentinel row exactly matches both the candidate manifest and Supabase
-ledger. Never leave `public.deploy_migrations` present.
+ledger, including `content_sha256`. Never leave `public.deploy_migrations`
+present.
 
 If the custom ledger is absent, leave it absent. The first normal deploy creates
 and imports it from the trusted Supabase ledger inside the same serialized
@@ -229,9 +295,9 @@ export SOURCE_REPO=/var/www/jingying-cabin
 export RELEASE_ROOT=/var/cache/jingying-cabin-releases
 export CURRENT_LINK=/var/www/jingying-cabin-current
 export ENV_FILE=/etc/jingying-cabin/production.env
-export LOCK_FILE=/var/cache/jingying-cabin-releases/.jingying-cabin.deploy.lock
 export BRANCH=codex/full-project-ui
 export EXPECTED_SHA=<reviewed-full-40-character-ci-sha>
+export EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256>
 export DB_CONTAINER="${DB_CONTAINER:-supabase-db}"
 export LEGACY_RESTORE_SCRIPT=/etc/jingying-cabin/restore-legacy.sh
 export STAGING_LINK=/var/www/jingying-cabin-bootstrap-staging
@@ -268,10 +334,16 @@ assert_release_git_state "$release_dir" "$TARGET_SHA"
   RELEASE_SHA="$TARGET_SHA" pnpm run build
 )
 assert_release_git_state "$release_dir" "$TARGET_SHA"
+node "$release_dir/scripts/prepare-standalone-release.mjs" \
+  "$release_dir" "$TARGET_SHA"
 node "$release_dir/scripts/release-integrity.mjs" write \
   "$release_dir" "$TARGET_SHA"
+actual_manifest_sha256="$(
+  sha256sum "$release_dir/.release-integrity.json" | awk '{print $1}'
+)"
+[[ "$actual_manifest_sha256" == "$EXPECTED_RELEASE_MANIFEST_SHA256" ]]
 node "$release_dir/scripts/release-integrity.mjs" verify \
-  "$release_dir" "$TARGET_SHA"
+  "$release_dir" "$TARGET_SHA" "$EXPECTED_RELEASE_MANIFEST_SHA256"
 
 migration_manifest="$(mktemp "$RELEASE_ROOT/.bootstrap-migrations.XXXXXX")"
 write_migration_manifest "$release_dir/supabase/migrations" "$migration_manifest"
@@ -293,12 +365,15 @@ touching production:
 [[ ! -e "$STAGING_LINK" && ! -L "$STAGING_LINK" ]]
 ln -s "$release_dir" "$STAGING_LINK"
 CURRENT_LINK="$STAGING_LINK" PM2_NAME="$STAGING_PM2_NAME" \
-  RELEASE_SHA="$TARGET_SHA" PORT="$STAGING_PORT" \
+  RELEASE_SHA="$TARGET_SHA" \
+  RELEASE_MANIFEST_SHA256="$EXPECTED_RELEASE_MANIFEST_SHA256" \
+  PORT="$STAGING_PORT" \
   pm2_bounded startOrReload "$STAGING_LINK/ecosystem.config.cjs" --update-env
 CURRENT_LINK="$STAGING_LINK" RELEASE_ROOT="$RELEASE_ROOT" \
   PM2_NAME="$STAGING_PM2_NAME" \
   HEALTH_URL="http://127.0.0.1:${STAGING_PORT}/api/health" \
-  "$STAGING_LINK/scripts/verify-release.sh" "$TARGET_SHA"
+  "$STAGING_LINK/scripts/verify-release.sh" \
+  "$TARGET_SHA" "$EXPECTED_RELEASE_MANIFEST_SHA256"
 ```
 
 If staging verification fails, delete only the staging PM2 process and symlink;
@@ -323,11 +398,14 @@ ln -s "$release_dir" "$next_link"
 mv -Tf "$next_link" "$CURRENT_LINK"
 
 if ! CURRENT_LINK="$CURRENT_LINK" PM2_NAME=jingying-cabin \
-    RELEASE_SHA="$TARGET_SHA" pm2_bounded startOrReload \
+    RELEASE_SHA="$TARGET_SHA" \
+    RELEASE_MANIFEST_SHA256="$EXPECTED_RELEASE_MANIFEST_SHA256" \
+    pm2_bounded startOrReload \
     "$CURRENT_LINK/ecosystem.config.cjs" --update-env ||
   ! CURRENT_LINK="$CURRENT_LINK" RELEASE_ROOT="$RELEASE_ROOT" \
     PM2_NAME=jingying-cabin \
-    "$CURRENT_LINK/scripts/verify-release.sh" "$TARGET_SHA" ||
+    "$CURRENT_LINK/scripts/verify-release.sh" \
+      "$TARGET_SHA" "$EXPECTED_RELEASE_MANIFEST_SHA256" ||
   ! pm2_bounded save; then
   printf 'Managed release activation failed; restoring rehearsed legacy service.\n' >&2
   if "$LEGACY_RESTORE_SCRIPT"; then
@@ -358,7 +436,8 @@ fi
 
 CURRENT_LINK="$CURRENT_LINK" RELEASE_ROOT="$RELEASE_ROOT" \
   PM2_NAME=jingying-cabin \
-  "$CURRENT_LINK/scripts/verify-release.sh" "$TARGET_SHA"
+  "$CURRENT_LINK/scripts/verify-release.sh" \
+  "$TARGET_SHA" "$EXPECTED_RELEASE_MANIFEST_SHA256"
 ```
 
 Confirm the production health response, PM2 cwd/script, and `CURRENT_LINK` all
@@ -368,13 +447,16 @@ Expand migrations are not application rollback.
 
 ## 7. Normal releases after bootstrap
 
-Take `EXPECTED_SHA` from the reviewed hosted-CI result, not from the current
-branch name. The deploy script fetches the branch and refuses all candidate,
-database, symlink, and PM2 mutation if the branch head no longer equals that
-exact SHA:
+Take `EXPECTED_SHA` and `EXPECTED_RELEASE_MANIFEST_SHA256` from the reviewed
+hosted-CI result, not from the current branch name or server build. CI builds
+with the exact Git SHA and prints the manifest digest in its job summary. The
+deploy script fetches the branch and refuses all candidate, database, symlink,
+and PM2 mutation if either the branch head or server-built standalone artifact
+differs from those reviewed values:
 
 ```bash
 EXPECTED_SHA=<reviewed-full-40-character-ci-sha> \
+EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256> \
 BRANCH=codex/full-project-ui \
 bash /var/www/jingying-cabin/scripts/deploy.sh
 ```

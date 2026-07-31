@@ -3,12 +3,15 @@
 set -euo pipefail
 umask 077
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 RELEASE_ROOT="${RELEASE_ROOT:-/var/cache/jingying-cabin-releases}"
 CURRENT_LINK="${CURRENT_LINK:-/var/www/jingying-cabin-current}"
 ENV_FILE="${ENV_FILE:-/etc/jingying-cabin/production.env}"
 OUTPUT_DIR=""
 PRODUCT_COMMIT=""
 PREVIOUS_COMMIT=""
+PRODUCT_MANIFEST_SHA256=""
+PREVIOUS_MANIFEST_SHA256=""
 REASON="operator rollback"
 PM2_NAME="${PM2_NAME:-jingying-cabin}"
 
@@ -20,7 +23,9 @@ Usage:
     --current-link /var/www/jingying-cabin-current \
     --output-dir artifacts/xingyao-hermes-rollback \
     --product-commit <40-hex> \
+    --product-manifest-sha256 <64-hex> \
     --previous-commit <40-hex> \
+    --previous-manifest-sha256 <64-hex> \
     --reason "canary failed"
 
 Both commits must already be immutable, verified release directories. The
@@ -39,7 +44,9 @@ while [[ "$#" -gt 0 ]]; do
     --env-file) ENV_FILE="${2:-}"; shift 2 ;;
     --output-dir) OUTPUT_DIR="${2:-}"; shift 2 ;;
     --product-commit) PRODUCT_COMMIT="${2:-}"; shift 2 ;;
+    --product-manifest-sha256) PRODUCT_MANIFEST_SHA256="${2:-}"; shift 2 ;;
     --previous-commit) PREVIOUS_COMMIT="${2:-}"; shift 2 ;;
+    --previous-manifest-sha256) PREVIOUS_MANIFEST_SHA256="${2:-}"; shift 2 ;;
     --reason) REASON="${2:-}"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -47,6 +54,10 @@ done
 
 [[ "$PRODUCT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "--product-commit must be a lowercase full SHA"
 [[ "$PREVIOUS_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "--previous-commit must be a lowercase full SHA"
+[[ "$PRODUCT_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+  die "--product-manifest-sha256 must be the trusted release manifest hash"
+[[ "$PREVIOUS_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+  die "--previous-manifest-sha256 must be the trusted release manifest hash"
 [[ "$REASON" != *$'\n'* && "$REASON" != *$'\r'* ]] ||
   die "--reason must be a single line"
 for value in "$RELEASE_ROOT" "$CURRENT_LINK" "$ENV_FILE" "$OUTPUT_DIR"; do
@@ -68,6 +79,12 @@ for release in "$product_release" "$previous_release"; do
   [[ -x "$release/scripts/verify-release.sh" ]] || die "release lacks verifier: $release"
   [[ -f "$release/scripts/deploy.sh" ]] || die "release lacks atomic deploy helpers: $release"
 done
+node "$SCRIPT_DIR/release-integrity.mjs" verify \
+  "$product_release" "$PRODUCT_COMMIT" "$PRODUCT_MANIFEST_SHA256" ||
+  die "product release failed trusted integrity verification"
+node "$SCRIPT_DIR/release-integrity.mjs" verify \
+  "$previous_release" "$PREVIOUS_COMMIT" "$PREVIOUS_MANIFEST_SHA256" ||
+  die "previous release failed trusted integrity verification"
 [[ -L "$CURRENT_LINK" ]] || die "CURRENT_LINK is not a symlink"
 [[ "$(realpath -e -- "$CURRENT_LINK")" -ef "$product_release" ]] ||
   die "CURRENT_LINK does not point to --product-commit"
@@ -80,6 +97,8 @@ if [[ -e "$OUTPUT_DIR" ]]; then
 fi
 mkdir -p -- "$OUTPUT_DIR/files"
 cp -- "$product_release/scripts/deploy.sh" "$OUTPUT_DIR/files/deploy.sh"
+cp -- "$product_release/scripts/release-integrity.mjs" \
+  "$OUTPUT_DIR/files/release-integrity.mjs"
 cp -- "$product_release/scripts/verify-release.sh" "$OUTPUT_DIR/files/verify-release.sh"
 
 printf -v default_release_root_q '%q' "$RELEASE_ROOT"
@@ -101,9 +120,12 @@ printf 'DEFAULT_ENV_FILE=%s\n' "$default_env_file_q"
 printf 'DEFAULT_PM2_NAME=%s\n' "$default_pm2_name_q"
 printf 'PRODUCT_COMMIT=%q\n' "$PRODUCT_COMMIT"
 printf 'PREVIOUS_COMMIT=%q\n' "$PREVIOUS_COMMIT"
+printf 'PRODUCT_MANIFEST_SHA256=%q\n' "$PRODUCT_MANIFEST_SHA256"
+printf 'PREVIOUS_MANIFEST_SHA256=%q\n' "$PREVIOUS_MANIFEST_SHA256"
 cat <<'EOF'
 readonly PACKAGE_DIR DEFAULT_RELEASE_ROOT DEFAULT_CURRENT_LINK DEFAULT_ENV_FILE
 readonly DEFAULT_PM2_NAME PRODUCT_COMMIT PREVIOUS_COMMIT
+readonly PRODUCT_MANIFEST_SHA256 PREVIOUS_MANIFEST_SHA256
 
 RELEASE_ROOT="${RELEASE_ROOT:-$DEFAULT_RELEASE_ROOT}"
 CURRENT_LINK="${CURRENT_LINK:-$DEFAULT_CURRENT_LINK}"
@@ -137,6 +159,7 @@ verify_packaged_file() {
   }
 }
 verify_packaged_file "files/deploy.sh"
+verify_packaged_file "files/release-integrity.mjs"
 verify_packaged_file "files/verify-release.sh"
 verify_packaged_file "rollback-command.sh"
 
@@ -153,14 +176,22 @@ load_previous_release
   printf 'Refusing rollback: current release is not %s\n' "$PRODUCT_COMMIT" >&2
   exit 1
 }
+[[ "$previous_manifest_sha" == "$PRODUCT_MANIFEST_SHA256" ]] || {
+  printf 'Refusing rollback: current release manifest hash is not the reviewed product hash\n' >&2
+  exit 1
+}
 product_target="$previous_target"
 rollback_target="$RELEASE_ROOT/$PREVIOUS_COMMIT"
-validate_release_capabilities "$rollback_target" "$PREVIOUS_COMMIT"
+validate_release_capabilities \
+  "$rollback_target" "$PREVIOUS_COMMIT" "$PREVIOUS_MANIFEST_SHA256"
 previous_target="$rollback_target"
 previous_sha="$PREVIOUS_COMMIT"
+previous_manifest_sha="$PREVIOUS_MANIFEST_SHA256"
 candidate_pm2_may_be_active=1
 rollback_current
-if reload_pm2 "$PREVIOUS_COMMIT" && verify_release "$PREVIOUS_COMMIT" && save_pm2; then
+if reload_pm2 "$PREVIOUS_COMMIT" "$PREVIOUS_MANIFEST_SHA256" &&
+  verify_release "$PREVIOUS_COMMIT" "$PREVIOUS_MANIFEST_SHA256" &&
+  save_pm2; then
   printf 'Rollback verified and persisted at %s\n' "$PREVIOUS_COMMIT"
   exit 0
 fi
@@ -168,9 +199,10 @@ fi
 printf 'Rollback activation failed; restoring product release %s\n' "$PRODUCT_COMMIT" >&2
 previous_target="$product_target"
 previous_sha="$PRODUCT_COMMIT"
+previous_manifest_sha="$PRODUCT_MANIFEST_SHA256"
 rollback_current
-reload_pm2 "$PRODUCT_COMMIT"
-verify_release "$PRODUCT_COMMIT"
+reload_pm2 "$PRODUCT_COMMIT" "$PRODUCT_MANIFEST_SHA256"
+verify_release "$PRODUCT_COMMIT" "$PRODUCT_MANIFEST_SHA256"
 save_pm2
 exit 1
 EOF
@@ -179,6 +211,7 @@ chmod 750 "$OUTPUT_DIR/rollback-command.sh"
 
 manifest_files=(
   "$OUTPUT_DIR/files/deploy.sh"
+  "$OUTPUT_DIR/files/release-integrity.mjs"
   "$OUTPUT_DIR/files/verify-release.sh"
   "$OUTPUT_DIR/rollback-command.sh"
 )
@@ -188,7 +221,9 @@ manifest_files=(
   printf 'release_root=%s\n' "$RELEASE_ROOT"
   printf 'current_link=%s\n' "$CURRENT_LINK"
   printf 'product_commit=%s\n' "$PRODUCT_COMMIT"
+  printf 'product_manifest_sha256=%s\n' "$PRODUCT_MANIFEST_SHA256"
   printf 'previous_commit=%s\n' "$PREVIOUS_COMMIT"
+  printf 'previous_manifest_sha256=%s\n' "$PREVIOUS_MANIFEST_SHA256"
   printf 'reason=%s\n' "$REASON"
   for file in "${manifest_files[@]}"; do
     rel="${file#"$OUTPUT_DIR/"}"

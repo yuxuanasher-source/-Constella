@@ -64,9 +64,50 @@ Before enabling the canary, create a release evidence JSON file. It must record:
 Example:
 
 ```sh
+CURRENT_LINK=/var/www/jingying-cabin-current
+PRODUCT_RELEASE="$(realpath -e "$CURRENT_LINK")"
+PRODUCT_COMMIT="$(basename "$PRODUCT_RELEASE")"
+[[ "$PRODUCT_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+PRODUCT_MANIFEST_SHA256="$(
+  curl --fail --silent --show-error http://127.0.0.1:3000/api/health |
+    PRODUCT_COMMIT="$PRODUCT_COMMIT" node -e '
+      const fs = require("node:fs");
+      const body = JSON.parse(fs.readFileSync(0, "utf8"));
+      if (
+        body.ok !== true ||
+        body.release?.sha !== process.env.PRODUCT_COMMIT ||
+        !/^[0-9a-f]{64}$/.test(body.release?.manifestSha256 ?? "")
+      ) process.exit(1);
+      process.stdout.write(body.release.manifestSha256);
+    '
+)"
+timeout --signal=TERM --kill-after=5s 30s pm2 jlist |
+  PRODUCT_RELEASE="$PRODUCT_RELEASE" PRODUCT_COMMIT="$PRODUCT_COMMIT" \
+    PRODUCT_MANIFEST_SHA256="$PRODUCT_MANIFEST_SHA256" node -e '
+    const fs = require("node:fs");
+    const release = fs.realpathSync(process.env.PRODUCT_RELEASE);
+    const apps = JSON.parse(fs.readFileSync(0, "utf8"))
+      .filter((entry) => entry?.name === "jingying-cabin");
+    if (
+      apps.length === 0 ||
+      apps.some((entry) => {
+        const env = entry?.pm2_env;
+        return (
+          !env ||
+          env.RELEASE_SHA !== process.env.PRODUCT_COMMIT ||
+          env.RELEASE_MANIFEST_SHA256 !==
+            process.env.PRODUCT_MANIFEST_SHA256 ||
+          fs.realpathSync(env.pm_cwd) !== release
+        );
+      })
+    ) process.exit(1);
+  '
+node "$CURRENT_LINK/scripts/release-integrity.mjs" verify \
+  "$PRODUCT_RELEASE" "$PRODUCT_COMMIT" "$PRODUCT_MANIFEST_SHA256"
+
 node scripts/verify-xingyao-hermes-release.mjs \
   --output artifacts/xingyao-hermes-release-evidence.json \
-  --product-commit "$(git rev-parse HEAD)" \
+  --product-commit "$PRODUCT_COMMIT" \
   --fork-commit "<xingyao-hermes-fork-commit>" \
   --upstream-tag "<upstream-tag>" \
   --upstream-commit "<upstream-commit>" \
@@ -96,6 +137,7 @@ CURRENT_LINK=/var/www/jingying-cabin-current \
 ENV_FILE=/etc/jingying-cabin/production.env \
 BRANCH=codex/hermes-native-intelligence-restoration \
 EXPECTED_SHA=<reviewed-full-40-character-ci-sha> \
+EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256> \
 PM2_NAME=jingying-cabin \
 bash /var/www/jingying-cabin/scripts/deploy.sh
 ```
@@ -167,12 +209,27 @@ entry during canary; do not widen it with comma-separated or wildcard entries.
 Create the rollback package before widening traffic:
 
 ```sh
-bash scripts/create-xingyao-hermes-rollback.sh \
-  --release-root /var/cache/jingying-cabin-releases \
-  --current-link /var/www/jingying-cabin-current \
+CURRENT_LINK=/var/www/jingying-cabin-current
+RELEASE_ROOT=/var/cache/jingying-cabin-releases
+PRODUCT_RELEASE="$(realpath -e "$CURRENT_LINK")"
+PRODUCT_COMMIT="$(basename "$PRODUCT_RELEASE")"
+# This value was already checked against health, PM2, and release integrity in
+# the Release Evidence procedure above.
+[[ "$PRODUCT_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+PREVIOUS_COMMIT="<last-known-good-product-commit>"
+PREVIOUS_MANIFEST_SHA256="<reviewed-last-known-good-manifest-sha256>"
+node "$CURRENT_LINK/scripts/release-integrity.mjs" verify \
+  "$RELEASE_ROOT/$PREVIOUS_COMMIT" \
+  "$PREVIOUS_COMMIT" "$PREVIOUS_MANIFEST_SHA256"
+
+bash "$CURRENT_LINK/scripts/create-xingyao-hermes-rollback.sh" \
+  --release-root "$RELEASE_ROOT" \
+  --current-link "$CURRENT_LINK" \
   --output-dir artifacts/xingyao-hermes-rollback \
-  --product-commit "$(git rev-parse HEAD)" \
-  --previous-commit "<last-known-good-product-commit>" \
+  --product-commit "$PRODUCT_COMMIT" \
+  --product-manifest-sha256 "$PRODUCT_MANIFEST_SHA256" \
+  --previous-commit "$PREVIOUS_COMMIT" \
+  --previous-manifest-sha256 "$PREVIOUS_MANIFEST_SHA256" \
   --reason "canary failed"
 ```
 
@@ -183,19 +240,24 @@ checkout. Both release SHAs must already exist under `RELEASE_ROOT`.
 Run rollback with:
 
 ```sh
-EXPECTED_MANIFEST_SHA256=<reviewed-hash-printed-at-package-creation> \
-RELEASE_ROOT=/var/cache/jingying-cabin-releases \
-CURRENT_LINK=/var/www/jingying-cabin-current \
-ENV_FILE=/etc/jingying-cabin/production.env PM2_NAME=jingying-cabin \
-bash artifacts/xingyao-hermes-rollback/rollback-command.sh
+PACKAGE_DIR="$(realpath -e artifacts/xingyao-hermes-rollback)"
+EXPECTED_MANIFEST_SHA256=<reviewed-hash-printed-at-package-creation>
+export RELEASE_ROOT=/var/cache/jingying-cabin-releases
+export CURRENT_LINK=/var/www/jingying-cabin-current
+export ENV_FILE=/etc/jingying-cabin/production.env
+export PM2_NAME=jingying-cabin
+node /var/www/jingying-cabin-current/scripts/verify-xingyao-hermes-rollback-package.mjs \
+  execute "$PACKAGE_DIR" "$EXPECTED_MANIFEST_SHA256"
 ```
 
-Keep the reviewed manifest hash outside the package. The command refuses a
-different manifest or a modified packaged helper, sources only the packaged
-deploy helper, acquires the same host lock, verifies the current full SHA,
-atomically switches the symlink, reloads and exactly verifies every matching PM2
-instance, then persists PM2. Failure restores the packaged product release; both
-directories are retained for recovery.
+Keep the reviewed manifest hash and trusted verifier outside the package. The
+release-anchored verifier checks the manifest and every packaged file, including
+`rollback-command.sh`, before it starts that command. The command then sources
+only the packaged deploy helper, acquires the same host lock, verifies the
+current full SHA and manifest, atomically switches the symlink, reloads and
+exactly verifies every matching PM2 instance, then persists PM2. Failure
+restores the packaged product release; both directories are retained for
+recovery.
 
 After rollback, edit the protected `ENV_FILE` to set
 `XINGYAO_HERMES_GATEWAY_ENABLED=false` and clear
@@ -209,11 +271,15 @@ set +a
 CURRENT_LINK=/var/www/jingying-cabin-current
 RELEASE_ROOT=/var/cache/jingying-cabin-releases
 RESTORED_SHA="$(basename "$(realpath -e "$CURRENT_LINK")")"
-CURRENT_LINK="$CURRENT_LINK" PM2_NAME=jingying-cabin RELEASE_SHA="$RESTORED_SHA" \
-  timeout --signal=TERM 30s pm2 startOrReload \
+RESTORED_MANIFEST_SHA256="$PREVIOUS_MANIFEST_SHA256"
+CURRENT_LINK="$CURRENT_LINK" PM2_NAME=jingying-cabin \
+  RELEASE_SHA="$RESTORED_SHA" \
+  RELEASE_MANIFEST_SHA256="$RESTORED_MANIFEST_SHA256" \
+  timeout --signal=TERM --kill-after=5s 30s pm2 startOrReload \
   "$CURRENT_LINK/ecosystem.config.cjs" --update-env
 CURRENT_LINK="$CURRENT_LINK" RELEASE_ROOT="$RELEASE_ROOT" \
   PM2_NAME=jingying-cabin \
-  "$CURRENT_LINK/scripts/verify-release.sh" "$RESTORED_SHA"
-timeout --signal=TERM 30s pm2 save
+  "$CURRENT_LINK/scripts/verify-release.sh" \
+  "$RESTORED_SHA" "$RESTORED_MANIFEST_SHA256"
+timeout --signal=TERM --kill-after=5s 30s pm2 save
 ```

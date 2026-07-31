@@ -11,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 // Keep the plan's `node --test` entrypoint while remaining compatible with the
 // repository-wide Vitest glob. The computed Node specifier prevents Vite from
@@ -55,6 +55,7 @@ const [
   hermesRunbook,
   bootstrapRunbook,
   migrationValidator,
+  ciWorkflow,
 ] = await Promise.all([
   readFile(join(process.cwd(), "scripts/deploy.sh"), "utf8"),
   readFile(join(process.cwd(), "scripts/verify-release.sh"), "utf8"),
@@ -76,6 +77,7 @@ const [
     join(process.cwd(), "scripts/validate-expand-migration.mjs"),
     "utf8",
   ),
+  readFile(join(process.cwd(), ".github/workflows/ci.yml"), "utf8"),
 ]);
 
 function position(source, marker) {
@@ -89,6 +91,12 @@ const bash =
   existsSync("C:\\Program Files\\Git\\bin\\bash.exe")
     ? "C:\\Program Files\\Git\\bin\\bash.exe"
     : "bash";
+
+function shellPath(path) {
+  const normalized = path.replace(/\\/g, "/");
+  if (process.platform !== "win32") return normalized;
+  return `/${normalized[0].toLowerCase()}${normalized.slice(2)}`;
+}
 
 function run(command, options = {}) {
   return spawnSync(command, options.args ?? [], {
@@ -137,9 +145,10 @@ test("recreates PM2 from an ecosystem file and verifies the release", () => {
   assert.ok(reload < verification, "verification must follow PM2 reload");
 
   assert.match(ecosystem, /cwd:\s*process\.env\.CURRENT_LINK/);
-  assert.match(ecosystem, /script:\s*["']pnpm["']/);
-  assert.match(ecosystem, /args:\s*["']start["']/);
+  assert.match(ecosystem, /script:\s*["']\.next\/standalone\/server\.js["']/);
+  assert.match(ecosystem, /interpreter:\s*process\.execPath/);
   assert.match(ecosystem, /RELEASE_SHA:\s*process\.env\.RELEASE_SHA/);
+  assert.match(ecosystem, /RELEASE_MANIFEST_SHA256/);
 });
 
 test("verifier checks health, full SHA, PM2 state, cwd, script, and current target", () => {
@@ -215,6 +224,7 @@ CURRENT_LINK="$(cygpath -u "$CURRENT_NATIVE" 2>/dev/null || printf '%s' "$CURREN
 deploy_script="$(cygpath -u "$DEPLOY_NATIVE" 2>/dev/null || printf '%s' "$DEPLOY_NATIVE")"
 source "$deploy_script"
 validate_release_capabilities() { validate_release_path "$1"; }
+read_pm2_release_manifest_sha() { printf '%s' "${"e".repeat(64)}"; }
 expected_link="$(lexical_path "$CURRENT_LINK")"
 validate_control_paths
 load_previous_release
@@ -256,6 +266,9 @@ test("candidate build failure leaves database, PM2, and current release untouche
   const targetSha = "b".repeat(40);
   const previousTarget = join(releaseRoot, previousSha);
   const currentLink = join(sandbox, "current");
+  const testLock = join(sandbox, "deploy.lock");
+  const testManifestSha = "e".repeat(64);
+  const deployUnderTest = join(sandbox, "deploy-under-test.sh");
   await mkdir(join(sourceRepo, ".git"), { recursive: true });
   await mkdir(previousTarget, { recursive: true });
   await mkdir(fakeBin);
@@ -284,6 +297,19 @@ test("candidate build failure leaves database, PM2, and current release untouche
     currentLink,
     process.platform === "win32" ? "junction" : "dir",
   );
+  await writeFile(
+    deployUnderTest,
+    deploy
+      .replace(
+        'readonly LOCK_FILE="/var/lock/jingying-cabin/deploy.lock"',
+        `readonly LOCK_FILE="${shellPath(testLock)}"`,
+      )
+      .replace(
+        /read_pm2_release_manifest_sha\(\) \{[\s\S]*?\n\}\n\nsafe_remove_release_dir/,
+        `read_pm2_release_manifest_sha() { printf '%s' "${testManifestSha}"; }\n\nsafe_remove_release_dir`,
+      ),
+  );
+  await writeFile(join(sandbox, "release-integrity.mjs"), "process.exit(0);\n");
 
   await writeExecutable(
     join(fakeBin, "git"),
@@ -304,7 +330,7 @@ esac
   await writeExecutable(
     join(fakeBin, "node"),
     `#!/usr/bin/env bash
-if [[ "$1" == "-p" ]]; then printf '20\\n'; else printf 'v20.20.2\\n'; fi
+if [[ "$1" == "-p" ]]; then printf '20\\n'; else exec "$REAL_NODE" "$@"; fi
 `,
   );
   await writeExecutable(
@@ -325,7 +351,7 @@ else
 fi
 `,
   );
-  for (const command of ["corepack", "docker", "pm2", "curl", "flock"]) {
+  for (const command of ["corepack", "docker", "curl", "flock"]) {
     await writeExecutable(
       join(fakeBin, command),
       `#!/usr/bin/env bash
@@ -333,8 +359,17 @@ printf '${command} %s\\n' "$*" >> "$CALLS_FILE"
 `,
     );
   }
+  await writeExecutable(
+    join(fakeBin, "pm2"),
+    `#!/usr/bin/env bash
+printf 'pm2 %s\\n' "$*" >> "$CALLS_FILE"
+if [[ "$1" == "jlist" ]]; then
+  printf '[{"name":"jingying-cabin","pm2_env":{"RELEASE_SHA":"%s","RELEASE_MANIFEST_SHA256":"%s","pm_cwd":"%s"}}]\\n' \
+    "$PREVIOUS_SHA" "$PREVIOUS_MANIFEST_SHA" "$PREVIOUS_TARGET"
+fi
+`,
+  );
 
-  const deployPath = join(process.cwd(), "scripts/deploy.sh");
   const invoke = (extraEnv = {}) =>
     run(bash, {
       args: [
@@ -345,10 +380,14 @@ export SOURCE_REPO="$(native_to_unix "$SOURCE_NATIVE")"
 export RELEASE_ROOT="$(native_to_unix "$RELEASE_NATIVE")"
 export CURRENT_LINK="$(native_to_unix "$CURRENT_NATIVE")"
 export ENV_FILE="$(native_to_unix "$ENV_NATIVE")"
-export LOCK_FILE="$(native_to_unix "$LOCK_NATIVE")"
 export CALLS_FILE="$(native_to_unix "$CALLS_NATIVE")"
 export FAKE_TARGET_SHA="${targetSha}"
 export EXPECTED_SHA="\${EXPECTED_SHA_OVERRIDE:-${targetSha}}"
+export EXPECTED_RELEASE_MANIFEST_SHA256="${testManifestSha}"
+export REAL_NODE="$(native_to_unix "$REAL_NODE_NATIVE")"
+export PREVIOUS_TARGET="$(native_to_unix "$PREVIOUS_NATIVE")"
+export PREVIOUS_SHA="${previousSha}"
+export PREVIOUS_MANIFEST_SHA="${testManifestSha}"
 export PATH="$(native_to_unix "$BIN_NATIVE"):$PATH"
 deploy_script="$(native_to_unix "$DEPLOY_NATIVE")"
 bash "$deploy_script"`,
@@ -359,10 +398,11 @@ bash "$deploy_script"`,
         RELEASE_NATIVE: releaseRoot,
         CURRENT_NATIVE: currentLink,
         ENV_NATIVE: envFile,
-        LOCK_NATIVE: join(releaseRoot, ".deploy.lock"),
         CALLS_NATIVE: callsFile,
         BIN_NATIVE: fakeBin,
-        DEPLOY_NATIVE: deployPath,
+        DEPLOY_NATIVE: deployUnderTest,
+        REAL_NODE_NATIVE: process.execPath,
+        PREVIOUS_NATIVE: previousTarget,
         ...extraEnv,
       },
     });
@@ -377,6 +417,7 @@ bash "$deploy_script"`,
     [
       "POSTGREST_READY_URL=http://127.0.0.1:3001/ready",
       "POSTGREST_METRICS_URL=http://127.0.0.1:3001/metrics",
+      "POSTGREST_SCHEMA_CACHE_URL=http://127.0.0.1:3001/schema_cache",
       "",
     ].join("\n"),
     {
@@ -392,7 +433,10 @@ bash "$deploy_script"`,
   assert.notEqual(movedHead.status, 0);
   assert.match(movedHead.stderr, /branch head moved/);
   const movedCalls = await readFile(callsFile, "utf8");
-  assert.doesNotMatch(movedCalls, /worktree add|pnpm |docker |pm2 /);
+  assert.doesNotMatch(
+    movedCalls,
+    /worktree add|pnpm |docker |pm2 (?:start|reload|save|delete)/,
+  );
   await writeFile(callsFile, "");
 
   const shell = invoke();
@@ -402,7 +446,7 @@ bash "$deploy_script"`,
   assert.match(calls, /pnpm install --frozen-lockfile/);
   assert.match(calls, /pnpm run build/);
   assert.doesNotMatch(calls, /^docker /m);
-  assert.doesNotMatch(calls, /^pm2 /m);
+  assert.doesNotMatch(calls, /^pm2 (?:start|reload|save|delete)/m);
   const linkedTarget = await readlink(currentLink);
   assert.equal(resolve(linkedTarget), resolve(previousTarget));
 });
@@ -510,11 +554,9 @@ mkdir "$FAKE_FLOCK_STATE" 2>/dev/null
   const deployPath = join(process.cwd(), "scripts/deploy.sh");
   const shellScript = `native_to_unix() { cygpath -u "$1" 2>/dev/null || printf '%s' "$1"; }
 export PATH="$(native_to_unix "$BIN_NATIVE"):$PATH"
-export RELEASE_ROOT="$(native_to_unix "$RELEASE_NATIVE")"
-export LOCK_FILE="$(native_to_unix "$LOCK_NATIVE")"
 export FAKE_FLOCK_STATE="$(native_to_unix "$LOCK_STATE_NATIVE")"
 source "$(native_to_unix "$DEPLOY_NATIVE")"
-acquire_deploy_lock`;
+acquire_deploy_lock_at "$(native_to_unix "$LOCK_NATIVE")"`;
   const env = {
     ...process.env,
     BIN_NATIVE: fakeBin,
@@ -529,6 +571,81 @@ acquire_deploy_lock`;
   const second = run(bash, { args: ["-lc", shellScript], env });
   assert.notEqual(second.status, 0, "concurrent deployment must fail");
   assert.match(second.stderr, /another deployment already holds/);
+});
+
+test("real Linux flock excludes a concurrent deployment process", async (t) => {
+  if (process.platform === "win32") return;
+  const sandbox = await mkdtemp(join(tmpdir(), "deploy-real-flock-"));
+  t.after(() => rm(sandbox, { recursive: true, force: true }));
+  const lock = join(sandbox, "deploy.lock");
+  const ready = join(sandbox, "ready");
+  const deployPath = join(process.cwd(), "scripts/deploy.sh");
+  const holder = spawn(
+    bash,
+    [
+      "-lc",
+      `source "$DEPLOY_NATIVE"
+acquire_deploy_lock_at "$LOCK_NATIVE"
+printf held > "$READY_NATIVE"
+sleep 10`,
+    ],
+    {
+      env: {
+        ...process.env,
+        DEPLOY_NATIVE: deployPath,
+        LOCK_NATIVE: lock,
+        READY_NATIVE: ready,
+      },
+      stdio: "ignore",
+    },
+  );
+  t.after(() => holder.kill("SIGKILL"));
+  for (let attempt = 0; attempt < 50 && !existsSync(ready); attempt += 1) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+  }
+  assert.ok(existsSync(ready), "first process did not acquire the real flock");
+  const contender = run(bash, {
+    args: [
+      "-lc",
+      `source "$DEPLOY_NATIVE"; acquire_deploy_lock_at "$LOCK_NATIVE"`,
+    ],
+    env: {
+      ...process.env,
+      DEPLOY_NATIVE: deployPath,
+      LOCK_NATIVE: lock,
+    },
+  });
+  assert.notEqual(contender.status, 0);
+  assert.match(contender.stderr, /another deployment already holds/);
+});
+
+test("PM2 timeout enforces a hard kill deadline", async (t) => {
+  const sandbox = await mkdtemp(join(tmpdir(), "deploy-pm2-timeout-"));
+  t.after(() => rm(sandbox, { recursive: true, force: true }));
+  const fakeBin = join(sandbox, "bin");
+  await mkdir(fakeBin);
+  await writeExecutable(
+    join(fakeBin, "pm2"),
+    "#!/usr/bin/env bash\ntrap '' TERM\nwhile :; do sleep 1; done\n",
+  );
+  const started = Date.now();
+  const result = run(bash, {
+    args: [
+      "-lc",
+      `PATH="$(cygpath -u "$BIN_NATIVE" 2>/dev/null || printf '%s' "$BIN_NATIVE"):$PATH"
+source "$DEPLOY_NATIVE"
+PM2_TIMEOUT_SECONDS=1
+pm2_bounded jlist`,
+    ],
+    env: {
+      ...process.env,
+      BIN_NATIVE: fakeBin,
+      DEPLOY_NATIVE: join(process.cwd(), "scripts/deploy.sh"),
+    },
+    timeout: 8_000,
+  });
+  assert.notEqual(result.status, 0);
+  assert.ok(Date.now() - started < 7_000, "PM2 timeout exceeded hard deadline");
 });
 
 test("rollback preserves both releases until old reload, verify, and save succeed", async (t) => {
@@ -596,8 +713,12 @@ test("release verifier accepts only the exact healthy runtime SHA", async (t) =>
   const expectedSha = "c".repeat(40);
   const currentTarget = join(releaseRoot, expectedSha);
   const currentLink = join(sandbox, "current");
+  const expectedManifest = "e".repeat(64);
+  const standaloneServer = join(currentTarget, ".next/standalone/server.js");
   await mkdir(currentTarget, { recursive: true });
   await mkdir(join(currentTarget, "scripts"), { recursive: true });
+  await mkdir(join(currentTarget, ".next/standalone"), { recursive: true });
+  await writeFile(standaloneServer, "process.exit(0);\n");
   await mkdir(fakeBin);
   await writeFile(
     join(currentTarget, "scripts/release-integrity.mjs"),
@@ -612,7 +733,8 @@ test("release verifier accepts only the exact healthy runtime SHA", async (t) =>
   await writeExecutable(
     join(fakeBin, "curl"),
     `#!/usr/bin/env bash
-printf '{"ok":true,"release":{"sha":"%s"}}\\n' "$FAKE_HEALTH_SHA"
+printf '{"ok":true,"release":{"sha":"%s","manifestSha256":"%s"}}\\n' \
+  "$FAKE_HEALTH_SHA" "$FAKE_MANIFEST_SHA"
 `,
   );
   await writeExecutable(
@@ -626,13 +748,13 @@ exec "$REAL_NODE" "$@"
     `#!/usr/bin/env bash
 [[ "$1" == "jlist" ]] || exit 2
 node -e '
-  const [name,cwd,sha,mode]=process.argv.slice(1);
-  const entry={name,pm2_env:{status:"online",RELEASE_SHA:sha,pm_cwd:cwd,pm_exec_path:"/usr/local/bin/pnpm",args:["start"]}};
-  if (mode === "args") entry.pm2_env.args=["start", "--bad"];
+  const [name,cwd,sha,manifest,server,interpreter,mode]=process.argv.slice(1);
+  const entry={name,pm2_env:{status:"online",RELEASE_SHA:sha,RELEASE_MANIFEST_SHA256:manifest,pm_cwd:cwd,pm_exec_path:server,exec_interpreter:interpreter,args:[]}};
+  if (mode === "args") entry.pm2_env.args=["--bad"];
   const entries=[entry];
   if (mode === "stale-instance") entries.push({name,pm2_env:{...entry.pm2_env,RELEASE_SHA:"d".repeat(40)}});
   console.log(JSON.stringify(entries));
-' "$PM2_NAME" "$PM_CWD_NATIVE" "$FAKE_EXPECTED_SHA" "$PM2_INSTANCE_MODE"
+' "$PM2_NAME" "$PM_CWD_NATIVE" "$FAKE_EXPECTED_SHA" "$FAKE_MANIFEST_SHA" "$PM_EXEC_PATH_NATIVE" "$REAL_NODE_NATIVE" "$PM2_INSTANCE_MODE"
 `,
   );
 
@@ -648,7 +770,7 @@ export RELEASE_ROOT="$(native_to_unix "$RELEASE_NATIVE")"
 export REAL_NODE="$(native_to_unix "$REAL_NODE_NATIVE")"
 export PATH="$(native_to_unix "$BIN_NATIVE"):$PATH"
 verify_script="$(native_to_unix "$VERIFY_NATIVE")"
-bash "$verify_script" "$FAKE_EXPECTED_SHA"`,
+bash "$verify_script" "$FAKE_EXPECTED_SHA" "$FAKE_MANIFEST_SHA"`,
       ],
       env: {
         ...process.env,
@@ -659,7 +781,9 @@ bash "$verify_script" "$FAKE_EXPECTED_SHA"`,
         REAL_NODE_NATIVE: process.execPath,
         PM2_NAME: "jingying-cabin-contract",
         PM_CWD_NATIVE: currentTarget,
+        PM_EXEC_PATH_NATIVE: standaloneServer,
         FAKE_EXPECTED_SHA: expectedSha,
+        FAKE_MANIFEST_SHA: expectedManifest,
         FAKE_HEALTH_SHA: healthSha,
         PM2_INSTANCE_MODE: pm2Mode,
       },
@@ -711,6 +835,10 @@ node() { "$(native_to_unix "$NODE_NATIVE")" "$@"; }
 candidate="$(native_to_unix "$CANDIDATE_NATIVE")"
 pm2_bounded() { printf '{malformed'; }
 pm2_references_release "$candidate"
+pm2_bounded() { printf '[null]'; }
+pm2_references_release "$candidate"
+pm2_bounded() { printf '[{"name":"other","pm2_env":null}]'; }
+pm2_references_release "$candidate"
 pm2_bounded() { printf '[]'; }
 if pm2_references_release "$candidate"; then exit 55; fi`,
     ],
@@ -740,9 +868,11 @@ node() { "$(native_to_unix "$NODE_NATIVE")" "$@"; }
 counter="$(native_to_unix "$COUNTER_NATIVE")"
 POSTGREST_READY_URL=https://example.invalid/ready
 POSTGREST_METRICS_URL=https://example.invalid/metrics
+POSTGREST_SCHEMA_CACHE_URL=https://example.invalid/schema_cache
 if validate_postgrest_admin_urls; then exit 56; fi
 POSTGREST_READY_URL=http://127.0.0.1:3001/ready
 POSTGREST_METRICS_URL=http://127.0.0.1:3001/metrics
+POSTGREST_SCHEMA_CACHE_URL=http://127.0.0.1:3001/schema_cache
 validate_postgrest_admin_urls
 timeout() {
   printf '# HELP ignored\\npgrst_schema_cache_loads_total{status="FAIL"} 9\\npgrst_schema_cache_loads_total{status="SUCCESS"} 41\\n'
@@ -756,7 +886,10 @@ read_postgrest_schema_cache_generation() {
   if [[ "$value" -eq 1 ]]; then printf '41'; else printf '42'; fi
 }
 sleep() { :; }
-wait_for_postgrest_schema_cache 41
+postgrest_schema_cache_contains_probe() {
+  [[ "$1" == "deploy_schema_probe_${"f".repeat(40)}" ]]
+}
+wait_for_postgrest_schema_cache 41 "deploy_schema_probe_${"f".repeat(40)}"
 [[ "$(cat "$counter")" == "2" ]]`,
     ],
     env: {
@@ -794,6 +927,12 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.doesNotMatch(deploy, /rm -rf/);
   assert.match(deploy, /POSTGREST_READY_URL/);
   assert.match(deploy, /POSTGREST_METRICS_URL/);
+  assert.match(deploy, /POSTGREST_SCHEMA_CACHE_URL/);
+  assert.match(
+    deploy,
+    /readonly LOCK_FILE="\/var\/lock\/jingying-cabin\/deploy\.lock"/,
+  );
+  assert.match(deploy, /--kill-after=5s/);
   assert.match(migrationValidator, /-- deploy: expand/);
   assert.match(migrationValidator, /psql meta-command is forbidden/);
   assert.match(migrationValidator, /top-level transaction control/);
@@ -809,6 +948,10 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(verify, /every\(/);
   assert.match(verify, /normalizedArgs/);
   assert.match(ecosystem, /\.\.\.process\.env/);
+  assert.match(ciWorkflow, /RELEASE_SHA:\s*\$\{\{ github\.sha \}\}/);
+  assert.match(ciWorkflow, /prepare-standalone-release\.mjs/);
+  assert.match(ciWorkflow, /release-integrity\.mjs write/);
+  assert.match(ciWorkflow, /GITHUB_STEP_SUMMARY/);
 
   assert.doesNotMatch(legacyRollback, /git reset --hard/);
   assert.match(legacyRollback, /CURRENT_LINK/);
