@@ -30,6 +30,12 @@ const ciWorkflow = repoFile(".github/workflows/ci.yml");
 const scheduledWorkflow = repoFile(".github/workflows/scheduled-runners.yml");
 
 describe("CI workflow contracts", () => {
+  it("runs pull requests and default-branch pushes without double-running feature pushes", () => {
+    expect(ciWorkflow).toContain(
+      "on:\n  pull_request:\n  push:\n    branches:\n      - codex/full-project-ui",
+    );
+  });
+
   it("uses least privilege and cancels superseded branch runs", () => {
     expect(ciWorkflow).toContain("permissions:\n  contents: read");
     expect(ciWorkflow).toContain(
@@ -96,14 +102,37 @@ describe("scheduled runner workflow contracts", () => {
       const job = extractJob(scheduledWorkflow, jobName);
       expect(job).toContain("runs-on: ubuntu-latest");
       expect(job).toContain("timeout-minutes: 5");
+      expect(job).toContain(
+        `concurrency:\n      group: scheduled-${jobName}\n      cancel-in-progress: false`,
+      );
       expect(job).not.toContain("self-hosted");
       expect(job).toContain('response_file="$(mktemp)"');
       expect(job).toContain("trap 'rm -f \"$response_file\"' EXIT");
+      expect(job).toContain("--connect-timeout 10");
+      expect(job).toContain("--max-time 240");
       expect(job).toContain('-o "$response_file"');
       expect(job).toContain('[ "$status" -lt 200 ] || [ "$status" -ge 300 ]');
       expect(job).toContain("completed with HTTP $status");
       expect(job).not.toMatch(/\bcat\s+["']?response/);
       expect(job).not.toContain("set -x");
+    },
+  );
+
+  it.each(scheduledJobs)(
+    "rejects non-HTTPS APP_BASE_URL before %s sends its bearer token",
+    (jobName) => {
+      const job = extractJob(scheduledWorkflow, jobName);
+      const schemeGuard = job.indexOf('case "$APP_BASE_URL" in');
+      const request = job.indexOf("status=$(curl");
+
+      expect(schemeGuard).toBeGreaterThanOrEqual(0);
+      expect(job).toContain("https://?*) ;;");
+      expect(job).toContain(
+        'echo "Runner request blocked: APP_BASE_URL must use HTTPS" >&2',
+      );
+      expect(request).toBeGreaterThan(schemeGuard);
+      expect(job).toContain("--proto '=https'");
+      expect(job).not.toContain('echo "$APP_BASE_URL"');
     },
   );
 });

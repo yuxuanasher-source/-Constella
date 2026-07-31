@@ -25,6 +25,9 @@ jobs:
     # These jobs only make authenticated HTTPS requests and need no host access.
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: scheduled-ocr-runner
+      cancel-in-progress: false
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *') }}
     steps:
@@ -33,9 +36,20 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           OCR_RUNNER_TOKEN: ${{ secrets.OCR_RUNNER_TOKEN }}
         run: |
+          case "$APP_BASE_URL" in
+            https://?*) ;;
+            *)
+              echo "Runner request blocked: APP_BASE_URL must use HTTPS" >&2
+              exit 1
+              ;;
+          esac
           response_file="$(mktemp)"
           trap 'rm -f "$response_file"' EXIT
-          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
+          status=$(curl -sS \
+            --proto '=https' \
+            --connect-timeout 10 \
+            --max-time 240 \
+            -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/ocr/run" \
             -H "Authorization: Bearer ${OCR_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -50,6 +64,9 @@ jobs:
     name: Recording AI runner (every 30 minutes)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: scheduled-recording-ai-runner
+      cancel-in-progress: false
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/30 * * * *') }}
     steps:
@@ -58,9 +75,20 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           RECORDING_AI_RUNNER_TOKEN: ${{ secrets.RECORDING_AI_RUNNER_TOKEN }}
         run: |
+          case "$APP_BASE_URL" in
+            https://?*) ;;
+            *)
+              echo "Runner request blocked: APP_BASE_URL must use HTTPS" >&2
+              exit 1
+              ;;
+          esac
           response_file="$(mktemp)"
           trap 'rm -f "$response_file"' EXIT
-          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
+          status=$(curl -sS \
+            --proto '=https' \
+            --connect-timeout 10 \
+            --max-time 240 \
+            -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/recording-ai/run" \
             -H "Authorization: Bearer ${RECORDING_AI_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -75,6 +103,9 @@ jobs:
     name: Recording intelligence calibration (daily)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: scheduled-recording-intelligence-learn
+      cancel-in-progress: false
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
     steps:
@@ -83,9 +114,20 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           RECORDING_AI_RUNNER_TOKEN: ${{ secrets.RECORDING_AI_RUNNER_TOKEN }}
         run: |
+          case "$APP_BASE_URL" in
+            https://?*) ;;
+            *)
+              echo "Runner request blocked: APP_BASE_URL must use HTTPS" >&2
+              exit 1
+              ;;
+          esac
           response_file="$(mktemp)"
           trap 'rm -f "$response_file"' EXIT
-          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
+          status=$(curl -sS \
+            --proto '=https' \
+            --connect-timeout 10 \
+            --max-time 240 \
+            -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/recording-intelligence/learn" \
             -H "Authorization: Bearer ${RECORDING_AI_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -100,6 +142,9 @@ jobs:
     name: Anomaly scan runner (every 30 minutes)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: scheduled-anomaly-runner
+      cancel-in-progress: false
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '*/30 * * * *') }}
     steps:
@@ -108,9 +153,20 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           ANOMALY_RUNNER_TOKEN: ${{ secrets.ANOMALY_RUNNER_TOKEN }}
         run: |
+          case "$APP_BASE_URL" in
+            https://?*) ;;
+            *)
+              echo "Runner request blocked: APP_BASE_URL must use HTTPS" >&2
+              exit 1
+              ;;
+          esac
           response_file="$(mktemp)"
           trap 'rm -f "$response_file"' EXIT
-          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
+          status=$(curl -sS \
+            --proto '=https' \
+            --connect-timeout 10 \
+            --max-time 240 \
+            -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/anomalies/run" \
             -H "Authorization: Bearer ${ANOMALY_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -125,6 +181,9 @@ jobs:
     name: Account metrics sync runner (daily)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: scheduled-account-metrics-sync-runner
+      cancel-in-progress: false
     # 平台指标网关（PLATFORM_METRICS_ENDPOINT）就绪前保持关闭，避免 400 变红
     if: ${{ vars.APP_BASE_URL != '' && vars.PLATFORM_METRICS_SYNC_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
     steps:
@@ -133,9 +192,20 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           ACCOUNT_LIBRARY_RUNNER_TOKEN: ${{ secrets.ACCOUNT_LIBRARY_RUNNER_TOKEN }}
         run: |
+          case "$APP_BASE_URL" in
+            https://?*) ;;
+            *)
+              echo "Runner request blocked: APP_BASE_URL must use HTTPS" >&2
+              exit 1
+              ;;
+          esac
           response_file="$(mktemp)"
           trap 'rm -f "$response_file"' EXIT
-          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
+          status=$(curl -sS \
+            --proto '=https' \
+            --connect-timeout 10 \
+            --max-time 240 \
+            -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/account-library/metrics-sync/run" \
             -H "Authorization: Bearer ${ACCOUNT_LIBRARY_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -150,6 +220,9 @@ jobs:
     name: Account idle scan runner (daily)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: scheduled-account-idle-scan-runner
+      cancel-in-progress: false
     # APP_BASE_URL 未配置时跳过，避免 CI 变红
     if: ${{ vars.APP_BASE_URL != '' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '0 2 * * *') }}
     steps:
@@ -158,9 +231,20 @@ jobs:
           APP_BASE_URL: ${{ vars.APP_BASE_URL }}
           ACCOUNT_LIBRARY_RUNNER_TOKEN: ${{ secrets.ACCOUNT_LIBRARY_RUNNER_TOKEN }}
         run: |
+          case "$APP_BASE_URL" in
+            https://?*) ;;
+            *)
+              echo "Runner request blocked: APP_BASE_URL must use HTTPS" >&2
+              exit 1
+              ;;
+          esac
           response_file="$(mktemp)"
           trap 'rm -f "$response_file"' EXIT
-          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
+          status=$(curl -sS \
+            --proto '=https' \
+            --connect-timeout 10 \
+            --max-time 240 \
+            -o "$response_file" -w "%{http_code}" \
             -X POST "${APP_BASE_URL%/}/api/internal/account-library/idle-scan/run" \
             -H "Authorization: Bearer ${ACCOUNT_LIBRARY_RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
