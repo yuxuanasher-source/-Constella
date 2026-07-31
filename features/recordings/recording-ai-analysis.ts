@@ -896,7 +896,9 @@ export async function executeClaimedRecordingAiAnalysis({
   draftBuilder: typeof buildRecordingAiAnalysisDraft;
   pipeline?: RecordingAiDraftPipeline | null;
   signal?: AbortSignal;
-  onStage?: (stage: RecordingAiPipelineStage | "persisting") => Promise<void> | void;
+  onStage?: (
+    stage: RecordingAiPipelineStage | "persisting",
+  ) => Promise<void> | void;
   beforeFinalize?: (input: {
     status: "succeeded" | "failed" | "cancelled";
     errorCode: string | null;
@@ -904,6 +906,7 @@ export async function executeClaimedRecordingAiAnalysis({
   }) => Promise<void>;
   deferTerminalStatus?: boolean;
 }): Promise<RecordingAiAnalysisDto> {
+  void actor;
   const db = client;
   const analysisId = workItem.id;
   const attempt = Math.max(0, Math.trunc(workItem.attempt ?? 0));
@@ -1133,8 +1136,9 @@ export async function executeClaimedRecordingAiAnalysis({
 
 function isAbortError(error: unknown) {
   return (
-    error instanceof DOMException && error.name === "AbortError"
-  ) || (error instanceof Error && error.name === "AbortError");
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
 }
 
 function buildSegments(

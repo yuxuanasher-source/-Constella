@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 
 import { WebSocket, WebSocketServer } from "ws";
@@ -25,7 +24,6 @@ import {
   createHermesGatewaySession,
   resolveHermesGatewayConfig,
   type HermesGatewayClientConfig,
-  type HermesGatewaySession,
 } from "./gateway-client";
 
 describe("Hermes Gateway JSON-RPC client", () => {
@@ -58,9 +56,7 @@ describe("Hermes Gateway JSON-RPC client", () => {
         "read-api-service-token-that-must-never-be-used",
     });
     expect(config).toMatchObject({
-      url: expect.stringMatching(
-        /^ws:\/\/localhost:\d+\/api\/xingyao\/ws$/,
-      ),
+      url: expect.stringMatching(/^ws:\/\/localhost:\d+\/api\/xingyao\/ws$/),
       serviceToken: "gateway-service-token-that-is-long-enough",
     });
     expect(
