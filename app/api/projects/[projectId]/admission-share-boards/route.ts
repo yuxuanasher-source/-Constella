@@ -26,6 +26,7 @@ import type {
   AdmissionShareSelectionInput,
 } from "@/features/applications/admission-share-workflow";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { getPublicRequestOrigin } from "@/lib/http/public-request-origin";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function GET(
@@ -96,11 +97,9 @@ export async function POST(
       },
     });
 
-    // Build the public link from the configured app URL so it works for
-    // external visitors; fall back to the request origin in local/dev.
     const shareUrl = new URL(
       `/share/admission/${result.token}`,
-      process.env.NEXT_PUBLIC_APP_URL ?? request.url,
+      getPublicRequestOrigin(request),
     );
     return NextResponse.json({
       shareBoard: toSafeShareBoard(result.shareBoard),
