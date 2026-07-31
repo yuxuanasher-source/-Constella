@@ -27,8 +27,8 @@ export default defineConfig({
         "lib/markdown/**",
         "features/billing/providers/**",
         "features/billing/webhooks.ts",
-        "features/billing/usage-reservations.ts",
-        "features/knowledge-base/**",
+        "features/billing/usage-metering.ts",
+        "features/ai/knowledge-base.ts",
       ],
       thresholds: {
         lines: 85,

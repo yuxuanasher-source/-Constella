@@ -12,6 +12,7 @@ import { execFileSync } from "node:child_process";
 
 import {
   collectChangedFiles,
+  DIFF_FILTER,
   filterSupportedFiles,
   prettierArguments,
 } from "./check-changed-format.mjs";
@@ -71,7 +72,8 @@ function repository(t) {
   return { root, base, head: git(root, ["rev-parse", "HEAD"]) };
 }
 
-test("selects only added, copied, modified, and renamed files since merge-base", (t) => {
+test("selects added, copied, modified, renamed, and type-changed files", (t) => {
+  assert.equal(DIFF_FILTER, "ACMRT");
   const sample = repository(t);
   assert.deepEqual(collectChangedFiles(sample.root, sample.base, sample.head), [
     "image.png",

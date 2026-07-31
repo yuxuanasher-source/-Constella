@@ -23,6 +23,7 @@ const SUPPORTED_EXTENSIONS = new Set([
   ".yaml",
   ".yml",
 ]);
+export const DIFF_FILTER = "ACMRT";
 
 function fatal(message) {
   throw new Error(`[changed-format] ${message}`);
@@ -60,7 +61,15 @@ export function collectChangedFiles(rootInput, baseRevision, headRevision) {
   }
   const output = git(
     root,
-    ["diff", "--name-only", "--diff-filter=ACMR", "-z", mergeBase, head, "--"],
+    [
+      "diff",
+      "--name-only",
+      `--diff-filter=${DIFF_FILTER}`,
+      "-z",
+      mergeBase,
+      head,
+      "--",
+    ],
     { buffer: true },
   );
   return output.toString("utf8").split("\0").filter(Boolean);

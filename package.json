@@ -10,7 +10,7 @@
     "dev": "next dev",
     "build": "next build",
     "check:changed-format": "node scripts/check-changed-format.mjs",
-    "test:critical-coverage": "vitest run lib/markdown features/billing/providers features/billing/webhooks.test.ts features/billing/usage-reservations.test.ts features/knowledge-base --coverage",
+    "test:critical-coverage": "vitest run lib/markdown features/billing/providers features/billing/webhooks.test.ts features/billing/usage-metering.test.ts features/ai/knowledge-base.test.ts --coverage",
     "start": "next start",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
