@@ -7,6 +7,14 @@ const migration = readFileSync(
   join(process.cwd(), "supabase/migrations/20260620100000_p6_payment.sql"),
   "utf8",
 ).toLowerCase();
+const foundationMigration = readFileSync(
+  join(process.cwd(), "supabase/migrations/20260601161000_initial_foundation.sql"),
+  "utf8",
+).toLowerCase();
+const webhookSource = readFileSync(
+  join(process.cwd(), "features/billing/webhooks.ts"),
+  "utf8",
+);
 
 describe("P6 payment schema contract", () => {
   it("creates the core payment tables", () => {
@@ -62,6 +70,14 @@ describe("P6 payment schema contract", () => {
     );
     expect(migration).not.toContain("on public.billing_webhook_events for");
     expect(migration).not.toContain("on public.billing_reconciliations for");
+  });
+
+  it("keeps provider event ids out of the UUID audit object_id", () => {
+    expect(foundationMigration).toMatch(
+      /create table public\.audit_logs[\s\S]*?\bobject_id uuid/,
+    );
+    expect(webhookSource).not.toMatch(/objectId:\s*event\.eventId/);
+    expect(webhookSource).toMatch(/webhookEventId:\s*event\.eventId/);
   });
 
   it("seeds plans and price versions idempotently", () => {

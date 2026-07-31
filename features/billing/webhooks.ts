@@ -87,11 +87,11 @@ export async function handleWebhook({
         action: "reject",
         module: "billing",
         objectType: "billing_webhook_event",
-        objectId: event.eventId,
         reason: invariantRejection,
         result: "failure",
         after: {
           processed: true,
+          webhookEventId: event.eventId,
           rejectionReason: invariantRejection,
           orderId: order.id,
           eventType: event.type,

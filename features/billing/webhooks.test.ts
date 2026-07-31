@@ -106,6 +106,36 @@ async function handle(
   return handleWebhook({ repo, provider, ...payload, now: NOW });
 }
 
+function expectInvariantAuditMapping(
+  audit: ReturnType<typeof vi.fn>,
+  reason:
+    | "amount_mismatch"
+    | "provider_mismatch"
+    | "invalid_provider_transaction",
+) {
+  expect(audit).toHaveBeenCalledOnce();
+  const input = audit.mock.calls[0]?.[0] as
+    | {
+        objectId?: unknown;
+        module?: string;
+        objectType?: string;
+        reason?: string;
+        result?: string;
+        after?: Record<string, unknown>;
+      }
+    | undefined;
+  expect(input).toMatchObject({
+    module: "billing",
+    objectType: "billing_webhook_event",
+    reason,
+    result: "failure",
+    after: {
+      webhookEventId: "evt-1",
+    },
+  });
+  expect(input).not.toHaveProperty("objectId");
+}
+
 describe("handleWebhook", () => {
   it("activates the subscription on a verified payment success", async () => {
     const { repo, state } = await setupWithPendingOrder();
@@ -193,15 +223,7 @@ describe("handleWebhook", () => {
     expect(state.subscriptions.get("org-1")?.status).toBe("trialing");
     expect(state.transactions).toHaveLength(0);
     expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
-    expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        module: "billing",
-        objectType: "billing_webhook_event",
-        objectId: "evt-1",
-        reason: "amount_mismatch",
-        result: "failure",
-      }),
-    );
+    expectInvariantAuditMapping(audit, "amount_mismatch");
   });
 
   it.each([
@@ -284,15 +306,7 @@ describe("handleWebhook", () => {
       });
       expect(state.featureAddons.get("org-1:war_room")?.enabled).toBe(true);
       expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
-      expect(audit).toHaveBeenCalledOnce();
-      expect(audit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          objectType: "billing_webhook_event",
-          objectId: "evt-1",
-          reason: "provider_mismatch",
-          result: "failure",
-        }),
-      );
+      expectInvariantAuditMapping(audit, "provider_mismatch");
     },
   );
 
@@ -330,15 +344,7 @@ describe("handleWebhook", () => {
       });
       expect(state.featureAddons.get("org-1:war_room")?.enabled).toBe(true);
       expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
-      expect(audit).toHaveBeenCalledOnce();
-      expect(audit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          objectType: "billing_webhook_event",
-          objectId: "evt-1",
-          reason: "invalid_provider_transaction",
-          result: "failure",
-        }),
-      );
+      expectInvariantAuditMapping(audit, "invalid_provider_transaction");
     },
   );
 
