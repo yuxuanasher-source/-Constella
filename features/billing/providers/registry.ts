@@ -5,6 +5,7 @@ import type { PaymentProvider } from "./payment-provider";
 export type PaymentProviderEnv = {
   NODE_ENV?: string;
   BILLING_PAYMENT_PROVIDER?: string;
+  PAYMENT_PROVIDER_DEFAULT?: string;
   BILLING_MOCK_WEBHOOK_SECRET?: string;
 };
 
@@ -25,11 +26,23 @@ export function getPaymentProvider(
   name?: string,
   env: PaymentProviderEnv = process.env,
 ): PaymentProvider {
-  const resolved =
-    (name ?? env.BILLING_PAYMENT_PROVIDER ?? "").trim() || "offline";
+  const configured =
+    name !== undefined
+      ? name
+      : env.BILLING_PAYMENT_PROVIDER !== undefined
+        ? env.BILLING_PAYMENT_PROVIDER
+        : "offline";
+  const resolved = configured.trim();
+  if (!resolved) {
+    throw new PaymentProviderUnavailableError();
+  }
+
   switch (resolved) {
     case "mock": {
-      if (env.NODE_ENV === "production") {
+      if (
+        (env.NODE_ENV !== "test" && env.NODE_ENV !== "development") ||
+        env.PAYMENT_PROVIDER_DEFAULT !== "mock"
+      ) {
         throw new PaymentProviderUnavailableError();
       }
       try {

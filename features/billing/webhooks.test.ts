@@ -342,6 +342,190 @@ describe("handleWebhook", () => {
     },
   );
 
+  it("leaves a rejected payment retryable when invariant audit fails", async () => {
+    const { repo, state } = await setupWithPendingOrder();
+    const payload = paymentWebhook({ amountCents: 99899 });
+    const audit = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("audit unavailable"))
+      .mockResolvedValue(undefined);
+
+    await expect(
+      handleWebhook({
+        repo,
+        provider,
+        ...payload,
+        now: NOW,
+        audit,
+      }),
+    ).rejects.toThrow("audit unavailable");
+
+    expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(false);
+    expect(state.transactions).toHaveLength(0);
+    expect(state.orders.get("order-1")?.status).toBe("pending");
+    expect(state.subscriptions.get("org-1")?.status).toBe("trialing");
+
+    await expect(
+      handleWebhook({
+        repo,
+        provider,
+        ...payload,
+        now: NOW,
+        audit,
+      }),
+    ).resolves.toEqual({
+      processed: false,
+      reason: "amount_mismatch",
+      orderId: "order-1",
+    });
+
+    expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
+    expect(audit).toHaveBeenCalledTimes(2);
+    await expect(
+      handleWebhook({
+        repo,
+        provider,
+        ...payload,
+        now: NOW,
+        audit,
+      }),
+    ).resolves.toMatchObject({
+      processed: false,
+      reason: "duplicate",
+    });
+    expect(audit).toHaveBeenCalledTimes(2);
+    expect(state.transactions).toHaveLength(0);
+  });
+
+  it("leaves a rejected refund retryable when invariant audit fails", async () => {
+    const { repo, state } = await setupWithRefundingFeatureOrder("offline");
+    const payload = paymentWebhook({
+      type: "refund",
+      providerTxnId: "mock_refund_order-1",
+      amountCents: 4000,
+    });
+    const audit = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("audit unavailable"))
+      .mockResolvedValue(undefined);
+
+    await expect(
+      handleWebhook({
+        repo,
+        provider,
+        ...payload,
+        now: NOW,
+        audit,
+      }),
+    ).rejects.toThrow("audit unavailable");
+
+    expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(false);
+    expect(state.transactions).toHaveLength(0);
+    expect(state.orders.get("order-1")?.status).toBe("refunding");
+    expect(state.subscriptions.get("org-1")).toMatchObject({
+      status: "active",
+      planId: "plan_pro",
+    });
+    expect(state.featureAddons.get("org-1:war_room")?.enabled).toBe(true);
+
+    await expect(
+      handleWebhook({
+        repo,
+        provider,
+        ...payload,
+        now: NOW,
+        audit,
+      }),
+    ).resolves.toEqual({
+      processed: false,
+      reason: "provider_mismatch",
+      orderId: "order-1",
+    });
+
+    expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
+    expect(audit).toHaveBeenCalledTimes(2);
+    await expect(
+      handleWebhook({
+        repo,
+        provider,
+        ...payload,
+        now: NOW,
+        audit,
+      }),
+    ).resolves.toMatchObject({
+      processed: false,
+      reason: "duplicate",
+    });
+    expect(audit).toHaveBeenCalledTimes(2);
+    expect(state.transactions).toHaveLength(0);
+    expect(state.orders.get("order-1")?.status).toBe("refunding");
+    expect(state.featureAddons.get("org-1:war_room")?.enabled).toBe(true);
+  });
+
+  it("keeps invariant rejection retryable when processed acknowledgement fails", async () => {
+    const { repo, state } = await setupWithPendingOrder();
+    const payload = paymentWebhook({ providerTxnId: "   " });
+    const audit = vi.fn(async () => undefined);
+    let failProcessedMark = true;
+    const retryableRepo: BillingRepo = {
+      ...repo,
+      async markWebhookProcessed(providerName, eventId) {
+        if (failProcessedMark) {
+          failProcessedMark = false;
+          throw new Error("processed acknowledgement unavailable");
+        }
+        await repo.markWebhookProcessed(providerName, eventId);
+      },
+    };
+
+    await expect(
+      handleWebhook({
+        repo: retryableRepo,
+        provider,
+        ...payload,
+        now: NOW,
+        audit,
+      }),
+    ).rejects.toThrow("processed acknowledgement unavailable");
+
+    expect(audit).toHaveBeenCalledOnce();
+    expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(false);
+    expect(state.transactions).toHaveLength(0);
+    expect(state.orders.get("order-1")?.status).toBe("pending");
+    expect(state.subscriptions.get("org-1")?.status).toBe("trialing");
+
+    await expect(
+      handleWebhook({
+        repo: retryableRepo,
+        provider,
+        ...payload,
+        now: NOW,
+        audit,
+      }),
+    ).resolves.toEqual({
+      processed: false,
+      reason: "invalid_provider_transaction",
+      orderId: "order-1",
+    });
+
+    expect(audit).toHaveBeenCalledTimes(2);
+    expect(state.webhookEvents.get("mock:evt-1")?.processed).toBe(true);
+    await expect(
+      handleWebhook({
+        repo: retryableRepo,
+        provider,
+        ...payload,
+        now: NOW,
+        audit,
+      }),
+    ).resolves.toMatchObject({
+      processed: false,
+      reason: "duplicate",
+    });
+    expect(audit).toHaveBeenCalledTimes(2);
+    expect(state.transactions).toHaveLength(0);
+  });
+
   it("permits a partial refund when the order provider matches", async () => {
     const { repo, state } = await setupWithRefundingFeatureOrder();
 

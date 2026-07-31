@@ -81,7 +81,6 @@ export async function handleWebhook({
     orderAmountCents: order.amountCents,
   });
   if (invariantRejection) {
-    await repo.markWebhookProcessed(provider.name, event.eventId);
     if (audit) {
       await audit({
         organizationId: order.organizationId,
@@ -100,6 +99,7 @@ export async function handleWebhook({
         changedFields: ["processed"],
       });
     }
+    await repo.markWebhookProcessed(provider.name, event.eventId);
     return {
       processed: false,
       reason: invariantRejection,

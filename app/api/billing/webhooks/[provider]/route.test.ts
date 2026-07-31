@@ -45,11 +45,17 @@ const provider = {
 const repo = { kind: "billing-repo" };
 const admin = { kind: "supabase-admin" };
 
-function request() {
+function request({
+  body = "{}",
+  signature = "signature",
+}: {
+  body?: string;
+  signature?: string;
+} = {}) {
   return new Request("http://localhost/api/billing/webhooks/mock", {
     method: "POST",
-    headers: { "x-billing-signature": "signature" },
-    body: "{}",
+    headers: { "x-billing-signature": signature },
+    body,
   });
 }
 
@@ -102,6 +108,23 @@ describe("billing webhook route", () => {
     );
   });
 
+  it.each(["", "   "])(
+    "returns a generic 404 for explicit provider name %j",
+    async (providerName) => {
+      vi.mocked(getPaymentProvider).mockImplementation(() => {
+        throw new PaymentProviderUnavailableError();
+      });
+
+      const response = await POST(request(), context(providerName));
+
+      expect(response.status).toBe(404);
+      await expect(response.json()).resolves.toEqual({
+        error: "Payment provider unavailable",
+      });
+      expect(handleWebhook).not.toHaveBeenCalled();
+    },
+  );
+
   it("returns a generic 400 for signature verification failure", async () => {
     vi.mocked(handleWebhook).mockResolvedValue({
       processed: false,
@@ -138,15 +161,34 @@ describe("billing webhook route", () => {
   );
 
   it("returns a generic 500 for unexpected failures", async () => {
+    const rawBody = "super-secret-raw-body";
+    const signature = "super-secret-signature";
+    const secretConfig = "super-secret-provider-config";
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.mocked(handleWebhook).mockRejectedValue(
-      new Error("database password leaked"),
+      new Error(`database password leaked ${secretConfig}`),
     );
 
-    const response = await POST(request(), context());
+    try {
+      const response = await POST(
+        request({ body: rawBody, signature }),
+        context(),
+      );
 
-    expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toEqual({
-      error: "Webhook processing failed",
-    });
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: "Webhook processing failed",
+      });
+      expect(errorLog).toHaveBeenCalledWith("Billing webhook processing failed", {
+        category: "unexpected_error",
+      });
+      const serializedLog = JSON.stringify(errorLog.mock.calls);
+      expect(serializedLog).not.toContain(rawBody);
+      expect(serializedLog).not.toContain(signature);
+      expect(serializedLog).not.toContain(secretConfig);
+      expect(serializedLog).not.toContain("database password leaked");
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 });
