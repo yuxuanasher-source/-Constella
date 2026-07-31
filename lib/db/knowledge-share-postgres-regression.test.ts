@@ -62,9 +62,10 @@ describe.runIf(Boolean(container))(
         set session_replication_role = origin;
       `;
 
-      runSql(
-        dbContainer,
-        `${cleanupSql}
+      try {
+        runSql(
+          dbContainer,
+          `${cleanupSql}
          insert into public.organizations (id, name, code) values
            ('${ids.orgA}', 'KB Share A', 'kb-share-regression-a'),
            ('${ids.orgB}', 'KB Share B', 'kb-share-regression-b');
@@ -99,9 +100,8 @@ describe.runIf(Boolean(container))(
              '${ids.actorA}', 'Share A', now() - interval '1 day', null, null,
              now() - interval '2 days'
            );`,
-      );
+        );
 
-      try {
         expect(
           runSqlText(
             dbContainer,

@@ -608,6 +608,36 @@ describe("OpsReferenceApp responsive navigation shell", () => {
 });
 
 describe("knowledge-base expiring share controls", () => {
+  const seedSecondDocument = () => {
+    window.localStorage.setItem(
+      "jingying.knowledgeBase.v1",
+      JSON.stringify({
+        version: 1,
+        nodes: {
+          "kb-root": {
+            id: "kb-root",
+            type: "folder",
+            name: "直属库",
+            parentId: null,
+            createdAt: 0,
+            order: 0,
+            system: true,
+          },
+          "kb-doc-race-target": {
+            id: "kb-doc-race-target",
+            type: "doc",
+            name: "竞态目标文档",
+            parentId: "kb-root",
+            contentMd: "# Target",
+            createdAt: 1,
+            updatedAt: 1,
+            order: 2,
+          },
+        },
+      }),
+    );
+  };
+
   afterEach(() => {
     window.localStorage.clear();
     vi.unstubAllGlobals();
@@ -659,6 +689,116 @@ describe("knowledge-base expiring share controls", () => {
       expiresInDays: 1,
     });
     expect(createCall[1].headers["Idempotency-Key"]).toBeTruthy();
+    expect(screen.getByLabelText("分享链接")).toHaveValue(
+      "https://app.example.test/share/kb/token-once",
+    );
+  }, 15_000);
+
+  it("ignores a deferred create success after switching to another document", async () => {
+    seedSecondDocument();
+    let resolveCreate;
+    const deferredCreate = new Promise((resolve) => {
+      resolveCreate = resolve;
+    });
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null }), { status: 200 });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        return new Response(JSON.stringify({ shares: [] }), { status: 200 });
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        return deferredCreate;
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    fireEvent.click(await screen.findByRole("button", { name: "分享链接" }));
+    fireEvent.click(screen.getByText("竞态目标文档"));
+    expect(await screen.findByDisplayValue("竞态目标文档")).toBeInTheDocument();
+
+    resolveCreate(
+      new Response(
+        JSON.stringify({
+          id: "55555555-5555-4555-8555-555555555555",
+          url: "https://app.example.test/share/kb/stale-token",
+          expiresAt: "2026-08-07T12:00:00.000Z",
+        }),
+        { status: 200 },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "分享链接" })).toBeEnabled(),
+    );
+
+    expect(
+      screen.queryByDisplayValue("https://app.example.test/share/kb/stale-token"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/分享链接已生成/)).not.toBeInTheDocument();
+    expect(clipboardWrite).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("ignores a deferred duplicate response after the document content changes", async () => {
+    let resolveCreate;
+    const deferredCreate = new Promise((resolve) => {
+      resolveCreate = resolve;
+    });
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null }), { status: 200 });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        return new Response(JSON.stringify({ shares: [] }), { status: 200 });
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        return deferredCreate;
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    fireEvent.click(await screen.findByRole("button", { name: "分享链接" }));
+    const editor = screen.getAllByPlaceholderText(
+      "输入正文，按 / 选择块类型",
+    )[0];
+    fireEvent.change(editor, { target: { value: `${editor.value} edited` } });
+
+    resolveCreate(
+      new Response(
+        JSON.stringify({
+          error: "Share request already processed",
+          code: "share_request_already_processed",
+          shareId: "55555555-5555-4555-8555-555555555555",
+        }),
+        { status: 409 },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "分享链接" })).toBeEnabled(),
+    );
+
+    expect(screen.queryByText(/原链接无法恢复/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/该分享请求已处理/)).not.toBeInTheDocument();
+    expect(clipboardWrite).not.toHaveBeenCalled();
   }, 15_000);
 
   it("reuses one idempotency key after a failed response and rotates it after success", async () => {
@@ -794,6 +934,12 @@ describe("knowledge-base expiring share controls", () => {
               listAttempts > 1
                 ? [
                     {
+                      id: "44444444-4444-4444-8444-444444444444",
+                      title: "旧的活跃分享",
+                      createdAt: "2026-07-30T12:00:00.000Z",
+                      expiresAt: "2026-08-06T12:00:00.000Z",
+                    },
+                    {
                       id: "33333333-3333-4333-8333-333333333333",
                       title: "📖 使用教程",
                       createdAt: "2026-07-31T12:00:00.000Z",
@@ -809,7 +955,11 @@ describe("knowledge-base expiring share controls", () => {
         createAttempts += 1;
         if (createAttempts === 1) throw new TypeError("Failed to fetch");
         return new Response(
-          JSON.stringify({ error: "Share request already processed" }),
+          JSON.stringify({
+            error: "Share request already processed",
+            code: "share_request_already_processed",
+            shareId: "33333333-3333-4333-8333-333333333333",
+          }),
           { status: 409 },
         );
       }
@@ -824,11 +974,23 @@ describe("knowledge-base expiring share controls", () => {
     fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
 
     expect(
-      await screen.findByText("该分享请求已处理，已刷新活跃分享。"),
+      await screen.findByText(
+        "该请求已处理，但原链接无法恢复，请撤销对应分享并重新生成。",
+      ),
     ).toBeInTheDocument();
     expect(
       await screen.findByLabelText("有效期至 2026/08/07 20:00:00"),
     ).toHaveAttribute("datetime", "2026-08-07T12:00:00.000Z");
+    expect(
+      screen.getByTestId(
+        "knowledge-share-33333333-3333-4333-8333-333333333333",
+      ),
+    ).toHaveFocus();
+    expect(
+      screen.getByTestId(
+        "knowledge-share-44444444-4444-4444-8444-444444444444",
+      ),
+    ).not.toHaveFocus();
     expect(screen.queryByDisplayValue(/\/share\/kb\//)).not.toBeInTheDocument();
 
     const requestKeys = fetchMock.mock.calls

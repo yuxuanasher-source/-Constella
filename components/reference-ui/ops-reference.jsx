@@ -29323,6 +29323,9 @@ async function kbShareDoc(doc, expiresInDays, requestKey) {
     const payload = await res.json().catch(() => ({}));
     const error = new Error(payload.error || "分享失败");
     error.status = res.status;
+    error.code = typeof payload.code === "string" ? payload.code : undefined;
+    error.shareId =
+      typeof payload.shareId === "string" ? payload.shareId : undefined;
     throw error;
   }
   const payload = await res.json();
@@ -29373,12 +29376,16 @@ function ScreenKnowledge() {
   const [activeShares, setActiveShares] = React.useState([]);
   const [activeSharesLoading, setActiveSharesLoading] = React.useState(false);
   const [revokingShareId, setRevokingShareId] = React.useState(null);
+  const [focusedShareId, setFocusedShareId] = React.useState(null);
   const [docMsg, setDocMsg] = React.useState("");
   const [shareBusy, setShareBusy] = React.useState(false);
   const [syncState, setSyncState] = React.useState("loading"); // loading|synced|local
   const hydratedRef = React.useRef(false);
   const remoteTimerRef = React.useRef(null);
   const pendingShareAttemptRef = React.useRef(null);
+  const shareAttemptEpochRef = React.useRef(0);
+  const currentShareInputRef = React.useRef(null);
+  const activeShareRowRefs = React.useRef(new Map());
 
   // 加载：优先腾讯云 COS 真源，拿不到则用本地缓存。
   React.useEffect(() => {
@@ -29412,17 +29419,33 @@ function ScreenKnowledge() {
   }, [store]);
 
   const selected = store.nodes[selectedId] || store.nodes[KB_ROOT_ID];
+  currentShareInputRef.current = {
+    doc: selected?.type === "doc" ? selected : null,
+    expiresInDays: shareExpiryDays,
+  };
+
+  const isCurrentShareAttempt = React.useCallback(
+    (attempt) =>
+      Boolean(
+        attempt &&
+          attempt.epoch === shareAttemptEpochRef.current &&
+          kbShareAttemptMatches(
+            attempt,
+            currentShareInputRef.current?.doc,
+            currentShareInputRef.current?.expiresInDays,
+          ),
+      ),
+    [],
+  );
 
   React.useEffect(() => {
     if (
       pendingShareAttemptRef.current &&
-      !kbShareAttemptMatches(
-        pendingShareAttemptRef.current,
-        selected?.type === "doc" ? selected : null,
-        shareExpiryDays,
-      )
+      !isCurrentShareAttempt(pendingShareAttemptRef.current)
     ) {
+      shareAttemptEpochRef.current += 1;
       pendingShareAttemptRef.current = null;
+      setShareBusy(false);
     }
   }, [
     selected?.id,
@@ -29430,6 +29453,7 @@ function ScreenKnowledge() {
     selected?.contentMd,
     selected?.type,
     shareExpiryDays,
+    isCurrentShareAttempt,
   ]);
 
   // 切换文档时清空上一篇的分享链接 / 提示。
@@ -29437,8 +29461,14 @@ function ScreenKnowledge() {
     setShareUrl("");
     setShareExpiresAt("");
     setShareExpiryDays(7);
+    setFocusedShareId(null);
     setDocMsg("");
   }, [selectedId]);
+
+  React.useEffect(() => {
+    if (!focusedShareId) return;
+    activeShareRowRefs.current.get(focusedShareId)?.focus();
+  }, [activeShares, focusedShareId]);
 
   React.useEffect(() => {
     let alive = true;
@@ -29732,28 +29762,36 @@ function ScreenKnowledge() {
                       setShareExpiresAt("");
                       setShareBusy(true);
                       const pendingAttempt = pendingShareAttemptRef.current;
-                      const requestKey =
+                      const attempt =
                         kbShareAttemptMatches(
                           pendingAttempt,
                           selected,
                           shareExpiryDays,
                         )
-                          ? pendingAttempt.requestKey
-                          : kbShareRequestKey();
-                      pendingShareAttemptRef.current = {
-                        documentId: selected.id,
-                        documentName: selected.name,
-                        contentMd: selected.contentMd || "",
-                        expiresInDays: shareExpiryDays,
-                        requestKey,
-                      };
+                          ? pendingAttempt
+                          : {
+                              documentId: selected.id,
+                              documentName: selected.name,
+                              contentMd: selected.contentMd || "",
+                              expiresInDays: shareExpiryDays,
+                              requestKey: kbShareRequestKey(),
+                              epoch: ++shareAttemptEpochRef.current,
+                            };
+                      pendingShareAttemptRef.current = attempt;
+                      let terminalAttempt = false;
                       try {
                         const result = await kbShareDoc(
                           selected,
                           shareExpiryDays,
-                          requestKey,
+                          attempt.requestKey,
                         );
-                        pendingShareAttemptRef.current = null;
+                        if (
+                          pendingShareAttemptRef.current !== attempt ||
+                          !isCurrentShareAttempt(attempt)
+                        ) {
+                          return;
+                        }
+                        terminalAttempt = true;
                         setShareUrl(result.url);
                         setShareExpiresAt(result.expiresAt || "");
                         setActiveShares((shares) => [
@@ -29767,20 +29805,36 @@ function ScreenKnowledge() {
                         ]);
                         try {
                           await navigator.clipboard?.writeText(result.url);
+                          if (!isCurrentShareAttempt(attempt)) return;
                           setDocMsg("分享链接已生成并复制到剪贴板。");
                         } catch {
+                          if (!isCurrentShareAttempt(attempt)) return;
                           setDocMsg("分享链接已生成。");
                         }
                       } catch (e) {
-                        if (e?.status === 409) {
-                          pendingShareAttemptRef.current = null;
+                        if (
+                          pendingShareAttemptRef.current !== attempt ||
+                          !isCurrentShareAttempt(attempt)
+                        ) {
+                          return;
+                        }
+                        if (
+                          e?.status === 409 &&
+                          e?.code === "share_request_already_processed" &&
+                          e?.shareId
+                        ) {
                           const refreshedShares = await kbListActiveShares(
                             selected.id,
                           ).catch(() => null);
+                          if (!isCurrentShareAttempt(attempt)) return;
+                          terminalAttempt = true;
                           if (refreshedShares) {
                             setActiveShares(refreshedShares);
                           }
-                          setDocMsg("该分享请求已处理，已刷新活跃分享。");
+                          setFocusedShareId(e.shareId);
+                          setDocMsg(
+                            "该请求已处理，但原链接无法恢复，请撤销对应分享并重新生成。",
+                          );
                         } else {
                           setDocMsg(
                             e?.message === "Tencent COS is not configured"
@@ -29789,7 +29843,15 @@ function ScreenKnowledge() {
                           );
                         }
                       } finally {
-                        setShareBusy(false);
+                        if (isCurrentShareAttempt(attempt)) {
+                          if (
+                            terminalAttempt &&
+                            pendingShareAttemptRef.current === attempt
+                          ) {
+                            pendingShareAttemptRef.current = null;
+                          }
+                          setShareBusy(false);
+                        }
                       }
                     }}
                   >
@@ -29878,6 +29940,7 @@ function ScreenKnowledge() {
                       style={{ display: "flex", gap: 8, alignItems: "center" }}
                     >
                       <input
+                        aria-label="分享链接"
                         readOnly
                         value={shareUrl}
                         onFocus={(e) => e.target.select()}
@@ -29940,6 +30003,15 @@ function ScreenKnowledge() {
                       return (
                         <div
                           key={share.id}
+                          ref={(node) => {
+                            if (node) {
+                              activeShareRowRefs.current.set(share.id, node);
+                            } else {
+                              activeShareRowRefs.current.delete(share.id);
+                            }
+                          }}
+                          data-testid={`knowledge-share-${share.id}`}
+                          tabIndex={-1}
                           style={{
                             display: "flex",
                             alignItems: "center",

@@ -63,24 +63,26 @@ export async function POST(
         { status: 404 },
       );
     }
-    await writeAuditLog(admin, {
-      organizationId: auth.organizationId,
-      actorUserId: auth.userId,
-      actorName: auth.name,
-      actorRole: auth.role,
-      action: "revoke_knowledge_share",
-      module: "knowledge_base",
-      objectType: "knowledge_share_link",
-      objectId: result.id,
-      after: { revoked: true, cleanupPending: result.cleanupPending },
-      isHighRisk: true,
-      reason: "knowledge_share_revocation",
-    }).catch(() => {
-      console.error("Knowledge share audit failed", {
-        shareId: result.id,
-        phase: "revoke",
+    if (result.newlyRevoked) {
+      await writeAuditLog(admin, {
+        organizationId: auth.organizationId,
+        actorUserId: auth.userId,
+        actorName: auth.name,
+        actorRole: auth.role,
+        action: "revoke_knowledge_share",
+        module: "knowledge_base",
+        objectType: "knowledge_share_link",
+        objectId: result.id,
+        after: { revoked: true, cleanupPending: result.cleanupPending },
+        isHighRisk: true,
+        reason: "knowledge_share_revocation",
+      }).catch(() => {
+        console.error("Knowledge share audit failed", {
+          shareId: result.id,
+          phase: "revoke",
+        });
       });
-    });
+    }
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json(

@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  DuplicateKnowledgeShareRequestError,
   InvalidKnowledgeShareInputError,
+  KnowledgeShareCreationError,
   canManageKnowledgeShares,
   createKnowledgeShare,
   createKnowledgeShareRepository,
@@ -56,6 +58,7 @@ describe("knowledge share lifecycle", () => {
         repository: repo,
         putSnapshot,
         deleteSnapshot: vi.fn(),
+        onCompensationFailure: vi.fn(),
         now: () => NOW,
         randomTokenBytes: () => tokenBytes,
         newShareId: () => SHARE_ID,
@@ -99,6 +102,7 @@ describe("knowledge share lifecycle", () => {
       repository: repo,
       putSnapshot: vi.fn().mockResolvedValue(undefined),
       deleteSnapshot: vi.fn(),
+      onCompensationFailure: vi.fn(),
       now: () => NOW,
       randomTokenBytes: () => Buffer.alloc(32, 1),
       newShareId: () => SHARE_ID,
@@ -155,6 +159,7 @@ describe("knowledge share lifecycle", () => {
           repository: repo,
           putSnapshot: vi.fn().mockRejectedValue(new Error("COS secret")),
           deleteSnapshot,
+          onCompensationFailure: vi.fn(),
           now: () => NOW,
           randomTokenBytes: () => Buffer.alloc(32, 2),
           newShareId: () => SHARE_ID,
@@ -192,6 +197,7 @@ describe("knowledge share lifecycle", () => {
           repository: repo,
           putSnapshot: vi.fn().mockResolvedValue(undefined),
           deleteSnapshot,
+          onCompensationFailure: vi.fn(),
           now: () => NOW,
           randomTokenBytes: () => Buffer.alloc(32, 3),
           newShareId: () => SHARE_ID,
@@ -206,6 +212,145 @@ describe("knowledge share lifecycle", () => {
     expect(deleteSnapshot).toHaveBeenCalledWith(
       `knowledge-base-share/${SHARE_ID}.json`,
     );
+  });
+
+  it("reports both metadata and COS compensation failures without sensitive data", async () => {
+    const repo = repository({
+      markFailed: vi.fn().mockRejectedValue(new Error("database secret")),
+    });
+    const onCompensationFailure = vi.fn();
+    const tokenBytes = Buffer.alloc(32, 4);
+
+    await expect(
+      createKnowledgeShare(
+        {
+          organizationId: ORG_ID,
+          actorUserId: USER_ID,
+          title: "Review",
+          contentMd: "highly-sensitive-content",
+          sourceDocumentId: "doc-1",
+          requestKey: "request-compensation-fail",
+        },
+        {
+          repository: repo,
+          putSnapshot: vi.fn().mockRejectedValue(new Error("upload secret")),
+          deleteSnapshot: vi.fn().mockRejectedValue(new Error("COS secret")),
+          now: () => NOW,
+          randomTokenBytes: () => tokenBytes,
+          newShareId: () => SHARE_ID,
+          onCompensationFailure,
+        } as Parameters<typeof createKnowledgeShare>[1],
+      ),
+    ).rejects.toBeInstanceOf(KnowledgeShareCreationError);
+
+    expect(onCompensationFailure).toHaveBeenCalledWith({
+      shareId: SHARE_ID,
+      failedStages: ["mark_failed", "delete_snapshot"],
+    });
+    const observed = JSON.stringify(onCompensationFailure.mock.calls);
+    expect(observed).not.toContain(tokenBytes.toString("base64url"));
+    expect(observed).not.toContain("highly-sensitive-content");
+    expect(observed).not.toContain("secret");
+  });
+
+  it("keeps the sanitized creation failure when the compensation observer fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      createKnowledgeShare(
+        {
+          organizationId: ORG_ID,
+          actorUserId: USER_ID,
+          title: "Review",
+          contentMd: "private-content",
+          requestKey: "request-observer-fail",
+        },
+        {
+          repository: repository({
+            markFailed: vi.fn().mockRejectedValue(new Error("database secret")),
+          }),
+          putSnapshot: vi.fn().mockRejectedValue(new Error("upload secret")),
+          deleteSnapshot: vi.fn().mockRejectedValue(new Error("COS secret")),
+          now: () => NOW,
+          randomTokenBytes: () => Buffer.alloc(32, 5),
+          newShareId: () => SHARE_ID,
+          onCompensationFailure: vi
+            .fn()
+            .mockRejectedValue(new Error("observer secret")),
+        },
+      ),
+    ).rejects.toBeInstanceOf(KnowledgeShareCreationError);
+
+    const logged = JSON.stringify(consoleError.mock.calls);
+    expect(logged).toContain(SHARE_ID);
+    expect(logged).toContain("mark_failed");
+    expect(logged).toContain("delete_snapshot");
+    expect(logged).not.toContain("private-content");
+    expect(logged).not.toContain("secret");
+    consoleError.mockRestore();
+  });
+
+  it("resolves duplicate retries by the exact organization actor and request key", async () => {
+    const uniqueError = { code: "23505", message: "duplicate key" };
+    const lookup = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      maybeSingle: vi.fn(),
+    };
+    lookup.select.mockReturnValue(lookup);
+    lookup.eq.mockReturnValue(lookup);
+    lookup.maybeSingle.mockResolvedValue({ data: { id: SHARE_ID }, error: null });
+    const client = {
+      from: vi
+        .fn()
+        .mockReturnValueOnce({
+          insert: vi.fn().mockResolvedValue({ error: uniqueError }),
+        })
+        .mockReturnValueOnce(lookup),
+    };
+    const repo = createKnowledgeShareRepository(client as never);
+
+    await expect(
+      repo.insertPending(pendingShareInput()),
+    ).rejects.toMatchObject({
+      name: "DuplicateKnowledgeShareRequestError",
+      existingShareId: SHARE_ID,
+    });
+    expect(lookup.eq).toHaveBeenNthCalledWith(1, "organization_id", ORG_ID);
+    expect(lookup.eq).toHaveBeenNthCalledWith(2, "created_by", USER_ID);
+    expect(lookup.eq).toHaveBeenNthCalledWith(
+      3,
+      "request_key",
+      "request-duplicate",
+    );
+  });
+
+  it("does not classify an unrelated unique violation as an idempotent retry", async () => {
+    const uniqueError = { code: "23505", message: "token hash collision" };
+    const lookup = {
+      select: vi.fn(),
+      eq: vi.fn(),
+      maybeSingle: vi.fn(),
+    };
+    lookup.select.mockReturnValue(lookup);
+    lookup.eq.mockReturnValue(lookup);
+    lookup.maybeSingle.mockResolvedValue({ data: null, error: null });
+    const client = {
+      from: vi
+        .fn()
+        .mockReturnValueOnce({
+          insert: vi.fn().mockResolvedValue({ error: uniqueError }),
+        })
+        .mockReturnValueOnce(lookup),
+    };
+    const repo = createKnowledgeShareRepository(client as never);
+
+    await expect(repo.insertPending(pendingShareInput())).rejects.toBe(
+      uniqueError,
+    );
+    await expect(
+      Promise.reject(uniqueError),
+    ).rejects.not.toBeInstanceOf(DuplicateKnowledgeShareRequestError);
   });
 
   it("marks pending or ambiguously active metadata failed during compensation", async () => {
@@ -285,7 +430,11 @@ describe("knowledge share lifecycle", () => {
     const repo = repository({
       revoke: vi.fn(async () => {
         order.push("db");
-        return { id: SHARE_ID, cosKey: `knowledge-base-share/${SHARE_ID}.json` };
+        return {
+          id: SHARE_ID,
+          cosKey: `knowledge-base-share/${SHARE_ID}.json`,
+          newlyRevoked: true,
+        };
       }),
     });
     const onCleanupFailure = vi.fn();
@@ -308,7 +457,11 @@ describe("knowledge share lifecycle", () => {
     );
 
     expect(order).toEqual(["db", "cos"]);
-    expect(result).toEqual({ id: SHARE_ID, cleanupPending: true });
+    expect(result).toEqual({
+      id: SHARE_ID,
+      cleanupPending: true,
+      newlyRevoked: true,
+    });
     expect(onCleanupFailure).toHaveBeenCalledWith({ shareId: SHARE_ID });
     expect(JSON.stringify(onCleanupFailure.mock.calls)).not.toContain("secret");
   });
@@ -321,3 +474,18 @@ describe("knowledge share lifecycle", () => {
     expect(canManageKnowledgeShares("streamer")).toBe(false);
   });
 });
+
+function pendingShareInput() {
+  return {
+    id: SHARE_ID,
+    organizationId: ORG_ID,
+    tokenHash: "a".repeat(64),
+    title: "Review",
+    sourceDocumentId: "doc-1",
+    cosKey: `knowledge-base-share/${SHARE_ID}.json`,
+    requestKey: "request-duplicate",
+    createdBy: USER_ID,
+    createdByName: "Owner",
+    expiresAt: "2026-08-07T12:00:00.000Z",
+  };
+}

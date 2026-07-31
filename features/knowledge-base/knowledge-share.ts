@@ -22,9 +22,12 @@ export class InvalidKnowledgeShareInputError extends Error {
 }
 
 export class DuplicateKnowledgeShareRequestError extends Error {
-  constructor() {
+  readonly existingShareId?: string;
+
+  constructor(existingShareId?: string) {
     super("Knowledge share request already processed");
     this.name = "DuplicateKnowledgeShareRequestError";
+    this.existingShareId = existingShareId;
   }
 }
 
@@ -78,6 +81,16 @@ export type ActiveKnowledgeShare = {
 export type RevokedKnowledgeShare = {
   id: string;
   cosKey: string;
+  newlyRevoked: boolean;
+};
+
+export type KnowledgeShareCompensationStage =
+  | "mark_failed"
+  | "delete_snapshot";
+
+export type KnowledgeShareCompensationFailure = {
+  shareId: string;
+  failedStages: KnowledgeShareCompensationStage[];
 };
 
 export type KnowledgeShareRepository = {
@@ -120,6 +133,9 @@ type CreateKnowledgeShareDependencies = {
   randomTokenBytes?: () => Buffer;
   newShareId?: () => string;
   onCleanupFailure?: (input: { shareId: string }) => void;
+  onCompensationFailure: (
+    input: KnowledgeShareCompensationFailure,
+  ) => void | Promise<void>;
 };
 
 export function canManageKnowledgeShares(
@@ -187,12 +203,41 @@ export async function createKnowledgeShare(
     return { id, token, expiresAt };
   } catch (error) {
     if (metadataInserted) {
-      await dependencies.repository
-        .markFailed({ id, organizationId: normalized.organizationId })
-        .catch(() => undefined);
-      await dependencies.deleteSnapshot(cosKey).catch(() => {
-        dependencies.onCleanupFailure?.({ shareId: id });
-      });
+      const failedStages: KnowledgeShareCompensationStage[] = [];
+      try {
+        await dependencies.repository.markFailed({
+          id,
+          organizationId: normalized.organizationId,
+        });
+      } catch {
+        failedStages.push("mark_failed");
+      }
+      try {
+        await dependencies.deleteSnapshot(cosKey);
+      } catch {
+        failedStages.push("delete_snapshot");
+        try {
+          dependencies.onCleanupFailure?.({ shareId: id });
+        } catch {
+          console.error("Knowledge share cleanup observer failed", {
+            shareId: id,
+            failedStages: ["delete_snapshot"],
+          });
+        }
+      }
+      if (failedStages.length > 0) {
+        try {
+          await dependencies.onCompensationFailure({
+            shareId: id,
+            failedStages,
+          });
+        } catch {
+          console.error("Knowledge share compensation observer failed", {
+            shareId: id,
+            failedStages,
+          });
+        }
+      }
     }
     if (error instanceof DuplicateKnowledgeShareRequestError) {
       throw error;
@@ -260,7 +305,11 @@ export async function revokeKnowledgeShare(
     now?: () => Date;
     onCleanupFailure?: (input: { shareId: string }) => void;
   },
-): Promise<{ id: string; cleanupPending: boolean } | null> {
+): Promise<{
+  id: string;
+  cleanupPending: boolean;
+  newlyRevoked: boolean;
+} | null> {
   const now = dependencies.now?.() ?? new Date();
   const revoked = await dependencies.repository.revoke({
     ...input,
@@ -270,10 +319,18 @@ export async function revokeKnowledgeShare(
 
   try {
     await dependencies.deleteSnapshot(revoked.cosKey);
-    return { id: revoked.id, cleanupPending: false };
+    return {
+      id: revoked.id,
+      cleanupPending: false,
+      newlyRevoked: revoked.newlyRevoked,
+    };
   } catch {
     dependencies.onCleanupFailure?.({ shareId: revoked.id });
-    return { id: revoked.id, cleanupPending: true };
+    return {
+      id: revoked.id,
+      cleanupPending: true,
+      newlyRevoked: revoked.newlyRevoked,
+    };
   }
 }
 
@@ -296,7 +353,17 @@ export function createKnowledgeShareRepository(
         status: "pending",
       });
       if (error?.code === "23505") {
-        throw new DuplicateKnowledgeShareRequestError();
+        const { data: existing, error: existingError } = await client
+          .from("knowledge_share_links")
+          .select("id")
+          .eq("organization_id", input.organizationId)
+          .eq("created_by", input.createdBy)
+          .eq("request_key", input.requestKey)
+          .maybeSingle();
+        if (!existingError && existing?.id) {
+          throw new DuplicateKnowledgeShareRequestError(String(existing.id));
+        }
+        throw error;
       }
       if (error) throw error;
     },
@@ -384,7 +451,11 @@ export function createKnowledgeShareRepository(
         .maybeSingle();
       if (error) throw error;
       if (data) {
-        return { id: String(data.id), cosKey: String(data.cos_key) };
+        return {
+          id: String(data.id),
+          cosKey: String(data.cos_key),
+          newlyRevoked: true,
+        };
       }
 
       const { data: existing, error: existingError } = await client
@@ -396,7 +467,11 @@ export function createKnowledgeShareRepository(
         .maybeSingle();
       if (existingError) throw existingError;
       return existing
-        ? { id: String(existing.id), cosKey: String(existing.cos_key) }
+        ? {
+            id: String(existing.id),
+            cosKey: String(existing.cos_key),
+            newlyRevoked: false,
+          }
         : null;
     },
   };

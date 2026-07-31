@@ -23,6 +23,9 @@ import {
 } from "@/lib/storage/tencent-cos";
 
 const ALLOWED_EXPIRY_DAYS = new Set([1, 7, 30]);
+// The decoded Markdown limit is 8 MiB. The wire envelope gets 1 MiB of JSON
+// overhead, while escaped payloads that exceed this independent cap fail fast.
+export const MAX_KNOWLEDGE_SHARE_REQUEST_BYTES = 9 * 1024 * 1024;
 
 async function resolveAuthorizedContext() {
   const sessionClient = await createSupabaseServerClient();
@@ -78,8 +81,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = await request.json().catch(() => null);
-    if (!body || typeof body !== "object") {
+    const parsedBody = await readJsonBodyWithLimit(request);
+    if (parsedBody.kind === "too_large") {
+      return NextResponse.json(
+        { error: "Request too large" },
+        { status: 413 },
+      );
+    }
+    const body = parsedBody.kind === "ok" ? parsedBody.value : null;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
     }
     const expiresInDays =
@@ -112,6 +122,31 @@ export async function POST(request: Request) {
         repository: createKnowledgeShareRepository(context.admin),
         putSnapshot: cosPutJson,
         deleteSnapshot: cosDeleteObject,
+        onCompensationFailure: async ({ shareId, failedStages }) => {
+          console.error("Knowledge share compensation requires manual review", {
+            shareId,
+            failedStages,
+          });
+          await writeAuditLog(context.admin, {
+            organizationId: context.auth.organizationId,
+            actorUserId: context.auth.userId,
+            actorName: context.auth.name,
+            actorRole: context.auth.role,
+            action: "create_knowledge_share",
+            module: "knowledge_base",
+            objectType: "knowledge_share_link",
+            objectId: shareId,
+            after: { failedStages, manualReviewRequired: true },
+            reason: "knowledge_share_compensation_manual_review",
+            isHighRisk: true,
+            result: "failure",
+          }).catch(() => {
+            console.error("Knowledge share compensation audit failed", {
+              shareId,
+              failedStages,
+            });
+          });
+        },
       },
     );
     await writeAuditLog(context.admin, {
@@ -149,7 +184,11 @@ export async function POST(request: Request) {
     }
     if (error instanceof DuplicateKnowledgeShareRequestError) {
       return NextResponse.json(
-        { error: "Share request already processed" },
+        {
+          error: "Share request already processed",
+          code: "share_request_already_processed",
+          shareId: error.existingShareId,
+        },
         { status: 409 },
       );
     }
@@ -163,6 +202,58 @@ export async function POST(request: Request) {
       { error: "Unable to create share" },
       { status: 500 },
     );
+  }
+}
+
+type LimitedJsonResult =
+  | { kind: "ok"; value: unknown }
+  | { kind: "invalid" }
+  | { kind: "too_large" };
+
+async function readJsonBodyWithLimit(
+  request: Request,
+): Promise<LimitedJsonResult> {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength) {
+    const bytes = Number(declaredLength);
+    if (Number.isFinite(bytes) && bytes > MAX_KNOWLEDGE_SHARE_REQUEST_BYTES) {
+      await request.body?.cancel().catch(() => undefined);
+      return { kind: "too_large" };
+    }
+  }
+  if (!request.body) return { kind: "invalid" };
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_KNOWLEDGE_SHARE_REQUEST_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        return { kind: "too_large" };
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return { kind: "invalid" };
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return { kind: "ok", value: JSON.parse(text) };
+  } catch {
+    return { kind: "invalid" };
   }
 }
 

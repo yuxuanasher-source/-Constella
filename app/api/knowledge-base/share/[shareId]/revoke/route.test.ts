@@ -53,8 +53,25 @@ describe("knowledge share revoke route", () => {
     vi.mocked(revokeKnowledgeShare).mockResolvedValue({
       id: shareId,
       cleanupPending: false,
+      newlyRevoked: true,
     });
     vi.mocked(writeAuditLog).mockResolvedValue(undefined);
+  });
+
+  it("does not repeat the high-risk success audit for an idempotent retry", async () => {
+    vi.mocked(revokeKnowledgeShare).mockResolvedValue({
+      id: shareId,
+      cleanupPending: true,
+      newlyRevoked: false,
+    });
+
+    const response = await POST(new Request("http://local", { method: "POST" }), {
+      params: Promise.resolve({ shareId }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(writeAuditLog).not.toHaveBeenCalled();
   });
 
   afterEach(() => {

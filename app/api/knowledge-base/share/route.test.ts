@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getAuthContext } from "@/lib/auth/context";
 import {
+  DuplicateKnowledgeShareRequestError,
   KnowledgeShareCreationError,
   createKnowledgeShare,
   createKnowledgeShareRepository,
@@ -52,6 +53,7 @@ const auth = {
   organizationName: "Org",
   role: "owner" as const,
 };
+const EXPECTED_REQUEST_HARD_LIMIT = 9 * 1024 * 1024;
 
 describe("knowledge share route", () => {
   beforeEach(() => {
@@ -112,6 +114,7 @@ describe("knowledge share route", () => {
         expiresInDays: 7,
       }),
       expect.objectContaining({
+        onCompensationFailure: expect.any(Function),
         putSnapshot: cosPutJson,
       }),
     );
@@ -130,6 +133,45 @@ describe("knowledge share route", () => {
     expect(JSON.stringify(vi.mocked(writeAuditLog).mock.calls)).not.toContain(
       token,
     );
+  });
+
+  it("records sanitized compensation failures for manual review", async () => {
+    await route.POST(
+      new Request("http://local/api/knowledge-base/share", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "create-share-compensation",
+        },
+        body: JSON.stringify({ title: "Review", contentMd: "content" }),
+      }),
+    );
+    const dependencies = vi.mocked(createKnowledgeShare).mock.calls[0]?.[1];
+    const callback = dependencies?.onCompensationFailure;
+    vi.mocked(writeAuditLog).mockClear();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(callback).toBeTypeOf("function");
+    await callback?.({
+      shareId: "33333333-3333-4333-8333-333333333333",
+      failedStages: ["mark_failed", "delete_snapshot"],
+    });
+
+    expect(writeAuditLog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "create_knowledge_share",
+        objectId: "33333333-3333-4333-8333-333333333333",
+        reason: "knowledge_share_compensation_manual_review",
+        result: "failure",
+        after: {
+          failedStages: ["mark_failed", "delete_snapshot"],
+          manualReviewRequired: true,
+        },
+      }),
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("content");
+    consoleError.mockRestore();
   });
 
   it("rejects unsupported expiry values", async () => {
@@ -169,6 +211,146 @@ describe("knowledge share route", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "Invalid request" });
     expect(createKnowledgeShare).not.toHaveBeenCalled();
+  });
+
+  it("returns a stable duplicate code and existing share id without bearer material", async () => {
+    const duplicate = Object.assign(
+      new DuplicateKnowledgeShareRequestError(),
+      { existingShareId: "44444444-4444-4444-8444-444444444444" },
+    );
+    vi.mocked(createKnowledgeShare).mockRejectedValue(duplicate);
+
+    const response = await route.POST(
+      new Request("http://local/api/knowledge-base/share", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "create-share-duplicate",
+        },
+        body: JSON.stringify({ title: "Review", contentMd: "content" }),
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Share request already processed",
+      code: "share_request_already_processed",
+      shareId: "44444444-4444-4444-8444-444444444444",
+    });
+  });
+
+  it("rejects an oversized Content-Length before reading the body", async () => {
+    const response = await route.POST(
+      new Request("http://local/api/knowledge-base/share", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(EXPECTED_REQUEST_HARD_LIMIT + 1),
+          "idempotency-key": "create-share-content-length",
+        },
+        body: JSON.stringify({ title: "Review", contentMd: "small" }),
+      }),
+    );
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ error: "Request too large" });
+    expect(createKnowledgeShare).not.toHaveBeenCalled();
+  });
+
+  it("cancels a chunked body as soon as its byte limit is exceeded", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(5 * 1024 * 1024).fill(97));
+        controller.enqueue(
+          new Uint8Array(EXPECTED_REQUEST_HARD_LIMIT - 5 * 1024 * 1024 + 1).fill(
+            97,
+          ),
+        );
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = await route.POST(
+      new Request(
+        "http://local/api/knowledge-base/share",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": "create-share-chunked",
+          },
+          body: stream,
+          duplex: "half",
+        } as RequestInit & { duplex: "half" },
+      ),
+    );
+
+    expect(response.status).toBe(413);
+    expect(cancelled).toBe(true);
+    expect(createKnowledgeShare).not.toHaveBeenCalled();
+  });
+
+  it("accepts a valid multi-byte body below the hard request limit", async () => {
+    const contentMd = "文".repeat(2_790_000);
+    const body = JSON.stringify({ title: "Review", contentMd });
+    expect(new TextEncoder().encode(body).byteLength).toBeLessThanOrEqual(
+      EXPECTED_REQUEST_HARD_LIMIT,
+    );
+
+    const response = await route.POST(
+      new Request("http://local/api/knowledge-base/share", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "create-share-multibyte",
+        },
+        body,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+  });
+
+  it("rejects escaped JSON whose wire bytes exceed the hard limit", async () => {
+    const body = JSON.stringify({
+      title: "Review",
+      contentMd: "\u0000".repeat(1_600_000),
+    });
+    expect(new TextEncoder().encode(body).byteLength).toBeGreaterThan(
+      EXPECTED_REQUEST_HARD_LIMIT,
+    );
+
+    const response = await route.POST(
+      new Request("http://local/api/knowledge-base/share", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "create-share-escaped",
+        },
+        body,
+      }),
+    );
+
+    expect(response.status).toBe(413);
+    expect(createKnowledgeShare).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for malformed JSON within the hard limit", async () => {
+    const response = await route.POST(
+      new Request("http://local/api/knowledge-base/share", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "create-share-invalid-json",
+        },
+        body: "{not-json",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Invalid request" });
   });
 
   it("does not lose the one-time share URL when supplemental auditing fails", async () => {
