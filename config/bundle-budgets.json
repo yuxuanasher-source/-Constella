@@ -1,0 +1,6 @@
+{
+  "/console": {
+    "firstLoadGzipBytes": 500000
+  },
+  "maxClientChunkGzipBytes": 330000
+}

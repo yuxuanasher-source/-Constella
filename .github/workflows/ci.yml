@@ -38,6 +38,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Enforce client bundle budgets
+        run: pnpm check:bundle-budget
+
   database-regression:
     runs-on: [self-hosted, linux, x64, constella-ci]
     timeout-minutes: 30
