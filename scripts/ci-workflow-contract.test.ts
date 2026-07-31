@@ -106,18 +106,8 @@ describe("CI workflow contracts", () => {
       "- name: Verify reviewed release artifact round trip",
     );
     expect(ciWorkflow).toContain(
-      'node "$candidate/scripts/extract-release-artifact.mjs"',
+      "node scripts/verify-release-artifact-roundtrip.mjs",
     );
-    expect(ciWorkflow).toContain(
-      'node "$candidate/scripts/release-integrity.mjs" verify',
-    );
-    expect(ciWorkflow).toContain('.listen(54321, "127.0.0.1")');
-    expect(ciWorkflow).toContain(
-      "NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321",
-    );
-    expect(ciWorkflow).toContain("XINGYAO_HERMES_LEGACY_RUNTIME_ENABLED=true");
-    expect(ciWorkflow).toContain("node .next/standalone/server.js");
-    expect(ciWorkflow).toContain("http://127.0.0.1:3999/api/health");
     expect(ciWorkflow).toContain("- name: Upload reviewed release artifact");
   });
 });

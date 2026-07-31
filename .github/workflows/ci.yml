@@ -82,79 +82,9 @@ jobs:
           MANIFEST_SHA256: ${{ steps.release-artifact.outputs.manifest_sha256 }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
-          roundtrip_root="$(mktemp -d)"
-          candidate="$roundtrip_root/$RELEASE_SHA"
-          db_stub_pid=""
-          server_pid=""
-          cleanup() {
-            if [ -n "$server_pid" ]; then
-              kill -TERM "$server_pid" 2>/dev/null || true
-              for _ in 1 2 3 4 5; do
-                kill -0 "$server_pid" 2>/dev/null || break
-                sleep 1
-              done
-              kill -KILL "$server_pid" 2>/dev/null || true
-              wait "$server_pid" 2>/dev/null || true
-            fi
-            if [ -n "$db_stub_pid" ]; then
-              kill -TERM "$db_stub_pid" 2>/dev/null || true
-              wait "$db_stub_pid" 2>/dev/null || true
-            fi
-            git worktree remove --force "$candidate" 2>/dev/null || true
-            rm -rf -- "$roundtrip_root"
-          }
-          trap cleanup EXIT
-          git worktree add --detach "$candidate" "$RELEASE_SHA"
-          node "$candidate/scripts/extract-release-artifact.mjs" \
-            "$GITHUB_WORKSPACE/$ARTIFACT_PATH" "$candidate" \
-            "$ARTIFACT_SHA256" "$RELEASE_SHA"
-          node "$candidate/scripts/release-integrity.mjs" verify \
-            "$candidate" "$RELEASE_SHA" "$MANIFEST_SHA256"
-          node -e '
-            require("node:http")
-              .createServer((request, response) => {
-                if (request.url.startsWith("/rest/v1/organizations")) {
-                  response.writeHead(200, { "content-range": "*/0" });
-                } else {
-                  response.writeHead(404);
-                }
-                response.end();
-              })
-              .listen(54321, "127.0.0.1");
-          ' >"$roundtrip_root/db-stub.log" 2>&1 &
-          db_stub_pid="$!"
-          (
-            cd "$candidate"
-            exec env PORT=3999 HOSTNAME=127.0.0.1 \
-              RELEASE_SHA="$RELEASE_SHA" \
-              RELEASE_MANIFEST_SHA256="$MANIFEST_SHA256" \
-              NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321 \
-              NEXT_PUBLIC_SUPABASE_ANON_KEY=ci-roundtrip-anon \
-              SUPABASE_INTERNAL_URL=http://127.0.0.1:54321 \
-              SUPABASE_SERVICE_ROLE_KEY=ci-roundtrip-service-role \
-              ADMISSION_SHARE_CAPABILITY_SECRET=ci-roundtrip-secret-0000000000000 \
-              XINGYAO_HERMES_LEGACY_RUNTIME_ENABLED=true \
-              node .next/standalone/server.js
-          ) >"$roundtrip_root/server.log" 2>&1 &
-          server_pid="$!"
-          health=""
-          for _ in $(seq 1 30); do
-            if health="$(curl --fail --silent --show-error \
-              --connect-timeout 1 --max-time 2 \
-              http://127.0.0.1:3999/api/health)"; then
-              break
-            fi
-            sleep 1
-          done
-          HEALTH_JSON="$health" node -e '
-            const body = JSON.parse(process.env.HEALTH_JSON);
-            if (
-              body.ok !== true ||
-              body.release?.sha !== process.env.RELEASE_SHA ||
-              body.release?.manifestSha256 !== process.env.MANIFEST_SHA256
-            ) process.exit(1);
-          '
+          node scripts/verify-release-artifact-roundtrip.mjs \
+            "$GITHUB_WORKSPACE/$ARTIFACT_PATH" \
+            "$ARTIFACT_SHA256" "$MANIFEST_SHA256" "$RELEASE_SHA"
 
       - name: Upload reviewed release artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/codex/full-project-ui'

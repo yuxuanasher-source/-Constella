@@ -2,6 +2,7 @@
 
 import {
   cpSync,
+  copyFileSync,
   chmodSync,
   existsSync,
   lstatSync,
@@ -107,12 +108,47 @@ const materialized = `${standalone}.materialized`;
 if (existsSync(materialized)) {
   fail(`stale materialized runtime path exists: ${materialized}`);
 }
-cpSync(standalone, materialized, {
-  recursive: true,
-  dereference: true,
-  errorOnExist: true,
-  force: false,
-});
+
+function materializeRuntime(source, destination, ancestors = new Set()) {
+  const sourceStat = lstatSync(source);
+  let resolvedSource = source;
+  let stat = sourceStat;
+  if (sourceStat.isSymbolicLink()) {
+    try {
+      resolvedSource = realpathSync(source);
+    } catch {
+      fail(`standalone runtime contains a broken symlink: ${source}`);
+    }
+    if (
+      !isInside(standalone, resolvedSource) &&
+      !isInside(pnpmVirtualStore, resolvedSource)
+    ) {
+      fail(`standalone runtime symlink escaped its generated roots: ${source}`);
+    }
+    stat = lstatSync(resolvedSource);
+  }
+  if (stat.isDirectory()) {
+    const realDirectory = realpathSync(resolvedSource);
+    if (ancestors.has(realDirectory)) {
+      fail(`standalone runtime contains a symlink cycle: ${source}`);
+    }
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(realDirectory);
+    mkdirSync(destination, { mode: 0o750 });
+    for (const entry of readdirSync(resolvedSource).sort()) {
+      materializeRuntime(
+        join(resolvedSource, entry),
+        join(destination, entry),
+        nextAncestors,
+      );
+    }
+    return;
+  }
+  if (!stat.isFile()) fail(`unsupported runtime artifact: ${source}`);
+  copyFileSync(resolvedSource, destination);
+}
+
+materializeRuntime(standalone, materialized);
 rmSync(standalone, { recursive: true, force: false });
 renameSync(materialized, standalone);
 

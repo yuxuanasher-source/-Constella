@@ -57,6 +57,7 @@ const [
   migrationValidator,
   artifactExtractor,
   standalonePreparer,
+  artifactRoundtripVerifier,
   ciWorkflow,
 ] = await Promise.all([
   readFile(join(process.cwd(), "scripts/deploy.sh"), "utf8"),
@@ -82,6 +83,10 @@ const [
   readFile(join(process.cwd(), "scripts/extract-release-artifact.mjs"), "utf8"),
   readFile(
     join(process.cwd(), "scripts/prepare-standalone-release.mjs"),
+    "utf8",
+  ),
+  readFile(
+    join(process.cwd(), "scripts/verify-release-artifact-roundtrip.mjs"),
     "utf8",
   ),
   readFile(join(process.cwd(), ".github/workflows/ci.yml"), "utf8"),
@@ -1033,9 +1038,19 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
     /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/codex\/full-project-ui'/,
   );
   assert.match(ciWorkflow, /Verify reviewed release artifact round trip/);
-  assert.match(ciWorkflow, /git worktree add --detach/);
-  assert.match(ciWorkflow, /release-integrity\.mjs" verify/);
-  assert.match(ciWorkflow, /127\.0\.0\.1:3999\/api\/health/);
+  assert.match(ciWorkflow, /verify-release-artifact-roundtrip\.mjs/);
+  assert.match(artifactRoundtripVerifier, /"worktree", "add", "--detach"/);
+  assert.match(
+    artifactRoundtripVerifier,
+    /scripts\/extract-release-artifact\.mjs/,
+  );
+  assert.match(artifactRoundtripVerifier, /scripts\/release-integrity\.mjs/);
+  assert.match(artifactRoundtripVerifier, /\/api\/health/);
+  assert.match(artifactRoundtripVerifier, /health\?\.release\?\.sha/);
+  assert.match(
+    artifactRoundtripVerifier,
+    /health\?\.release\?\.manifestSha256/,
+  );
   assert.match(artifactExtractor, /release artifact does not match/);
   assert.match(artifactExtractor, /createReadStream/);
   assert.doesNotMatch(artifactExtractor, /readFileSync\(archivePath\)/);

@@ -39,6 +39,13 @@ describe("standalone release preparation", () => {
         ),
         { recursive: true },
       );
+      mkdirSync(
+        join(
+          root,
+          "node_modules/.pnpm/external-helper@1.0.0/node_modules/external-helper",
+        ),
+        { recursive: true },
+      );
       mkdirSync(join(root, ".next/static/chunks"), { recursive: true });
       mkdirSync(join(root, "public/assets"), { recursive: true });
       writeFileSync(
@@ -61,6 +68,30 @@ describe("standalone release preparation", () => {
           "node_modules/.pnpm/external-runtime@1.0.0/node_modules/external-runtime/index.js",
         ),
         "external runtime\n",
+      );
+      writeFileSync(
+        join(
+          root,
+          "node_modules/.pnpm/external-helper@1.0.0/node_modules/external-helper/index.js",
+        ),
+        "external helper\n",
+      );
+      mkdirSync(
+        join(
+          root,
+          "node_modules/.pnpm/external-runtime@1.0.0/node_modules/external-runtime/node_modules",
+        ),
+      );
+      symlinkSync(
+        join(
+          root,
+          "node_modules/.pnpm/external-helper@1.0.0/node_modules/external-helper",
+        ),
+        join(
+          root,
+          "node_modules/.pnpm/external-runtime@1.0.0/node_modules/external-runtime/node_modules/external-helper",
+        ),
+        process.platform === "win32" ? "junction" : "dir",
       );
       symlinkSync(
         join(root, ".next/standalone/node_modules/.store/runtime"),
@@ -99,6 +130,15 @@ describe("standalone release preparation", () => {
           "utf8",
         ),
       ).toBe("external runtime\n");
+      expect(
+        readFileSync(
+          join(
+            root,
+            ".next/standalone/node_modules/external-runtime/node_modules/external-helper/index.js",
+          ),
+          "utf8",
+        ),
+      ).toBe("external helper\n");
       expect(
         readFileSync(
           join(root, ".next/standalone/node_modules/runtime/index.js"),
