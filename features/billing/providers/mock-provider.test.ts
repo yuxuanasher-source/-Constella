@@ -33,6 +33,40 @@ describe("mock payment provider", () => {
     expect(pay.payParams.type).toBe("qrcode");
   });
 
+  it("implements query, refund, and injected statement contracts", async () => {
+    const statement = [
+      {
+        providerTxnId: "mock_pay_order-1",
+        amountCents: 99900,
+        status: "succeeded" as const,
+      },
+    ];
+    const completeProvider = createMockPaymentProvider({
+      secret: TEST_PAYMENT_WEBHOOK_SECRET,
+      statement,
+    });
+
+    await expect(
+      completeProvider.queryPayment("mock_pay_order-1"),
+    ).resolves.toEqual({ status: "pending" });
+    await expect(
+      completeProvider.refund({
+        orderId: "order-1",
+        transactionId: "transaction-1",
+        providerTxnId: "mock_pay_order-1",
+        amountCents: 99900,
+        reason: "contract test",
+      }),
+    ).resolves.toMatchObject({
+      provider: "mock",
+      refundTxnId: "mock_refund_transaction-1",
+      status: "succeeded",
+    });
+    await expect(completeProvider.fetchStatement("2026-07-31")).resolves.toBe(
+      statement,
+    );
+  });
+
   it("verifies a correctly signed webhook", () => {
     const { rawBody, signature } = buildSignedMockWebhook(
       body,
@@ -61,10 +95,34 @@ describe("mock payment provider", () => {
     expect(result).toEqual({ verified: false, reason: "signature_mismatch" });
   });
 
+  it("rejects missing, malformed, and semantically invalid webhooks", () => {
+    expect(provider.verifyWebhook({ rawBody: "{}", signature: "" })).toEqual({
+      verified: false,
+      reason: "signature_mismatch",
+    });
+
+    const invalidJson = "{";
+    expect(
+      provider.verifyWebhook({
+        rawBody: invalidJson,
+        signature: signMockWebhook(TEST_PAYMENT_WEBHOOK_SECRET, invalidJson),
+      }),
+    ).toEqual({ verified: false, reason: "invalid_json" });
+
+    const invalidEvent = JSON.stringify({ eventId: "evt-invalid" });
+    expect(
+      provider.verifyWebhook({
+        rawBody: invalidEvent,
+        signature: signMockWebhook(TEST_PAYMENT_WEBHOOK_SECRET, invalidEvent),
+      }),
+    ).toEqual({ verified: false, reason: "invalid_event" });
+  });
+
   it("requires an explicit secret", () => {
-    const createWithoutOptions = createMockPaymentProvider as unknown as (
-      options?: { secret?: string },
-    ) => PaymentProvider;
+    const createWithoutOptions =
+      createMockPaymentProvider as unknown as (options?: {
+        secret?: string;
+      }) => PaymentProvider;
 
     expect(() => createWithoutOptions()).toThrow(/explicit secret/i);
     expect(() => createWithoutOptions({})).toThrow(/explicit secret/i);

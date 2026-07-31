@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "check:changed-format": "node scripts/check-changed-format.mjs",
+    "test:critical-coverage": "vitest run lib/markdown features/billing/providers features/billing/webhooks.test.ts features/billing/usage-metering.test.ts features/ai/knowledge-base.test.ts --coverage",
     "start": "next start",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
@@ -82,6 +84,7 @@
     "@types/react-dom": "^19",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.2",
+    "@vitest/coverage-v8": "4.1.8",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "jsdom": "^29.1.1",

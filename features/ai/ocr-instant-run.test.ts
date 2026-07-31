@@ -92,7 +92,7 @@ describe("kickQueuedOcrJobsInProcess", () => {
       await kickQueuedOcrJobsInProcess({ limit: 1 });
       expect(claimJobs).not.toHaveBeenCalled();
     } finally {
-      for (const _ of held) {
+      for (let index = 0; index < held.length; index += 1) {
         releaseInlineKickSlot(OCR_INLINE_KICK_GATE);
       }
     }

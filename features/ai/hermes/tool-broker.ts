@@ -454,7 +454,7 @@ async function executeMemoryListTool({
         updatedAt: memory.updatedAt,
       })),
     });
-  } catch (error) {
+  } catch {
     throw new HermesToolBrokerError("persistence_unavailable");
   }
 }
@@ -592,17 +592,13 @@ async function executeSkillViewTool({
   ) {
     throw new HermesToolBrokerError("permission_denied");
   }
-  return skillBrokerEnvelope(
-    request,
-    now,
-    {
-      skillId: artifact.skillId,
-      version: artifact.version,
-      bundleSha256: artifact.bundleSha256,
-      bundle: artifact.bundle,
-      source: artifact.source,
-    },
-  );
+  return skillBrokerEnvelope(request, now, {
+    skillId: artifact.skillId,
+    version: artifact.version,
+    bundleSha256: artifact.bundleSha256,
+    bundle: artifact.bundle,
+    source: artifact.source,
+  });
 }
 
 function skillBrokerEnvelope(

@@ -19,5 +19,24 @@ export default defineConfig({
     ],
     globals: true,
     setupFiles: ["./vitest.setup.ts"],
+    coverage: {
+      provider: "v8",
+      reportsDirectory: "./coverage/critical",
+      reporter: ["text", "json-summary"],
+      include: [
+        "lib/markdown/**",
+        "features/billing/providers/**",
+        "features/billing/webhooks.ts",
+        "features/billing/usage-metering.ts",
+        "features/ai/knowledge-base.ts",
+      ],
+      thresholds: {
+        perFile: true,
+        lines: 85,
+        functions: 85,
+        statements: 85,
+        branches: 75,
+      },
+    },
   },
 });

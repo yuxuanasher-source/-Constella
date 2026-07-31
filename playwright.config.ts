@@ -10,9 +10,14 @@ const webServerEnv = {
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? "http://127.0.0.1:54321",
   SUPABASE_SERVICE_ROLE_KEY:
     process.env.SUPABASE_SERVICE_ROLE_KEY ?? "visual-smoke-service-role-key",
+  ADMISSION_SHARE_CAPABILITY_SECRET:
+    process.env.ADMISSION_SHARE_CAPABILITY_SECRET ??
+    "visual-smoke-admission-capability-secret",
 };
 const localBrowserChannel = process.env.CI ? undefined : "chrome";
-const browserChannel = localBrowserChannel ? { channel: localBrowserChannel } : {};
+const browserChannel = localBrowserChannel
+  ? { channel: localBrowserChannel }
+  : {};
 
 export default defineConfig({
   testDir: "./tests/visual",
