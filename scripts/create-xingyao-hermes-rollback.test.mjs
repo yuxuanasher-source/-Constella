@@ -90,6 +90,7 @@ function createRelease(releaseRoot, label) {
     ].join("\n"),
   );
   for (const name of [
+    "extract-release-artifact.mjs",
     "prepare-standalone-release.mjs",
     "release-integrity.mjs",
     "validate-expand-migration.mjs",

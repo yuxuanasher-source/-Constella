@@ -40,12 +40,32 @@ jobs:
           RELEASE_SHA: ${{ github.sha }}
         run: pnpm build
 
-      - name: Produce reviewed release manifest hash
+      - name: Produce reviewed release artifact
+        id: release-artifact
         run: |
           node scripts/prepare-standalone-release.mjs "$GITHUB_WORKSPACE" "$GITHUB_SHA"
           node scripts/release-integrity.mjs write "$GITHUB_WORKSPACE" "$GITHUB_SHA"
+          artifact="release-runtime-${GITHUB_SHA}.tar"
+          tar --format=ustar --sort=name --mtime='@0' \
+            --owner=0 --group=0 --numeric-owner \
+            -cf "$artifact" .release-integrity.json .next/standalone
           manifest_sha256="$(sha256sum .release-integrity.json | awk '{print $1}')"
-          printf 'Release manifest SHA-256: `%s`\n' "$manifest_sha256" >> "$GITHUB_STEP_SUMMARY"
+          artifact_sha256="$(sha256sum "$artifact" | awk '{print $1}')"
+          {
+            printf 'Release Git SHA: `%s`\n' "$GITHUB_SHA"
+            printf 'Release manifest SHA-256: `%s`\n' "$manifest_sha256"
+            printf 'Release artifact SHA-256: `%s`\n' "$artifact_sha256"
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf 'path=%s\n' "$artifact" >> "$GITHUB_OUTPUT"
+
+      - name: Upload reviewed release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-runtime-${{ github.sha }}
+          path: ${{ steps.release-artifact.outputs.path }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
 
   database-regression:
     runs-on: [self-hosted, linux, x64, constella-ci]

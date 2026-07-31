@@ -138,12 +138,16 @@ ENV_FILE=/etc/jingying-cabin/production.env \
 BRANCH=codex/hermes-native-intelligence-restoration \
 EXPECTED_SHA=<reviewed-full-40-character-ci-sha> \
 EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256> \
+EXPECTED_RELEASE_ARTIFACT_SHA256=<reviewed-ci-release-artifact-sha256> \
+RELEASE_ARTIFACT_PATH=/var/cache/jingying-cabin-release-artifacts/<sha>/release-runtime-<sha>.tar \
 PM2_NAME=jingying-cabin \
 bash /var/www/jingying-cabin/scripts/deploy.sh
 ```
 
-The deploy command already verifies and persists PM2. After deploy, verify both
-services while the gateway is still disabled:
+Retrieve the SHA-named artifact by reviewed successful CI run ID and verify its
+tar SHA-256 exactly as specified in the atomic bootstrap runbook. The deploy
+command already verifies and persists PM2. After deploy, verify both services
+while the gateway is still disabled:
 
 ```sh
 mkdir -p artifacts

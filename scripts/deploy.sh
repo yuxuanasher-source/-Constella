@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # Atomic production deployment:
-#   secure env + host lock -> immutable candidate build -> read-only migration
+#   secure env + host lock -> exact reviewed CI artifact -> read-only migration
 #   preflight -> transactionally serialized expand migrations -> atomic symlink
 #   switch -> exact release verification -> persistent PM2 state.
 set -Eeuo pipefail
 umask 077
 export LC_ALL=C
-
-DEPLOY_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 SOURCE_REPO="${SOURCE_REPO:-/var/www/jingying-cabin}"
 RELEASE_ROOT="${RELEASE_ROOT:-/var/cache/jingying-cabin-releases}"
@@ -18,6 +16,8 @@ KEEP_RELEASES="${KEEP_RELEASES:-3}"
 BRANCH="${BRANCH:-codex/full-project-ui}"
 EXPECTED_SHA="${EXPECTED_SHA:-}"
 EXPECTED_RELEASE_MANIFEST_SHA256="${EXPECTED_RELEASE_MANIFEST_SHA256:-}"
+RELEASE_ARTIFACT_PATH="${RELEASE_ARTIFACT_PATH:-}"
+EXPECTED_RELEASE_ARTIFACT_SHA256="${EXPECTED_RELEASE_ARTIFACT_SHA256:-}"
 DB_CONTAINER="${DB_CONTAINER:-supabase-db}"
 DB_NAME="${DB_NAME:-postgres}"
 PM2_NAME="${PM2_NAME:-jingying-cabin}"
@@ -129,6 +129,8 @@ load_runtime_env() {
   local saved_keep="$KEEP_RELEASES" saved_branch="$BRANCH"
   local saved_expected="$EXPECTED_SHA"
   local saved_expected_manifest="$EXPECTED_RELEASE_MANIFEST_SHA256"
+  local saved_artifact="$RELEASE_ARTIFACT_PATH"
+  local saved_artifact_sha="$EXPECTED_RELEASE_ARTIFACT_SHA256"
   local saved_db="$DB_CONTAINER" saved_db_name="$DB_NAME" saved_pm2="$PM2_NAME"
   local saved_pm2_timeout="$PM2_TIMEOUT_SECONDS"
   local saved_database_lease_wait="$DATABASE_LEASE_WAIT_SECONDS"
@@ -146,6 +148,8 @@ load_runtime_env() {
   BRANCH="$saved_branch"
   EXPECTED_SHA="$saved_expected"
   EXPECTED_RELEASE_MANIFEST_SHA256="$saved_expected_manifest"
+  RELEASE_ARTIFACT_PATH="$saved_artifact"
+  EXPECTED_RELEASE_ARTIFACT_SHA256="$saved_artifact_sha"
   DB_CONTAINER="$saved_db"
   DB_NAME="$saved_db_name"
   PM2_NAME="$saved_pm2"
@@ -219,14 +223,12 @@ validate_rollback_control_paths() {
 }
 
 validate_rollback_runtime() {
-  local node_major pnpm_version
-  for command_name in git realpath sha256sum stat id node pnpm pm2 curl timeout flock; do
+  local node_major
+  for command_name in realpath sha256sum stat id node pm2 curl timeout flock; do
     command -v "$command_name" >/dev/null 2>&1 || die "required command is missing: $command_name"
   done
   node_major="$(node -p 'process.versions.node.split(".")[0]')"
   [[ "$node_major" == "20" ]] || die "Node major must be 20 (found $(node --version))"
-  pnpm_version="$(pnpm --version)"
-  [[ "$pnpm_version" == "10.12.1" ]] || die "pnpm must be exactly 10.12.1 (found $pnpm_version)"
   [[ "$PM2_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
     die "PM2_TIMEOUT_SECONDS must be a positive integer"
   [[ "$DATABASE_LEASE_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
@@ -235,7 +237,7 @@ validate_rollback_runtime() {
 
 validate_runtime() {
   validate_rollback_runtime
-  for command_name in git corepack docker find sort; do
+  for command_name in git docker find sort; do
     command -v "$command_name" >/dev/null 2>&1 || die "required command is missing: $command_name"
   done
 }
@@ -278,6 +280,18 @@ validate_source_repo() {
   [[ "$git_root" == "$SOURCE_REPO" ]] || die "SOURCE_REPO must be the physical repository root: $git_root"
 }
 
+validate_release_artifact() {
+  local artifact_parent
+  require_absolute_path "RELEASE_ARTIFACT_PATH" "$RELEASE_ARTIFACT_PATH"
+  RELEASE_ARTIFACT_PATH="$(lexical_path "$RELEASE_ARTIFACT_PATH")"
+  [[ -e "$RELEASE_ARTIFACT_PATH" ]] ||
+    die "release artifact is missing: $RELEASE_ARTIFACT_PATH"
+  artifact_parent="$(physical_path "$(dirname "$RELEASE_ARTIFACT_PATH")")"
+  validate_owner_and_mode "release artifact parent" "$artifact_parent" dir
+  validate_owner_and_mode "release artifact" "$RELEASE_ARTIFACT_PATH" file
+  RELEASE_ARTIFACT_PATH="$(physical_path "$RELEASE_ARTIFACT_PATH")"
+}
+
 validate_release_path() {
   local candidate="$1" normalized parent name physical_parent
   require_absolute_path "release path" "$candidate"
@@ -306,7 +320,7 @@ validate_release_capabilities() {
   [[ -f "$target/app/api/health/route.ts" ]] || die "release lacks health source: $target"
   grep -Fq 'process.env.RELEASE_SHA' "$target/app/api/health/route.ts" ||
     die "release health route lacks full RELEASE_SHA capability: $target"
-  node "$DEPLOY_SCRIPT_DIR/release-integrity.mjs" verify \
+  node "$target/scripts/release-integrity.mjs" verify \
     "$target" "$sha" "$manifest_sha256" ||
     die "release runtime integrity verification failed: $target"
 }
@@ -560,7 +574,7 @@ parse_migration_identity() {
 
 validate_expand_header() {
   local file="$1"
-  node "$DEPLOY_SCRIPT_DIR/validate-expand-migration.mjs" "$file" ||
+  node "$release_dir/scripts/validate-expand-migration.mjs" "$file" ||
     die "expand migration validation failed: $(basename "$file")"
 }
 
@@ -1133,10 +1147,13 @@ main() {
     die "EXPECTED_SHA must be the reviewed full lowercase Git SHA"
   [[ "$EXPECTED_RELEASE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
     die "EXPECTED_RELEASE_MANIFEST_SHA256 must come from the trusted CI artifact"
+  [[ "$EXPECTED_RELEASE_ARTIFACT_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+    die "EXPECTED_RELEASE_ARTIFACT_SHA256 must come from the trusted CI artifact"
   validate_runtime
   validate_secure_env_file
   load_runtime_env
   validate_control_paths
+  validate_release_artifact
   acquire_deploy_lock
   validate_source_repo
   load_previous_release
@@ -1159,23 +1176,16 @@ main() {
   git -C "$SOURCE_REPO" worktree add --detach "$release_dir" "$TARGET_SHA"
   assert_release_git_state "$release_dir" "$TARGET_SHA"
 
-  (
-    cd "$release_dir"
-    pnpm install --frozen-lockfile
-    log "Building candidate before any database or service mutation"
-    NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=3072}" \
-      RELEASE_SHA="$TARGET_SHA" pnpm run build
-  ) 2>&1 | tee "$RELEASE_ROOT/$TARGET_SHA-build.log"
+  log "Extracting the exact reviewed CI runtime artifact"
+  node "$release_dir/scripts/extract-release-artifact.mjs" \
+    "$RELEASE_ARTIFACT_PATH" "$release_dir" \
+    "$EXPECTED_RELEASE_ARTIFACT_SHA256" "$TARGET_SHA"
   assert_release_git_state "$release_dir" "$TARGET_SHA"
-  node "$release_dir/scripts/prepare-standalone-release.mjs" \
-    "$release_dir" "$TARGET_SHA"
-  node "$release_dir/scripts/release-integrity.mjs" write \
-    "$release_dir" "$TARGET_SHA"
   actual_manifest_sha256="$(
     sha256sum "$release_dir/.release-integrity.json" | awk '{print $1}'
   )"
   [[ "$actual_manifest_sha256" == "$EXPECTED_RELEASE_MANIFEST_SHA256" ]] ||
-    die "server-built release manifest differs from the trusted CI artifact"
+    die "extracted release manifest differs from the trusted CI artifact"
   validate_release_capabilities \
     "$release_dir" "$TARGET_SHA" "$EXPECTED_RELEASE_MANIFEST_SHA256"
 

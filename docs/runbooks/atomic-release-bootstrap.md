@@ -27,6 +27,8 @@ Run as the deployment user, using root only for ownership setup:
 ```bash
 sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0750 \
   /var/cache/jingying-cabin-releases
+sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0750 \
+  /var/cache/jingying-cabin-release-artifacts
 sudo install -d -o root -g "$(id -gn)" -m 0750 \
   /var/lock/jingying-cabin
 sudo install -o "$(id -un)" -g "$(id -gn)" -m 0600 /dev/null \
@@ -108,16 +110,22 @@ SQL
 If `supabase_migrations.schema_migrations` is absent, stop. There is no trusted
 ledger and deployment must remain fail-closed.
 
-For a legacy `public.deploy_migrations`, build the expected ledger from the
-reviewed candidate files, including their SHA-256 content hashes. This bootstrap
-target must contain no pending migration, so the candidate, Supabase, and legacy
-ledgers must match in both directions. Resolve any mismatch from database backup
-and release evidence; never infer applied state from table existence or filename
-alone.
+For a legacy `public.deploy_migrations`, build the expected ledger from an
+isolated export of the reviewed commit, including migration SHA-256 content
+hashes. Do not rely on whatever branch happens to be checked out:
 
 ```bash
 TARGET_SHA=<reviewed-full-40-character-ci-sha>
-CANDIDATE_MIGRATIONS="/var/cache/jingying-cabin-releases/$TARGET_SHA/supabase/migrations"
+SOURCE_REPO=/var/www/jingying-cabin
+BRANCH=codex/full-project-ui
+AUDIT_ROOT="/var/cache/jingying-cabin-bootstrap-audit-$TARGET_SHA"
+[[ ! -e "$AUDIT_ROOT" ]]
+install -d -m 0750 "$AUDIT_ROOT"
+git -C "$SOURCE_REPO" fetch origin "$BRANCH"
+[[ "$(git -C "$SOURCE_REPO" rev-parse "origin/$BRANCH^{commit}")" == "$TARGET_SHA" ]]
+git -C "$SOURCE_REPO" archive "$TARGET_SHA" supabase/migrations |
+  tar -x -C "$AUDIT_ROOT"
+CANDIDATE_MIGRATIONS="$AUDIT_ROOT/supabase/migrations"
 EXPECTED_ROWS="$(
   find "$CANDIDATE_MIGRATIONS" -mindepth 1 -maxdepth 1 -type f -name '*.sql' \
     -print0 |
@@ -225,6 +233,12 @@ commit;
 SQL
 ```
 
+This bootstrap target must contain no pending migration, so the candidate,
+Supabase, and legacy ledgers must match in both directions. Resolve any mismatch
+from database backup and release evidence; never infer applied state from table
+existence or filename alone. Preserve the isolated export with the change
+evidence until the observation window ends.
+
 If `deploy_internal.schema_migrations` already exists, stop unless it is owned by
 `postgres`, is an ordinary table with both RLS and forced RLS enabled, has no
 ACL entry for any non-owner, contains exactly one bootstrap sentinel, and every
@@ -283,10 +297,52 @@ cannot reconstruct the legacy service without the source checkout being reset.
 Never store raw `pm2 jlist` output as an artifact because it can contain runtime
 secrets.
 
-## 5. Build and prove the first managed release on staging
+## 5. Retrieve and prove the first managed release on staging
 
-Use Node 20 and pnpm 10.12.1. Select the target only after its exact SHA has
-passed hosted CI. Source the new deploy helpers so the bootstrap uses the same
+Select the target only after its exact SHA has passed hosted CI. Retrieve the
+artifact by the reviewed workflow-run ID, not merely by branch or artifact
+name. The run must report `success`, and its `headSha` must be `EXPECTED_SHA`.
+Copy the resulting tar file into the protected artifact directory, mode `0600`,
+and compare its SHA-256 with the digest printed in that same reviewed CI job
+summary. The deployment host does not need GitHub credentials if a release
+operator performs this retrieval and protected transfer.
+
+One GitHub CLI retrieval pattern is:
+
+```bash
+set -Eeuo pipefail
+export REPOSITORY=<owner/repository>
+export CI_RUN_ID=<reviewed-successful-ci-run-id>
+export EXPECTED_BRANCH=codex/full-project-ui
+export EXPECTED_SHA=<reviewed-full-40-character-ci-sha>
+export EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256>
+export EXPECTED_RELEASE_ARTIFACT_SHA256=<reviewed-ci-release-artifact-sha256>
+export ARTIFACT_DIR="/var/cache/jingying-cabin-release-artifacts/$EXPECTED_SHA"
+[[ ! -e "$ARTIFACT_DIR" ]]
+install -d -m 0750 "$ARTIFACT_DIR"
+RUN_JSON="$(gh run view "$CI_RUN_ID" --repo "$REPOSITORY" \
+  --json headBranch,headSha,event,conclusion)"
+RUN_JSON="$RUN_JSON" EXPECTED_BRANCH="$EXPECTED_BRANCH" \
+  EXPECTED_SHA="$EXPECTED_SHA" node -e '
+  const run = JSON.parse(process.env.RUN_JSON);
+  if (
+    run.conclusion !== "success" ||
+    run.event !== "push" ||
+    run.headBranch !== process.env.EXPECTED_BRANCH ||
+    run.headSha !== process.env.EXPECTED_SHA
+  ) {
+    process.exit(1);
+  }
+'
+gh run download "$CI_RUN_ID" --repo "$REPOSITORY" \
+  --name "release-runtime-$EXPECTED_SHA" --dir "$ARTIFACT_DIR"
+export RELEASE_ARTIFACT_PATH="$ARTIFACT_DIR/release-runtime-$EXPECTED_SHA.tar"
+chmod 0600 "$RELEASE_ARTIFACT_PATH"
+printf '%s  %s\n' "$EXPECTED_RELEASE_ARTIFACT_SHA256" \
+  "$RELEASE_ARTIFACT_PATH" | sha256sum --check --strict
+```
+
+Then use Node 20 and source the deploy helpers so bootstrap uses the same
 runtime, ownership, physical-path, and host-lock checks as later releases:
 
 ```bash
@@ -298,20 +354,20 @@ export ENV_FILE=/etc/jingying-cabin/production.env
 export BRANCH=codex/full-project-ui
 export EXPECTED_SHA=<reviewed-full-40-character-ci-sha>
 export EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256>
+export EXPECTED_RELEASE_ARTIFACT_SHA256=<reviewed-ci-release-artifact-sha256>
+export RELEASE_ARTIFACT_PATH="/var/cache/jingying-cabin-release-artifacts/$EXPECTED_SHA/release-runtime-$EXPECTED_SHA.tar"
 export DB_CONTAINER="${DB_CONTAINER:-supabase-db}"
 export LEGACY_RESTORE_SCRIPT=/etc/jingying-cabin/restore-legacy.sh
 export STAGING_LINK=/var/www/jingying-cabin-bootstrap-staging
 export STAGING_PM2_NAME=jingying-cabin-bootstrap-staging
 export STAGING_PORT=3002
 
-[[ "$(git -C "$SOURCE_REPO" rev-parse HEAD)" == "$EXPECTED_SHA" ]]
-git -C "$SOURCE_REPO" diff --quiet --ignore-submodules --
-git -C "$SOURCE_REPO" diff --cached --quiet --ignore-submodules --
 source "$SOURCE_REPO/scripts/deploy.sh"
 validate_runtime
 validate_secure_env_file
 load_runtime_env
 validate_control_paths
+validate_release_artifact
 acquire_deploy_lock
 validate_source_repo
 
@@ -328,16 +384,10 @@ validate_release_path "$release_dir"
 git -C "$SOURCE_REPO" worktree add --detach "$release_dir" "$TARGET_SHA"
 assert_release_git_state "$release_dir" "$TARGET_SHA"
 
-(
-  cd "$release_dir"
-  pnpm install --frozen-lockfile
-  RELEASE_SHA="$TARGET_SHA" pnpm run build
-)
+node "$release_dir/scripts/extract-release-artifact.mjs" \
+  "$RELEASE_ARTIFACT_PATH" "$release_dir" \
+  "$EXPECTED_RELEASE_ARTIFACT_SHA256" "$TARGET_SHA"
 assert_release_git_state "$release_dir" "$TARGET_SHA"
-node "$release_dir/scripts/prepare-standalone-release.mjs" \
-  "$release_dir" "$TARGET_SHA"
-node "$release_dir/scripts/release-integrity.mjs" write \
-  "$release_dir" "$TARGET_SHA"
 actual_manifest_sha256="$(
   sha256sum "$release_dir/.release-integrity.json" | awk '{print $1}'
 )"
@@ -447,16 +497,18 @@ Expand migrations are not application rollback.
 
 ## 7. Normal releases after bootstrap
 
-Take `EXPECTED_SHA` and `EXPECTED_RELEASE_MANIFEST_SHA256` from the reviewed
-hosted-CI result, not from the current branch name or server build. CI builds
-with the exact Git SHA and prints the manifest digest in its job summary. The
-deploy script fetches the branch and refuses all candidate, database, symlink,
-and PM2 mutation if either the branch head or server-built standalone artifact
-differs from those reviewed values:
+Take `EXPECTED_SHA`, `EXPECTED_RELEASE_MANIFEST_SHA256`, and
+`EXPECTED_RELEASE_ARTIFACT_SHA256` from the same reviewed successful hosted-CI
+run. Download its SHA-named artifact using the reviewed run ID and verify the tar
+digest as shown above. The deploy script fetches the branch and refuses database,
+symlink, and PM2 mutation unless the branch head, tar digest, embedded release
+SHA, and extracted integrity manifest all match those reviewed values:
 
 ```bash
 EXPECTED_SHA=<reviewed-full-40-character-ci-sha> \
 EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256> \
+EXPECTED_RELEASE_ARTIFACT_SHA256=<reviewed-ci-release-artifact-sha256> \
+RELEASE_ARTIFACT_PATH=/var/cache/jingying-cabin-release-artifacts/<sha>/release-runtime-<sha>.tar \
 BRANCH=codex/full-project-ui \
 bash /var/www/jingying-cabin/scripts/deploy.sh
 ```

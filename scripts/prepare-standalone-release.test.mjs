@@ -58,15 +58,6 @@ describe("standalone release preparation", () => {
       expect(
         readFileSync(join(root, ".next/standalone/.release-sha"), "utf8"),
       ).toBe(`${sha}\n`);
-      expect(
-        readFileSync(join(root, ".next/standalone/server.js"), "utf8"),
-      ).not.toContain(root);
-      expect(
-        readFileSync(
-          join(root, ".next/standalone/.next/required-server-files.json"),
-          "utf8",
-        ),
-      ).not.toContain(root);
       if (process.platform !== "win32") {
         expect(
           statSync(join(root, ".next/standalone/server.js")).mode & 0o777,

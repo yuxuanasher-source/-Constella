@@ -6,9 +6,9 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -66,33 +66,7 @@ for (const [source, destination] of copies) {
   });
 }
 
-function replaceAll(buffer, needle, replacement) {
-  if (needle.length === 0) return buffer;
-  const chunks = [];
-  let cursor = 0;
-  let match = buffer.indexOf(needle, cursor);
-  if (match === -1) return buffer;
-  while (match !== -1) {
-    chunks.push(buffer.subarray(cursor, match), replacement);
-    cursor = match + needle.length;
-    match = buffer.indexOf(needle, cursor);
-  }
-  chunks.push(buffer.subarray(cursor));
-  return Buffer.concat(chunks);
-}
-
-const buildRootVariants = [
-  root,
-  root.replaceAll("\\", "/"),
-  JSON.stringify(root).slice(1, -1),
-  JSON.stringify(root.replaceAll("\\", "/")).slice(1, -1),
-]
-  .filter((value, index, values) => values.indexOf(value) === index)
-  .sort((left, right) => right.length - left.length)
-  .map((value) => Buffer.from(value));
-const canonicalRoot = Buffer.from(".");
-
-function normalizeRuntimeTree(path) {
+function validateRuntimeLinks(path) {
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) {
     const target = realpathSync(path);
@@ -106,6 +80,31 @@ function normalizeRuntimeTree(path) {
     }
     return;
   }
+  if (!stat.isDirectory()) return;
+  for (const entry of readdirSync(path).sort()) {
+    validateRuntimeLinks(join(path, entry));
+  }
+}
+
+validateRuntimeLinks(standalone);
+const materialized = `${standalone}.materialized`;
+if (existsSync(materialized)) {
+  fail(`stale materialized runtime path exists: ${materialized}`);
+}
+cpSync(standalone, materialized, {
+  recursive: true,
+  dereference: true,
+  errorOnExist: true,
+  force: false,
+});
+rmSync(standalone, { recursive: true, force: false });
+renameSync(materialized, standalone);
+
+function normalizeRuntimeTree(path) {
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) {
+    fail(`materialized standalone runtime still contains a symlink: ${path}`);
+  }
   if (stat.isDirectory()) {
     for (const entry of readdirSync(path).sort()) {
       normalizeRuntimeTree(join(path, entry));
@@ -114,13 +113,6 @@ function normalizeRuntimeTree(path) {
     return;
   }
   if (!stat.isFile()) fail(`unsupported runtime artifact: ${path}`);
-  let contents = readFileSync(path);
-  for (const variant of buildRootVariants) {
-    contents = replaceAll(contents, variant, canonicalRoot);
-  }
-  writeFileSync(path, contents, {
-    mode: stat.mode & 0o111 ? 0o750 : 0o640,
-  });
   chmodSync(path, stat.mode & 0o111 ? 0o750 : 0o640);
 }
 

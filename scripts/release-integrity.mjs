@@ -36,6 +36,7 @@ const requiredEntries = [
   "ecosystem.config.cjs",
   "scripts/create-xingyao-hermes-rollback.sh",
   "scripts/deploy.sh",
+  "scripts/extract-release-artifact.mjs",
   "scripts/prepare-standalone-release.mjs",
   "scripts/release-integrity.mjs",
   "scripts/validate-expand-migration.mjs",

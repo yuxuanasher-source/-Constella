@@ -55,6 +55,7 @@ const [
   hermesRunbook,
   bootstrapRunbook,
   migrationValidator,
+  artifactExtractor,
   ciWorkflow,
 ] = await Promise.all([
   readFile(join(process.cwd(), "scripts/deploy.sh"), "utf8"),
@@ -77,6 +78,7 @@ const [
     join(process.cwd(), "scripts/validate-expand-migration.mjs"),
     "utf8",
   ),
+  readFile(join(process.cwd(), "scripts/extract-release-artifact.mjs"), "utf8"),
   readFile(join(process.cwd(), ".github/workflows/ci.yml"), "utf8"),
 ]);
 
@@ -109,17 +111,27 @@ async function writeExecutable(path, contents) {
   await writeFile(path, contents, { mode: 0o755 });
 }
 
-test("builds the immutable candidate before touching migrations or current", () => {
+test("extracts the reviewed runtime before touching migrations or current", () => {
   const main = deploy.slice(position(deploy, "main() {"));
-  const build = position(main, 'RELEASE_SHA="$TARGET_SHA" pnpm run build');
+  const extract = position(main, "extract-release-artifact.mjs");
   const migrate = position(main, "apply_migrations");
   const switchCurrent = position(
     main,
     'log "Atomically switching current release',
   );
 
-  assert.ok(build < migrate, "candidate build must precede migrations");
+  assert.ok(extract < migrate, "artifact extraction must precede migrations");
   assert.ok(migrate < switchCurrent, "migrations must precede symlink switch");
+  assert.doesNotMatch(main, /pnpm run build|pnpm install/);
+  assert.match(main, /node "\$release_dir\/scripts\/extract-release-artifact\.mjs"/);
+  assert.match(
+    deploy,
+    /node "\$target\/scripts\/release-integrity\.mjs" verify/,
+  );
+  assert.match(
+    deploy,
+    /node "\$release_dir\/scripts\/validate-expand-migration\.mjs"/,
+  );
   assert.match(deploy, /pg_advisory_xact_lock/);
   assert.match(deploy, /printf 'begin;\\n'/);
   assert.match(deploy, /printf 'commit;\\n'/);
@@ -253,7 +265,7 @@ esac`,
   assert.equal(shell.status, 0, `${shell.stdout}\n${shell.stderr}`);
 });
 
-test("candidate build failure leaves database, PM2, and current release untouched", async (t) => {
+test("artifact extraction failure leaves database, PM2, and current release untouched", async (t) => {
   const sandbox = await mkdtemp(join(tmpdir(), "deploy-build-failure-"));
   t.after(() => rm(sandbox, { recursive: true, force: true }));
 
@@ -262,6 +274,7 @@ test("candidate build failure leaves database, PM2, and current release untouche
   const fakeBin = join(sandbox, "bin");
   const callsFile = join(sandbox, "calls.log");
   const envFile = join(sandbox, "production.env");
+  const releaseArtifact = join(sandbox, "release-runtime.tar");
   const previousSha = "a".repeat(40);
   const targetSha = "b".repeat(40);
   const previousTarget = join(releaseRoot, previousSha);
@@ -273,6 +286,7 @@ test("candidate build failure leaves database, PM2, and current release untouche
   await mkdir(previousTarget, { recursive: true });
   await mkdir(fakeBin);
   await writeFile(callsFile, "");
+  await writeFile(releaseArtifact, "trusted fixture artifact\n");
   await mkdir(join(previousTarget, "scripts"), { recursive: true });
   await mkdir(join(previousTarget, "app/api/health"), { recursive: true });
   await writeFile(
@@ -310,6 +324,10 @@ test("candidate build failure leaves database, PM2, and current release untouche
       ),
   );
   await writeFile(join(sandbox, "release-integrity.mjs"), "process.exit(0);\n");
+  await writeFile(
+    join(sandbox, "extract-release-artifact.mjs"),
+    "process.exit(Number(process.env.EXTRACT_STATUS ?? 0));\n",
+  );
 
   await writeExecutable(
     join(fakeBin, "git"),
@@ -321,7 +339,10 @@ case "$1 $2" in
   "rev-parse origin/"*) printf '%s\\n' "$FAKE_TARGET_SHA" ;;
   "rev-parse HEAD") basename "$REPO" ;;
   "diff --quiet"|"diff --cached") exit 0 ;;
-  "worktree add") mkdir -p -- "$4" ;;
+  "worktree add")
+    mkdir -p -- "$4/scripts"
+    cp -- "$FAKE_EXTRACTOR" "$4/scripts/extract-release-artifact.mjs"
+    ;;
   "worktree remove") exit 1 ;;
   *) exit 0 ;;
 esac
@@ -334,14 +355,6 @@ if [[ "$1" == "-p" ]]; then printf '20\\n'; else exec "$REAL_NODE" "$@"; fi
 `,
   );
   await writeExecutable(
-    join(fakeBin, "pnpm"),
-    `#!/usr/bin/env bash
-if [[ "$1" == "--version" ]]; then printf '10.12.1\\n'; exit 0; fi
-printf 'pnpm %s\\n' "$*" >> "$CALLS_FILE"
-if [[ "$1 $2" == "run build" ]]; then exit 17; fi
-`,
-  );
-  await writeExecutable(
     join(fakeBin, "stat"),
     `#!/usr/bin/env bash
 if [[ "\${FAKE_INSECURE_ENV:-0}" == 1 && "$2" == "%a" && "$4" == "$ENV_FILE" ]]; then
@@ -351,7 +364,7 @@ else
 fi
 `,
   );
-  for (const command of ["corepack", "docker", "curl", "flock"]) {
+  for (const command of ["docker", "curl", "flock"]) {
     await writeExecutable(
       join(fakeBin, command),
       `#!/usr/bin/env bash
@@ -384,7 +397,10 @@ export CALLS_FILE="$(native_to_unix "$CALLS_NATIVE")"
 export FAKE_TARGET_SHA="${targetSha}"
 export EXPECTED_SHA="\${EXPECTED_SHA_OVERRIDE:-${targetSha}}"
 export EXPECTED_RELEASE_MANIFEST_SHA256="${testManifestSha}"
+export RELEASE_ARTIFACT_PATH="$(native_to_unix "$ARTIFACT_NATIVE")"
+export EXPECTED_RELEASE_ARTIFACT_SHA256="${"d".repeat(64)}"
 export REAL_NODE="$(native_to_unix "$REAL_NODE_NATIVE")"
+export FAKE_EXTRACTOR="$(native_to_unix "$EXTRACTOR_NATIVE")"
 export PREVIOUS_TARGET="$(native_to_unix "$PREVIOUS_NATIVE")"
 export PREVIOUS_SHA="${previousSha}"
 export PREVIOUS_MANIFEST_SHA="${testManifestSha}"
@@ -402,7 +418,9 @@ bash "$deploy_script"`,
         BIN_NATIVE: fakeBin,
         DEPLOY_NATIVE: deployUnderTest,
         REAL_NODE_NATIVE: process.execPath,
+        EXTRACTOR_NATIVE: join(sandbox, "extract-release-artifact.mjs"),
         PREVIOUS_NATIVE: previousTarget,
+        ARTIFACT_NATIVE: releaseArtifact,
         ...extraEnv,
       },
     });
@@ -439,12 +457,16 @@ bash "$deploy_script"`,
   );
   await writeFile(callsFile, "");
 
-  const shell = invoke();
-  assert.notEqual(shell.status, 0, "the simulated candidate build must fail");
+  const shell = invoke({ EXTRACT_STATUS: "17" });
+  assert.notEqual(
+    shell.status,
+    0,
+    "the simulated artifact extraction must fail",
+  );
 
   const calls = await readFile(callsFile, "utf8");
-  assert.match(calls, /pnpm install --frozen-lockfile/);
-  assert.match(calls, /pnpm run build/);
+  assert.match(calls, /worktree add/);
+  assert.doesNotMatch(calls, /pnpm /);
   assert.doesNotMatch(calls, /^docker /m);
   assert.doesNotMatch(calls, /^pm2 (?:start|reload|save|delete)/m);
   const linkedTarget = await readlink(currentLink);
@@ -951,7 +973,16 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(ciWorkflow, /RELEASE_SHA:\s*\$\{\{ github\.sha \}\}/);
   assert.match(ciWorkflow, /prepare-standalone-release\.mjs/);
   assert.match(ciWorkflow, /release-integrity\.mjs write/);
+  assert.match(ciWorkflow, /Release Git SHA/);
+  assert.match(ciWorkflow, /tar --format=ustar/);
+  assert.match(ciWorkflow, /sha256sum "\$artifact"/);
+  assert.match(ciWorkflow, /actions\/upload-artifact@[0-9a-f]{40}\s+# v4/);
+  assert.match(ciWorkflow, /release-runtime-\$\{\{ github\.sha \}\}/);
   assert.match(ciWorkflow, /GITHUB_STEP_SUMMARY/);
+  assert.match(artifactExtractor, /release artifact does not match/);
+  assert.match(artifactExtractor, /POSIX ustar/);
+  assert.match(artifactExtractor, /unsafe release artifact path/);
+  assert.match(artifactExtractor, /entry type is not allowed/);
 
   assert.doesNotMatch(legacyRollback, /git reset --hard/);
   assert.match(legacyRollback, /CURRENT_LINK/);
@@ -972,9 +1003,18 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(bootstrapRunbook, /STAGING_PM2_NAME/);
   assert.match(bootstrapRunbook, /PENDING_MIGRATIONS/);
   assert.match(bootstrapRunbook, /must never call `apply_migrations`/);
+  assert.match(bootstrapRunbook, /CI_RUN_ID/);
+  assert.match(bootstrapRunbook, /conclusion !== "success"/);
+  assert.match(bootstrapRunbook, /run\.event !== "push"/);
+  assert.match(bootstrapRunbook, /run\.headBranch !==/);
+  assert.match(bootstrapRunbook, /EXPECTED_RELEASE_ARTIFACT_SHA256/);
+  assert.match(bootstrapRunbook, /RELEASE_ARTIFACT_PATH/);
+  assert.match(bootstrapRunbook, /extract-release-artifact\.mjs/);
   assert.match(bootstrapRunbook, /pm2 save/);
   assert.match(bootstrapRunbook, /legacy-pm2-before-bootstrap\.redacted\.json/);
   assert.match(bootstrapRunbook, /Never store raw `pm2 jlist`/);
+  assert.match(hermesRunbook, /EXPECTED_RELEASE_ARTIFACT_SHA256/);
+  assert.match(hermesRunbook, /RELEASE_ARTIFACT_PATH/);
 
   const mainActivation = main.slice(position(main, "atomic_switch_current"));
   const reload = position(mainActivation, 'reload_pm2 "$TARGET_SHA"');

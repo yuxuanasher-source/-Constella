@@ -37,6 +37,7 @@ describe("release integrity manifest", () => {
         "ecosystem.config.cjs": "module.exports = {};\n",
         "scripts/create-xingyao-hermes-rollback.sh": "#!/usr/bin/env bash\n",
         "scripts/deploy.sh": "#!/usr/bin/env bash\n",
+        "scripts/extract-release-artifact.mjs": "process.exit(0);\n",
         "scripts/prepare-standalone-release.mjs": "process.exit(0);\n",
         "scripts/release-integrity.mjs": "process.exit(0);\n",
         "scripts/validate-expand-migration.mjs": "process.exit(0);\n",
