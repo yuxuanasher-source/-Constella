@@ -1759,6 +1759,81 @@ describe("knowledge-base expiring share controls", () => {
     expect(screen.queryByLabelText("分享链接")).not.toBeInTheDocument();
     expect(screen.queryByText(/^有效期至：/)).not.toBeInTheDocument();
   }, 15_000);
+
+  it("clears a revoked displayed share after a replacement create fails", async () => {
+    let createAttempts = 0;
+    let resolveRevoke;
+    const deferredRevoke = new Promise((resolve) => {
+      resolveRevoke = resolve;
+    });
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null }), { status: 200 });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        return new Response(JSON.stringify({ shares: [] }), { status: 200 });
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        createAttempts += 1;
+        if (createAttempts === 2) {
+          return new Response(JSON.stringify({ error: "Sharing unavailable" }), {
+            status: 503,
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            id: "33333333-3333-4333-8333-333333333333",
+            url: "https://app.example.test/share/kb/revoked-x-token",
+            expiresAt: "2026-08-07T12:00:00.000Z",
+          }),
+          { status: 200 },
+        );
+      }
+      if (
+        url.includes("33333333-3333-4333-8333-333333333333/revoke") &&
+        method === "POST"
+      ) {
+        return deferredRevoke;
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    await screen.findByDisplayValue(
+      "https://app.example.test/share/kb/revoked-x-token",
+    );
+    const xRow = screen.getByTestId(
+      "knowledge-share-33333333-3333-4333-8333-333333333333",
+    );
+    fireEvent.click(within(xRow).getByRole("button", { name: "撤销" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+    await screen.findByText("分享失败：Sharing unavailable");
+    expect(screen.getByLabelText("分享链接")).toHaveValue(
+      "https://app.example.test/share/kb/revoked-x-token",
+    );
+
+    await act(async () => {
+      resolveRevoke(
+        new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      );
+    });
+
+    await waitFor(() => expect(xRow).not.toBeInTheDocument());
+    expect(screen.queryByLabelText("分享链接")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^有效期至：/)).not.toBeInTheDocument();
+    expect(screen.getByText("分享失败：Sharing unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("分享链接已撤销。")).not.toBeInTheDocument();
+  }, 15_000);
 });
 
 describe("OpsReferenceApp role dashboard contract", () => {

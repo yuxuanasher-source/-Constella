@@ -29390,6 +29390,7 @@ function ScreenKnowledge() {
   const [docMsg, setDocMsg] = React.useState("");
   const [shareBusy, setShareBusy] = React.useState(false);
   const [syncState, setSyncState] = React.useState("loading"); // loading|synced|local
+  const shareUrlShareIdRef = React.useRef(shareUrlShareId);
   const hydratedRef = React.useRef(false);
   const remoteTimerRef = React.useRef(null);
   const pendingShareAttemptRef = React.useRef(null);
@@ -29462,6 +29463,10 @@ function ScreenKnowledge() {
   );
 
   React.useEffect(() => {
+    shareUrlShareIdRef.current = shareUrlShareId;
+  }, [shareUrlShareId]);
+
+  React.useEffect(() => {
     if (
       pendingShareAttemptRef.current &&
       !isCurrentShareAttempt(pendingShareAttemptRef.current)
@@ -29486,6 +29491,7 @@ function ScreenKnowledge() {
     activeRevokeOperationRef.current = null;
     setRevokingShareId(null);
     setShareUrl("");
+    shareUrlShareIdRef.current = null;
     setShareUrlShareId(null);
     setShareExpiresAt("");
     setShareExpiryDays(7);
@@ -29821,6 +29827,7 @@ function ScreenKnowledge() {
                         terminalAttempt = true;
                         shareDisplayEpochRef.current += 1;
                         setShareUrl(result.url);
+                        shareUrlShareIdRef.current = result.id;
                         setShareUrlShareId(result.id);
                         setShareExpiresAt(result.expiresAt || "");
                         setActiveShares((shares) => [
@@ -30098,15 +30105,18 @@ function ScreenKnowledge() {
                                   shares.filter((item) => item.id !== share.id),
                                 );
                                 if (
+                                  share.id === shareUrlShareIdRef.current
+                                ) {
+                                  setShareUrl("");
+                                  shareUrlShareIdRef.current = null;
+                                  setShareUrlShareId(null);
+                                  setShareExpiresAt("");
+                                }
+                                if (
                                   operation.displayEpoch ===
                                   shareDisplayEpochRef.current
                                 ) {
                                   setDocMsg("分享链接已撤销。");
-                                  if (share.id === shareUrlShareId) {
-                                    setShareUrl("");
-                                    setShareUrlShareId(null);
-                                    setShareExpiresAt("");
-                                  }
                                 }
                               } catch {
                                 if (!isCurrentRevokeOperation(operation)) return;
