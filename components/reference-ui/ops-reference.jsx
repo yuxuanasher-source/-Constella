@@ -29275,18 +29275,48 @@ function kbExportPdf(doc) {
   w.document.close();
 }
 
-async function kbShareDoc(doc) {
+function kbShareRequestKey() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `kb-share-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+async function kbShareDoc(doc, expiresInDays, requestKey) {
   const res = await globalThis.fetch("/api/knowledge-base/share", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title: doc.name, contentMd: doc.contentMd || "" }),
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": requestKey,
+    },
+    body: JSON.stringify({
+      title: doc.name,
+      contentMd: doc.contentMd || "",
+      sourceDocumentId: doc.id,
+      expiresInDays,
+    }),
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || "分享失败");
   }
   const payload = await res.json();
-  return payload.url;
+  return payload;
+}
+
+async function kbListActiveShares(sourceDocumentId) {
+  const res = await globalThis.fetch(
+    `/api/knowledge-base/share?sourceDocumentId=${encodeURIComponent(sourceDocumentId)}`,
+  );
+  if (!res.ok) throw new Error("无法读取活跃分享");
+  const payload = await res.json();
+  return Array.isArray(payload.shares) ? payload.shares : [];
+}
+
+async function kbRevokeShare(shareId) {
+  const res = await globalThis.fetch(
+    `/api/knowledge-base/share/${encodeURIComponent(shareId)}/revoke`,
+    { method: "POST" },
+  );
+  if (!res.ok) throw new Error("撤销失败");
 }
 
 function KnowledgeDocEditor({ doc, onChange }) {
@@ -29311,6 +29341,11 @@ function ScreenKnowledge() {
   const [menu, setMenu] = React.useState(null);
   const [moveId, setMoveId] = React.useState(null);
   const [shareUrl, setShareUrl] = React.useState("");
+  const [shareExpiresAt, setShareExpiresAt] = React.useState("");
+  const [shareExpiryDays, setShareExpiryDays] = React.useState(7);
+  const [activeShares, setActiveShares] = React.useState([]);
+  const [activeSharesLoading, setActiveSharesLoading] = React.useState(false);
+  const [revokingShareId, setRevokingShareId] = React.useState(null);
   const [docMsg, setDocMsg] = React.useState("");
   const [shareBusy, setShareBusy] = React.useState(false);
   const [syncState, setSyncState] = React.useState("loading"); // loading|synced|local
@@ -29353,8 +29388,35 @@ function ScreenKnowledge() {
   // 切换文档时清空上一篇的分享链接 / 提示。
   React.useEffect(() => {
     setShareUrl("");
+    setShareExpiresAt("");
+    setShareExpiryDays(7);
     setDocMsg("");
   }, [selectedId]);
+
+  React.useEffect(() => {
+    let alive = true;
+    if (selected?.type !== "doc") {
+      setActiveShares([]);
+      setActiveSharesLoading(false);
+      return () => {
+        alive = false;
+      };
+    }
+    setActiveSharesLoading(true);
+    kbListActiveShares(selected.id)
+      .then((shares) => {
+        if (alive) setActiveShares(shares);
+      })
+      .catch(() => {
+        if (alive) setActiveShares([]);
+      })
+      .finally(() => {
+        if (alive) setActiveSharesLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [selected?.id, selected?.type]);
 
   const toggle = (id) =>
     setExpanded((e) => {
@@ -29620,12 +29682,27 @@ function ScreenKnowledge() {
                     onClick={async () => {
                       setDocMsg("");
                       setShareUrl("");
+                      setShareExpiresAt("");
                       setShareBusy(true);
                       try {
-                        const url = await kbShareDoc(selected);
-                        setShareUrl(url);
+                        const result = await kbShareDoc(
+                          selected,
+                          shareExpiryDays,
+                          kbShareRequestKey(),
+                        );
+                        setShareUrl(result.url);
+                        setShareExpiresAt(result.expiresAt || "");
+                        setActiveShares((shares) => [
+                          {
+                            id: result.id,
+                            title: selected.name,
+                            createdAt: new Date().toISOString(),
+                            expiresAt: result.expiresAt,
+                          },
+                          ...shares.filter((share) => share.id !== result.id),
+                        ]);
                         try {
-                          await navigator.clipboard?.writeText(url);
+                          await navigator.clipboard?.writeText(result.url);
                           setDocMsg("分享链接已生成并复制到剪贴板。");
                         } catch {
                           setDocMsg("分享链接已生成。");
@@ -29643,6 +29720,38 @@ function ScreenKnowledge() {
                   >
                     {shareBusy ? "生成中…" : "分享链接"}
                   </Button>
+                  <label
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                    }}
+                  >
+                    分享有效期
+                    <select
+                      aria-label="分享有效期"
+                      value={String(shareExpiryDays)}
+                      disabled={shareBusy}
+                      onChange={(event) =>
+                        setShareExpiryDays(Number(event.target.value))
+                      }
+                      style={{
+                        height: 28,
+                        border: "1px solid var(--line)",
+                        borderRadius: 6,
+                        background: "#fff",
+                        color: "var(--ink-700)",
+                        padding: "0 8px",
+                        fontSize: 12,
+                      }}
+                    >
+                      <option value="1">1 天</option>
+                      <option value="7">7 天</option>
+                      <option value="30">30 天</option>
+                    </select>
+                  </label>
                   <Button
                     size="sm"
                     kind="default"
@@ -29681,6 +29790,12 @@ function ScreenKnowledge() {
                   {docMsg ? (
                     <div style={{ marginBottom: shareUrl ? 6 : 0 }}>
                       {docMsg}
+                    </div>
+                  ) : null}
+                  {shareExpiresAt ? (
+                    <div style={{ marginBottom: shareUrl ? 6 : 0 }}>
+                      有效期至：
+                      {new Date(shareExpiresAt).toLocaleString("zh-CN")}
                     </div>
                   ) : null}
                   {shareUrl ? (
@@ -29722,6 +29837,70 @@ function ScreenKnowledge() {
                       </a>
                     </div>
                   ) : null}
+                </div>
+              ) : null}
+              {selected.type === "doc" &&
+              (activeSharesLoading || activeShares.length > 0) ? (
+                <div
+                  style={{
+                    marginBottom: 12,
+                    padding: "10px 12px",
+                    border: "1px solid var(--line)",
+                    borderRadius: 8,
+                    background: "#fff",
+                    fontSize: 12,
+                    color: "var(--ink-700)",
+                  }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                    活跃分享
+                  </div>
+                  {activeSharesLoading ? (
+                    <div style={{ color: "var(--ink-400)" }}>读取中…</div>
+                  ) : (
+                    activeShares.map((share) => (
+                      <div
+                        key={share.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "6px 0",
+                          borderTop: "1px solid var(--line)",
+                        }}
+                      >
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          {share.title} · 有效期至 {" "}
+                          {new Date(share.expiresAt).toLocaleString("zh-CN")}
+                        </span>
+                        <Button
+                          size="sm"
+                          kind="danger"
+                          disabled={revokingShareId === share.id}
+                          onClick={async () => {
+                            setRevokingShareId(share.id);
+                            try {
+                              await kbRevokeShare(share.id);
+                              setActiveShares((shares) =>
+                                shares.filter((item) => item.id !== share.id),
+                              );
+                              setDocMsg("分享链接已撤销。");
+                              if (shareUrl && share.id === activeShares[0]?.id) {
+                                setShareUrl("");
+                                setShareExpiresAt("");
+                              }
+                            } catch {
+                              setDocMsg("撤销失败，请稍后重试。");
+                            } finally {
+                              setRevokingShareId(null);
+                            }
+                          }}
+                        >
+                          {revokingShareId === share.id ? "撤销中…" : "撤销"}
+                        </Button>
+                      </div>
+                    ))
+                  )}
                 </div>
               ) : null}
               <input

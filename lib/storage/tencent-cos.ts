@@ -64,3 +64,14 @@ export async function cosPutJson(key: string, value: unknown): Promise<void> {
     ContentType: "application/json",
   });
 }
+
+export async function cosDeleteObject(key: string): Promise<void> {
+  const ctx = getClient();
+  if (!ctx) throw new Error("Tencent COS is not configured");
+  const { cos, config } = ctx;
+  await cos.deleteObject({
+    Bucket: config.bucket,
+    Region: config.region,
+    Key: key,
+  });
+}

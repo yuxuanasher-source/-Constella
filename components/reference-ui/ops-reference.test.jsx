@@ -607,6 +607,123 @@ describe("OpsReferenceApp responsive navigation shell", () => {
   });
 });
 
+describe("knowledge-base expiring share controls", () => {
+  afterEach(() => {
+    window.localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it("defaults to seven days and sends the selected lifetime with a document id", async () => {
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null, configured: false }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        return new Response(JSON.stringify({ shares: [] }), { status: 200 });
+      }
+      if (url === "/api/knowledge-base/share" && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            id: "33333333-3333-4333-8333-333333333333",
+            token: "token-once",
+            url: "https://app.example.test/share/kb/token-once",
+            expiresAt: "2026-08-01T12:00:00.000Z",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+
+    const expirySelect = await screen.findByLabelText("分享有效期");
+    expect(expirySelect).toHaveValue("7");
+    fireEvent.change(expirySelect, { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "分享链接" }));
+
+    expect((await screen.findAllByText(/2026.*8.*1/)).length).toBeGreaterThan(0);
+    const createCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url) === "/api/knowledge-base/share" && init?.method === "POST",
+    );
+    expect(createCall).toBeTruthy();
+    expect(JSON.parse(createCall[1].body)).toMatchObject({
+      sourceDocumentId: "kb-doc-usage-tutorial",
+      expiresInDays: 1,
+    });
+    expect(createCall[1].headers["Idempotency-Key"]).toBeTruthy();
+  }, 15_000);
+
+  it("shows the current document's active shares and revokes in place", async () => {
+    let revoked = false;
+    const fetchMock = vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      const method = init.method || "GET";
+      if (url === "/api/knowledge-base" && method === "GET") {
+        return new Response(JSON.stringify({ store: null, configured: false }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith("/api/knowledge-base/share?") && method === "GET") {
+        return new Response(
+          JSON.stringify({
+            shares: revoked
+              ? []
+              : [
+                  {
+                    id: "33333333-3333-4333-8333-333333333333",
+                    title: "📖 使用教程",
+                    createdAt: "2026-07-31T12:00:00.000Z",
+                    expiresAt: "2026-08-07T12:00:00.000Z",
+                  },
+                ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (
+        url ===
+          "/api/knowledge-base/share/33333333-3333-4333-8333-333333333333/revoke" &&
+        method === "POST"
+      ) {
+        revoked = true;
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<OpsReferenceApp initialRoute="knowledge" />);
+    fireEvent.click(await screen.findByText("📖 使用教程"));
+
+    expect(await screen.findByText("活跃分享")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, element) =>
+          element?.tagName === "SPAN" &&
+          element.textContent.includes("有效期至") &&
+          element.textContent.includes("2026"),
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "撤销" })).not.toBeInTheDocument(),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/knowledge-base/share/33333333-3333-4333-8333-333333333333/revoke",
+      expect.objectContaining({ method: "POST" }),
+    );
+  }, 15_000);
+});
+
 describe("OpsReferenceApp role dashboard contract", () => {
   afterEach(() => {
     vi.doUnmock("react");

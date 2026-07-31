@@ -17,6 +17,8 @@ export type AuditAction =
   | "extend_share_board"
   | "reopen_share_board"
   | "rotate_share_board_token"
+  | "create_knowledge_share"
+  | "revoke_knowledge_share"
   | "resolve_share_playback_issue"
   | "vendor_review_submit"
   | "vendor_review_sync"

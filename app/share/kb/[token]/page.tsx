@@ -1,21 +1,29 @@
+import type { Metadata } from "next";
+
+import {
+  createKnowledgeShareRepository,
+  getPublicKnowledgeShare,
+} from "@/features/knowledge-base/knowledge-share";
+import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
 import {
   MARKDOWN_DOC_CSS,
   renderMarkdownToHtml,
 } from "@/lib/markdown/render-markdown";
-import { cosGetJson } from "@/lib/storage/tencent-cos";
+import {
+  cosGetJson,
+  isCosConfigured,
+} from "@/lib/storage/tencent-cos";
 
 export const dynamic = "force-dynamic";
 
-type SharedDoc = {
-  title?: string;
-  contentMd?: string;
-  sharedBy?: string;
-  createdAt?: string;
+export const metadata: Metadata = {
+  robots: {
+    index: false,
+    follow: false,
+    noarchive: true,
+    nocache: true,
+  },
 };
-
-function isSafeToken(token: string): boolean {
-  return /^[a-zA-Z0-9_-]{8,80}$/.test(token);
-}
 
 export default async function SharedKnowledgeDocPage({
   params,
@@ -23,39 +31,30 @@ export default async function SharedKnowledgeDocPage({
   params: Promise<{ token: string }>;
 }) {
   const { token } = await params;
-
-  let doc: SharedDoc | null = null;
-  if (isSafeToken(token)) {
+  let doc: Awaited<ReturnType<typeof getPublicKnowledgeShare>> = null;
+  const admin = createSupabaseAdminClient();
+  if (admin && isCosConfigured()) {
     try {
-      doc = await cosGetJson<SharedDoc>(`knowledge-base-share/${token}.json`);
+      doc = await getPublicKnowledgeShare(token, {
+        repository: createKnowledgeShareRepository(admin),
+        getSnapshot: cosGetJson,
+      });
     } catch {
       doc = null;
     }
   }
 
-  if (!doc || !doc.contentMd) {
-    return (
-      <main
-        style={{
-          fontFamily:
-            '-apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
-          maxWidth: 640,
-          margin: "80px auto",
-          padding: "0 24px",
-          textAlign: "center",
-          color: "#64748b",
-        }}
-      >
-        <h1 style={{ fontSize: 20, color: "#1f2733" }}>链接无效或已过期</h1>
-        <p>该分享链接对应的文档不存在，或云端存储未配置。</p>
-      </main>
-    );
+  if (!doc) {
+    return <InvalidKnowledgeShare />;
   }
 
   const html = renderMarkdownToHtml(doc.contentMd);
   const meta = [
     doc.sharedBy ? `分享人：${doc.sharedBy}` : "",
     doc.createdAt ? new Date(doc.createdAt).toLocaleString("zh-CN") : "",
+    doc.expiresAt
+      ? `有效期至 ${new Date(doc.expiresAt).toLocaleString("zh-CN")}`
+      : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -71,7 +70,7 @@ export default async function SharedKnowledgeDocPage({
           borderBottom: "1px solid #e2e8f0",
         }}
       >
-        <div style={{ fontSize: 12, color: "#94a3b8", padding: "8px 0" }}>
+        <div style={{ fontSize: 12, color: "#64748b", padding: "8px 0" }}>
           经营舱 · 直播复盘分享 {meta ? `· ${meta}` : ""}
         </div>
       </div>
@@ -79,6 +78,25 @@ export default async function SharedKnowledgeDocPage({
         <h1>{doc.title || "复盘文档"}</h1>
         <div dangerouslySetInnerHTML={{ __html: html }} />
       </article>
+    </main>
+  );
+}
+
+function InvalidKnowledgeShare() {
+  return (
+    <main
+      style={{
+        fontFamily:
+          '-apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
+        maxWidth: 640,
+        margin: "80px auto",
+        padding: "0 24px",
+        textAlign: "center",
+        color: "#64748b",
+      }}
+    >
+      <h1 style={{ fontSize: 20, color: "#1f2733" }}>链接无效或已过期</h1>
+      <p>此链接当前不可访问。</p>
     </main>
   );
 }
