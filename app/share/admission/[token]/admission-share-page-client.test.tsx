@@ -165,6 +165,22 @@ describe("AdmissionSharePageClient", () => {
     expect(container.textContent).not.toContain("accessCode");
   });
 
+  it("uses drafts from the combined hydrate response without a second request", async () => {
+    vi.mocked(loadAdmissionShareBoard).mockResolvedValue({
+      shareBoard: formalBoard,
+      vendorCheckpoints: [],
+      reviewDrafts: [...serverDrafts],
+    });
+
+    render(<AdmissionSharePageClient token="public-token" />);
+
+    expect(
+      await screen.findAllByText(formalBoard.items[0].streamer.displayName),
+    ).toHaveLength(2);
+    expect(loadAdmissionShareBoard).toHaveBeenCalledWith("public-token");
+    expect(loadAdmissionShareDrafts).not.toHaveBeenCalled();
+  });
+
   it("autosaves a remark after 500ms with the current CAS revision", async () => {
     render(<AdmissionSharePageClient token="public-token" />);
     await screen.findAllByText("待判断主播");

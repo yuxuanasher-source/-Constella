@@ -20,7 +20,10 @@ import {
   setAdmissionShareAccessSession,
 } from "@/lib/http/admission-share-access-session";
 
-import { publicAdmissionShareErrorResponse } from "../public-route-utils";
+import {
+  publicAdmissionReviewDraftDto,
+  publicAdmissionShareErrorResponse,
+} from "../public-route-utils";
 
 export async function GET(
   request: Request,
@@ -57,10 +60,15 @@ export async function GET(
 
     // 厂家端可选理由标签（仅 key/名称/说明，不泄漏内部配置）。
     // 解析失败不影响看板本身，退回内置默认字典。
-    const rubric = await resolveAdmissionRubric({
-      client: supabase as unknown as AdmissionReviewClient,
-      organizationId: organizationId ?? "",
-    }).catch(() => defaultAdmissionRubric());
+    const [rubric, reviewDrafts] = await Promise.all([
+      resolveAdmissionRubric({
+        client: supabase as unknown as AdmissionReviewClient,
+        organizationId: organizationId ?? "",
+      }).catch(() => defaultAdmissionRubric()),
+      shareBoard.mode === "formal_review"
+        ? repo.listReviewDrafts(shareBoard.id)
+        : Promise.resolve([]),
+    ]);
     const vendorCheckpoints = checkpointsForStage(rubric, "vendor_second").map(
       (checkpoint) => ({
         key: checkpoint.key,
@@ -72,6 +80,7 @@ export async function GET(
     const response = NextResponse.json({
       shareBoard,
       vendorCheckpoints,
+      reviewDrafts: reviewDrafts.map(publicAdmissionReviewDraftDto),
     });
     if (preparedSession?.created) {
       setAdmissionShareAccessSession(response, {

@@ -13,6 +13,10 @@ import {
   setAdmissionShareAccessSession,
 } from "@/lib/http/admission-share-access-session";
 
+const { listReviewDrafts } = vi.hoisted(() => ({
+  listReviewDrafts: vi.fn(),
+}));
+
 vi.mock(
   "@/features/applications/admission-share-board",
   async (importOriginal) => {
@@ -25,7 +29,7 @@ vi.mock(
       SupabaseAdmissionShareBoardRepository: vi
         .fn()
         .mockImplementation(function () {
-          return { repo: "share-repo" };
+          return { repo: "share-repo", listReviewDrafts };
         }),
       getPublicAdmissionShareBoardContextWithSession: vi.fn(),
     };
@@ -62,6 +66,17 @@ let publicContext: Awaited<
 describe("public admission share route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    listReviewDrafts.mockResolvedValue([
+      {
+        recordingSubmissionId: "rec-1",
+        recordingVersion: 2,
+        decision: "backup",
+        remark: "Can be backup.",
+        reasonCodes: [],
+        revision: 1,
+        updatedAt: "2026-06-07T00:00:00.000Z",
+      },
+    ]);
     vi.mocked(createSupabaseAdminClient).mockReturnValue(supabase as never);
     vi.mocked(readAdmissionShareAccessSession).mockReturnValue(
       "opaque-session-token",
@@ -156,7 +171,7 @@ describe("public admission share route", () => {
     ).toHaveBeenCalledTimes(1);
     expect(getPublicAdmissionShareBoardContextWithSession).toHaveBeenCalledWith(
       {
-        repo: { repo: "share-repo" },
+        repo: expect.objectContaining({ repo: "share-repo" }),
         accessStore: { store: "access-store" },
         token: "plain-token",
         sessionToken: "opaque-session-token",
@@ -235,7 +250,7 @@ describe("public admission share route", () => {
 
     expect(getPublicAdmissionShareBoardContextWithSession).toHaveBeenCalledWith(
       {
-        repo: { repo: "share-repo" },
+        repo: expect.objectContaining({ repo: "share-repo" }),
         accessStore: { store: "access-store" },
         token: "plain-token",
         sessionToken: undefined,
@@ -267,5 +282,28 @@ describe("public admission share route", () => {
     expect(getPublicAdmissionShareBoardContextWithSession).toHaveBeenCalledWith(
       expect.objectContaining({ sessionToken: undefined }),
     );
+  });
+
+  it("includes formal review drafts in the combined hydrate response", async () => {
+    const response = await GET(
+      new Request("http://localhost/api/public/admission-share/plain-token"),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(
+      expect.objectContaining({
+        reviewDrafts: [
+          expect.objectContaining({
+            recordingSubmissionId: "rec-1",
+            recordingVersion: 2,
+            decision: "backup",
+            revision: 1,
+          }),
+        ],
+      }),
+    );
+    expect(listReviewDrafts).toHaveBeenCalledOnce();
+    expect(listReviewDrafts).toHaveBeenCalledWith("share-1");
   });
 });
