@@ -1,3 +1,4 @@
+-- deploy: expand
 create table public.usage_reservations (
   id uuid primary key,
   organization_id uuid not null references public.organizations(id) on delete cascade,

@@ -12,6 +12,10 @@ const migration = readFileSync(
 );
 
 describe("atomic OCR enqueue migration", () => {
+  it("declares the migration safe for the atomic expand phase", () => {
+    expect(migration.startsWith("-- deploy: expand\n")).toBe(true);
+  });
+
   it("writes the supplied screenshot id into the OCR result row", () => {
     expect(migration).toMatch(
       /insert into public\.ocr_results \(\s*organization_id,\s*live_report_id,\s*screenshot_id,[\s\S]*?\)\s*values \(\s*v_report\.organization_id,\s*p_live_report_id,\s*p_screenshot_id,/,
