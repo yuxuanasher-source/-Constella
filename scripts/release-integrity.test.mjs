@@ -30,11 +30,17 @@ describe("release integrity manifest", () => {
       mkdirSync(join(root, ".next/standalone/node_modules/next"), {
         recursive: true,
       });
+      mkdirSync(join(root, ".next/standalone/node_modules/next/source-map"));
+      mkdirSync(join(root, ".next/standalone/node_modules/next/source-map08"));
       mkdirSync(join(root, "scripts"), { recursive: true });
       mkdirSync(join(root, "supabase/migrations"), { recursive: true });
       const fixtureFiles = {
         ".next/standalone/server.js": "server\n",
         ".next/standalone/node_modules/next/runtime.js": "next runtime\n",
+        ".next/standalone/node_modules/next/source-map/runtime.js":
+          "source map\n",
+        ".next/standalone/node_modules/next/source-map08/runtime.js":
+          "source map 08\n",
         "ecosystem.config.cjs": "module.exports = {};\n",
         "scripts/create-xingyao-hermes-rollback.sh": "#!/usr/bin/env bash\n",
         "scripts/deploy.sh": "#!/usr/bin/env bash\n",
@@ -91,6 +97,18 @@ describe("release integrity manifest", () => {
         manifest.files.find(({ path }) => path === ".next/standalone/server.js")
           ?.mode,
       ).toBe(0o640);
+      expect(
+        manifest.files.findIndex(
+          ({ path }) =>
+            path === ".next/standalone/node_modules/next/source-map/runtime.js",
+        ),
+      ).toBeLessThan(
+        manifest.files.findIndex(
+          ({ path }) =>
+            path ===
+            ".next/standalone/node_modules/next/source-map08/runtime.js",
+        ),
+      );
       chmodSync(join(root, "scripts/deploy.sh"), 0o700);
       chmodSync(join(root, "ecosystem.config.cjs"), 0o600);
       expect(

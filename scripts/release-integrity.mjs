@@ -163,9 +163,11 @@ async function snapshot({ expectedModes, executablePaths } = {}) {
         entry,
       ]),
     ).values(),
-  ].sort((left, right) =>
-    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
-  );
+  ].sort((left, right) => {
+    const leftPath = relativeReleasePath(left.path);
+    const rightPath = relativeReleasePath(right.path);
+    return leftPath < rightPath ? -1 : leftPath > rightPath ? 1 : 0;
+  });
   const files = [];
   for (const entry of uniqueFiles) {
     const path = relativeReleasePath(entry.path);
