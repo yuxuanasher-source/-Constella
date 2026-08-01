@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createOcrJob, listOcrJobs } from "@/features/ai/ocr-jobs";
+import { UsageHardBlockError } from "@/features/billing/usage-reservations";
 import { getAuthContext } from "@/lib/auth/context";
 import {
   createSupabaseAdminClient,
@@ -199,7 +200,22 @@ function optionalNumber(value: unknown): number | undefined {
 }
 
 function errorResponse(error: unknown) {
+  if (error instanceof UsageHardBlockError) {
+    return NextResponse.json(
+      {
+        error: "OCR usage limit reached",
+        code: "usage_limit_reached",
+      },
+      { status: 429 },
+    );
+  }
   if (error instanceof Error) {
+    if (typeof (error as { code?: unknown }).code === "string") {
+      return NextResponse.json(
+        { error: "OCR job request failed" },
+        { status: 500 },
+      );
+    }
     return NextResponse.json(
       { error: error.message },
       { status: statusForServiceError(error) },

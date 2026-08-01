@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { UsageHardBlockError } from "@/features/billing/usage-reservations";
+
 import {
   cancelLiveTask,
   confirmLiveReportOcrResult,
@@ -588,6 +590,42 @@ describe("live operations service", () => {
       "org/report-screenshots",
     );
     expect(JSON.stringify(notify.mock.calls)).not.toContain(screenshotSha256);
+  });
+
+  it("preserves the OCR hard-block type after compensating report and screenshot writes", async () => {
+    vi.mocked(repo.getLiveTaskById).mockResolvedValueOnce({
+      ...task,
+      status: "pending_report",
+      systemDuration: 80,
+    });
+    const hardBlock = new UsageHardBlockError();
+    const createOcrJob = vi.fn(async () => {
+      throw hardBlock;
+    });
+
+    await expect(
+      submitLiveReportScreenshotForOcr({
+        repo,
+        audit,
+        notify,
+        actor: streamerActor,
+        taskId: "task-1",
+        input: ocrInput,
+        resolveScreenshotContent: resolveScreenshotContent(),
+        createOcrJob,
+        deleteReportScreenshot,
+      }),
+    ).rejects.toBe(hardBlock);
+
+    expect(deleteReportScreenshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: databaseScreenshotId,
+        liveReportId: "report-1",
+      }),
+    );
+    expect(repo.updateLiveReport).toHaveBeenCalledWith("report-1", {
+      status: "voided",
+    });
   });
 
   it("queues OCR from a rejected report retry path", async () => {

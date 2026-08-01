@@ -9,6 +9,11 @@ import {
   runExpirePendingOrdersSweep,
   runRenewalSweep,
 } from "@/features/billing/subscription-jobs";
+import {
+  listStaleUsageReservations,
+  markStaleUsageReservationReviewed,
+  resetStaleUsageReservationReview,
+} from "@/features/billing/usage-reservations";
 import { recordFunnelEvent } from "@/features/funnel/funnel-events";
 import { writeAuditLog } from "@/lib/audit/audit";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
@@ -17,6 +22,10 @@ import { sendNotification } from "@/lib/notify/notify";
 type RouteContext = {
   params: Promise<{ task: string }>;
 };
+
+const STALE_RESERVATION_THRESHOLD_HOURS = 24;
+const DEFAULT_STALE_RESERVATION_LIMIT = 500;
+const MAX_STALE_RESERVATION_LIMIT = 500;
 
 /**
  * 计费定时任务入口（由外部调度器以 x-cron-secret 触发，service-role 执行）。
@@ -39,6 +48,102 @@ export async function POST(request: Request, context: RouteContext) {
   try {
     const { task } = await context.params;
     const repo = createSupabaseBillingRepo(admin);
+
+    if (task === "stale-usage-reservations") {
+      try {
+        const requestedLimit = Number(
+          new URL(request.url).searchParams.get("limit") ??
+            DEFAULT_STALE_RESERVATION_LIMIT,
+        );
+        const limit = Number.isFinite(requestedLimit)
+          ? Math.max(
+              1,
+              Math.min(Math.trunc(requestedLimit), MAX_STALE_RESERVATION_LIMIT),
+            )
+          : DEFAULT_STALE_RESERVATION_LIMIT;
+        const before = new Date(
+          Date.now() - STALE_RESERVATION_THRESHOLD_HOURS * 60 * 60 * 1000,
+        ).toISOString();
+        const candidates = await listStaleUsageReservations({
+          client: admin,
+          before,
+          limit,
+        });
+        const reviewed = [];
+
+        for (const candidate of candidates) {
+          const marked = await markStaleUsageReservationReviewed({
+            client: admin,
+            reservationId: candidate.reservationId,
+            expectedReservedAt: candidate.reservedAt,
+            expectedLastReviewedAt: candidate.lastReviewedAt,
+            before,
+          });
+          if (!marked) {
+            continue;
+          }
+
+          try {
+            await writeAuditLog(admin, {
+              organizationId: marked.organizationId,
+              action: "update",
+              module: "billing",
+              objectType: "usage_reservation",
+              objectId: marked.reservationId,
+              after: {
+                reservationId: marked.reservationId,
+                source: marked.source,
+                reservedAt: marked.reservedAt,
+                ageSeconds: marked.ageSeconds,
+              },
+              changedFields: ["last_reviewed_at"],
+              reason: "stale_usage_reservation_reviewed",
+            });
+          } catch {
+            try {
+              await resetStaleUsageReservationReview({
+                client: admin,
+                reservationId: marked.reservationId,
+                expectedReservedAt: marked.reservedAt,
+                failedReviewedAt: marked.reviewedAt,
+                previousReviewedAt: marked.previousReviewedAt,
+              });
+            } catch {
+              // Keep the response generic; a conditional reset can be retried
+              // without exposing database or audit details to the caller.
+            }
+            throw new Error("Stale usage reservation review failed");
+          }
+
+          reviewed.push(marked);
+        }
+
+        return NextResponse.json({
+          task,
+          summary: {
+            before,
+            thresholdHours: STALE_RESERVATION_THRESHOLD_HOURS,
+            limit,
+            candidateCount: candidates.length,
+            reviewedCount: reviewed.length,
+            skippedCount: candidates.length - reviewed.length,
+            organizationCount: new Set(
+              reviewed.map((reservation) => reservation.organizationId),
+            ).size,
+            oldestAgeSeconds: reviewed.reduce(
+              (oldest, reservation) =>
+                Math.max(oldest, reservation.ageSeconds),
+              0,
+            ),
+          },
+        });
+      } catch {
+        return NextResponse.json(
+          { error: "Stale usage reservation review failed" },
+          { status: 500 },
+        );
+      }
+    }
 
     if (task === "dunning") {
       const summary = await runDunningSweep({

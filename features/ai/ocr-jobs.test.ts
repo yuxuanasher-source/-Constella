@@ -35,6 +35,7 @@ function createClient(
     }>;
     rpcErrors?: Record<string, Error>;
     insertErrors?: Record<string, Error>;
+    reservationStatus?: "reserved" | "consumed";
   } = {},
 ) {
   const ocrResults = [...(fixtures.ocrResults ?? [])];
@@ -152,6 +153,27 @@ function createClient(
                   ai_invocation_id: String(args.p_invocation_id),
                   payload: args.p_payload as Record<string, unknown>,
                 },
+            error: fixtures.rpcErrors?.[name] ?? null,
+          };
+        }
+        if (name === "reserve_usage_reservation") {
+          return {
+            data: {
+              id: String(args.p_reservation_id),
+              status: fixtures.reservationStatus ?? "reserved",
+            },
+            error: fixtures.rpcErrors?.[name] ?? null,
+          };
+        }
+        if (name === "consume_usage_reservation") {
+          return {
+            data: { id: String(args.p_reservation_id), status: "consumed" },
+            error: fixtures.rpcErrors?.[name] ?? null,
+          };
+        }
+        if (name === "release_usage_reservation") {
+          return {
+            data: { id: String(args.p_reservation_id), status: "released" },
             error: fixtures.rpcErrors?.[name] ?? null,
           };
         }
@@ -382,6 +404,33 @@ describe("OCR jobs", () => {
     expect(inserts.ocr_results).toBeUndefined();
   });
 
+  it("maps the database quota signal to a stable named error", async () => {
+    const { client } = createClient({
+      rpcErrors: {
+        enqueue_ocr_job: new Error(
+          "P0001: OCR_USAGE_LIMIT_REACHED internal-plan-id=secret",
+        ),
+      },
+    });
+
+    await expect(
+      createOcrJob({
+        client,
+        actor,
+        input: {
+          id: "job-over-limit",
+          invocationId: "invocation-over-limit",
+          liveReportId: "report-over-limit",
+          imagePath: "org/report-screenshots/task-1/end.png",
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: "UsageHardBlockError",
+      message: "OCR usage limit reached",
+      code: "usage_limit_reached",
+    });
+  });
+
   it.each(["cross-report", "cross-organization"])(
     "rejects a %s screenshot id without falling back to direct inserts",
     async () => {
@@ -439,7 +488,7 @@ describe("OCR jobs", () => {
     );
   });
 
-  it("runs OCR successfully, stores parsed fields, and records OCR usage", async () => {
+  it("consumes reserved OCR usage before calling the provider", async () => {
     const { client, inserts, updates } = createClient({
       jobs: [
         {
@@ -488,15 +537,14 @@ describe("OCR jobs", () => {
         }),
       }),
     ]);
-    expect(inserts.usage_events).toEqual([
-      expect.objectContaining({
-        metric: "ocr",
-        quantity: 1,
-        source: "ocr_job",
-        object_type: "background_job",
-        object_id: "job-1",
-      }),
-    ]);
+    expect(client.rpc).toHaveBeenCalledWith("consume_usage_reservation", {
+      p_reservation_id: "job-1",
+      p_metadata: {
+        provider: "tencent_ocr",
+        attempt: 1,
+      },
+    });
+    expect(inserts.usage_events).toBeUndefined();
   });
 
   it("stores operational metric candidates in raw OCR result without writing them to live reports", async () => {
@@ -862,7 +910,7 @@ describe("OCR jobs", () => {
     expect(runGeneralBasicOcr).toHaveBeenCalledWith({ imageBase64: "AQID" });
   });
 
-  it("requeues and unlocks OCR jobs when image resolution fails before provider call", async () => {
+  it("releases usage and requeues when image resolution fails before provider call", async () => {
     const { client, updates } = createClient({
       jobs: [
         {
@@ -907,6 +955,10 @@ describe("OCR jobs", () => {
       errorCode: "image_source_failed",
     });
     expect(runGeneralBasicOcr).not.toHaveBeenCalled();
+    expect(client.rpc).toHaveBeenCalledWith("release_usage_reservation", {
+      p_reservation_id: "job-image-error",
+      p_reason: "image_source_failed",
+    });
     expect(updates.ocr_results).toEqual([
       expect.objectContaining({
         payload: expect.objectContaining({
@@ -937,7 +989,148 @@ describe("OCR jobs", () => {
     );
   });
 
-  it("releases the lock and requeues when the provider throws unexpectedly", async () => {
+  it("releases a reserved allowance when the provider is unconfigured and sends no request", async () => {
+    const { client } = createClient({
+      jobs: [
+        {
+          id: "job-provider-unconfigured",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          maxAttempts: 3,
+          payload: {
+            liveReportId: "report-provider-unconfigured",
+            imageBase64: "AQID",
+          },
+        },
+      ],
+    });
+    const runGeneralBasicOcr = vi.fn(async () => ({
+      status: "degraded" as const,
+      textLines: [],
+      textItems: [],
+      confidence: 0,
+      degradedReason: "provider_unconfigured",
+      errorSummary: "Tencent OCR credentials are not configured",
+    }));
+
+    const result = await runOcrJobOnce({
+      client,
+      metricClient: null,
+      actor,
+      jobId: "job-provider-unconfigured",
+      provider: { runGeneralBasicOcr },
+    });
+
+    expect(runGeneralBasicOcr).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      status: "queued",
+      errorCode: "provider_unconfigured",
+    });
+    expect(client.rpc).toHaveBeenCalledWith("release_usage_reservation", {
+      p_reservation_id: "job-provider-unconfigured",
+      p_reason: "provider_unconfigured",
+    });
+    expect(client.rpc).not.toHaveBeenCalledWith(
+      "consume_usage_reservation",
+      expect.anything(),
+    );
+  });
+
+  it("does not reverse or duplicate a consumed allowance when an unconfigured retry sends no request", async () => {
+    const { client } = createClient({
+      reservationStatus: "consumed",
+      jobs: [
+        {
+          id: "job-provider-unconfigured-consumed",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 1,
+          maxAttempts: 3,
+          payload: {
+            liveReportId: "report-provider-unconfigured-consumed",
+            imageBase64: "AQID",
+          },
+        },
+      ],
+    });
+
+    await runOcrJobOnce({
+      client,
+      metricClient: null,
+      actor,
+      jobId: "job-provider-unconfigured-consumed",
+      provider: {
+        runGeneralBasicOcr: vi.fn(async () => ({
+          status: "degraded" as const,
+          textLines: [],
+          textItems: [],
+          confidence: 0,
+          degradedReason: "provider_unconfigured",
+        })),
+      },
+    });
+
+    expect(client.rpc).not.toHaveBeenCalledWith(
+      "release_usage_reservation",
+      expect.anything(),
+    );
+    expect(client.rpc).not.toHaveBeenCalledWith(
+      "consume_usage_reservation",
+      expect.anything(),
+    );
+  });
+
+  it("records an attempted provider call even when consumption persistence fails", async () => {
+    const { client } = createClient({
+      jobs: [
+        {
+          id: "job-consume-error",
+          organizationId: "org-1",
+          jobType: "ocr.extract_live_report",
+          status: "queued",
+          attempt: 0,
+          maxAttempts: 3,
+          payload: {
+            liveReportId: "report-consume-error",
+            imageBase64: "ZmFrZQ==",
+          },
+        },
+      ],
+      rpcErrors: {
+        consume_usage_reservation: new Error("reservation unavailable"),
+      },
+    });
+    const runGeneralBasicOcr = vi.fn(async () => ({
+      status: "failed" as const,
+      textLines: [],
+      textItems: [],
+      confidence: 0,
+      errorSummary: "provider request failed",
+    }));
+
+    const result = await runOcrJobOnce({
+      client,
+      metricClient: null,
+      actor,
+      jobId: "job-consume-error",
+      provider: { runGeneralBasicOcr },
+    });
+
+    expect(runGeneralBasicOcr).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      status: "queued",
+      errorCode: "usage_reservation_failed",
+    });
+    expect(client.rpc).not.toHaveBeenCalledWith(
+      "release_usage_reservation",
+      expect.anything(),
+    );
+  });
+
+  it("consumes once and requeues when the provider throws unexpectedly", async () => {
     const { client, updates } = createClient({
       jobs: [
         {
@@ -970,9 +1163,12 @@ describe("OCR jobs", () => {
       imageResolver: vi.fn(async () => ({ imageBase64: "AQID" })),
     });
 
-    // Unexpected throw after the lock was taken: the job is requeued and the
-    // lock cleared rather than left stuck in `running`.
     expect(result).toMatchObject({ status: "queued", attempt: 1 });
+    expect(runGeneralBasicOcr).toHaveBeenCalledOnce();
+    expect(client.rpc).toHaveBeenCalledWith("consume_usage_reservation", {
+      p_reservation_id: "job-runner-error",
+      p_metadata: { provider: "tencent_ocr", attempt: 1 },
+    });
     expect(updates.background_jobs.at(-1)).toEqual(
       expect.objectContaining({
         payload: expect.objectContaining({
@@ -1194,7 +1390,7 @@ describe("OCR jobs", () => {
     },
   );
 
-  it("allows a cancelled job to retry while its report is still in OCR", async () => {
+  it("allows a cancelled job to retry after safely re-arming its reservation", async () => {
     const { client } = createClient({
       jobs: [
         {
@@ -1218,9 +1414,12 @@ describe("OCR jobs", () => {
         jobId: "job-cancelled-retry",
       }),
     ).resolves.toMatchObject({ status: "queued" });
+    expect(client.rpc).toHaveBeenCalledWith("reserve_usage_reservation", {
+      p_reservation_id: "job-cancelled-retry",
+    });
   });
 
-  it("runs the provider after a failed OCR job is retried for an active OCR report", async () => {
+  it("runs the provider after a failed OCR job is safely re-armed and retried", async () => {
     const { client } = createClient({
       jobs: [
         {
@@ -1504,7 +1703,7 @@ describe("OCR jobs", () => {
     );
   });
 
-  it("lets manual retry override a final failed job without clearing attempts", async () => {
+  it("lets manual retry re-arm a final failed job without clearing attempts", async () => {
     const { client, updates } = createClient({
       jobs: [
         {

@@ -5,7 +5,10 @@ import { getPaymentProvider } from "@/features/billing/providers/registry";
 import { requestRefund } from "@/features/billing/refunds";
 import { getAuthContext } from "@/lib/auth/context";
 import { writeAuditLog } from "@/lib/audit/audit";
-import { createSupabaseServerClient } from "@/lib/db/supabase-server";
+import {
+  createSupabaseAdminClient,
+  createSupabaseServerClient,
+} from "@/lib/db/supabase-server";
 import { statusForServiceError } from "@/lib/http/route-error-status";
 import { sendNotification } from "@/lib/notify/notify";
 
@@ -38,8 +41,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Refund requires a reason" }, { status: 400 });
     }
 
+    const admin = createSupabaseAdminClient();
+    if (!admin) {
+      return NextResponse.json(
+        { error: "Billing service is unavailable" },
+        { status: 503 },
+      );
+    }
+
     const result = await requestRefund({
-      repo: createSupabaseBillingRepo(supabase),
+      repo: createSupabaseBillingRepo(admin),
       provider: getPaymentProvider(),
       actor: auth,
       orderId,

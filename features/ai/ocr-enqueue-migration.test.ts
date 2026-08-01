@@ -6,12 +6,16 @@ import { describe, expect, it } from "vitest";
 const migration = readFileSync(
   resolve(
     process.cwd(),
-    "supabase/migrations/20260726103000_atomic_ocr_enqueue.sql",
+    "supabase/migrations/20260731090000_ocr_usage_reservations.sql",
   ),
   "utf8",
 );
 
 describe("atomic OCR enqueue migration", () => {
+  it("declares the migration safe for the atomic expand phase", () => {
+    expect(migration.startsWith("-- deploy: expand\n")).toBe(true);
+  });
+
   it("writes the supplied screenshot id into the OCR result row", () => {
     expect(migration).toMatch(
       /insert into public\.ocr_results \(\s*organization_id,\s*live_report_id,\s*screenshot_id,[\s\S]*?\)\s*values \(\s*v_report\.organization_id,\s*p_live_report_id,\s*p_screenshot_id,/,
@@ -56,5 +60,20 @@ describe("atomic OCR enqueue migration", () => {
     expect(migration).toMatch(
       /v_job\.payload ->> 'screenshotId'[\s\S]*?p_screenshot_id::text/,
     );
+  });
+
+  it("checks for an exact existing job before reserving quota", () => {
+    const existingResult = migration.indexOf(
+      "from public.ocr_results as result",
+    );
+    const existingReturn = migration.indexOf("return to_jsonb(v_job)");
+    const quotaCounter = migration.indexOf(
+      "from public.usage_monthly_counters",
+      existingReturn,
+    );
+
+    expect(existingResult).toBeGreaterThan(-1);
+    expect(existingReturn).toBeGreaterThan(existingResult);
+    expect(quotaCounter).toBeGreaterThan(existingReturn);
   });
 });

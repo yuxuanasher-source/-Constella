@@ -10,6 +10,7 @@ import {
 import { deleteReportScreenshotForOcr } from "@/features/live-operations/live-operations-repository";
 import { submitLiveReportScreenshotForOcr } from "@/features/live-operations/live-operations-service";
 import { createSupabaseAdminClient } from "@/lib/db/supabase-server";
+import { UsageHardBlockError } from "@/features/billing/usage-reservations";
 
 vi.mock("@/features/ai/ocr-jobs", () => ({
   createOcrJob: vi.fn(),
@@ -248,5 +249,21 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
     });
     expect(submitLiveReportScreenshotForOcr).toHaveBeenCalled();
     expect(createOcrJob).not.toHaveBeenCalled();
+  });
+
+  it("maps the OCR hard limit to a stable non-sensitive 429 response", async () => {
+    vi.mocked(submitLiveReportScreenshotForOcr).mockRejectedValueOnce(
+      new UsageHardBlockError(),
+    );
+
+    const response = await postTaskOcr({
+      screenshotStoragePath: "org/report-screenshots/task-1/end.png",
+    });
+
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toEqual({
+      error: "OCR usage limit reached",
+      code: "usage_limit_reached",
+    });
   });
 });

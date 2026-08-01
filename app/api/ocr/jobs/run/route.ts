@@ -44,10 +44,16 @@ export async function POST(request: Request) {
       typeof body.limit === "number" && Number.isFinite(body.limit)
         ? Math.max(1, Math.min(Math.trunc(body.limit), 10))
         : 1;
+    const executionClient = createSupabaseAdminClient();
+    if (!executionClient) {
+      return NextResponse.json(
+        { error: "OCR execution service is unavailable" },
+        { status: 503 },
+      );
+    }
     const provider = createTencentOcrProvider(
       readTencentOcrConfigFromEnv(process.env),
     );
-    const metricClient = createSupabaseAdminClient();
     const runnerId = auth.userId;
     const jobs = await claimRunnableOcrJobs({
       client: supabase as never,
@@ -60,9 +66,12 @@ export async function POST(request: Request) {
     const failures = [];
     for (const job of jobs) {
       try {
+        if (job.organizationId !== auth.organizationId) {
+          throw new Error("OCR job organization mismatch");
+        }
         const result = await runOcrJobOnce({
-          client: supabase as never,
-          metricClient: metricClient as never,
+          client: executionClient as never,
+          metricClient: executionClient as never,
           actor: auth,
           jobId: job.id,
           provider,

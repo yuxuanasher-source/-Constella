@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { UsageHardBlockError } from "@/features/billing/usage-reservations";
 import type { AuditLogInput } from "@/lib/audit/audit";
 import type { NotificationInput } from "@/lib/notify/notify";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
@@ -803,7 +804,7 @@ export async function submitLiveReportScreenshotForOcr({
       imagePath: input.screenshotStoragePath,
       expectedDuration: task.systemDuration,
     });
-  } catch {
+  } catch (error) {
     // Never advance the task into review with no worker behind the report:
     // void the just-created report and surface the failure so the streamer can
     // retry (the task stays in its current, re-uploadable status).
@@ -825,6 +826,9 @@ export async function submitLiveReportScreenshotForOcr({
       }
     }
     await repo.updateLiveReport(report.id, { status: "voided" });
+    if (error instanceof UsageHardBlockError) {
+      throw error;
+    }
     throw new Error("OCR 入队失败，请稍后重试");
   }
 
