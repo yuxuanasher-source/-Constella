@@ -1,26 +1,124 @@
 // 纯函数 Markdown → HTML 渲染（标题/表格/列表/引用/加粗/图片/段落）。
 // 服务端分享页与客户端导出（PDF / Word）共用，保证呈现一致。
 
-function escapeHtml(value: string): string {
+function escapeTextHtml(value: string): string {
   return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
 
+function escapeHtmlAttribute(value: string): string {
+  return escapeTextHtml(value)
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+const RASTER_BASE64_DATA_URL =
+  /^data:image\/(?:png|jpe?g|gif|webp);base64,([a-z0-9+/]+={0,2})$/i;
+
+function isSafeImageSource(value: string): boolean {
+  const source = value.trim();
+  const dataUrl = source.match(RASTER_BASE64_DATA_URL);
+  if (dataUrl) {
+    return dataUrl[1].length % 4 === 0;
+  }
+
+  try {
+    const protocol = new URL(source).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+type InlineToken =
+  | { type: "text"; value: string }
+  | { type: "image"; alt: string; source: string }
+  | { type: "strong-marker" };
+
+function appendTextTokens(tokens: InlineToken[], value: string): void {
+  for (const part of value.split(/(\*\*)/)) {
+    if (!part) continue;
+    tokens.push(
+      part === "**"
+        ? { type: "strong-marker" }
+        : { type: "text", value: part },
+    );
+  }
+}
+
+function tokenizeInlineMarkdown(value: string): InlineToken[] {
+  const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  const tokens: InlineToken[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = imagePattern.exec(value)) !== null) {
+    appendTextTokens(tokens, value.slice(cursor, match.index));
+    tokens.push({ type: "image", alt: match[1], source: match[2].trim() });
+    cursor = imagePattern.lastIndex;
+  }
+
+  appendTextTokens(tokens, value.slice(cursor));
+  return tokens;
+}
+
+function renderInlineToken(token: InlineToken): string {
+  if (token.type === "text") return escapeTextHtml(token.value);
+  if (token.type === "strong-marker") return "**";
+  if (!isSafeImageSource(token.source)) return "";
+  return `<img src="${escapeHtmlAttribute(token.source)}" alt="${escapeHtmlAttribute(token.alt)}" style="max-width:100%" />`;
+}
+
+function findClosingStrongMarker(
+  tokens: InlineToken[],
+  openingIndex: number,
+): number {
+  let hasContent = false;
+  for (let i = openingIndex + 1; i < tokens.length; i += 1) {
+    if (tokens[i].type === "strong-marker") {
+      if (hasContent) return i;
+      hasContent = true;
+    } else {
+      hasContent = true;
+    }
+  }
+  return -1;
+}
+
 function inlineMarkdown(value: string): string {
-  // 图片优先，再加粗。图片 src 仅允许 http(s)/data，避免注入。
-  let html = escapeHtml(value);
-  html = html.replace(
-    /!\[([^\]]*)\]\(([^)]+)\)/g,
-    (_m, alt: string, src: string) => {
-      const safe = /^(https?:|data:image\/)/i.test(src.trim()) ? src.trim() : "";
-      return safe
-        ? `<img src="${safe}" alt="${alt}" style="max-width:100%" />`
-        : "";
-    },
-  );
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  const tokens = tokenizeInlineMarkdown(value);
+  let html = "";
+  let i = 0;
+
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (token.type !== "strong-marker") {
+      html += renderInlineToken(token);
+      i += 1;
+      continue;
+    }
+
+    const closingIndex = findClosingStrongMarker(tokens, i);
+    if (closingIndex === -1) {
+      html += renderInlineToken(token);
+      i += 1;
+      continue;
+    }
+
+    html += "<strong>";
+    for (
+      let contentIndex = i + 1;
+      contentIndex < closingIndex;
+      contentIndex += 1
+    ) {
+      html += renderInlineToken(tokens[contentIndex]);
+    }
+    html += "</strong>";
+    i = closingIndex + 1;
+  }
+
   return html;
 }
 

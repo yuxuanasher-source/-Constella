@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createMemoryBillingRepo } from "./billing-repo-memory";
+import { TEST_PAYMENT_WEBHOOK_SECRET } from "./billing-test-fixtures";
 import { createMockPaymentProvider } from "./providers/mock-provider";
 import { reconcile, runReconciliation } from "./reconciliation";
 
@@ -64,6 +65,7 @@ describe("runReconciliation", () => {
     const { repo, state } = createMemoryBillingRepo({});
     await seedPayment(repo);
     const provider = createMockPaymentProvider({
+      secret: TEST_PAYMENT_WEBHOOK_SECRET,
       statement: [{ providerTxnId: "mock_pay_order-1", amountCents: 99900 }],
     });
 
@@ -79,7 +81,10 @@ describe("runReconciliation", () => {
   it("alerts and persists a mismatch when the statement is short", async () => {
     const { repo, state } = createMemoryBillingRepo({});
     await seedPayment(repo);
-    const provider = createMockPaymentProvider({ statement: [] });
+    const provider = createMockPaymentProvider({
+      secret: TEST_PAYMENT_WEBHOOK_SECRET,
+      statement: [],
+    });
     const alert = vi.fn(async () => undefined);
 
     const result = await runReconciliation({

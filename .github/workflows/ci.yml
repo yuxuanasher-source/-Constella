@@ -11,6 +11,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -26,6 +28,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Enforce changed-file formatting
+        if: github.event_name == 'pull_request'
+        env:
+          FORMAT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: pnpm check:changed-format
+
       - name: Lint
         run: pnpm lint
 
@@ -35,8 +43,17 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Enforce critical-domain coverage
+        run: pnpm test:critical-coverage
+
       - name: Build
         run: pnpm build
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run visual smoke tests
+        run: pnpm test:ops-visual
 
   database-regression:
     runs-on: [self-hosted, linux, x64, constella-ci]

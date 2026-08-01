@@ -66,6 +66,43 @@ describe("rankKnowledgePassages", () => {
   it("returns nothing when no term matches", () => {
     expect(rankKnowledgePassages("不存在的关键词xyz", docs)).toEqual([]);
   });
+
+  it("boosts matching business context and recent retrospectives", () => {
+    const now = new Date();
+    const ranked = rankKnowledgePassages(
+      "复盘",
+      [
+        {
+          ...docs[2],
+          id: "older",
+          projectId: "project-other",
+          updatedAt: new Date(now.getTime() - 90 * 86_400_000).toISOString(),
+        },
+        {
+          ...docs[2],
+          id: "contextual",
+          projectId: "project-1",
+          streamerId: "streamer-1",
+          product: "product-1",
+          platform: "douyin",
+          updatedAt: now.toISOString(),
+        },
+      ],
+      5,
+      {
+        projectId: "project-1",
+        streamerId: "streamer-1",
+        product: "product-1",
+        platform: "douyin",
+      },
+    );
+
+    expect(ranked.map((passage) => passage.id)).toEqual([
+      "contextual",
+      "older",
+    ]);
+    expect(ranked[0].score).toBeGreaterThan(ranked[1].score);
+  });
 });
 
 describe("assembleKnowledgeAnswer (RAG hard constraints)", () => {
@@ -80,7 +117,11 @@ describe("assembleKnowledgeAnswer (RAG hard constraints)", () => {
     const passages = rankKnowledgePassages("CPT 口径", docs);
     const r = assembleKnowledgeAnswer("CPT 口径", passages);
     expect(r.hasData).toBe(true);
-    expect(r.citations[0]).toMatchObject({ index: 1, docId: "doc-2", sourceRef: "SOP/结算口径 v2" });
+    expect(r.citations[0]).toMatchObject({
+      index: 1,
+      docId: "doc-2",
+      sourceRef: "SOP/结算口径 v2",
+    });
     expect(r.answer).toContain("以结构化数据查询为准");
     expect(r.answer).toContain("来源：");
   });
@@ -88,9 +129,35 @@ describe("assembleKnowledgeAnswer (RAG hard constraints)", () => {
 
 describe("normalizePassage", () => {
   it("accepts snake_case and camelCase, rejects malformed", () => {
-    expect(normalizePassage({ id: "d1", title: "T", source_ref: "S" })?.sourceRef).toBe("S");
-    expect(normalizePassage({ docId: "d2", title: "T", sourceRef: "S" })?.id).toBe("d2");
+    expect(
+      normalizePassage({ id: "d1", title: "T", source_ref: "S" })?.sourceRef,
+    ).toBe("S");
+    expect(
+      normalizePassage({ docId: "d2", title: "T", sourceRef: "S" })?.id,
+    ).toBe("d2");
     expect(normalizePassage({ title: "missing id" })).toBeNull();
     expect(normalizePassage(null)).toBeNull();
+  });
+
+  it("normalizes optional fields and invalid numeric scores", () => {
+    expect(
+      normalizePassage({
+        id: "d3",
+        doc_type: "retrospective",
+        title: "复盘",
+        body: "正文",
+        tags: ["one", 2],
+        score: "not-a-number",
+      }),
+    ).toEqual({
+      id: "d3",
+      docId: undefined,
+      docType: "retrospective",
+      title: "复盘",
+      snippet: "正文",
+      sourceRef: "未标注来源",
+      tags: ["one", "2"],
+      score: 0,
+    });
   });
 });

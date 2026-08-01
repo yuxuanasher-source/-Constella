@@ -34,8 +34,9 @@ export function parsePublicEnv(
 export function parseServerEnv(
   env: Record<string, string | undefined>,
 ): ServerEnv {
-  const { gatewayAllowlistEntries: _gatewayAllowlistEntries, ...hermesEnv } =
+  const { gatewayAllowlistEntries, ...hermesEnv } =
     parseHermesRuntimeSelectionConfig(env);
+  void gatewayAllowlistEntries;
   return {
     ...serverEnvSchema.parse(env),
     ...hermesEnv,
@@ -56,8 +57,7 @@ export function getServerEnv(): ServerEnv {
     STORAGE_BUCKET_PRIVATE: process.env.STORAGE_BUCKET_PRIVATE,
     ADMISSION_SHARE_CAPABILITY_SECRET:
       process.env.ADMISSION_SHARE_CAPABILITY_SECRET,
-    XINGYAO_HERMES_GATEWAY_ENABLED:
-      process.env.XINGYAO_HERMES_GATEWAY_ENABLED,
+    XINGYAO_HERMES_GATEWAY_ENABLED: process.env.XINGYAO_HERMES_GATEWAY_ENABLED,
     XINGYAO_HERMES_GATEWAY_ALLOWLIST:
       process.env.XINGYAO_HERMES_GATEWAY_ALLOWLIST,
     XINGYAO_HERMES_GATEWAY_BASE_URL:

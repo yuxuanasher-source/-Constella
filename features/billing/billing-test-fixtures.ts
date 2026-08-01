@@ -1,6 +1,10 @@
 import type { PlanRecord, SubscriptionRecord } from "./billing-repo";
 import type { PlanPriceRow } from "./pricing";
 
+/** Explicit test-only HMAC secret; never use outside local/test billing fixtures. */
+export const TEST_PAYMENT_WEBHOOK_SECRET =
+  "test-only-billing-webhook-secret-32-chars-minimum";
+
 /** 与 P6 迁移内置套餐保持一致的测试样本（仅用于测试）。 */
 export const TEST_PLANS: PlanRecord[] = [
   makePlan({

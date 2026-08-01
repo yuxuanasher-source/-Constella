@@ -4,6 +4,7 @@ import { createMemoryBillingRepo } from "./billing-repo-memory";
 import type { BillingRepo, NewOrderInput } from "./billing-repo";
 import {
   TEST_ACTOR,
+  TEST_PAYMENT_WEBHOOK_SECRET,
   TEST_PLANS,
   TEST_PRICES,
   makeSubscription,
@@ -17,7 +18,9 @@ import {
 
 const NOW = new Date("2026-06-20T00:00:00.000Z");
 const PAID_AT = "2026-06-16T00:00:00.000Z";
-const provider = createMockPaymentProvider({ secret: "test-secret" });
+const provider = createMockPaymentProvider({
+  secret: TEST_PAYMENT_WEBHOOK_SECRET,
+});
 
 async function seedPaidOrder(repo: BillingRepo, input: Partial<NewOrderInput>) {
   const id = input.id ?? "order-1";

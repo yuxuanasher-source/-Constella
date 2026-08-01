@@ -12,7 +12,7 @@ import type {
   WebhookVerifyResult,
 } from "./payment-provider";
 
-const DEFAULT_SECRET = "mock-secret";
+const MINIMUM_MOCK_SECRET_LENGTH = 32;
 
 /**
  * 确定性 mock 支付 Provider：可在测试与本地联调中跑通完整下单 / 回调链路。
@@ -20,10 +20,10 @@ const DEFAULT_SECRET = "mock-secret";
  * `statement` 用于对账测试时注入渠道对账文件。
  */
 export function createMockPaymentProvider(
-  options: { secret?: string; statement?: StatementEntry[] } = {},
+  options: { secret: string; statement?: StatementEntry[] },
 ): PaymentProvider {
-  const secret = options.secret ?? DEFAULT_SECRET;
-  const statement = options.statement ?? [];
+  const secret = requireStrongMockSecret(options?.secret);
+  const statement = options?.statement ?? [];
 
   return {
     name: "mock",
@@ -94,10 +94,23 @@ export function signMockWebhook(secret: string, rawBody: string): string {
 /** 测试 / 联调辅助：构造一条已签名的回调请求体。 */
 export function buildSignedMockWebhook(
   body: MockWebhookBody,
-  secret: string = DEFAULT_SECRET,
+  secret: string,
 ): { rawBody: string; signature: string } {
+  const resolvedSecret = requireStrongMockSecret(secret);
   const rawBody = JSON.stringify(body);
-  return { rawBody, signature: signMockWebhook(secret, rawBody) };
+  return { rawBody, signature: signMockWebhook(resolvedSecret, rawBody) };
+}
+
+function requireStrongMockSecret(secret: string | undefined): string {
+  if (
+    typeof secret !== "string" ||
+    secret.trim().length < MINIMUM_MOCK_SECRET_LENGTH
+  ) {
+    throw new Error(
+      "Mock payment provider requires an explicit secret of at least 32 characters",
+    );
+  }
+  return secret;
 }
 
 function toPaymentEvent(body: Partial<MockWebhookBody>): PaymentEvent | null {
