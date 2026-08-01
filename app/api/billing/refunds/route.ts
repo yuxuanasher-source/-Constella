@@ -35,10 +35,16 @@ export async function POST(request: Request) {
     const orderId = typeof body.orderId === "string" ? body.orderId : "";
     const reason = typeof body.reason === "string" ? body.reason : "";
     if (!orderId) {
-      return NextResponse.json({ error: "orderId is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "orderId is required" },
+        { status: 400 },
+      );
     }
     if (!reason.trim()) {
-      return NextResponse.json({ error: "Refund requires a reason" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Refund requires a reason" },
+        { status: 400 },
+      );
     }
 
     const admin = createSupabaseAdminClient();

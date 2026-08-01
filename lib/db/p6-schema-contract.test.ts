@@ -8,7 +8,10 @@ const migration = readFileSync(
   "utf8",
 ).toLowerCase();
 const foundationMigration = readFileSync(
-  join(process.cwd(), "supabase/migrations/20260601161000_initial_foundation.sql"),
+  join(
+    process.cwd(),
+    "supabase/migrations/20260601161000_initial_foundation.sql",
+  ),
   "utf8",
 ).toLowerCase();
 const webhookSource = readFileSync(

@@ -9,9 +9,7 @@ function escapeTextHtml(value: string): string {
 }
 
 function escapeHtmlAttribute(value: string): string {
-  return escapeTextHtml(value)
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+  return escapeTextHtml(value).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 const RASTER_BASE64_DATA_URL =
@@ -41,9 +39,7 @@ function appendTextTokens(tokens: InlineToken[], value: string): void {
   for (const part of value.split(/(\*\*)/)) {
     if (!part) continue;
     tokens.push(
-      part === "**"
-        ? { type: "strong-marker" }
-        : { type: "text", value: part },
+      part === "**" ? { type: "strong-marker" } : { type: "text", value: part },
     );
   }
 }
@@ -151,7 +147,8 @@ export function renderMarkdownToHtml(markdown: string): string {
       const head = header.map((c) => `<th>${inlineMarkdown(c)}</th>`).join("");
       const rows = body
         .map(
-          (r) => `<tr>${r.map((c) => `<td>${inlineMarkdown(c)}</td>`).join("")}</tr>`,
+          (r) =>
+            `<tr>${r.map((c) => `<td>${inlineMarkdown(c)}</td>`).join("")}</tr>`,
         )
         .join("");
       out.push(
@@ -178,7 +175,9 @@ export function renderMarkdownToHtml(markdown: string): string {
     if (/^\s*[-*]\s+/.test(line)) {
       const items: string[] = [];
       while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
-        items.push(`<li>${inlineMarkdown(lines[i].replace(/^\s*[-*]\s+/, ""))}</li>`);
+        items.push(
+          `<li>${inlineMarkdown(lines[i].replace(/^\s*[-*]\s+/, ""))}</li>`,
+        );
         i += 1;
       }
       out.push(`<ul>${items.join("")}</ul>`);
@@ -187,7 +186,9 @@ export function renderMarkdownToHtml(markdown: string): string {
     if (/^\s*\d+\.\s+/.test(line)) {
       const items: string[] = [];
       while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        items.push(`<li>${inlineMarkdown(lines[i].replace(/^\s*\d+\.\s+/, ""))}</li>`);
+        items.push(
+          `<li>${inlineMarkdown(lines[i].replace(/^\s*\d+\.\s+/, ""))}</li>`,
+        );
         i += 1;
       }
       out.push(`<ol>${items.join("")}</ol>`);

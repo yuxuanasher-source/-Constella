@@ -62,8 +62,20 @@ describe("createCheckoutOrder", () => {
       kind: "subscription_new" as const,
       target: { planCode: "pro", billingCycle: "monthly" as const },
     };
-    const first = await createCheckoutOrder({ repo, provider, actor: TEST_ACTOR, intent, now: NOW });
-    const second = await createCheckoutOrder({ repo, provider, actor: TEST_ACTOR, intent, now: NOW });
+    const first = await createCheckoutOrder({
+      repo,
+      provider,
+      actor: TEST_ACTOR,
+      intent,
+      now: NOW,
+    });
+    const second = await createCheckoutOrder({
+      repo,
+      provider,
+      actor: TEST_ACTOR,
+      intent,
+      now: NOW,
+    });
 
     expect(second.reused).toBe(true);
     expect(second.order.id).toBe(first.order.id);
@@ -97,7 +109,10 @@ describe("createCheckoutOrder", () => {
       repo,
       provider,
       actor: TEST_ACTOR,
-      intent: { kind: "usage_addon", target: { metric: "ocr", quantity: 1000 } },
+      intent: {
+        kind: "usage_addon",
+        target: { metric: "ocr", quantity: 1000 },
+      },
       now: NOW,
     });
     expect(result.order.amountCents).toBe(10000);

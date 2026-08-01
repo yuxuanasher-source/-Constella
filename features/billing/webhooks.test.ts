@@ -144,7 +144,9 @@ describe("handleWebhook", () => {
     expect(result).toMatchObject({ processed: true, orderId: "order-1" });
     expect(state.orders.get("order-1")?.status).toBe("paid");
     expect(state.subscriptions.get("org-1")?.status).toBe("active");
-    expect(state.transactions.filter((t) => t.status === "succeeded")).toHaveLength(1);
+    expect(
+      state.transactions.filter((t) => t.status === "succeeded"),
+    ).toHaveLength(1);
   });
 
   it("is idempotent against a replayed event", async () => {
@@ -177,7 +179,10 @@ describe("handleWebhook", () => {
       now: NOW,
     });
 
-    expect(result).toMatchObject({ processed: false, reason: "signature_mismatch" });
+    expect(result).toMatchObject({
+      processed: false,
+      reason: "signature_mismatch",
+    });
     expect(state.orders.get("order-1")?.status).toBe("pending");
     const events = [...state.webhookEvents.values()];
     expect(events).toHaveLength(1);
@@ -187,7 +192,10 @@ describe("handleWebhook", () => {
   it("acks gracefully when the order is missing", async () => {
     const { repo } = await setupWithPendingOrder();
     const result = await handle(repo, paymentWebhook({ orderId: "missing" }));
-    expect(result).toMatchObject({ processed: false, reason: "order_not_found" });
+    expect(result).toMatchObject({
+      processed: false,
+      reason: "order_not_found",
+    });
   });
 
   it("marks the order failed on a reported payment failure", async () => {
@@ -252,10 +260,7 @@ describe("handleWebhook", () => {
   it("rejects a blank provider transaction id without side effects", async () => {
     const { repo, state } = await setupWithPendingOrder();
 
-    const result = await handle(
-      repo,
-      paymentWebhook({ providerTxnId: "   " }),
-    );
+    const result = await handle(repo, paymentWebhook({ providerTxnId: "   " }));
 
     expect(result).toEqual({
       processed: false,

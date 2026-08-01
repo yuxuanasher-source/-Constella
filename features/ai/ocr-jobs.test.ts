@@ -1622,9 +1622,8 @@ describe("OCR jobs", () => {
       p_lease_seconds: 60,
       p_now: "2026-07-14T10:00:00.000Z",
     });
-    const platformClaimCalls = vi.mocked(client.rpc).mock.calls as unknown as Array<
-      [string, Record<string, unknown>]
-    >;
+    const platformClaimCalls = vi.mocked(client.rpc).mock
+      .calls as unknown as Array<[string, Record<string, unknown>]>;
     const platformClaimArgs = platformClaimCalls[0]?.[1] as
       | Record<string, unknown>
       | undefined;

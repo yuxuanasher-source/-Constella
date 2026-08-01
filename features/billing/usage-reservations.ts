@@ -159,7 +159,9 @@ export async function markStaleUsageReservationReviewed({
     throw error;
   }
   if (!Array.isArray(data) || data.length > 1) {
-    throw new Error("Stale usage reservation mark RPC returned an invalid payload");
+    throw new Error(
+      "Stale usage reservation mark RPC returned an invalid payload",
+    );
   }
   if (data.length === 0) {
     return null;
@@ -174,7 +176,9 @@ export async function markStaleUsageReservationReviewed({
     last_reviewed_at: row.previous_reviewed_at,
   });
   if (!isTimestamp(row.reviewed_at)) {
-    throw new Error("Stale usage reservation mark RPC returned an invalid payload");
+    throw new Error(
+      "Stale usage reservation mark RPC returned an invalid payload",
+    );
   }
   return {
     reservationId: common.reservationId,
@@ -213,7 +217,9 @@ export async function resetStaleUsageReservationReview({
     throw error;
   }
   if (typeof data !== "boolean") {
-    throw new Error("Stale usage reservation reset RPC returned an invalid payload");
+    throw new Error(
+      "Stale usage reservation reset RPC returned an invalid payload",
+    );
   }
   return data;
 }
@@ -246,7 +252,10 @@ function parseStaleUsageReservation(value: unknown): StaleUsageReservation {
   };
 }
 
-function requireRecord(value: unknown, message: string): Record<string, unknown> {
+function requireRecord(
+  value: unknown,
+  message: string,
+): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(message);
   }

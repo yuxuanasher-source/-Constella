@@ -14,12 +14,11 @@ type RouteContext = {
   params: Promise<{ provider: string }>;
 };
 
-const BUSINESS_INVARIANT_REJECTIONS =
-  new Set<WebhookBusinessInvariantReason>([
-    "amount_mismatch",
-    "provider_mismatch",
-    "invalid_provider_transaction",
-  ]);
+const BUSINESS_INVARIANT_REJECTIONS = new Set<WebhookBusinessInvariantReason>([
+  "amount_mismatch",
+  "provider_mismatch",
+  "invalid_provider_transaction",
+]);
 
 /**
  * 渠道异步回调入口。验签 + 幂等在 handleWebhook 内完成；
@@ -52,10 +51,7 @@ export async function POST(request: Request, context: RouteContext) {
     });
 
     if (!result.processed && result.verificationFailed) {
-      return NextResponse.json(
-        { error: "Invalid webhook" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "Invalid webhook" }, { status: 400 });
     }
 
     if (

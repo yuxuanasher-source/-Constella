@@ -20,9 +20,10 @@ import * as route from "./route";
 
 vi.mock("@/lib/auth/context", () => ({ getAuthContext: vi.fn() }));
 vi.mock("@/features/knowledge-base/knowledge-share", async (importOriginal) => {
-  const original = await importOriginal<
-    typeof import("@/features/knowledge-base/knowledge-share")
-  >();
+  const original =
+    await importOriginal<
+      typeof import("@/features/knowledge-base/knowledge-share")
+    >();
   return {
     ...original,
     createKnowledgeShare: vi.fn(),
@@ -149,7 +150,9 @@ describe("knowledge share route", () => {
     const dependencies = vi.mocked(createKnowledgeShare).mock.calls[0]?.[1];
     const callback = dependencies?.onCompensationFailure;
     vi.mocked(writeAuditLog).mockClear();
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
 
     expect(callback).toBeTypeOf("function");
     await callback?.({
@@ -214,13 +217,10 @@ describe("knowledge share route", () => {
   });
 
   it("returns a stable duplicate code and existing share id without bearer material", async () => {
-    const duplicate = Object.assign(
-      new DuplicateKnowledgeShareRequestError(),
-      {
-        existingShareId: "44444444-4444-4444-8444-444444444444",
-        shareStatus: "active",
-      },
-    );
+    const duplicate = Object.assign(new DuplicateKnowledgeShareRequestError(), {
+      existingShareId: "44444444-4444-4444-8444-444444444444",
+      shareStatus: "active",
+    });
     vi.mocked(createKnowledgeShare).mockRejectedValue(duplicate);
 
     const response = await route.POST(
@@ -266,9 +266,9 @@ describe("knowledge share route", () => {
       start(controller) {
         controller.enqueue(new Uint8Array(5 * 1024 * 1024).fill(97));
         controller.enqueue(
-          new Uint8Array(EXPECTED_REQUEST_HARD_LIMIT - 5 * 1024 * 1024 + 1).fill(
-            97,
-          ),
+          new Uint8Array(
+            EXPECTED_REQUEST_HARD_LIMIT - 5 * 1024 * 1024 + 1,
+          ).fill(97),
         );
       },
       cancel() {
@@ -276,18 +276,15 @@ describe("knowledge share route", () => {
       },
     });
     const response = await route.POST(
-      new Request(
-        "http://local/api/knowledge-base/share",
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "idempotency-key": "create-share-chunked",
-          },
-          body: stream,
-          duplex: "half",
-        } as RequestInit & { duplex: "half" },
-      ),
+      new Request("http://local/api/knowledge-base/share", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "create-share-chunked",
+        },
+        body: stream,
+        duplex: "half",
+      } as RequestInit & { duplex: "half" }),
     );
 
     expect(response.status).toBe(413);
@@ -357,8 +354,12 @@ describe("knowledge share route", () => {
   });
 
   it("does not lose the one-time share URL when supplemental auditing fails", async () => {
-    vi.mocked(writeAuditLog).mockRejectedValue(new Error("audit database secret"));
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(writeAuditLog).mockRejectedValue(
+      new Error("audit database secret"),
+    );
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
     const token = Buffer.alloc(32, 7).toString("base64url");
 
     const response = await route.POST(
@@ -382,11 +383,13 @@ describe("knowledge share route", () => {
     expect(payload).not.toHaveProperty("token");
     expect(payload.url).toBe(`https://app.example.test/share/kb/${token}`);
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain(token);
-    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("database secret");
-    expect(consoleError).toHaveBeenCalledWith(
-      "Knowledge share audit failed",
-      { shareId: "33333333-3333-4333-8333-333333333333", phase: "create" },
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(
+      "database secret",
     );
+    expect(consoleError).toHaveBeenCalledWith("Knowledge share audit failed", {
+      shareId: "33333333-3333-4333-8333-333333333333",
+      phase: "create",
+    });
     consoleError.mockRestore();
   });
 
@@ -442,7 +445,9 @@ describe("knowledge share route", () => {
       },
     ]);
 
-    const response = await (route as typeof route & { GET: typeof route.POST }).GET(
+    const response = await (
+      route as typeof route & { GET: typeof route.POST }
+    ).GET(
       new Request(
         "http://local/api/knowledge-base/share?sourceDocumentId=doc-1",
       ),

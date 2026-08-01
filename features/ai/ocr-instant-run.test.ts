@@ -85,9 +85,7 @@ describe("kickQueuedOcrJobsInProcess", () => {
 
     await kickQueuedOcrJobsInProcess({ limit: 1 });
 
-    expect(runJob).toHaveBeenCalledWith(
-      expect.objectContaining({ provider }),
-    );
+    expect(runJob).toHaveBeenCalledWith(expect.objectContaining({ provider }));
     expect(provider.runGeneralBasicOcr).toHaveBeenCalledOnce();
   });
 

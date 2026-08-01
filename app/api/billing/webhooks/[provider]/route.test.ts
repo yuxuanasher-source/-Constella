@@ -93,10 +93,7 @@ describe("billing webhook route", () => {
       throw new PaymentProviderUnavailableError();
     });
 
-    const response = await POST(
-      request(),
-      context("secret-internal-provider"),
-    );
+    const response = await POST(request(), context("secret-internal-provider"));
 
     expect(response.status).toBe(404);
     const body = await response.json();
@@ -179,9 +176,12 @@ describe("billing webhook route", () => {
       await expect(response.json()).resolves.toEqual({
         error: "Webhook processing failed",
       });
-      expect(errorLog).toHaveBeenCalledWith("Billing webhook processing failed", {
-        category: "unexpected_error",
-      });
+      expect(errorLog).toHaveBeenCalledWith(
+        "Billing webhook processing failed",
+        {
+          category: "unexpected_error",
+        },
+      );
       const serializedLog = JSON.stringify(errorLog.mock.calls);
       expect(serializedLog).not.toContain(rawBody);
       expect(serializedLog).not.toContain(signature);

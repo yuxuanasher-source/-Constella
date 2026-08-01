@@ -27,9 +27,9 @@ const NOW = new Date("2026-06-13T00:00:00.000Z");
 describe("Self-serve funnel → P6 checkout handoff", () => {
   it("drives a trial org from onboarding through the paywall into an active subscription", async () => {
     // Onboarding: activation reached after core steps.
-    expect(isActivated(["create_project", "add_streamer", "submit_report"])).toBe(
-      true,
-    );
+    expect(
+      isActivated(["create_project", "add_streamer", "submit_report"]),
+    ).toBe(true);
 
     // Paywall reads the getBillingStatus conclusion (trial nearing expiry).
     const trialStatus = buildBillingStatus({
@@ -84,7 +84,12 @@ describe("Self-serve funnel → P6 checkout handoff", () => {
       },
       TEST_PAYMENT_WEBHOOK_SECRET,
     );
-    const result = await handleWebhook({ repo, provider, ...payload, now: NOW });
+    const result = await handleWebhook({
+      repo,
+      provider,
+      ...payload,
+      now: NOW,
+    });
 
     expect(result.processed).toBe(true);
     expect(state.subscriptions.get("org-1")).toMatchObject({

@@ -29,18 +29,15 @@ describe("payment provider registry", () => {
     ["staging", "staging"],
     ["preview", "preview"],
     ["production-like", "production-preview"],
-  ])(
-    "refuses mock when NODE_ENV is %s",
-    (_label, nodeEnv) => {
-      expectUnavailable(() =>
-        getPaymentProvider("mock", {
-          NODE_ENV: nodeEnv,
-          PAYMENT_PROVIDER_DEFAULT: "mock",
-          BILLING_MOCK_WEBHOOK_SECRET: TEST_PAYMENT_WEBHOOK_SECRET,
-        }),
-      );
-    },
-  );
+  ])("refuses mock when NODE_ENV is %s", (_label, nodeEnv) => {
+    expectUnavailable(() =>
+      getPaymentProvider("mock", {
+        NODE_ENV: nodeEnv,
+        PAYMENT_PROVIDER_DEFAULT: "mock",
+        BILLING_MOCK_WEBHOOK_SECRET: TEST_PAYMENT_WEBHOOK_SECRET,
+      }),
+    );
+  });
 
   it.each([undefined, "", "offline", " mock ", "MOCK"])(
     "requires an exact mock arming value, received %j",
@@ -96,11 +93,7 @@ describe("payment provider registry", () => {
     ["explicit empty", "", {}],
     ["explicit whitespace", "   ", {}],
     ["configured empty", undefined, { BILLING_PAYMENT_PROVIDER: "" }],
-    [
-      "configured whitespace",
-      undefined,
-      { BILLING_PAYMENT_PROVIDER: "   " },
-    ],
+    ["configured whitespace", undefined, { BILLING_PAYMENT_PROVIDER: "   " }],
   ])(
     "rejects %s provider names instead of defaulting to offline",
     (_label, name, env) => {

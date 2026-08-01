@@ -79,9 +79,7 @@ describe("knowledge share lifecycle", () => {
         expiresAt: "2026-08-07T12:00:00.000Z",
       }),
     );
-    const persisted = JSON.stringify(
-      vi.mocked(repo.insertPending).mock.calls,
-    );
+    const persisted = JSON.stringify(vi.mocked(repo.insertPending).mock.calls);
     const snapshot = JSON.stringify(putSnapshot.mock.calls);
     expect(persisted).not.toContain(expectedToken);
     expect(snapshot).not.toContain(expectedToken);
@@ -254,7 +252,9 @@ describe("knowledge share lifecycle", () => {
   });
 
   it("keeps the sanitized creation failure when the compensation observer fails", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
 
     await expect(
       createKnowledgeShare(
@@ -318,13 +318,13 @@ describe("knowledge share lifecycle", () => {
     };
     const repo = createKnowledgeShareRepository(client as never);
 
-    await expect(
-      repo.insertPending(pendingShareInput()),
-    ).rejects.toMatchObject({
-      name: "DuplicateKnowledgeShareRequestError",
-      existingShareId: SHARE_ID,
-      shareStatus: "active",
-    });
+    await expect(repo.insertPending(pendingShareInput())).rejects.toMatchObject(
+      {
+        name: "DuplicateKnowledgeShareRequestError",
+        existingShareId: SHARE_ID,
+        shareStatus: "active",
+      },
+    );
     expect(lookup.eq).toHaveBeenNthCalledWith(1, "organization_id", ORG_ID);
     expect(lookup.eq).toHaveBeenNthCalledWith(2, "created_by", USER_ID);
     expect(lookup.eq).toHaveBeenNthCalledWith(
@@ -335,11 +335,46 @@ describe("knowledge share lifecycle", () => {
   });
 
   it.each([
-    ["active", { status: "active", revoked_at: null, expires_at: "2999-01-01T00:00:00.000Z" }],
-    ["pending", { status: "pending", revoked_at: null, expires_at: "2999-01-01T00:00:00.000Z" }],
-    ["failed", { status: "failed", revoked_at: null, expires_at: "2999-01-01T00:00:00.000Z" }],
-    ["revoked", { status: "active", revoked_at: "2026-07-31T12:00:00.000Z", expires_at: "2000-01-01T00:00:00.000Z" }],
-    ["expired", { status: "active", revoked_at: null, expires_at: "2000-01-01T00:00:00.000Z" }],
+    [
+      "active",
+      {
+        status: "active",
+        revoked_at: null,
+        expires_at: "2999-01-01T00:00:00.000Z",
+      },
+    ],
+    [
+      "pending",
+      {
+        status: "pending",
+        revoked_at: null,
+        expires_at: "2999-01-01T00:00:00.000Z",
+      },
+    ],
+    [
+      "failed",
+      {
+        status: "failed",
+        revoked_at: null,
+        expires_at: "2999-01-01T00:00:00.000Z",
+      },
+    ],
+    [
+      "revoked",
+      {
+        status: "active",
+        revoked_at: "2026-07-31T12:00:00.000Z",
+        expires_at: "2000-01-01T00:00:00.000Z",
+      },
+    ],
+    [
+      "expired",
+      {
+        status: "active",
+        revoked_at: null,
+        expires_at: "2000-01-01T00:00:00.000Z",
+      },
+    ],
   ] as const)(
     "classifies duplicate request metadata as %s using safe fields only",
     async (shareStatus, metadata) => {
@@ -365,7 +400,9 @@ describe("knowledge share lifecycle", () => {
       };
       const repo = createKnowledgeShareRepository(client as never);
 
-      await expect(repo.insertPending(pendingShareInput())).rejects.toMatchObject({
+      await expect(
+        repo.insertPending(pendingShareInput()),
+      ).rejects.toMatchObject({
         name: "DuplicateKnowledgeShareRequestError",
         existingShareId: SHARE_ID,
         shareStatus,
@@ -399,9 +436,9 @@ describe("knowledge share lifecycle", () => {
     await expect(repo.insertPending(pendingShareInput())).rejects.toBe(
       uniqueError,
     );
-    await expect(
-      Promise.reject(uniqueError),
-    ).rejects.not.toBeInstanceOf(DuplicateKnowledgeShareRequestError);
+    await expect(Promise.reject(uniqueError)).rejects.not.toBeInstanceOf(
+      DuplicateKnowledgeShareRequestError,
+    );
   });
 
   it("marks pending or ambiguously active metadata failed during compensation", async () => {

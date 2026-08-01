@@ -80,9 +80,7 @@ describe("atomic OCR enqueue schema contract", () => {
     const reservation = migration.indexOf(
       "insert into public.usage_reservations",
     );
-    const invocation = migration.indexOf(
-      "insert into public.ai_invocations",
-    );
+    const invocation = migration.indexOf("insert into public.ai_invocations");
     const backgroundJob = migration.indexOf(
       "insert into public.background_jobs",
     );
@@ -215,7 +213,9 @@ describe("atomic OCR enqueue schema contract", () => {
     expect(functionSql).toContain("last_reviewed_at timestamptz");
     expect(functionSql).toContain("age_seconds bigint");
     expect(functionSql).not.toContain("metadata");
-    expect(functionSql).not.toMatch(/\b(update|delete|release_usage_reservation)\b/);
+    expect(functionSql).not.toMatch(
+      /\b(update|delete|release_usage_reservation)\b/,
+    );
   });
 
   it("marks only the listed reservation attempt and review version", () => {

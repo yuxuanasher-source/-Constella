@@ -25,9 +25,7 @@ describe("atomic OCR enqueue migration", () => {
   it("serializes submissions by live task and claims the task in the enqueue transaction", () => {
     const reportLock = migration.indexOf("from public.live_reports as lr");
     const taskLock = migration.indexOf("from public.live_tasks as task");
-    const taskClaim = migration.indexOf(
-      "status = 'report_pending_review'",
-    );
+    const taskClaim = migration.indexOf("status = 'report_pending_review'");
 
     expect(reportLock).toBeGreaterThan(-1);
     expect(taskLock).toBeGreaterThan(reportLock);

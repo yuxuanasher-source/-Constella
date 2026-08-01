@@ -96,9 +96,7 @@ export type RevokedKnowledgeShare = {
   newlyRevoked: boolean;
 };
 
-export type KnowledgeShareCompensationStage =
-  | "mark_failed"
-  | "delete_snapshot";
+export type KnowledgeShareCompensationStage = "mark_failed" | "delete_snapshot";
 
 export type KnowledgeShareCompensationFailure = {
   shareId: string;
@@ -262,9 +260,7 @@ export async function getPublicKnowledgeShare(
   token: string,
   dependencies: {
     repository: KnowledgeShareRepository;
-    getSnapshot: (
-      key: string,
-    ) => Promise<KnowledgeShareSnapshot | null>;
+    getSnapshot: (key: string) => Promise<KnowledgeShareSnapshot | null>;
     now?: () => Date;
   },
 ): Promise<PublicKnowledgeShare | null> {
@@ -283,9 +279,7 @@ export async function getPublicKnowledgeShare(
   return {
     title: metadata.title,
     contentMd: snapshot.contentMd,
-    ...(metadata.createdByName
-      ? { sharedBy: metadata.createdByName }
-      : null),
+    ...(metadata.createdByName ? { sharedBy: metadata.createdByName } : null),
     createdAt: metadata.createdAt,
     expiresAt: metadata.expiresAt,
   };
@@ -533,8 +527,7 @@ function normalizeCreateInput(input: CreateKnowledgeShareInput): {
   expiresInDays: (typeof ALLOWED_KNOWLEDGE_SHARE_EXPIRY_DAYS)[number];
 } {
   const title = typeof input.title === "string" ? input.title.trim() : "";
-  const contentMd =
-    typeof input.contentMd === "string" ? input.contentMd : "";
+  const contentMd = typeof input.contentMd === "string" ? input.contentMd : "";
   const expiresInDays =
     input.expiresInDays ?? DEFAULT_KNOWLEDGE_SHARE_EXPIRY_DAYS;
   if (
@@ -543,8 +536,7 @@ function normalizeCreateInput(input: CreateKnowledgeShareInput): {
     !title ||
     title.length > MAX_KNOWLEDGE_SHARE_TITLE_LENGTH ||
     !contentMd.trim() ||
-    Buffer.byteLength(contentMd, "utf8") >
-      MAX_KNOWLEDGE_SHARE_CONTENT_BYTES ||
+    Buffer.byteLength(contentMd, "utf8") > MAX_KNOWLEDGE_SHARE_CONTENT_BYTES ||
     !ALLOWED_KNOWLEDGE_SHARE_EXPIRY_DAYS.includes(
       expiresInDays as (typeof ALLOWED_KNOWLEDGE_SHARE_EXPIRY_DAYS)[number],
     ) ||
@@ -588,9 +580,9 @@ function isKnowledgeShareSnapshot(
 ): value is KnowledgeShareSnapshot {
   return Boolean(
     value &&
-      typeof value.contentMd === "string" &&
-      value.contentMd.trim() &&
-      Buffer.byteLength(value.contentMd, "utf8") <=
-        MAX_KNOWLEDGE_SHARE_CONTENT_BYTES,
+    typeof value.contentMd === "string" &&
+    value.contentMd.trim() &&
+    Buffer.byteLength(value.contentMd, "utf8") <=
+      MAX_KNOWLEDGE_SHARE_CONTENT_BYTES,
   );
 }

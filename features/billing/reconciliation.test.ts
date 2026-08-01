@@ -48,7 +48,9 @@ describe("reconcile", () => {
 });
 
 describe("runReconciliation", () => {
-  async function seedPayment(repo: ReturnType<typeof createMemoryBillingRepo>["repo"]) {
+  async function seedPayment(
+    repo: ReturnType<typeof createMemoryBillingRepo>["repo"],
+  ) {
     await repo.insertTransaction({
       organizationId: "org-1",
       orderId: "order-1",
@@ -69,7 +71,11 @@ describe("runReconciliation", () => {
       statement: [{ providerTxnId: "mock_pay_order-1", amountCents: 99900 }],
     });
 
-    const result = await runReconciliation({ repo, provider, date: "2026-06-20" });
+    const result = await runReconciliation({
+      repo,
+      provider,
+      date: "2026-06-20",
+    });
 
     expect(result.status).toBe("balanced");
     expect(state.reconciliations.get("2026-06-20:mock")).toEqual({
@@ -97,6 +103,8 @@ describe("runReconciliation", () => {
     expect(result.status).toBe("mismatch");
     expect(result.detail.ourOnly).toEqual(["mock_pay_order-1"]);
     expect(alert).toHaveBeenCalledTimes(1);
-    expect(state.reconciliations.get("2026-06-20:mock")?.status).toBe("mismatch");
+    expect(state.reconciliations.get("2026-06-20:mock")?.status).toBe(
+      "mismatch",
+    );
   });
 });

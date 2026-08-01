@@ -123,7 +123,10 @@ describe("production dependency security contract", () => {
   const jsdom = resolvePackageFrom(projectPackageJsonPath, "jsdom");
   const undici = resolvePackageFrom(jsdom.packageJsonPath, "undici");
   const eslint = resolvePackageFrom(projectPackageJsonPath, "eslint");
-  const eslintRc = resolvePackageFrom(eslint.packageJsonPath, "@eslint/eslintrc");
+  const eslintRc = resolvePackageFrom(
+    eslint.packageJsonPath,
+    "@eslint/eslintrc",
+  );
   const jsYaml = resolvePackageFrom(eslintRc.packageJsonPath, "js-yaml");
   const eslintMinimatch = resolvePackageFrom(
     eslint.packageJsonPath,

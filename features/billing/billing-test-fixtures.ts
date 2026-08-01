@@ -55,8 +55,16 @@ export const TEST_PRICES: Record<string, PlanPriceRow[]> = Object.fromEntries(
   TEST_PLANS.map((plan) => [
     plan.id,
     [
-      { billingCycle: "monthly", priceCents: plan.monthlyPriceCents, active: true },
-      { billingCycle: "annual", priceCents: plan.annualPriceCents, active: true },
+      {
+        billingCycle: "monthly",
+        priceCents: plan.monthlyPriceCents,
+        active: true,
+      },
+      {
+        billingCycle: "annual",
+        priceCents: plan.annualPriceCents,
+        active: true,
+      },
     ],
   ]),
 );
@@ -80,7 +88,10 @@ export function makePlan(
 }
 
 export function makeSubscription(
-  overrides: Partial<SubscriptionRecord> & { organizationId: string; planId: string },
+  overrides: Partial<SubscriptionRecord> & {
+    organizationId: string;
+    planId: string;
+  },
 ): SubscriptionRecord {
   return {
     status: "trialing",

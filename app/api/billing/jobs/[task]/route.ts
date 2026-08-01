@@ -131,8 +131,7 @@ export async function POST(request: Request, context: RouteContext) {
               reviewed.map((reservation) => reservation.organizationId),
             ).size,
             oldestAgeSeconds: reviewed.reduce(
-              (oldest, reservation) =>
-                Math.max(oldest, reservation.ageSeconds),
+              (oldest, reservation) => Math.max(oldest, reservation.ageSeconds),
               0,
             ),
           },
@@ -227,7 +226,8 @@ export async function POST(request: Request, context: RouteContext) {
 
     if (task === "reconcile") {
       const date =
-        new URL(request.url).searchParams.get("date") ?? toDateString(new Date());
+        new URL(request.url).searchParams.get("date") ??
+        toDateString(new Date());
       const summary = await runReconciliation({
         repo,
         provider: getPaymentProvider(),

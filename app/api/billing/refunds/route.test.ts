@@ -70,7 +70,9 @@ describe("billing refund route", () => {
     vi.mocked(createSupabaseBillingRepo).mockReturnValue({
       repo: "admin-billing",
     } as never);
-    vi.mocked(getPaymentProvider).mockReturnValue({ provider: "payment" } as never);
+    vi.mocked(getPaymentProvider).mockReturnValue({
+      provider: "payment",
+    } as never);
     vi.mocked(requestRefund).mockResolvedValue({ id: "refund-1" } as never);
   });
 

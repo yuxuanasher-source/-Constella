@@ -52,10 +52,16 @@ function createClient({
         };
       }
       if (name === "consume_usage_reservation") {
-        return { data: { id: args.p_reservation_id, status: "consumed" }, error: null };
+        return {
+          data: { id: args.p_reservation_id, status: "consumed" },
+          error: null,
+        };
       }
       if (name === "release_usage_reservation") {
-        return { data: { id: args.p_reservation_id, status: "released" }, error: null };
+        return {
+          data: { id: args.p_reservation_id, status: "released" },
+          error: null,
+        };
       }
       return { data: null, error: null };
     }),

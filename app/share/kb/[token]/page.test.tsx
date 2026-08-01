@@ -23,10 +23,7 @@ vi.mock("@/lib/storage/tencent-cos", () => ({
 
 import SharedKnowledgeDocPage from "./page";
 
-const pageSource = readFileSync(
-  "app/share/kb/[token]/page.tsx",
-  "utf8",
-);
+const pageSource = readFileSync("app/share/kb/[token]/page.tsx", "utf8");
 
 describe("public knowledge share page contract", () => {
   beforeEach(() => {
@@ -43,14 +40,15 @@ describe("public knowledge share page contract", () => {
 
   it("resolves public shares through hashed server metadata instead of a token COS key", () => {
     expect(pageSource).toContain("getPublicKnowledgeShare");
-    expect(pageSource).not.toContain(
-      "`knowledge-base-share/${token}.json`",
-    );
+    expect(pageSource).not.toContain("`knowledge-base-share/${token}.json`");
     expect(pageSource).toContain("getSnapshot: cosGetJson");
   });
 
   it("keeps one indistinguishable invalid state", () => {
-    expect(pageSource.match(/\u94fe\u63a5\u65e0\u6548\u6216\u5df2\u8fc7\u671f/g)?.length).toBe(1);
+    expect(
+      pageSource.match(/\u94fe\u63a5\u65e0\u6548\u6216\u5df2\u8fc7\u671f/g)
+        ?.length,
+    ).toBe(1);
     expect(pageSource).not.toContain("\u5df2\u64a4\u9500");
     expect(pageSource).not.toContain("\u4e0d\u5b58\u5728");
   });
@@ -72,7 +70,9 @@ describe("public knowledge share page contract", () => {
 
     render(
       await SharedKnowledgeDocPage({
-        params: Promise.resolve({ token: Buffer.alloc(32, 7).toString("base64url") }),
+        params: Promise.resolve({
+          token: Buffer.alloc(32, 7).toString("base64url"),
+        }),
       }),
     );
 
@@ -86,14 +86,22 @@ describe("public knowledge share page contract", () => {
     async () => {
       render(
         await SharedKnowledgeDocPage({
-          params: Promise.resolve({ token: Buffer.alloc(32, 8).toString("base64url") }),
+          params: Promise.resolve({
+            token: Buffer.alloc(32, 8).toString("base64url"),
+          }),
         }),
       );
 
       expect(
-        screen.getByRole("heading", { name: "\u94fe\u63a5\u65e0\u6548\u6216\u5df2\u8fc7\u671f" }),
+        screen.getByRole("heading", {
+          name: "\u94fe\u63a5\u65e0\u6548\u6216\u5df2\u8fc7\u671f",
+        }),
       ).toBeInTheDocument();
-      expect(screen.getByText("\u6b64\u94fe\u63a5\u5f53\u524d\u4e0d\u53ef\u8bbf\u95ee\u3002")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "\u6b64\u94fe\u63a5\u5f53\u524d\u4e0d\u53ef\u8bbf\u95ee\u3002",
+        ),
+      ).toBeInTheDocument();
     },
   );
 });

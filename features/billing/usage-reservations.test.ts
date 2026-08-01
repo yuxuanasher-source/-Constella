@@ -130,9 +130,9 @@ describe("usage reservations", () => {
       p_before: "2026-07-30T08:00:00.000Z",
       p_limit: 100,
     });
-    expect(JSON.stringify(await vi.mocked(client.rpc).mock.results[0]?.value)).not.toContain(
-      "metadata",
-    );
+    expect(
+      JSON.stringify(await vi.mocked(client.rpc).mock.results[0]?.value),
+    ).not.toContain("metadata");
   });
 
   it("marks a stale reservation only against the listed attempt and review version", async () => {

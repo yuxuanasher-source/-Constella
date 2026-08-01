@@ -58,10 +58,7 @@ export async function POST(
       },
     );
     if (!result) {
-      return NextResponse.json(
-        { error: "Share not found" },
-        { status: 404 },
-      );
+      return NextResponse.json({ error: "Share not found" }, { status: 404 });
     }
     if (result.newlyRevoked) {
       await writeAuditLog(admin, {

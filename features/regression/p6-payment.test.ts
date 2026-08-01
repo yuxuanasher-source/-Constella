@@ -60,7 +60,10 @@ describe("P6 payment closure regression", () => {
       repo,
       provider,
       actor: TEST_ACTOR,
-      intent: { kind: "subscription_new", target: { planCode: "basic", billingCycle: "monthly" } },
+      intent: {
+        kind: "subscription_new",
+        target: { planCode: "basic", billingCycle: "monthly" },
+      },
       now: NOW,
     });
     expect(buy.order.amountCents).toBe(29900);
@@ -75,11 +78,19 @@ describe("P6 payment closure regression", () => {
       repo,
       provider,
       actor: TEST_ACTOR,
-      intent: { kind: "subscription_upgrade", target: { planCode: "pro", billingCycle: "monthly" } },
+      intent: {
+        kind: "subscription_upgrade",
+        target: { planCode: "pro", billingCycle: "monthly" },
+      },
       now: NOW,
     });
     expect(upgrade.order.amountCents).toBeGreaterThan(0);
-    await payLatestOrder(repo, upgrade.order.id, upgrade.order.amountCents, "evt-up");
+    await payLatestOrder(
+      repo,
+      upgrade.order.id,
+      upgrade.order.amountCents,
+      "evt-up",
+    );
     expect(state.subscriptions.get("org-1")).toMatchObject({
       planId: "plan_pro",
       status: "active",
@@ -91,15 +102,25 @@ describe("P6 payment closure regression", () => {
       repo,
       provider,
       actor: TEST_ACTOR,
-      intent: { kind: "subscription_renewal", target: { planCode: "pro", billingCycle: "monthly" } },
+      intent: {
+        kind: "subscription_renewal",
+        target: { planCode: "pro", billingCycle: "monthly" },
+      },
       now: NOW,
     });
-    await payLatestOrder(repo, renew.order.id, renew.order.amountCents, "evt-renew");
+    await payLatestOrder(
+      repo,
+      renew.order.id,
+      renew.order.amountCents,
+      "evt-renew",
+    );
     const periodAfter = state.subscriptions.get("org-1")?.currentPeriodEnd;
     expect(periodAfter).not.toBe(periodBefore);
 
     // one transaction row per provider payment (created → succeeded upsert)
-    expect(state.transactions.filter((t) => t.status === "succeeded")).toHaveLength(3);
+    expect(
+      state.transactions.filter((t) => t.status === "succeeded"),
+    ).toHaveLength(3);
   });
 
   it("keeps read-only writes blocked and OCR overage hard-blocked", () => {
@@ -127,13 +148,18 @@ describe("P6 payment closure regression", () => {
       repo,
       provider,
       actor: TEST_ACTOR,
-      intent: { kind: "subscription_new", target: { planCode: "pro", billingCycle: "monthly" } },
+      intent: {
+        kind: "subscription_new",
+        target: { planCode: "pro", billingCycle: "monthly" },
+      },
       now: NOW,
     });
     await payLatestOrder(repo, buy.order.id, 99900, "evt-1");
     const replay = await payLatestOrder(repo, buy.order.id, 99900, "evt-1");
 
     expect(replay).toMatchObject({ processed: false, reason: "duplicate" });
-    expect(state.transactions.filter((t) => t.status === "succeeded")).toHaveLength(1);
+    expect(
+      state.transactions.filter((t) => t.status === "succeeded"),
+    ).toHaveLength(1);
   });
 });

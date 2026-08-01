@@ -71,7 +71,11 @@ export async function handleWebhook({
   const order = await repo.getOrderById(event.orderId);
   if (!order) {
     await repo.markWebhookProcessed(provider.name, event.eventId);
-    return { processed: false, reason: "order_not_found", orderId: event.orderId };
+    return {
+      processed: false,
+      reason: "order_not_found",
+      orderId: event.orderId,
+    };
   }
 
   const invariantRejection = businessInvariantRejection({
@@ -176,7 +180,11 @@ export async function handleWebhook({
       module: "billing",
       objectType: "billing_order",
       objectId: order.id,
-      after: { status: "paid", kind: order.kind, amountCents: order.amountCents },
+      after: {
+        status: "paid",
+        kind: order.kind,
+        amountCents: order.amountCents,
+      },
       changedFields: ["status"],
     });
   }

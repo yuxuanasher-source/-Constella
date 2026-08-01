@@ -10,11 +10,7 @@ import {
   makeSubscription,
 } from "./billing-test-fixtures";
 import { createMockPaymentProvider } from "./providers/mock-provider";
-import {
-  assertRefundable,
-  requestRefund,
-  requestRefundCore,
-} from "./refunds";
+import { assertRefundable, requestRefund, requestRefundCore } from "./refunds";
 
 const NOW = new Date("2026-06-20T00:00:00.000Z");
 const PAID_AT = "2026-06-16T00:00:00.000Z";
@@ -87,7 +83,11 @@ describe("requestRefund", () => {
 
   it("cancels the subscription and downgrades to free on subscription refund", async () => {
     const { repo, state } = setup();
-    await seedPaidOrder(repo, { id: "order-sub", kind: "subscription_new", planId: "plan_pro" });
+    await seedPaidOrder(repo, {
+      id: "order-sub",
+      kind: "subscription_new",
+      planId: "plan_pro",
+    });
 
     const result = await requestRefund({
       repo,
@@ -136,7 +136,9 @@ describe("requestRefund", () => {
       now: NOW,
     });
 
-    expect(state.usageCounters.get("org-1:ocr:2026-06-01")?.addonQuantity).toBe(0);
+    expect(state.usageCounters.get("org-1:ocr:2026-06-01")?.addonQuantity).toBe(
+      0,
+    );
     expect(state.orders.get("order-addon")?.status).toBe("refunded");
   });
 
@@ -208,7 +210,14 @@ describe("requestRefund", () => {
     await seedPaidOrder(repo, { id: "order-x", planId: "plan_pro" });
 
     await expect(
-      requestRefund({ repo, provider, actor: TEST_ACTOR, orderId: "order-x", reason: " ", now: NOW }),
+      requestRefund({
+        repo,
+        provider,
+        actor: TEST_ACTOR,
+        orderId: "order-x",
+        reason: " ",
+        now: NOW,
+      }),
     ).rejects.toThrow(/reason/);
 
     await repo.insertOrder({

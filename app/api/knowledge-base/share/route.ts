@@ -83,17 +83,13 @@ export async function POST(request: Request) {
 
     const parsedBody = await readJsonBodyWithLimit(request);
     if (parsedBody.kind === "too_large") {
-      return NextResponse.json(
-        { error: "Request too large" },
-        { status: 413 },
-      );
+      return NextResponse.json({ error: "Request too large" }, { status: 413 });
     }
     const body = parsedBody.kind === "ok" ? parsedBody.value : null;
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
     }
-    const expiresInDays =
-      "expiresInDays" in body ? body.expiresInDays : 7;
+    const expiresInDays = "expiresInDays" in body ? body.expiresInDays : 7;
     if (
       typeof expiresInDays !== "number" ||
       !ALLOWED_EXPIRY_DAYS.has(expiresInDays)
@@ -158,11 +154,13 @@ export async function POST(request: Request) {
       module: "knowledge_base",
       objectType: "knowledge_share_link",
       objectId: result.id,
-      objectName: "title" in body ? String(body.title).slice(0, 200) : undefined,
+      objectName:
+        "title" in body ? String(body.title).slice(0, 200) : undefined,
       after: {
         expiresAt: result.expiresAt,
         sourceDocumentId:
-          "sourceDocumentId" in body && typeof body.sourceDocumentId === "string"
+          "sourceDocumentId" in body &&
+          typeof body.sourceDocumentId === "string"
             ? body.sourceDocumentId
             : null,
       },
@@ -264,8 +262,5 @@ function contextError(error: "unauthorized" | "forbidden" | "unavailable") {
   if (error === "forbidden") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  return NextResponse.json(
-    { error: "Sharing unavailable" },
-    { status: 503 },
-  );
+  return NextResponse.json({ error: "Sharing unavailable" }, { status: 503 });
 }

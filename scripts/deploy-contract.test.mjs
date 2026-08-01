@@ -292,7 +292,7 @@ test("release verification resolves CURRENT_LINK to the managed SHA directory", 
   await mkdir(join(release, "scripts"), { recursive: true });
   await writeExecutable(
     join(release, "scripts/verify-release.sh"),
-    "#!/usr/bin/env bash\n[[ \"$1\" =~ ^[0-9a-f]{40}$ && \"$2\" =~ ^[0-9a-f]{64}$ ]]\n",
+    '#!/usr/bin/env bash\n[[ "$1" =~ ^[0-9a-f]{40}$ && "$2" =~ ^[0-9a-f]{64}$ ]]\n',
   );
   await symlink(
     release,
@@ -728,7 +728,10 @@ pm2_bounded jlist`,
     timeout: 20_000,
   });
   assert.notEqual(result.status, 0);
-  assert.ok(Date.now() - started < 15_000, "PM2 timeout exceeded hard deadline");
+  assert.ok(
+    Date.now() - started < 15_000,
+    "PM2 timeout exceeded hard deadline",
+  );
 });
 
 test("database lease acquisition has a bounded response deadline", () => {
@@ -789,7 +792,10 @@ assert_database_deploy_lease`,
     timeout: 20_000,
   });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /database deploy lease is no longer provably held/);
+  assert.match(
+    result.stderr,
+    /database deploy lease is no longer provably held/,
+  );
 });
 
 test("rollback preserves both releases until old reload, verify, and save succeed", async (t) => {

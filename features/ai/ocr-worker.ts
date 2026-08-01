@@ -55,7 +55,9 @@ export async function runOcrWorkerIteration(input: {
   leaseSeconds: number;
   now?: () => Date;
   provider?: TencentOcrProvider;
-  imageResolver?: (payload: OcrJobRecord["payload"]) => Promise<TencentOcrInput>;
+  imageResolver?: (
+    payload: OcrJobRecord["payload"],
+  ) => Promise<TencentOcrInput>;
   onCurrentJobsChange?: (count: number) => void;
 }): Promise<OcrWorkerIterationResult> {
   const now = input.now ?? (() => new Date());
@@ -64,7 +66,9 @@ export async function runOcrWorkerIteration(input: {
     return emptyResult();
   }
 
-  const breakerRepository = createProviderCircuitBreakerRepository(input.client);
+  const breakerRepository = createProviderCircuitBreakerRepository(
+    input.client,
+  );
   const breakerDecision = await canCallProvider(
     { repository: breakerRepository },
     "tencent_ocr",
@@ -167,7 +171,11 @@ export async function runOcrWorkerIteration(input: {
         await ignoreBreakerWriteFailure(
           recordProviderSuccess(
             { repository: breakerRepository },
-            { providerKey: "tencent_ocr", workerId: input.workerId, now: now() },
+            {
+              providerKey: "tencent_ocr",
+              workerId: input.workerId,
+              now: now(),
+            },
           ),
         );
       } else if (result.outcome === "retrying") {
@@ -222,7 +230,13 @@ export async function runOcrWorkerIteration(input: {
       }
     }
 
-    return { claimed: jobs.length, succeeded, failed, jobs: completedJobs, failures };
+    return {
+      claimed: jobs.length,
+      succeeded,
+      failed,
+      jobs: completedJobs,
+      failures,
+    };
   } finally {
     input.onCurrentJobsChange?.(0);
   }
@@ -344,7 +358,10 @@ async function runOneClaimedJob({
         now,
       });
     }
-    if (result.status === "succeeded" || result.status === "needs_confirmation") {
+    if (
+      result.status === "succeeded" ||
+      result.status === "needs_confirmation"
+    ) {
       return {
         outcome: "succeeded",
         job: { id: result.id, status: result.status, attempt: result.attempt },
@@ -524,7 +541,9 @@ function emptyResult(): OcrWorkerIterationResult {
 }
 
 function isProviderFailureCode(errorCode: string | undefined) {
-  return errorCode === "provider_failed" || errorCode === "provider_unconfigured";
+  return (
+    errorCode === "provider_failed" || errorCode === "provider_unconfigured"
+  );
 }
 
 function sanitizeWorkerError(error: unknown) {

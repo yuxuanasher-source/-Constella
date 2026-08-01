@@ -19,9 +19,10 @@ const MINIMUM_MOCK_SECRET_LENGTH = 32;
  * 验签用 HMAC-SHA256，回调体须携带与 {@link signMockWebhook} 一致的签名。
  * `statement` 用于对账测试时注入渠道对账文件。
  */
-export function createMockPaymentProvider(
-  options: { secret: string; statement?: StatementEntry[] },
-): PaymentProvider {
+export function createMockPaymentProvider(options: {
+  secret: string;
+  statement?: StatementEntry[];
+}): PaymentProvider {
   const secret = requireStrongMockSecret(options?.secret);
   const statement = options?.statement ?? [];
 

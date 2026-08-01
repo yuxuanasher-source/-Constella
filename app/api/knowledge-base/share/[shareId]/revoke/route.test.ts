@@ -15,9 +15,10 @@ import { writeAuditLog } from "@/lib/audit/audit";
 import { POST } from "./route";
 
 vi.mock("@/features/knowledge-base/knowledge-share", async (importOriginal) => {
-  const original = await importOriginal<
-    typeof import("@/features/knowledge-base/knowledge-share")
-  >();
+  const original =
+    await importOriginal<
+      typeof import("@/features/knowledge-base/knowledge-share")
+    >();
   return {
     ...original,
     createKnowledgeShareRepository: vi.fn(),
@@ -65,9 +66,12 @@ describe("knowledge share revoke route", () => {
       newlyRevoked: false,
     });
 
-    const response = await POST(new Request("http://local", { method: "POST" }), {
-      params: Promise.resolve({ shareId }),
-    });
+    const response = await POST(
+      new Request("http://local", { method: "POST" }),
+      {
+        params: Promise.resolve({ shareId }),
+      },
+    );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
@@ -79,9 +83,12 @@ describe("knowledge share revoke route", () => {
   });
 
   it("scopes an idempotent revoke to the authenticated organization", async () => {
-    const response = await POST(new Request("http://local", { method: "POST" }), {
-      params: Promise.resolve({ shareId }),
-    });
+    const response = await POST(
+      new Request("http://local", { method: "POST" }),
+      {
+        params: Promise.resolve({ shareId }),
+      },
+    );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
@@ -107,9 +114,12 @@ describe("knowledge share revoke route", () => {
   it("does not disclose whether a foreign or unknown share exists", async () => {
     vi.mocked(revokeKnowledgeShare).mockResolvedValue(null);
 
-    const response = await POST(new Request("http://local", { method: "POST" }), {
-      params: Promise.resolve({ shareId }),
-    });
+    const response = await POST(
+      new Request("http://local", { method: "POST" }),
+      {
+        params: Promise.resolve({ shareId }),
+      },
+    );
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "Share not found" });
@@ -118,9 +128,12 @@ describe("knowledge share revoke route", () => {
   it("rejects roles that cannot manage knowledge shares before mutation", async () => {
     vi.mocked(getAuthContext).mockResolvedValue({ ...auth, role: "finance" });
 
-    const response = await POST(new Request("http://local", { method: "POST" }), {
-      params: Promise.resolve({ shareId }),
-    });
+    const response = await POST(
+      new Request("http://local", { method: "POST" }),
+      {
+        params: Promise.resolve({ shareId }),
+      },
+    );
 
     expect(response.status).toBe(403);
     expect(revokeKnowledgeShare).not.toHaveBeenCalled();
@@ -129,9 +142,12 @@ describe("knowledge share revoke route", () => {
   it("fails closed without the admin client", async () => {
     vi.mocked(createSupabaseAdminClient).mockReturnValue(null);
 
-    const response = await POST(new Request("http://local", { method: "POST" }), {
-      params: Promise.resolve({ shareId }),
-    });
+    const response = await POST(
+      new Request("http://local", { method: "POST" }),
+      {
+        params: Promise.resolve({ shareId }),
+      },
+    );
 
     expect(response.status).toBe(503);
     expect(revokeKnowledgeShare).not.toHaveBeenCalled();
@@ -142,9 +158,12 @@ describe("knowledge share revoke route", () => {
       new Error("secret COS bucket path"),
     );
 
-    const response = await POST(new Request("http://local", { method: "POST" }), {
-      params: Promise.resolve({ shareId }),
-    });
+    const response = await POST(
+      new Request("http://local", { method: "POST" }),
+      {
+        params: Promise.resolve({ shareId }),
+      },
+    );
     const body = await response.text();
 
     expect(response.status).toBe(500);

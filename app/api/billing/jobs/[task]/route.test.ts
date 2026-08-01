@@ -177,10 +177,13 @@ describe("billing scheduled jobs route", () => {
     vi.mocked(markStaleUsageReservationReviewed).mockResolvedValue(null);
 
     const response = await POST(
-      new Request("http://localhost/api/billing/jobs/stale-usage-reservations", {
-        method: "POST",
-        headers: { "x-cron-secret": "billing-secret" },
-      }),
+      new Request(
+        "http://localhost/api/billing/jobs/stale-usage-reservations",
+        {
+          method: "POST",
+          headers: { "x-cron-secret": "billing-secret" },
+        },
+      ),
       { params: Promise.resolve({ task: "stale-usage-reservations" }) },
     );
 
@@ -207,10 +210,13 @@ describe("billing scheduled jobs route", () => {
     );
 
     const response = await POST(
-      new Request("http://localhost/api/billing/jobs/stale-usage-reservations", {
-        method: "POST",
-        headers: { "x-cron-secret": "billing-secret" },
-      }),
+      new Request(
+        "http://localhost/api/billing/jobs/stale-usage-reservations",
+        {
+          method: "POST",
+          headers: { "x-cron-secret": "billing-secret" },
+        },
+      ),
       { params: Promise.resolve({ task: "stale-usage-reservations" }) },
     );
 
@@ -229,9 +235,12 @@ describe("billing scheduled jobs route", () => {
 
   it("rejects calls without the billing cron secret before using admin", async () => {
     const response = await POST(
-      new Request("http://localhost/api/billing/jobs/stale-usage-reservations", {
-        method: "POST",
-      }),
+      new Request(
+        "http://localhost/api/billing/jobs/stale-usage-reservations",
+        {
+          method: "POST",
+        },
+      ),
       { params: Promise.resolve({ task: "stale-usage-reservations" }) },
     );
 

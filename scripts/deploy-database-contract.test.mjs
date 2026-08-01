@@ -15,8 +15,7 @@ const enabled = process.env.RUN_DEPLOY_DB_TESTS === "1";
 const container =
   process.env.DEPLOY_DB_TEST_CONTAINER ?? "supabase_db_jingying-cabin";
 const postgrestContainer =
-  process.env.DEPLOY_POSTGREST_TEST_CONTAINER ??
-  "supabase_rest_jingying-cabin";
+  process.env.DEPLOY_POSTGREST_TEST_CONTAINER ?? "supabase_rest_jingying-cabin";
 const repoRoot = process.cwd();
 const deployScript = join(repoRoot, "scripts/deploy.sh");
 const bashBin = [
@@ -115,30 +114,28 @@ function schemaCacheGeneration(metrics) {
 }
 
 (enabled ? describe : describe.skip)("atomic deploy database contract", () => {
-  it(
-    "proves a real PostgREST admin cache reload and target-specific schema probe",
-    async () => {
-      const suffix = `${process.pid}_${Date.now()}`;
-      const probe = `codex_postgrest_contract_${suffix}`;
-      let created = false;
+  it("proves a real PostgREST admin cache reload and target-specific schema probe", async () => {
+    const suffix = `${process.pid}_${Date.now()}`;
+    const probe = `codex_postgrest_contract_${suffix}`;
+    let created = false;
 
-      expect(probe).toMatch(/^codex_postgrest_contract_[0-9_]+$/);
-      try {
-        for (const name of [container, postgrestContainer]) {
-          const inspect = docker(["inspect", name]);
-          expect(inspect.status, inspect.stderr).toBe(0);
-        }
+    expect(probe).toMatch(/^codex_postgrest_contract_[0-9_]+$/);
+    try {
+      for (const name of [container, postgrestContainer]) {
+        const inspect = docker(["inspect", name]);
+        expect(inspect.status, inspect.stderr).toBe(0);
+      }
 
-        const ready = postgrestAdmin("ready");
-        expect(ready.status, ready.stderr).toBe(0);
-        const beforeMetrics = postgrestAdmin("metrics");
-        expect(beforeMetrics.status, beforeMetrics.stderr).toBe(0);
-        const before = schemaCacheGeneration(beforeMetrics.stdout);
-        expect(Number.isFinite(before)).toBe(true);
+      const ready = postgrestAdmin("ready");
+      expect(ready.status, ready.stderr).toBe(0);
+      const beforeMetrics = postgrestAdmin("metrics");
+      expect(beforeMetrics.status, beforeMetrics.stderr).toBe(0);
+      const before = schemaCacheGeneration(beforeMetrics.stdout);
+      expect(Number.isFinite(before)).toBe(true);
 
-        const create = psql(
-          "postgres",
-          `
+      const create = psql(
+        "postgres",
+        `
             create view public.${probe} as
               select '${probe}'::text as release_sha;
             revoke all on public.${probe} from public;
@@ -158,57 +155,55 @@ function schemaCacheGeneration(metrics) {
                 'SELECT'
               );
           `,
-        );
-        expect(create.status, create.stderr).toBe(0);
-        expect(create.stdout.trim()).toBe("t|t|t");
-        created = true;
+      );
+      expect(create.status, create.stderr).toBe(0);
+      expect(create.stdout.trim()).toBe("t|t|t");
+      created = true;
 
-        let observed = false;
-        let lastObservation = {};
-        const deadline = Date.now() + 25_000;
-        while (Date.now() < deadline) {
-          const currentReady = postgrestAdmin("ready");
-          const metrics = postgrestAdmin("metrics");
-          const cache = postgrestAdmin("schema_cache");
-          lastObservation = {
-            readyStatus: currentReady.status,
-            metricsStatus: metrics.status,
-            cacheStatus: cache.status,
-            generation: schemaCacheGeneration(metrics.stdout),
-            before,
-            cacheContainsProbe: cache.stdout.includes(probe),
-            readyError: currentReady.stderr,
-            metricsError: metrics.stderr,
-            cacheError: cache.stderr,
-          };
-          if (
-            currentReady.status === 0 &&
-            metrics.status === 0 &&
-            cache.status === 0 &&
-            schemaCacheGeneration(metrics.stdout) > before &&
-            cache.stdout.includes(probe)
-          ) {
-            observed = true;
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 250));
+      let observed = false;
+      let lastObservation = {};
+      const deadline = Date.now() + 25_000;
+      while (Date.now() < deadline) {
+        const currentReady = postgrestAdmin("ready");
+        const metrics = postgrestAdmin("metrics");
+        const cache = postgrestAdmin("schema_cache");
+        lastObservation = {
+          readyStatus: currentReady.status,
+          metricsStatus: metrics.status,
+          cacheStatus: cache.status,
+          generation: schemaCacheGeneration(metrics.stdout),
+          before,
+          cacheContainsProbe: cache.stdout.includes(probe),
+          readyError: currentReady.stderr,
+          metricsError: metrics.stderr,
+          cacheError: cache.stderr,
+        };
+        if (
+          currentReady.status === 0 &&
+          metrics.status === 0 &&
+          cache.status === 0 &&
+          schemaCacheGeneration(metrics.stdout) > before &&
+          cache.stdout.includes(probe)
+        ) {
+          observed = true;
+          break;
         }
-        expect(observed, JSON.stringify(lastObservation)).toBe(true);
-      } finally {
-        if (created) {
-          const cleanup = psql(
-            "postgres",
-            `
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      expect(observed, JSON.stringify(lastObservation)).toBe(true);
+    } finally {
+      if (created) {
+        const cleanup = psql(
+          "postgres",
+          `
               drop view if exists public.${probe};
               notify pgrst, 'reload schema';
             `,
-          );
-          expect(cleanup.status, cleanup.stderr).toBe(0);
-        }
+        );
+        expect(cleanup.status, cleanup.stderr).toBe(0);
       }
-    },
-    45_000,
-  );
+    }
+  }, 45_000);
 
   it("serializes concurrent migration attempts into a private, unforgeable ledger", async () => {
     const suffix = `${process.pid}_${Date.now()}`;

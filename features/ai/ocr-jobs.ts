@@ -514,7 +514,9 @@ export async function runClaimedOcrJob({
   unexpectedProviderErrorCode?: string;
   beforeProvider?: () => Promise<void>;
   beforePostTerminalSideEffects?: (result: OcrJobRecord) => Promise<void>;
-  beforePostTerminalFailureSideEffects?: (result: OcrJobRecord) => Promise<void>;
+  beforePostTerminalFailureSideEffects?: (
+    result: OcrJobRecord,
+  ) => Promise<void>;
 }): Promise<OcrJobRecord> {
   // The caller authorizes this execution through the actor contract; quota
   // consumption itself is intentionally bound to the claimed job.
@@ -619,7 +621,9 @@ export async function runClaimedOcrJob({
     });
   }
 
-  let providerResult: Awaited<ReturnType<TencentOcrProvider["runGeneralBasicOcr"]>>;
+  let providerResult: Awaited<
+    ReturnType<TencentOcrProvider["runGeneralBasicOcr"]>
+  >;
   try {
     providerResult = await provider.runGeneralBasicOcr(providerInput);
   } catch (error) {
@@ -858,7 +862,9 @@ export async function failClaimedOcrJobBeforeProvider({
   errorCode: string;
   errorSummary: string;
   deferTerminalJobUpdate?: boolean;
-  beforePostTerminalFailureSideEffects?: (result: OcrJobRecord) => Promise<void>;
+  beforePostTerminalFailureSideEffects?: (
+    result: OcrJobRecord,
+  ) => Promise<void>;
 }): Promise<OcrJobRecord> {
   let reservationStatus: "reserved" | "consumed";
   try {
@@ -1441,7 +1447,9 @@ async function failOcrJobAttempt({
   errorCode: string;
   errorSummary: string;
   deferTerminalJobUpdate?: boolean;
-  beforePostTerminalFailureSideEffects?: (result: OcrJobRecord) => Promise<void>;
+  beforePostTerminalFailureSideEffects?: (
+    result: OcrJobRecord,
+  ) => Promise<void>;
   forceTerminal?: boolean;
 }): Promise<OcrJobRecord> {
   const safeMessage = sanitizeErrorMessage(errorSummary);

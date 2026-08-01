@@ -39,11 +39,7 @@ describe("production dependency runtime compatibility", () => {
 
     try {
       writeFileSync(join(fixtureDirectory, "package.json"), "{}\n", "utf8");
-      writeFileSync(
-        join(fixtureDirectory, "pnpm-lock.json"),
-        "{}\n",
-        "utf8",
-      );
+      writeFileSync(join(fixtureDirectory, "pnpm-lock.json"), "{}\n", "utf8");
 
       const requireFromProject = createRequire(
         resolve(process.cwd(), "package.json"),

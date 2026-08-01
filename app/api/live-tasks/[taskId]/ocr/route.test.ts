@@ -113,7 +113,11 @@ describe("/api/live-tasks/[taskId]/ocr", () => {
 
   it("queues a safe OCR job for a report screenshot", async () => {
     vi.mocked(submitLiveReportScreenshotForOcr).mockImplementationOnce(
-      async ({ createOcrJob: queueOcrJob, input, resolveScreenshotContent }) => {
+      async ({
+        createOcrJob: queueOcrJob,
+        input,
+        resolveScreenshotContent,
+      }) => {
         await resolveScreenshotContent({
           imageBucket: input.imageBucket,
           imagePath: input.screenshotStoragePath,
