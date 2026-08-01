@@ -178,7 +178,7 @@ test("recreates PM2 from an ecosystem file and verifies the release", () => {
 
 test("verifier checks health, full SHA, PM2 state, cwd, script, and current target", () => {
   assert.match(verify, /curl[\s\S]*--fail[\s\S]*--retry/);
-  assert.match(verify, /release\.sha/);
+  assert.match(verify, /body\.release\?\.sha/);
   assert.match(verify, /EXPECTED_SHA/);
   assert.match(verify, /pm2 jlist/);
   assert.match(verify, /online/);
@@ -883,8 +883,13 @@ test("release verifier accepts only the exact healthy runtime SHA", async (t) =>
   await writeExecutable(
     join(fakeBin, "curl"),
     `#!/usr/bin/env bash
+health_sha="$FAKE_HEALTH_SHA"
+if [[ "$FAKE_HEALTH_SEQUENCE" == "stale-then-current" && ! -e "$FAKE_HEALTH_COUNT_FILE" ]]; then
+  : > "$FAKE_HEALTH_COUNT_FILE"
+  health_sha="${"d".repeat(40)}"
+fi
 printf '{"ok":true,"release":{"sha":"%s","manifestSha256":"%s"}}\\n' \
-  "$FAKE_HEALTH_SHA" "$FAKE_MANIFEST_SHA"
+  "$health_sha" "$FAKE_MANIFEST_SHA"
 `,
   );
   await writeExecutable(
@@ -909,7 +914,11 @@ node -e '
   );
 
   const verifyPath = join(process.cwd(), "scripts/verify-release.sh");
-  const invoke = (healthSha, pm2Mode = "healthy") =>
+  const invoke = (
+    healthSha,
+    pm2Mode = "healthy",
+    healthSequence = "fixed",
+  ) =>
     run(bash, {
       args: [
         "-lc",
@@ -935,15 +944,28 @@ bash "$verify_script" "$FAKE_EXPECTED_SHA" "$FAKE_MANIFEST_SHA"`,
         FAKE_EXPECTED_SHA: expectedSha,
         FAKE_MANIFEST_SHA: expectedManifest,
         FAKE_HEALTH_SHA: healthSha,
+        FAKE_HEALTH_SEQUENCE: healthSequence,
+        FAKE_HEALTH_COUNT_FILE: join(sandbox, `health-${healthSequence}.count`),
+        HEALTH_TIMEOUT_SECONDS: "5",
         PM2_INSTANCE_MODE: pm2Mode,
       },
     });
 
   const healthy = invoke(expectedSha);
   assert.equal(healthy.status, 0, `${healthy.stdout}\n${healthy.stderr}`);
+  const eventuallyHealthy = invoke(
+    expectedSha,
+    "healthy",
+    "stale-then-current",
+  );
+  assert.equal(
+    eventuallyHealthy.status,
+    0,
+    `${eventuallyHealthy.stdout}\n${eventuallyHealthy.stderr}`,
+  );
   const staleHealth = invoke("d".repeat(40));
   assert.notEqual(staleHealth.status, 0, "stale health SHA must be rejected");
-  assert.match(staleHealth.stderr, /release\.sha does not match/);
+  assert.match(staleHealth.stderr, /did not converge to the expected release/);
 
   const staleInstance = invoke(expectedSha, "stale-instance");
   assert.notEqual(
