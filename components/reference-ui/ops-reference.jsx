@@ -21681,89 +21681,6 @@ function kbExportPdf(doc) {
   w.document.close();
 }
 
-function kbShareRequestKey() {
-  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  return `kb-share-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-}
-
-function kbFormatShareExpiry(expiresAt) {
-  const value = new Date(expiresAt);
-  if (!Number.isFinite(value.getTime())) return "";
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(value);
-}
-
-function kbShareAttemptMatches(attempt, doc, expiresInDays) {
-  return Boolean(
-    attempt &&
-    attempt.documentId === doc?.id &&
-    attempt.documentName === doc?.name &&
-    attempt.contentMd === (doc?.contentMd || "") &&
-    attempt.expiresInDays === expiresInDays,
-  );
-}
-
-async function kbShareDoc(doc, expiresInDays, requestKey) {
-  const res = await globalThis.fetch("/api/knowledge-base/share", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Idempotency-Key": requestKey,
-    },
-    body: JSON.stringify({
-      title: doc.name,
-      contentMd: doc.contentMd || "",
-      sourceDocumentId: doc.id,
-      expiresInDays,
-    }),
-  });
-  if (!res.ok) {
-    const payload = await res.json().catch(() => ({}));
-    const error = new Error(payload.error || "分享失败");
-    error.status = res.status;
-    error.code = typeof payload.code === "string" ? payload.code : undefined;
-    error.shareId =
-      typeof payload.shareId === "string" ? payload.shareId : undefined;
-    error.shareStatus = [
-      "active",
-      "pending",
-      "failed",
-      "revoked",
-      "expired",
-    ].includes(payload.shareStatus)
-      ? payload.shareStatus
-      : undefined;
-    throw error;
-  }
-  const payload = await res.json();
-  return payload;
-}
-
-async function kbListActiveShares(sourceDocumentId) {
-  const res = await globalThis.fetch(
-    `/api/knowledge-base/share?sourceDocumentId=${encodeURIComponent(sourceDocumentId)}`,
-  );
-  if (!res.ok) throw new Error("无法读取活跃分享");
-  const payload = await res.json();
-  return Array.isArray(payload.shares) ? payload.shares : [];
-}
-
-async function kbRevokeShare(shareId) {
-  const res = await globalThis.fetch(
-    `/api/knowledge-base/share/${encodeURIComponent(shareId)}/revoke`,
-    { method: "POST" },
-  );
-  if (!res.ok) throw new Error("撤销失败");
-}
-
 function LiveReviewDrawer({
   task,
   project,
@@ -29903,16 +29820,10 @@ const KNOWLEDGE_SCENE_DEPENDENCIES = {
   kbExportMarkdown,
   kbExportPdf,
   kbExportWord,
-  kbFormatShareExpiry,
-  kbListActiveShares,
   kbMoveNode,
   kbPath,
   kbRenameNode,
-  kbRevokeShare,
   kbSetContent,
-  kbShareAttemptMatches,
-  kbShareDoc,
-  kbShareRequestKey,
   loadKnowledgeStore,
   loadKnowledgeStoreRemote,
   parseMarkdownToBlocks,
