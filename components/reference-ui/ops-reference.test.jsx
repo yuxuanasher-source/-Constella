@@ -4556,13 +4556,15 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "厂家分享看板" }));
 
     expect(
-      screen.getByRole("heading", { name: "选播准入" }),
+      await screen.findByRole("heading", { name: "选播准入" }),
     ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByPlaceholderText("项目 / 主播 / 报名编号"),
+      ).toHaveValue("project-alpha"),
+    );
     expect(
-      screen.getByPlaceholderText("项目 / 主播 / 报名编号"),
-    ).toHaveValue("project-alpha");
-    expect(
-      screen.getByText("Alpha Launch · 录屏明细"),
+      await screen.findByText("Alpha Launch · 录屏明细"),
     ).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([url]) =>
@@ -7019,7 +7021,7 @@ describe("OpsReferenceApp admission smoke", () => {
     );
 
     expect(await screen.findByText("组织审核校准")).toBeInTheDocument();
-    expect(screen.getByText("AI / MCN 一致率")).toBeInTheDocument();
+    expect(await screen.findByText("AI / MCN 一致率")).toBeInTheDocument();
     expect(screen.getByText("85.0%")).toBeInTheDocument();
     expect(screen.getByText("一审漏判率")).toBeInTheDocument();
     expect(screen.getByText("20.0%")).toBeInTheDocument();

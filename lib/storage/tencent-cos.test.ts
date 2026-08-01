@@ -90,16 +90,15 @@ describe("Tencent COS JSON storage", () => {
     });
   });
 
-  it.each([
-    { statusCode: 404 },
-    { code: "NoSuchKey" },
-    { code: "NotFound" },
-  ])("returns null for a missing object error %#", async (missingError) => {
-    cosMocks.getObject.mockRejectedValue(missingError);
-    const { cosGetJson } = await loadStorage();
+  it.each([{ statusCode: 404 }, { code: "NoSuchKey" }, { code: "NotFound" }])(
+    "returns null for a missing object error %#",
+    async (missingError) => {
+      cosMocks.getObject.mockRejectedValue(missingError);
+      const { cosGetJson } = await loadStorage();
 
-    await expect(cosGetJson("missing.json")).resolves.toBeNull();
-  });
+      await expect(cosGetJson("missing.json")).resolves.toBeNull();
+    },
+  );
 
   it("preserves non-missing getObject Promise failures", async () => {
     const providerError = Object.assign(new Error("COS unavailable"), {

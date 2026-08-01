@@ -9,15 +9,9 @@ import {
   MARKDOWN_DOC_CSS,
   renderMarkdownToHtml,
 } from "@/lib/markdown/render-markdown";
-import {
-  cosGetJson,
-  isCosConfigured,
-} from "@/lib/storage/tencent-cos";
+import { cosGetJson, isCosConfigured } from "@/lib/storage/tencent-cos";
 
 export const dynamic = "force-dynamic";
-export const metadata = {
-  robots: { index: false, follow: false, noarchive: true },
-};
 
 export const metadata: Metadata = {
   robots: {

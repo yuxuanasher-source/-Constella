@@ -55,6 +55,9 @@ jobs:
       - name: Run visual smoke tests
         run: pnpm test:ops-visual
 
+      - name: Enforce client bundle budgets
+        run: pnpm check:bundle-budget
+
   database-regression:
     runs-on: [self-hosted, linux, x64, constella-ci]
     timeout-minutes: 30

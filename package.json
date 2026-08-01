@@ -11,6 +11,7 @@
     "build": "next build",
     "check:changed-format": "node scripts/check-changed-format.mjs",
     "test:critical-coverage": "vitest run lib/markdown features/billing/providers features/billing/webhooks.test.ts features/billing/usage-metering.test.ts features/ai/knowledge-base.test.ts --coverage",
+    "check:bundle-budget": "node scripts/check-bundle-budget.mjs",
     "start": "next start",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
