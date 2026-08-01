@@ -43,7 +43,15 @@ function healthResponse(dbOk: boolean, db: boolean) {
     );
     const ok = dbOk && hermesRuntime.compatibilityStatus !== "runtime_disabled";
     return NextResponse.json(
-      { ok, db, hermesRuntime },
+      {
+        ok,
+        db,
+        hermesRuntime,
+        release: {
+          sha: process.env.RELEASE_SHA ?? null,
+          manifestSha256: process.env.RELEASE_MANIFEST_SHA256 ?? null,
+        },
+      },
       { status: ok ? 200 : 503 },
     );
   } catch {
@@ -52,6 +60,10 @@ function healthResponse(dbOk: boolean, db: boolean) {
         ok: false,
         db,
         hermesRuntime: hermesRuntimeConfigurationErrorHealth(),
+        release: {
+          sha: process.env.RELEASE_SHA ?? null,
+          manifestSha256: process.env.RELEASE_MANIFEST_SHA256 ?? null,
+        },
       },
       { status: 503 },
     );

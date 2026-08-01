@@ -1,0 +1,6 @@
+* @yuxuanasher-source
+/.github/ @yuxuanasher-source
+/features/billing/ @yuxuanasher-source
+/app/api/billing/ @yuxuanasher-source
+/supabase/migrations/ @yuxuanasher-source
+/scripts/deploy.sh @yuxuanasher-source

@@ -41,6 +41,8 @@ describe("/api/health", () => {
     process.env.XINGYAO_HERMES_GATEWAY_SERVICE_TOKEN =
       "gateway-service-token-that-is-long-enough";
     process.env.XINGYAO_HERMES_LEGACY_RUNTIME_ENABLED = "true";
+    process.env.RELEASE_SHA = "704595bf4a7a216801881a46e78d9c8ece225351";
+    process.env.RELEASE_MANIFEST_SHA256 = "a".repeat(64);
 
     const response = await GET();
 
@@ -55,6 +57,10 @@ describe("/api/health", () => {
         gatewayAllowlistConfigured: true,
         legacyEnabled: true,
         compatibilityStatus: "gateway_v2_ready",
+      },
+      release: {
+        sha: "704595bf4a7a216801881a46e78d9c8ece225351",
+        manifestSha256: "a".repeat(64),
       },
     });
     expect(JSON.stringify(body)).not.toContain("127.0.0.1");
@@ -96,7 +102,9 @@ describe("/api/health", () => {
   });
 
   it("returns a redacted 503 when Hermes runtime configuration is malformed", async () => {
-    vi.mocked(createSupabaseAdminClient).mockReturnValue(fakeAdminClient({}) as never);
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(
+      fakeAdminClient({}) as never,
+    );
     process.env.XINGYAO_HERMES_GATEWAY_ENABLED = "true";
     process.env.XINGYAO_HERMES_GATEWAY_ALLOWLIST =
       "11111111-1111-4111-8111-111111111111/not-a-user";
@@ -118,6 +126,7 @@ describe("/api/health", () => {
         legacyEnabled: false,
         compatibilityStatus: "configuration_error",
       },
+      release: { sha: null, manifestSha256: null },
     });
     expect(JSON.stringify(body)).not.toContain("not-a-user");
     expect(JSON.stringify(body)).not.toContain("127.0.0.1");
