@@ -71,6 +71,7 @@ describe("release integrity manifest", () => {
         run("git", ["update-index", "--chmod=+x", "scripts/deploy.sh"], root)
           .status,
       ).toBe(0);
+      chmodSync(join(root, "scripts/deploy.sh"), 0o755);
       expect(
         run("git", ["commit", "--quiet", "-m", "fixture"], root).status,
       ).toBe(0);

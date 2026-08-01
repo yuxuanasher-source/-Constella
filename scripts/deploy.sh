@@ -552,7 +552,7 @@ terminate_database_deploy_lease() {
 }
 
 acquire_database_deploy_lease() {
-  local marker="" deadline remaining read_timeout
+  local marker="" deadline remaining read_timeout request=""
   [[ "$DB_LEASE_ACTIVE" -eq 0 ]] || die "database deploy lease is already active"
   coproc DEPLOY_DB_LEASE_PROCESS { db_lease_session -Atq; }
   DB_LEASE_OUTPUT_FD="${DEPLOY_DB_LEASE_PROCESS[0]}"
@@ -560,8 +560,10 @@ acquire_database_deploy_lease() {
   DB_LEASE_PID="$DEPLOY_DB_LEASE_PROCESS_PID"
   deadline=$((SECONDS + DATABASE_LEASE_WAIT_SECONDS))
   while (( SECONDS < deadline )); do
-    if ! printf "select case when pg_try_advisory_lock(hashtextextended('%s', 0)) then 'DEPLOY_LEASE_ACQUIRED' else 'DEPLOY_LEASE_BUSY' end;\n" \
-      "$MIGRATION_LEASE_KEY" >&"$DB_LEASE_INPUT_FD"; then
+    printf -v request \
+      "select case when pg_try_advisory_lock(hashtextextended('%s', 0)) then 'DEPLOY_LEASE_ACQUIRED' else 'DEPLOY_LEASE_BUSY' end;\n" \
+      "$MIGRATION_LEASE_KEY"
+    if ! write_database_lease_request "$request"; then
       terminate_database_deploy_lease
       die "cannot request database deploy lease"
     fi
@@ -587,15 +589,24 @@ acquire_database_deploy_lease() {
   die "database deploy lease remained busy for ${DATABASE_LEASE_WAIT_SECONDS}s"
 }
 
+write_database_lease_request() {
+  local request="$1" status=0
+  trap '' PIPE
+  { printf '%s' "$request" >&"$DB_LEASE_INPUT_FD"; } 2>/dev/null || status=$?
+  trap - PIPE
+  return "$status"
+}
+
 assert_database_deploy_lease() {
-  local marker=""
+  local marker="" request=""
   if [[ "$DB_LEASE_ACTIVE" -ne 1 || -z "$DB_LEASE_PID" ]] ||
     ! kill -0 "$DB_LEASE_PID" >/dev/null 2>&1; then
     terminate_database_deploy_lease
     die "database deploy lease is no longer provably held"
   fi
-  if ! printf "select case when (select count(*) from pg_locks where pid = pg_backend_pid() and locktype = 'advisory' and mode = 'ExclusiveLock' and granted) = 1 then 'DEPLOY_LEASE_ALIVE' else 'DEPLOY_LEASE_MISSING' end;\n" \
-    >&"$DB_LEASE_INPUT_FD"; then
+  printf -v request \
+    "select case when (select count(*) from pg_locks where pid = pg_backend_pid() and locktype = 'advisory' and mode = 'ExclusiveLock' and granted) = 1 then 'DEPLOY_LEASE_ALIVE' else 'DEPLOY_LEASE_MISSING' end;\n"
+  if ! write_database_lease_request "$request"; then
     terminate_database_deploy_lease
     die "database deploy lease is no longer provably held"
   fi
@@ -607,10 +618,12 @@ assert_database_deploy_lease() {
 }
 
 release_database_deploy_lease() {
-  local marker="" status=0
+  local marker="" request="" status=0
   [[ "$DB_LEASE_ACTIVE" -eq 1 ]] || return 0
-  if ! printf "select case when pg_advisory_unlock(hashtextextended('%s', 0)) then 'DEPLOY_LEASE_RELEASED' else 'DEPLOY_LEASE_MISSING' end;\n\\q\n" \
-    "$MIGRATION_LEASE_KEY" >&"$DB_LEASE_INPUT_FD"; then
+  printf -v request \
+    "select case when pg_advisory_unlock(hashtextextended('%s', 0)) then 'DEPLOY_LEASE_RELEASED' else 'DEPLOY_LEASE_MISSING' end;\n\\q\n" \
+    "$MIGRATION_LEASE_KEY"
+  if ! write_database_lease_request "$request"; then
     status=1
   elif ! IFS= read -r -t "$DB_RESPONSE_TIMEOUT_SECONDS" marker <&"$DB_LEASE_OUTPUT_FD" ||
     [[ "$marker" != "DEPLOY_LEASE_RELEASED" ]]; then
