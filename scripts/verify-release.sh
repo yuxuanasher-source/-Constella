@@ -7,6 +7,7 @@ CURRENT_LINK="${CURRENT_LINK:-/var/www/jingying-cabin-current}"
 RELEASE_ROOT="${RELEASE_ROOT:-/var/cache/jingying-cabin-releases}"
 PM2_NAME="${PM2_NAME:-jingying-cabin}"
 PM2_TIMEOUT_SECONDS="${PM2_TIMEOUT_SECONDS:-30}"
+HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-30}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 
 die() { printf '[verify-release] %s\n' "$*" >&2; exit 1; }
@@ -19,6 +20,8 @@ die() { printf '[verify-release] %s\n' "$*" >&2; exit 1; }
 [[ "$RELEASE_ROOT" == /* ]] || die "RELEASE_ROOT must be absolute"
 [[ "$PM2_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
   die "PM2_TIMEOUT_SECONDS must be a positive integer"
+[[ "$HEALTH_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+  die "HEALTH_TIMEOUT_SECONDS must be a positive integer"
 [[ -L "$CURRENT_LINK" ]] || die "CURRENT_LINK is not a symlink: $CURRENT_LINK"
 
 current_target="$(readlink -f "$CURRENT_LINK")"
@@ -34,22 +37,42 @@ health_file="$(mktemp)"
 pm2_file="$(mktemp)"
 trap 'rm -f -- "$health_file" "$pm2_file"' EXIT
 
-timeout --signal=TERM --kill-after=5s 30s curl --fail --silent --show-error \
-  --connect-timeout 2 --max-time 5 --retry 5 --retry-delay 1 \
-  --retry-all-errors --retry-max-time 25 "$HEALTH_URL" > "$health_file"
-
-node - "$health_file" "$EXPECTED_SHA" "$EXPECTED_MANIFEST_SHA256" <<'NODE'
+health_matches_expected() {
+  node - "$health_file" "$EXPECTED_SHA" "$EXPECTED_MANIFEST_SHA256" <<'NODE'
 const fs = require("node:fs");
 const [file, expected, expectedManifest] = process.argv.slice(2);
-const body = JSON.parse(fs.readFileSync(file, "utf8"));
-if (body.ok !== true) throw new Error("health response is not ok");
-if (body.release?.sha !== expected) {
-  throw new Error("health response release.sha does not match the full expected SHA");
-}
-if (body.release?.manifestSha256 !== expectedManifest) {
-  throw new Error("health response release.manifestSha256 does not match");
+try {
+  const body = JSON.parse(fs.readFileSync(file, "utf8"));
+  process.exit(
+    body.ok === true &&
+      body.release?.sha === expected &&
+      body.release?.manifestSha256 === expectedManifest
+      ? 0
+      : 1,
+  );
+} catch {
+  process.exit(1);
 }
 NODE
+}
+
+health_deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
+while true; do
+  remaining=$((health_deadline - SECONDS))
+  (( remaining > 0 )) ||
+    die "health response did not converge to the expected release within ${HEALTH_TIMEOUT_SECONDS}s"
+  (( remaining < 5 )) && attempt_timeout="$remaining" || attempt_timeout=5
+  if timeout --signal=TERM --kill-after=2s "${attempt_timeout}s" \
+    curl --fail --silent --show-error \
+      --connect-timeout 2 --max-time "$attempt_timeout" \
+      --retry 1 --retry-delay 0 --retry-all-errors \
+      --retry-max-time "$attempt_timeout" "$HEALTH_URL" \
+      > "$health_file" 2>/dev/null &&
+    health_matches_expected; then
+    break
+  fi
+  sleep 1
+done
 
 timeout --signal=TERM --kill-after=5s "${PM2_TIMEOUT_SECONDS}s" \
   pm2 jlist > "$pm2_file"
