@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -61,6 +62,10 @@ describe("release integrity manifest", () => {
       ).toBe(0);
       expect(run("git", ["add", "."], root).status).toBe(0);
       expect(
+        run("git", ["update-index", "--chmod=+x", "scripts/deploy.sh"], root)
+          .status,
+      ).toBe(0);
+      expect(
         run("git", ["commit", "--quiet", "-m", "fixture"], root).status,
       ).toBe(0);
       const sha = run("git", ["rev-parse", "HEAD"], root).stdout.trim();
@@ -73,7 +78,21 @@ describe("release integrity manifest", () => {
       expect(written.status, written.stderr).toBe(0);
       const manifestPath = join(root, ".release-integrity.json");
       const manifestSha256 = sha256(manifestPath);
-      expect(JSON.parse(readFileSync(manifestPath, "utf8")).sha).toBe(sha);
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      expect(manifest.sha).toBe(sha);
+      expect(
+        manifest.files.find(({ path }) => path === "scripts/deploy.sh")?.mode,
+      ).toBe(0o750);
+      expect(
+        manifest.files.find(({ path }) => path === "ecosystem.config.cjs")
+          ?.mode,
+      ).toBe(0o640);
+      expect(
+        manifest.files.find(({ path }) => path === ".next/standalone/server.js")
+          ?.mode,
+      ).toBe(0o640);
+      chmodSync(join(root, "scripts/deploy.sh"), 0o700);
+      chmodSync(join(root, "ecosystem.config.cjs"), 0o600);
       expect(
         run(
           process.execPath,

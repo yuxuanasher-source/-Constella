@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   createReadStream,
   existsSync,
   lstatSync,
@@ -68,6 +69,28 @@ function assertGitState() {
   }
 }
 
+function trackedExecutablePaths() {
+  let staged;
+  try {
+    staged = git(["ls-files", "--stage", "-z", "--", ...requiredEntries]);
+  } catch {
+    fail("release Git executable modes cannot be read");
+  }
+  const executable = new Set();
+  for (const record of staged.split("\0")) {
+    if (!record) continue;
+    const tab = record.indexOf("\t");
+    const metadata = tab === -1 ? "" : record.slice(0, tab);
+    const path = tab === -1 ? "" : record.slice(tab + 1);
+    const [gitMode] = metadata.split(" ");
+    if (!/^100(644|755)$/.test(gitMode ?? "") || !path) {
+      fail("release Git index contains an unsupported entry");
+    }
+    if (gitMode === "100755") executable.add(path);
+  }
+  return executable;
+}
+
 function relativeReleasePath(path) {
   const relativePath = relative(root, path).split(sep).join("/");
   if (
@@ -127,7 +150,7 @@ async function hashFile(path) {
   return hash.digest("hex");
 }
 
-async function snapshot() {
+async function snapshot({ expectedModes, executablePaths } = {}) {
   const absoluteFiles = [];
   const visitedDirectories = new Set();
   for (const entry of requiredEntries) {
@@ -154,21 +177,36 @@ async function snapshot() {
       });
       continue;
     }
+    const stat = lstatSync(entry.path);
+    const normalizedMode = expectedModes
+      ? expectedModes.get(path)
+      : executablePaths?.has(path) || (stat.mode & 0o111) !== 0
+        ? 0o750
+        : 0o640;
+    if (![0o640, 0o750].includes(normalizedMode)) {
+      fail(`release manifest has an unsafe or missing mode: ${path}`);
+    }
+    try {
+      chmodSync(entry.path, normalizedMode);
+    } catch {
+      fail(`release runtime mode cannot be normalized: ${path}`);
+    }
     files.push({
       path,
       type: "file",
-      mode: lstatSync(entry.path).mode & 0o777,
-      size: lstatSync(entry.path).size,
+      mode: normalizedMode,
+      size: stat.size,
       sha256: await hashFile(entry.path),
     });
   }
   return { version: 2, sha: expectedSha, files };
 }
 
-if (mode === "write") assertGitState();
-const current = await snapshot();
-
 if (mode === "write") {
+  assertGitState();
+  const current = await snapshot({
+    executablePaths: trackedExecutablePaths(),
+  });
   writeFileSync(manifestPath, `${JSON.stringify(current, null, 2)}\n`, {
     mode: 0o600,
   });
@@ -187,6 +225,26 @@ if (mode === "write") {
   } catch {
     fail("release integrity manifest is missing or invalid");
   }
+  if (
+    expected?.version !== 2 ||
+    expected?.sha !== expectedSha ||
+    !Array.isArray(expected?.files)
+  ) {
+    fail("release integrity manifest is not bound to the expected SHA");
+  }
+  const expectedModes = new Map();
+  for (const entry of expected.files) {
+    if (entry?.type !== "file") continue;
+    if (
+      typeof entry.path !== "string" ||
+      ![0o640, 0o750].includes(entry.mode) ||
+      expectedModes.has(entry.path)
+    ) {
+      fail("release integrity manifest contains an invalid file mode policy");
+    }
+    expectedModes.set(entry.path, entry.mode);
+  }
+  const current = await snapshot({ expectedModes });
   if (JSON.stringify(expected) !== JSON.stringify(current)) {
     fail("release runtime artifact differs from its integrity manifest");
   }
