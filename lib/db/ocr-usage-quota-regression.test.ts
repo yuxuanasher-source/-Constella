@@ -586,8 +586,16 @@ describe.runIf(Boolean(container))(
         organization_id, plan_id, status, billing_cycle,
         current_period_start, current_period_end
       ) values
-        ('${ids.orgA}'::uuid, '${ids.plan}'::uuid, 'active', 'monthly', '2026-07-01', '2026-07-31'),
-        ('${ids.orgB}'::uuid, '${ids.plan}'::uuid, 'active', 'monthly', '2026-07-01', '2026-07-31')
+        (
+          '${ids.orgA}'::uuid, '${ids.plan}'::uuid, 'active', 'monthly',
+          date_trunc('month', current_date)::date,
+          (date_trunc('month', current_date) + interval '1 month - 1 day')::date
+        ),
+        (
+          '${ids.orgB}'::uuid, '${ids.plan}'::uuid, 'active', 'monthly',
+          date_trunc('month', current_date)::date,
+          (date_trunc('month', current_date) + interval '1 month - 1 day')::date
+        )
       on conflict (organization_id) do update
       set plan_id = excluded.plan_id,
           status = excluded.status,
@@ -638,13 +646,13 @@ describe.runIf(Boolean(container))(
           runSqlText(
             dbContainer,
             `select subscription.status::text || '|' || plan.included_ocr::text || '|' ||
-             subscription.current_period_start::text || '|' ||
-             subscription.current_period_end::text
+             (subscription.current_period_start <= current_date)::text || '|' ||
+             (subscription.current_period_end >= current_date)::text
            from public.organization_subscriptions as subscription
            join public.billing_plans as plan on plan.id = subscription.plan_id
            where subscription.organization_id = '${ids.orgA}'::uuid;`,
           ),
-        ).toBe("active|1|2026-07-01|2026-07-31");
+        ).toBe("active|1|true|true");
         const attempts = await Promise.all([
           runSqlAsync(
             dbContainer,
@@ -680,7 +688,7 @@ describe.runIf(Boolean(container))(
             `select
             (select used_quantity from public.usage_monthly_counters
              where organization_id = '${ids.orgA}'::uuid and metric = 'ocr'
-               and period_month = '2026-07-01')::text || '|' ||
+                and period_month = date_trunc('month', current_date)::date)::text || '|' ||
             (select count(*) from public.usage_reservations
              where organization_id = '${ids.orgA}'::uuid and status = 'reserved')::text || '|' ||
             (select count(*) from public.background_jobs
@@ -719,7 +727,7 @@ describe.runIf(Boolean(container))(
               where organization_id = '${ids.orgA}'::uuid)::text
            from public.usage_monthly_counters
            where organization_id = '${ids.orgA}'::uuid and metric = 'ocr'
-             and period_month = '2026-07-01';`,
+              and period_month = date_trunc('month', current_date)::date;`,
           ),
         ).toBe("1|1");
 
@@ -738,7 +746,7 @@ describe.runIf(Boolean(container))(
             dbContainer,
             `select used_quantity from public.usage_monthly_counters
            where organization_id = '${ids.orgB}'::uuid and metric = 'ocr'
-             and period_month = '2026-07-01';`,
+              and period_month = date_trunc('month', current_date)::date;`,
           ),
         ).toBe("1");
         runSql(
@@ -795,7 +803,7 @@ describe.runIf(Boolean(container))(
             (select status from public.usage_reservations where id = '${ids.jobB}'::uuid) || '|' ||
             (select used_quantity from public.usage_monthly_counters
              where organization_id = '${ids.orgB}'::uuid and metric = 'ocr'
-               and period_month = '2026-07-01')::text || '|' ||
+                and period_month = date_trunc('month', current_date)::date)::text || '|' ||
             (select count(*) from public.usage_events
              where organization_id = '${ids.orgB}'::uuid)::text || '|' ||
             (select count(*) from public.usage_reservations
@@ -941,7 +949,7 @@ function enqueueSql(
         'liveReportId', '${liveReportId}',
         'imageBase64', 'ZmFrZQ=='
       ),
-      '2026-07-31T12:00:00Z'::timestamptz
+      now()
     );
   `);
 }
