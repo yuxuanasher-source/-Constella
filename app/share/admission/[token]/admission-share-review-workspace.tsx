@@ -19,13 +19,16 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type SyntheticEvent,
 } from "react";
 
 import { normalizeAbsoluteHttpUrl } from "@/lib/http/safe-public-url";
 
 import type {
   AdmissionSharePlaybackSource,
+  BrandedPublicAdmissionShareBoard,
   PublicAdmissionShareBoard,
   ReviewDraft,
   ReviewDraftSaveState,
@@ -33,7 +36,7 @@ import type {
 } from "./admission-share-types";
 
 export type AdmissionShareReviewWorkspaceProps = {
-  board: PublicAdmissionShareBoard;
+  board: PublicAdmissionShareBoard | BrandedPublicAdmissionShareBoard;
   drafts: Record<string, ReviewDraft>;
   saveState: Record<string, ReviewDraftSaveState>;
   activeRecordingId: string;
@@ -49,7 +52,15 @@ export type AdmissionShareReviewWorkspaceProps = {
     sourceType: AdmissionSharePlaybackSource,
   ) => Promise<boolean>;
   reasonOptions?: VendorCheckpointOption[];
+  brandUiEnabled?: boolean;
 };
+
+export type MediaStageState =
+  | "idle"
+  | "loading"
+  | "playing"
+  | "error"
+  | "unavailable";
 
 const decisionOptions = [
   { value: "selected", label: "入选" },
@@ -84,6 +95,7 @@ export function AdmissionShareReviewWorkspace({
   onOpenSubmissionSummary,
   onReportPlaybackIssue,
   reasonOptions = [],
+  brandUiEnabled = false,
 }: AdmissionShareReviewWorkspaceProps) {
   const [pendingOnly, setPendingOnly] = useState(false);
   const [isListOpen, setIsListOpen] = useState(false);
@@ -262,6 +274,8 @@ export function AdmissionShareReviewWorkspace({
           <ActiveRecordingPane
             key={activeItem.recordingSubmissionId}
             item={activeItem}
+            board={board}
+            brandUiEnabled={brandUiEnabled}
             reportState={
               currentPlaybackReports[activeItem.recordingSubmissionId] ?? "idle"
             }
@@ -510,6 +524,34 @@ function MobileRecordingListDialog({
 }
 
 function ActiveRecordingPane({
+  board,
+  brandUiEnabled,
+  ...legacyProps
+}: {
+  board: PublicAdmissionShareBoard | BrandedPublicAdmissionShareBoard;
+  brandUiEnabled: boolean;
+  item: PublicAdmissionShareBoard["items"][number];
+  reportState: "idle" | "reporting" | "reported" | "failed";
+  onReportPlaybackIssue: (
+    recordingSubmissionId: string,
+    sourceType: AdmissionSharePlaybackSource,
+  ) => Promise<void>;
+}) {
+  if (!brandUiEnabled || !("brand" in board)) {
+    return <LegacyActiveRecordingPane {...legacyProps} />;
+  }
+
+  return (
+    <BrandedActiveRecordingPane
+      {...legacyProps}
+      brand={board.brand}
+      projectName={board.project.name}
+      roundNumber={board.roundNumber}
+    />
+  );
+}
+
+function LegacyActiveRecordingPane({
   item,
   reportState,
   onReportPlaybackIssue,
@@ -640,6 +682,399 @@ function ActiveRecordingPane({
         </div>
       </footer>
     </section>
+  );
+}
+
+function BrandedActiveRecordingPane({
+  item,
+  brand,
+  projectName,
+  roundNumber,
+  reportState,
+  onReportPlaybackIssue,
+}: {
+  item: PublicAdmissionShareBoard["items"][number];
+  brand: BrandedPublicAdmissionShareBoard["brand"];
+  projectName: string;
+  roundNumber: number;
+  reportState: "idle" | "reporting" | "reported" | "failed";
+  onReportPlaybackIssue: (
+    recordingSubmissionId: string,
+    sourceType: AdmissionSharePlaybackSource,
+  ) => Promise<void>;
+}) {
+  const safeItem = {
+    ...item,
+    externalUrl: normalizeAbsoluteHttpUrl(item.externalUrl),
+  };
+  const sourceType = sourceTypeFor(safeItem);
+  const embedUrl =
+    sourceType === "external" && safeItem.externalUrl
+      ? platformEmbedSource(safeItem.externalUrl)
+      : null;
+  const isDirectExternal =
+    sourceType === "external" &&
+    Boolean(safeItem.externalUrl && isDirectVideoSource(safeItem.externalUrl));
+  const canPlayInline =
+    sourceType === "original" || Boolean(embedUrl) || isDirectExternal;
+  const [mediaState, setMediaState] = useState<MediaStageState>(() =>
+    sourceType === "none" ? "unavailable" : "idle",
+  );
+  const [playbackAttempt, setPlaybackAttempt] = useState(0);
+  const [aspectRatio, setAspectRatio] = useState("16 / 9");
+  const [orientation, setOrientation] = useState<"landscape" | "portrait">(
+    "landscape",
+  );
+  const shouldMountInlineMedia =
+    canPlayInline && (mediaState === "loading" || mediaState === "playing");
+  const stageStyle = {
+    "--share-brand": brand.primaryColor,
+    "--share-brand-soft": `color-mix(in srgb, ${brand.primaryColor} 10%, white)`,
+  } as CSSProperties;
+  const canvasStyle = {
+    "--recording-aspect-ratio": aspectRatio,
+  } as CSSProperties;
+
+  const startPlayback = () => {
+    if (!canPlayInline) {
+      setMediaState("unavailable");
+      return;
+    }
+    setMediaState("loading");
+  };
+
+  const retryPlayback = () => {
+    setPlaybackAttempt((current) => current + 1);
+    setMediaState("loading");
+  };
+
+  const updateIntrinsicRatio = (event: SyntheticEvent<HTMLVideoElement>) => {
+    const { videoWidth, videoHeight } = event.currentTarget;
+    if (
+      !Number.isFinite(videoWidth) ||
+      !Number.isFinite(videoHeight) ||
+      videoWidth <= 0 ||
+      videoHeight <= 0
+    ) {
+      setAspectRatio("16 / 9");
+      setOrientation("landscape");
+      return;
+    }
+    const divisor = greatestCommonDivisor(videoWidth, videoHeight);
+    setAspectRatio(`${videoWidth / divisor} / ${videoHeight / divisor}`);
+    setOrientation(videoHeight > videoWidth ? "portrait" : "landscape");
+  };
+
+  const markVideoPlaying = (event: SyntheticEvent<HTMLVideoElement>) => {
+    setMediaState("playing");
+    event.currentTarget.focus();
+  };
+  const markEmbedPlaying = (event: SyntheticEvent<HTMLIFrameElement>) => {
+    setMediaState("playing");
+    event.currentTarget.focus();
+  };
+  const markError = () => setMediaState("error");
+
+  return (
+    <section aria-label="录屏播放器" className="recording-media-pane">
+      <header className="recording-media-pane__header">
+        <div className="min-w-0">
+          <h2 className="truncate text-base font-semibold text-[var(--ink-900)]">
+            {item.streamer.displayName || "主播名称未提供"}
+          </h2>
+          <p className="mt-1 truncate text-xs text-[var(--ink-500)]">
+            {item.streamer.accountLabel || "账号信息未填写"} · 版本{" "}
+            {item.recordingVersion}
+          </p>
+        </div>
+        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-[var(--ink-700)]">
+          {sourceHealthLabel(item.sourceHealth)}
+        </span>
+      </header>
+
+      <div
+        aria-label="录屏媒体工作区"
+        className="recording-media-stage"
+        data-state={mediaState}
+        role="region"
+        style={stageStyle}
+      >
+        <div
+          className="recording-media-canvas"
+          data-orientation={orientation}
+          style={canvasStyle}
+        >
+          {shouldMountInlineMedia && embedUrl ? (
+            <iframe
+              key={`${item.recordingSubmissionId}:${playbackAttempt}`}
+              title="外部平台录屏"
+              aria-label={`${item.streamer.displayName || "主播"} 外部录屏播放器`}
+              src={embedUrl}
+              allow="autoplay; fullscreen; picture-in-picture"
+              allowFullScreen
+              tabIndex={0}
+              onLoad={markEmbedPlaying}
+              onError={markError}
+            />
+          ) : shouldMountInlineMedia && sourceType === "original" ? (
+            <video
+              key={`${item.recordingSubmissionId}:${playbackAttempt}`}
+              aria-label={`${item.streamer.displayName || "主播"} 原始录屏播放器`}
+              src={item.playbackUrl}
+              controls
+              autoPlay
+              tabIndex={0}
+              preload="metadata"
+              onCanPlay={markVideoPlaying}
+              onPlaying={markVideoPlaying}
+              onLoadedMetadata={updateIntrinsicRatio}
+              onError={markError}
+            />
+          ) : shouldMountInlineMedia && isDirectExternal ? (
+            <video
+              key={`${item.recordingSubmissionId}:${playbackAttempt}`}
+              aria-label={`${item.streamer.displayName || "主播"} 外部录屏播放器`}
+              src={item.playbackUrl}
+              controls
+              autoPlay
+              tabIndex={0}
+              preload="metadata"
+              onCanPlay={markVideoPlaying}
+              onPlaying={markVideoPlaying}
+              onLoadedMetadata={updateIntrinsicRatio}
+              onError={markError}
+            />
+          ) : null}
+
+          {mediaState === "idle" || mediaState === "loading" ? (
+            <BrandedRecordingPoster
+              brandName={brand.brandName}
+              streamerName={item.streamer.displayName || "主播名称未提供"}
+              projectName={projectName}
+              roundNumber={roundNumber}
+              isLoading={mediaState === "loading"}
+              onPlay={startPlayback}
+            />
+          ) : null}
+
+          {mediaState === "error" ? (
+            <BrandedPlaybackFallback
+              item={safeItem}
+              sourceType={sourceType}
+              projectName={projectName}
+              roundNumber={roundNumber}
+              onRetryPlayback={retryPlayback}
+            />
+          ) : null}
+
+          {mediaState === "unavailable" ? (
+            <BrandedUnavailableSource
+              item={safeItem}
+              projectName={projectName}
+              roundNumber={roundNumber}
+            />
+          ) : null}
+        </div>
+      </div>
+
+      <footer className="recording-media-pane__footer">
+        <span>若播放异常，请反馈当前录屏，运营会跟进来源。</span>
+        <div className="flex min-h-11 items-center gap-3">
+          {reportState === "reported" || reportState === "failed" ? (
+            <span
+              role="status"
+              aria-label="播放问题反馈状态"
+              aria-live="polite"
+              className="font-medium"
+            >
+              {reportState === "reported" ? "已反馈" : "反馈失败，可重试"}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="recording-media-pane__report"
+            disabled={reportState === "reporting" || reportState === "reported"}
+            onClick={() =>
+              void onReportPlaybackIssue(item.recordingSubmissionId, sourceType)
+            }
+          >
+            <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+            {reportState === "reporting"
+              ? "反馈中…"
+              : reportState === "reported"
+                ? "已反馈"
+                : reportState === "failed"
+                  ? "重试反馈无法播放"
+                  : mediaState === "error"
+                    ? "反馈无法播放"
+                    : "反馈播放问题"}
+          </button>
+        </div>
+      </footer>
+    </section>
+  );
+}
+
+function BrandedRecordingPoster({
+  brandName,
+  streamerName,
+  projectName,
+  roundNumber,
+  isLoading,
+  onPlay,
+}: {
+  brandName: string;
+  streamerName: string;
+  projectName: string;
+  roundNumber: number;
+  isLoading: boolean;
+  onPlay: () => void;
+}) {
+  return (
+    <section
+      className="recording-poster"
+      aria-label={`${streamerName} 录屏待播放`}
+    >
+      <div className="recording-poster__content">
+        <p className="recording-poster__eyebrow">{brandName} · 组织官方分享</p>
+        <h2>{streamerName}</h2>
+        <p className="recording-poster__context">
+          {projectName} · 第 {roundNumber} 轮
+        </p>
+        <button
+          type="button"
+          aria-disabled={isLoading}
+          className="recording-poster__play min-h-11"
+          onClick={() => {
+            if (!isLoading) {
+              onPlay();
+            }
+          }}
+        >
+          {isLoading ? (
+            <>
+              <LoaderCircle
+                className="h-4 w-4 animate-spin motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+              正在加载录屏…
+            </>
+          ) : (
+            "播放录屏"
+          )}
+        </button>
+        {isLoading ? (
+          <span
+            aria-label="录屏加载状态"
+            aria-live="polite"
+            className="sr-only"
+            role="status"
+          >
+            正在加载录屏…
+          </span>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function BrandedPlaybackFallback({
+  item,
+  sourceType,
+  projectName,
+  roundNumber,
+  onRetryPlayback,
+}: {
+  item: PublicAdmissionShareBoard["items"][number];
+  sourceType: AdmissionSharePlaybackSource;
+  projectName: string;
+  roundNumber: number;
+  onRetryPlayback: () => void;
+}) {
+  const externalOnly = sourceType === "external" && !item.hasPrivateStorage;
+  return (
+    <div
+      aria-label="录屏播放失败"
+      className="recording-media-message"
+      role="alert"
+    >
+      <AlertTriangle
+        className="h-7 w-7 text-[var(--warn-600)]"
+        aria-hidden="true"
+      />
+      <p className="recording-media-message__title">视频加载失败</p>
+      <p>
+        {item.streamer.displayName || "主播名称未提供"} · {projectName} · 第{" "}
+        {roundNumber} 轮
+      </p>
+      <p>请尝试重新加载；若仍无法播放，可打开允许的外部来源并反馈问题。</p>
+      <div className="recording-media-message__actions">
+        <button
+          type="button"
+          className="recording-media-action recording-media-action--primary min-h-11"
+          onClick={onRetryPlayback}
+        >
+          <RotateCcw className="h-4 w-4" aria-hidden="true" />
+          {externalOnly ? "重试外部视频" : "重试原始视频"}
+        </button>
+        {item.externalUrl ? (
+          <a
+            className="recording-media-action min-h-11"
+            href={item.externalUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {externalOnly ? "打开外部视频" : "打开备用视频"}
+            <ExternalLink className="h-4 w-4" aria-hidden="true" />
+          </a>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function BrandedUnavailableSource({
+  item,
+  projectName,
+  roundNumber,
+}: {
+  item: PublicAdmissionShareBoard["items"][number];
+  projectName: string;
+  roundNumber: number;
+}) {
+  return (
+    <div
+      aria-label="录屏不可用"
+      className="recording-media-message"
+      role="alert"
+    >
+      <FileVideo className="h-7 w-7 text-[var(--ink-500)]" aria-hidden="true" />
+      <p className="recording-media-message__title">
+        {item.externalUrl ? "此来源需在外部平台查看" : "当前没有可播放来源"}
+      </p>
+      <p>
+        {item.streamer.displayName || "主播名称未提供"} · {projectName} · 第{" "}
+        {roundNumber} 轮
+      </p>
+      <p>
+        {item.externalUrl
+          ? "站内无法安全播放此来源，可在新窗口打开。"
+          : "请联系分享方补充原始录屏或可访问的外部链接。"}
+      </p>
+      {item.externalUrl ? (
+        <div className="recording-media-message__actions">
+          <a
+            className="recording-media-action recording-media-action--primary min-h-11"
+            href={item.externalUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            打开外部录屏
+            <ExternalLink className="h-4 w-4" aria-hidden="true" />
+          </a>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1142,6 +1577,17 @@ function isDirectVideoSource(sourceUrl: string) {
   return [".mp4", ".webm", ".mov", ".m4v", ".ogg"].some((extension) =>
     pathname.endsWith(extension),
   );
+}
+
+function greatestCommonDivisor(left: number, right: number) {
+  let a = Math.abs(Math.trunc(left));
+  let b = Math.abs(Math.trunc(right));
+  while (b !== 0) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return a || 1;
 }
 
 const secondaryButtonClass =

@@ -5,6 +5,8 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AdmissionSharePageClient from "./admission-share-page-client";
@@ -184,6 +186,12 @@ describe("AdmissionSharePageClient", () => {
     expect(
       screen.queryByText(formalBoard.brand.brandName),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText("待判断主播 原始录屏播放器"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "播放录屏" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders a truthful branded share header without an empty contact block", async () => {
@@ -206,6 +214,53 @@ describe("AdmissionSharePageClient", () => {
     expect(screen.queryByText("商务对接")).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("平台认证");
     expect(document.body.textContent).not.toContain("官方认证");
+    expect(
+      screen.queryByLabelText("待判断主播 原始录屏播放器"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "播放录屏" }),
+    ).toBeInTheDocument();
+  });
+
+  it("preserves the current review draft and active recording after a media error", async () => {
+    render(<AdmissionSharePageClient token="public-token" brandUiEnabled />);
+
+    const remark = await screen.findByLabelText("当前录屏备注");
+    fireEvent.change(remark, { target: { value: "先保留这条未提交意见" } });
+    fireEvent.click(screen.getByRole("button", { name: "播放录屏" }));
+    fireEvent.error(screen.getByLabelText("待判断主播 原始录屏播放器"));
+
+    expect(screen.getByLabelText("当前录屏备注")).toHaveValue(
+      "先保留这条未提交意见",
+    );
+    expect(
+      screen.getByRole("alert", { name: "录屏播放失败" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("1 / 2")).toBeInTheDocument();
+  });
+
+  it("loads the public media stylesheet with a light, reduced-motion-safe contract", () => {
+    const pagePath = resolve(
+      process.cwd(),
+      "app/share/admission/[token]/page.tsx",
+    );
+    const cssPath = resolve(process.cwd(), "styles/public-share.css");
+
+    expect(existsSync(cssPath)).toBe(true);
+    const pageSource = readFileSync(pagePath, "utf8");
+    const css = readFileSync(cssPath, "utf8");
+    const stageRule =
+      css.match(/\.recording-media-stage\s*\{([^}]*)\}/u)?.[1] ?? "";
+
+    expect(pageSource).toContain('import "@/styles/public-share.css";');
+    expect(stageRule).toMatch(/background:\s*linear-gradient/u);
+    expect(stageRule).not.toMatch(/(?:#000(?:000)?|black|--ink-900)/iu);
+    expect(css).toMatch(
+      /\.recording-media-canvas\[data-orientation="portrait"\][\s\S]*?width:\s*min\(100%,\s*430px\)/u,
+    );
+    expect(css).toMatch(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?transition:\s*none/u,
+    );
   });
 
   it("renders only the selected public contact fields and falls back to the wordmark", async () => {

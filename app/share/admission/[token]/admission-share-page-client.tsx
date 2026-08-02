@@ -1045,7 +1045,9 @@ export default function AdmissionSharePageClient({
           </div>
         ) : null}
 
-        {isLoading ? <WorkspaceSkeleton /> : null}
+        {isLoading ? (
+          <WorkspaceSkeleton brandUiEnabled={brandUiEnabled} />
+        ) : null}
 
         {!isLoading && needsAccessCode && !board ? (
           <AccessCodePanel
@@ -1081,6 +1083,7 @@ export default function AdmissionSharePageClient({
               reportPlaybackIssue(recordingSubmissionId, sourceType)
             }
             reasonOptions={reasonOptions}
+            brandUiEnabled={brandUiEnabled}
           />
         ) : null}
       </div>
@@ -1473,7 +1476,36 @@ function LockedReviewReceipt({ board }: { board: PublicAdmissionShareBoard }) {
   );
 }
 
-function WorkspaceSkeleton() {
+function WorkspaceSkeleton({ brandUiEnabled }: { brandUiEnabled: boolean }) {
+  if (brandUiEnabled) {
+    return (
+      <section
+        aria-label="正在读取复核工作台"
+        role="status"
+        aria-live="polite"
+        className="grid min-h-[680px] overflow-hidden rounded-lg border border-[var(--line)] bg-white lg:grid-cols-[280px_minmax(0,1fr)_340px]"
+      >
+        <span className="sr-only">正在读取复核工作台…</span>
+        <div className="animate-pulse border-r border-[var(--line)] bg-[var(--bg-soft)] p-4 motion-reduce:animate-none">
+          <div className="h-4 w-24 rounded bg-[var(--ink-100)]" />
+          <div className="mt-5 grid gap-3">
+            <div className="h-14 rounded bg-white" />
+            <div className="h-14 rounded bg-white" />
+            <div className="h-14 rounded bg-white" />
+          </div>
+        </div>
+        <div className="recording-media-stage p-5">
+          <div className="recording-media-canvas animate-pulse motion-reduce:animate-none" />
+        </div>
+        <div className="animate-pulse border-l border-[var(--line)] p-5 motion-reduce:animate-none">
+          <div className="h-4 w-28 rounded bg-[var(--ink-100)]" />
+          <div className="mt-5 h-24 rounded bg-[var(--ink-50)]" />
+          <div className="mt-4 h-28 rounded bg-[var(--ink-50)]" />
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section
       aria-label="正在读取复核工作台"

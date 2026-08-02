@@ -13,6 +13,7 @@ import {
   type AdmissionShareReviewWorkspaceProps,
 } from "./admission-share-review-workspace";
 import type {
+  BrandedPublicAdmissionShareBoard,
   PublicAdmissionShareBoard,
   ReviewDraft,
 } from "./admission-share-types";
@@ -70,6 +71,19 @@ const formalBoard = {
     },
   ],
 } satisfies PublicAdmissionShareBoard;
+
+const brandedFormalBoard = {
+  ...formalBoard,
+  brand: {
+    version: 4,
+    logoText: "STAR",
+    logoUrl: "/api/public/admission-share/public-token/brand-logo",
+    brandName: "Star Live",
+    brandTagline: "Professional live operations",
+    primaryColor: "#165DFF",
+  },
+  contactCard: null,
+} satisfies BrandedPublicAdmissionShareBoard;
 
 const drafts = {
   "recording-1": {
@@ -269,6 +283,243 @@ describe("AdmissionShareReviewWorkspace", () => {
       externalItem.playbackUrl,
     );
     expect(screen.getByRole("button", { name: "反馈播放问题" })).toBeEnabled();
+  });
+
+  it("keeps the legacy player mounted immediately when branded media is disabled", () => {
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={brandedFormalBoard}
+        brandUiEnabled={false}
+      />,
+    );
+
+    expect(
+      screen.getByLabelText("待判断主播 原始录屏播放器"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "播放录屏" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "录屏播放器" })).toHaveClass(
+      "bg-[var(--ink-900)]",
+    );
+  });
+
+  it("shows a truthful branded poster before mounting the original video", () => {
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={brandedFormalBoard}
+        brandUiEnabled
+      />,
+    );
+
+    const stage = screen.getByRole("region", { name: "录屏媒体工作区" });
+    expect(stage).toHaveAttribute("data-state", "idle");
+    expect(
+      screen.getByRole("region", { name: "待判断主播 录屏待播放" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Star Live · 组织官方分享")).toBeInTheDocument();
+    expect(screen.getByText("Alpha Project · 第 1 轮")).toBeInTheDocument();
+    expect(screen.queryByRole("video")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("待判断主播 原始录屏播放器"),
+    ).not.toBeInTheDocument();
+    const play = screen.getByRole("button", { name: "播放录屏" });
+    expect(play.className).toMatch(/\bmin-h-11\b/);
+    expect(document.body.textContent).not.toContain("认证");
+  });
+
+  it("keeps the poster through loading and reveals a portrait video at its reduced intrinsic ratio", () => {
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={brandedFormalBoard}
+        brandUiEnabled
+      />,
+    );
+
+    const playButton = screen.getByRole("button", { name: "播放录屏" });
+    playButton.focus();
+    fireEvent.click(playButton);
+
+    const stage = screen.getByRole("region", { name: "录屏媒体工作区" });
+    const video = screen.getByLabelText("待判断主播 原始录屏播放器");
+    const canvas = stage.querySelector<HTMLElement>(".recording-media-canvas");
+    expect(stage).toHaveAttribute("data-state", "loading");
+    expect(
+      screen.getByRole("status", { name: "录屏加载状态" }),
+    ).toHaveTextContent("正在加载录屏");
+    expect(
+      screen.getByRole("region", { name: "待判断主播 录屏待播放" }),
+    ).toBeInTheDocument();
+    expect(video).toHaveAttribute("autoplay");
+    expect(playButton).toHaveFocus();
+    expect(playButton).toHaveAttribute("aria-disabled", "true");
+
+    Object.defineProperty(video, "videoWidth", {
+      configurable: true,
+      value: 1080,
+    });
+    Object.defineProperty(video, "videoHeight", {
+      configurable: true,
+      value: 1920,
+    });
+    fireEvent.loadedMetadata(video);
+
+    expect(canvas).toHaveAttribute("data-orientation", "portrait");
+    expect(canvas?.style.getPropertyValue("--recording-aspect-ratio")).toBe(
+      "9 / 16",
+    );
+
+    fireEvent.playing(video);
+    expect(stage).toHaveAttribute("data-state", "playing");
+    expect(video).toHaveFocus();
+    expect(
+      screen.queryByRole("region", { name: "待判断主播 录屏待播放" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("falls back to 16:9 metadata without changing the active item or draft", () => {
+    const preservedDrafts = {
+      ...drafts,
+      "recording-1": {
+        ...drafts["recording-1"],
+        remark: "这段草稿必须保留",
+      },
+    };
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={brandedFormalBoard}
+        drafts={preservedDrafts}
+        brandUiEnabled
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "播放录屏" }));
+    const video = screen.getByLabelText("待判断主播 原始录屏播放器");
+    Object.defineProperty(video, "videoWidth", {
+      configurable: true,
+      value: 1920,
+    });
+    Object.defineProperty(video, "videoHeight", {
+      configurable: true,
+      value: 1080,
+    });
+    fireEvent.loadedMetadata(video);
+
+    const canvas = screen
+      .getByRole("region", { name: "录屏媒体工作区" })
+      .querySelector<HTMLElement>(".recording-media-canvas");
+    expect(canvas).toHaveAttribute("data-orientation", "landscape");
+    expect(canvas?.style.getPropertyValue("--recording-aspect-ratio")).toBe(
+      "16 / 9",
+    );
+
+    Object.defineProperty(video, "videoWidth", {
+      configurable: true,
+      value: 0,
+    });
+    Object.defineProperty(video, "videoHeight", {
+      configurable: true,
+      value: Number.NaN,
+    });
+    fireEvent.loadedMetadata(video);
+    expect(canvas).toHaveAttribute("data-orientation", "landscape");
+    expect(canvas?.style.getPropertyValue("--recording-aspect-ratio")).toBe(
+      "16 / 9",
+    );
+    expect(screen.getByLabelText("当前录屏备注")).toHaveValue(
+      "这段草稿必须保留",
+    );
+    expect(onActiveRecordingChange).not.toHaveBeenCalled();
+    expect(onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("isolates original load errors while retaining context, draft and a secure fallback", () => {
+    const preservedDrafts = {
+      ...drafts,
+      "recording-1": {
+        ...drafts["recording-1"],
+        remark: "未提交复核意见",
+      },
+    };
+    const board = {
+      ...brandedFormalBoard,
+      items: [
+        {
+          ...brandedFormalBoard.items[0],
+          sourceHealth: "original_with_external_fallback" as const,
+          externalUrl: "https://video.example/recording-1.mp4",
+        },
+        brandedFormalBoard.items[1],
+      ],
+    };
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={board}
+        drafts={preservedDrafts}
+        brandUiEnabled
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "播放录屏" }));
+    fireEvent.error(screen.getByLabelText("待判断主播 原始录屏播放器"));
+
+    const playbackAlert = screen.getByRole("alert", { name: "录屏播放失败" });
+    expect(playbackAlert).toHaveTextContent("视频加载失败");
+    expect(
+      screen.getByRole("region", { name: "录屏媒体工作区" }),
+    ).toHaveAttribute("data-state", "error");
+    expect(screen.getAllByText("待判断主播").length).toBeGreaterThan(0);
+    expect(playbackAlert).toHaveTextContent("Alpha Project · 第 1 轮");
+    expect(screen.getByLabelText("当前录屏备注")).toHaveValue("未提交复核意见");
+    expect(onActiveRecordingChange).not.toHaveBeenCalled();
+    const fallback = screen.getByRole("link", { name: "打开备用视频" });
+    expect(fallback).toHaveAttribute(
+      "href",
+      "https://video.example/recording-1.mp4",
+    );
+    expect(fallback).toHaveAttribute("rel", "noopener noreferrer");
+
+    fireEvent.click(screen.getByRole("button", { name: "重试原始视频" }));
+    expect(
+      screen.getByRole("region", { name: "录屏媒体工作区" }),
+    ).toHaveAttribute("data-state", "loading");
+    expect(screen.getByLabelText("当前录屏备注")).toHaveValue("未提交复核意见");
+  });
+
+  it("keeps full recording context in the unavailable state without leaking unsafe sources", () => {
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={{
+          ...brandedFormalBoard,
+          items: [
+            {
+              ...brandedFormalBoard.items[0],
+              playbackUrl: "",
+              externalUrl: "javascript:alert(document.domain)",
+              sourceHealth: "blocked",
+              hasPrivateStorage: false,
+            },
+          ],
+        }}
+        brandUiEnabled
+      />,
+    );
+
+    expect(
+      screen.getByRole("region", { name: "录屏媒体工作区" }),
+    ).toHaveAttribute("data-state", "unavailable");
+    const unavailableAlert = screen.getByRole("alert", { name: "录屏不可用" });
+    expect(unavailableAlert).toHaveTextContent("当前没有可播放来源");
+    expect(screen.getAllByText("待判断主播").length).toBeGreaterThan(0);
+    expect(unavailableAlert).toHaveTextContent("Alpha Project · 第 1 轮");
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("javascript:");
   });
 
   it.each([
