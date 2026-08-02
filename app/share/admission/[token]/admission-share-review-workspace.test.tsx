@@ -380,6 +380,9 @@ describe("AdmissionShareReviewWorkspace", () => {
       screen.getByRole("region", { name: "待判断主播 录屏待播放" }),
     ).toBeInTheDocument();
     expect(video).toHaveAttribute("autoplay");
+    expect(video).toHaveAttribute("tabindex", "-1");
+    expect(video).toHaveAttribute("aria-hidden", "true");
+    expect(video).toHaveAttribute("inert");
     expect(playButton).toHaveFocus();
     expect(playButton).toHaveAttribute("aria-disabled", "true");
 
@@ -401,6 +404,9 @@ describe("AdmissionShareReviewWorkspace", () => {
     const focusVideo = vi.spyOn(video, "focus");
     fireEvent.canPlay(video);
     expect(stage).toHaveAttribute("data-state", "playing");
+    expect(video).toHaveAttribute("tabindex", "0");
+    expect(video).not.toHaveAttribute("aria-hidden");
+    expect(video).not.toHaveAttribute("inert");
     expect(focusVideo).toHaveBeenCalledTimes(1);
     expect(video).toHaveFocus();
     fireEvent.playing(video);
@@ -461,9 +467,16 @@ describe("AdmissionShareReviewWorkspace", () => {
     const embed = screen.getByTitle("外部平台录屏");
     const focusEmbed = vi.spyOn(embed, "focus");
 
+    expect(embed).toHaveAttribute("tabindex", "-1");
+    expect(embed).toHaveAttribute("aria-hidden", "true");
+    expect(embed).toHaveAttribute("inert");
+
     fireEvent.load(embed);
     fireEvent.load(embed);
 
+    expect(embed).toHaveAttribute("tabindex", "0");
+    expect(embed).not.toHaveAttribute("aria-hidden");
+    expect(embed).not.toHaveAttribute("inert");
     expect(focusEmbed).toHaveBeenCalledTimes(1);
     expect(embed).toHaveFocus();
   });

@@ -916,7 +916,9 @@ function BrandedActiveRecordingPane({
               src={embedUrl}
               allow="autoplay; fullscreen; picture-in-picture"
               allowFullScreen
-              tabIndex={0}
+              aria-hidden={mediaState !== "playing" ? true : undefined}
+              inert={mediaState !== "playing" ? true : undefined}
+              tabIndex={mediaState === "playing" ? 0 : -1}
               onLoad={() => markEmbedPlaying(playbackAttempt)}
               onError={() => markError(playbackAttempt)}
             />
@@ -928,7 +930,9 @@ function BrandedActiveRecordingPane({
               src={item.playbackUrl}
               controls
               autoPlay
-              tabIndex={0}
+              aria-hidden={mediaState !== "playing" ? true : undefined}
+              inert={mediaState !== "playing" ? true : undefined}
+              tabIndex={mediaState === "playing" ? 0 : -1}
               preload="metadata"
               onCanPlay={() => markVideoPlaying(playbackAttempt)}
               onPlaying={() => markVideoPlaying(playbackAttempt)}
@@ -943,7 +947,9 @@ function BrandedActiveRecordingPane({
               src={item.playbackUrl}
               controls
               autoPlay
-              tabIndex={0}
+              aria-hidden={mediaState !== "playing" ? true : undefined}
+              inert={mediaState !== "playing" ? true : undefined}
+              tabIndex={mediaState === "playing" ? 0 : -1}
               preload="metadata"
               onCanPlay={() => markVideoPlaying(playbackAttempt)}
               onPlaying={() => markVideoPlaying(playbackAttempt)}
