@@ -7,6 +7,7 @@ import {
   ensurePublicAdmissionShareSession,
   extendAdmissionShareBoard,
   getPublicAdmissionShareBoard,
+  getPublicAdmissionShareBrandLogoPath,
   getPublicAdmissionShareBoardContextWithSession,
   getPublicAdmissionRecordingPlaybackSource,
   getInternalAdmissionShareBoardDetail,
@@ -1531,6 +1532,7 @@ describe("admission share board service", () => {
       canSubmit: false,
       allowExternalFallback: true,
       brand: {
+        version: 1,
         logoText: "星河",
         logoUrl: null,
         brandName: "星河直播",
@@ -1657,6 +1659,7 @@ describe("admission share board service", () => {
     });
     const publicBrand: Record<string, unknown> = { ...publicDto.brand };
     delete publicBrand.logoUrl;
+    delete publicBrand.version;
     const publicShared = {
       title: publicDto.title,
       purpose: publicDto.purpose,
@@ -1691,7 +1694,32 @@ describe("admission share board service", () => {
 
     expect(publicShared).toEqual(presentation);
     expect(internalShared).toEqual(presentation);
-    expect(publicDto.brand?.logoUrl).toBeNull();
+    expect(publicDto.brand).toEqual({
+      version: 7,
+      logoText: "星河",
+      logoUrl: "/api/public/admission-share/plain-token/brand-logo",
+      brandName: "星河直播",
+      brandTagline: "专业直播运营",
+      primaryColor: "#4A63D8",
+    });
+    expect(publicDto.contactCard).toEqual({
+      displayName: "林经理",
+      title: "商务负责人",
+      phone: "13800000000",
+    });
+    expect(Object.keys(publicDto.brand).sort()).toEqual(
+      [
+        "brandName",
+        "brandTagline",
+        "logoText",
+        "logoUrl",
+        "primaryColor",
+        "version",
+      ].sort(),
+    );
+    expect(Object.keys(publicDto.contactCard ?? {}).sort()).toEqual(
+      ["displayName", "phone", "title"].sort(),
+    );
     const serialized = JSON.stringify({ presentation, publicDto });
     expect(serialized).not.toContain(privateLogoPath);
     expect(serialized).not.toContain("internalNote");
@@ -1721,6 +1749,38 @@ describe("admission share board service", () => {
     });
     expect(JSON.stringify(identity)).not.toContain("Forged");
     expect(JSON.stringify(identity)).not.toContain("EVIL");
+  });
+
+  it("does not publish a forged version or logo route from an unknown brand schema", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          organizationId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+          brandVersion: 999,
+          brandSnapshot: {
+            schemaVersion: 999,
+            version: 999,
+            logoText: "EVIL",
+            logoStoragePath:
+              "9d4ba455-c58a-4e31-a3e8-c42a760ea54c/brand-logos/8732c883-7ea9-4db0-9b29-4a77e1f8c79e.webp",
+            brandName: "Forged Professional Brand",
+            brandTagline: "Trust this attacker",
+            primaryColor: "#000000",
+          },
+        }),
+      ),
+    });
+
+    const dto = await getPublicAdmissionShareBoard({
+      repo,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(dto.brand.version).toBe(0);
+    expect(dto.brand.logoUrl).toBeNull();
+    expect(JSON.stringify(dto.brand)).not.toContain("Forged");
+    expect(JSON.stringify(dto.brand)).not.toContain("EVIL");
   });
 
   it.each([
@@ -1770,6 +1830,143 @@ describe("admission share board service", () => {
       latestSubmission: null,
     });
     expect(dto.items.every((item) => !("draft" in item))).toBe(true);
+  });
+
+  it("returns a normalized private brand logo path only after a valid access session", async () => {
+    const organizationId = "9d4ba455-c58a-4e31-a3e8-c42a760ea54c";
+    const logoStoragePath = `${organizationId}/brand-logos/8732c883-7ea9-4db0-9b29-4a77e1f8c79e.webp`;
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          organizationId,
+          accessCodeHash: hashAdmissionShareAccessCode("2468"),
+          brandSnapshot: {
+            schemaVersion: 1,
+            version: 4,
+            logoText: "星河",
+            logoStoragePath,
+            brandName: "星河直播",
+            brandTagline: "专业直播运营",
+            primaryColor: "#165DFF",
+          },
+          brandVersion: 4,
+        }),
+      ),
+    });
+
+    const path = await getPublicAdmissionShareBrandLogoPath({
+      repo,
+      accessStore,
+      token: "plain-token",
+      sessionToken: "opaque-session-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(path).toBe(logoStoragePath);
+    expect(accessStore.hasValidSession).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      sessionToken: "opaque-session-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+  });
+
+  it("returns no public logo path for a missing or cross-organization snapshot path", async () => {
+    const organizationId = "9d4ba455-c58a-4e31-a3e8-c42a760ea54c";
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+
+    for (const logoStoragePath of [
+      null,
+      "21c6fe42-0cb5-4309-a5f2-9b28bf867bac/brand-logos/8732c883-7ea9-4db0-9b29-4a77e1f8c79e.webp",
+    ]) {
+      const repo = createRepo({
+        getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+          publicSnapshot({
+            organizationId,
+            brandSnapshot: {
+              schemaVersion: 1,
+              version: 4,
+              logoText: "星河",
+              logoStoragePath,
+              brandName: "星河直播",
+              brandTagline: "专业直播运营",
+              primaryColor: "#165DFF",
+            },
+          }),
+        ),
+      });
+
+      await expect(
+        getPublicAdmissionShareBrandLogoPath({
+          repo,
+          accessStore,
+          token: "plain-token",
+          sessionToken: "opaque-session-token",
+          now: "2026-06-07T01:00:00.000Z",
+        }),
+      ).resolves.toBeNull();
+    }
+  });
+
+  it.each([
+    [null, "SHARE_NOT_AVAILABLE", 404],
+    [publicSnapshot({ status: "revoked" }), "SHARE_REVOKED", 410],
+    [
+      publicSnapshot({ expiresAt: "2026-06-06T00:00:00.000Z" }),
+      "SHARE_EXPIRED",
+      410,
+    ],
+  ] as const)(
+    "keeps logo reads behind the public share lifecycle gate: %s",
+    async (snapshot, code, statusCode) => {
+      const repo = createRepo({
+        getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(snapshot),
+      });
+
+      await expect(
+        getPublicAdmissionShareBrandLogoPath({
+          repo,
+          token: "plain-token",
+          now: "2026-06-07T01:00:00.000Z",
+        }),
+      ).rejects.toMatchObject({ code, statusCode });
+    },
+  );
+
+  it("rejects a brand logo read when the access-code session is absent", async () => {
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(false),
+    };
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          accessCodeHash: hashAdmissionShareAccessCode("2468"),
+        }),
+      ),
+    });
+
+    await expect(
+      getPublicAdmissionShareBrandLogoPath({
+        repo,
+        accessStore,
+        token: "plain-token",
+        sessionToken: "expired-session",
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACCESS_CODE_REQUIRED",
+      statusCode: 401,
+    });
   });
 
   it("resolves private recording playback sources only after share gating", async () => {

@@ -19,7 +19,7 @@ import {
 } from "./admission-share-api";
 import type {
   AdmissionShareReviewDraftDto,
-  PublicAdmissionShareBoard,
+  BrandedPublicAdmissionShareBoard as PublicAdmissionShareBoard,
 } from "./admission-share-types";
 
 vi.mock("./admission-share-api", async (importOriginal) => {
@@ -46,6 +46,15 @@ const formalBoard = {
   expiresAt: "2026-08-06T00:00:00.000Z",
   canSubmit: true,
   allowExternalFallback: true,
+  brand: {
+    version: 4,
+    logoText: "STAR",
+    logoUrl: "/api/public/admission-share/public-token/brand-logo",
+    brandName: "Star Live",
+    brandTagline: "Professional live operations",
+    primaryColor: "#165DFF",
+  },
+  contactCard: null,
   progress: { completed: 1, total: 2 },
   latestSubmission: null,
   project: {
@@ -163,6 +172,76 @@ describe("AdmissionSharePageClient", () => {
     expect(container.textContent).not.toContain("tokenHash");
     expect(container.textContent).not.toContain("storagePath");
     expect(container.textContent).not.toContain("accessCode");
+  });
+
+  it("keeps the existing public header when the branded UI flag is disabled", async () => {
+    render(
+      <AdmissionSharePageClient token="public-token" brandUiEnabled={false} />,
+    );
+
+    expect(await screen.findByText("受控录屏复核")).toBeInTheDocument();
+    expect(screen.queryByText("组织官方分享")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(formalBoard.brand.brandName),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders a truthful branded share header without an empty contact block", async () => {
+    render(<AdmissionSharePageClient token="public-token" brandUiEnabled />);
+
+    expect(await screen.findByText("组织官方分享")).toBeInTheDocument();
+    expect(screen.getByText(formalBoard.brand.brandName)).toBeInTheDocument();
+    expect(
+      screen.getByText(formalBoard.brand.brandTagline),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `${formalBoard.project.code} · ${formalBoard.project.name}`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(formalBoard.title)).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: `${formalBoard.brand.brandName} LOGO` }),
+    ).toHaveAttribute("src", formalBoard.brand.logoUrl);
+    expect(screen.queryByText("商务对接")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("平台认证");
+    expect(document.body.textContent).not.toContain("官方认证");
+  });
+
+  it("renders only the selected public contact fields and falls back to the wordmark", async () => {
+    vi.mocked(loadAdmissionShareBoard).mockResolvedValueOnce({
+      shareBoard: {
+        ...formalBoard,
+        contactCard: {
+          displayName: "Lin",
+          title: "Business lead",
+          phone: "13800000000",
+          email: "lin@example.com",
+          wechat: "lin-work",
+        },
+      },
+      vendorCheckpoints: [],
+      reviewDrafts: [...serverDrafts],
+    });
+
+    render(<AdmissionSharePageClient token="public-token" brandUiEnabled />);
+
+    const logo = await screen.findByRole("img", {
+      name: `${formalBoard.brand.brandName} LOGO`,
+    });
+    fireEvent.error(logo);
+
+    expect(screen.getByText("商务对接")).toBeInTheDocument();
+    expect(screen.getByText("Lin")).toBeInTheDocument();
+    expect(screen.getByText("Business lead")).toBeInTheDocument();
+    expect(screen.getByText("13800000000")).toBeInTheDocument();
+    expect(screen.getByText("lin@example.com")).toBeInTheDocument();
+    expect(screen.getByText(/lin-work/u)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("img", { name: /LOGO/u }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(formalBoard.brand.logoText)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("logoStoragePath");
   });
 
   it("uses drafts from the combined hydrate response without a second request", async () => {

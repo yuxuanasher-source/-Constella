@@ -397,6 +397,7 @@ export type AdmissionSharePresentationSnapshot = Omit<
 };
 
 export type PublicAdmissionShareBrand = {
+  version: number;
   logoText: string;
   logoUrl: string | null;
   brandName: string;
@@ -503,7 +504,7 @@ export type AdmissionSharePresentation = Pick<
   | "progress"
   | "latestSubmission"
 > & {
-  brand: Omit<PublicAdmissionShareBrand, "logoUrl">;
+  brand: Omit<PublicAdmissionShareBrand, "logoUrl" | "version">;
   contactCard: PublicAdmissionShareContactCard | null;
   items: Array<
     Pick<
@@ -2424,6 +2425,40 @@ export async function getPublicAdmissionRecordingPlaybackSource({
   };
 }
 
+export async function getPublicAdmissionShareBrandLogoPath({
+  repo,
+  accessStore,
+  token,
+  accessCode,
+  sessionToken,
+  now = new Date().toISOString(),
+  onViewAuditError = observeViewAuditError,
+}: {
+  repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
+  token: string;
+  accessCode?: string;
+  sessionToken?: string;
+  now?: string;
+  onViewAuditError?: (error: unknown) => void;
+}): Promise<string | null> {
+  const snapshot = await requirePublicSnapshot({
+    repo,
+    accessStore,
+    token,
+    accessCode,
+    sessionToken,
+    now,
+  });
+  await markShareBoardViewedBestEffort(
+    repo,
+    snapshot.id,
+    now,
+    onViewAuditError,
+  );
+  return normalizedAdmissionShareBrand(snapshot).logoStoragePath;
+}
+
 const admissionSharePlaybackIssueCodes =
   new Set<AdmissionSharePlaybackErrorCode>([
     "MEDIA_LOAD_FAILED",
@@ -3407,16 +3442,7 @@ export function toAdmissionShareIdentityPresentation(
     "organizationId" | "brandSnapshot" | "contactCardSnapshot"
   >,
 ): Pick<AdmissionSharePresentation, "brand" | "contactCard"> {
-  const rawBrand = recordFromUnknown(snapshot.brandSnapshot);
-  const schemaIsTrusted =
-    rawBrand.schemaVersion === undefined || rawBrand.schemaVersion === 1;
-  const organizationName = schemaIsTrusted
-    ? safeSnapshotText(rawBrand.brandName, "组织", 40)
-    : "组织";
-  const brand = normalizePublishedBrand(snapshot.brandSnapshot, {
-    organizationId: snapshot.organizationId,
-    organizationName,
-  });
+  const brand = normalizedAdmissionShareBrand(snapshot);
 
   return {
     brand: {
@@ -3427,6 +3453,21 @@ export function toAdmissionShareIdentityPresentation(
     },
     contactCard: pickPublicContactCard(snapshot.contactCardSnapshot),
   };
+}
+
+function normalizedAdmissionShareBrand(
+  snapshot: Pick<AdmissionShareBoardRecord, "organizationId" | "brandSnapshot">,
+) {
+  const rawBrand = recordFromUnknown(snapshot.brandSnapshot);
+  const schemaIsTrusted =
+    rawBrand.schemaVersion === undefined || rawBrand.schemaVersion === 1;
+  const organizationName = schemaIsTrusted
+    ? safeSnapshotText(rawBrand.brandName, "组织", 40)
+    : "组织";
+  return normalizePublishedBrand(snapshot.brandSnapshot, {
+    organizationId: snapshot.organizationId,
+    organizationName,
+  });
 }
 
 export function toAdmissionSharePresentation(
@@ -3488,15 +3529,15 @@ function toPublicShareDto(
   input: { token: string },
 ): BrandedPublicAdmissionShareBoard {
   const presentation = toAdmissionSharePresentation(snapshot);
+  const normalizedBrand = normalizedAdmissionShareBrand(snapshot);
+  const hasLogo = Boolean(normalizedBrand.logoStoragePath);
   return {
     id: snapshot.id,
     ...presentation,
     brand: {
       ...presentation.brand,
-      // The token-gated logo route is introduced in Task 9. Until then the
-      // storage path remains server-only and callers use the deterministic
-      // wordmark fallback.
-      logoUrl: null,
+      version: normalizedBrand.version,
+      logoUrl: hasLogo ? publicAdmissionShareBrandLogoUrl(input.token) : null,
     },
     canSubmit:
       snapshot.mode === "formal_review" &&
@@ -3515,6 +3556,10 @@ function toPublicShareDto(
       hasPrivateStorage: Boolean(item.storagePath),
     })),
   };
+}
+
+function publicAdmissionShareBrandLogoUrl(token: string) {
+  return `/api/public/admission-share/${encodeURIComponent(token)}/brand-logo`;
 }
 
 function publicAdmissionRecordingPlaybackUrl(input: {

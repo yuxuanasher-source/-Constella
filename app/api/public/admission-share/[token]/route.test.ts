@@ -100,8 +100,9 @@ describe("public admission share route", () => {
         canSubmit: false,
         allowExternalFallback: true,
         brand: {
+          version: 3,
           logoText: "STAR",
-          logoUrl: null,
+          logoUrl: "/api/public/admission-share/plain-token/brand-logo",
           brandName: "Star Live",
           brandTagline: "Professional live operations",
           primaryColor: "#165DFF",
@@ -201,6 +202,56 @@ describe("public admission share route", () => {
       "recordingStatus",
       "reviewerName",
       "reviewerContact",
+    ]) {
+      expect(JSON.stringify(body)).not.toContain(forbidden);
+    }
+  });
+
+  it("returns only the public brand and optional contact-card whitelist", async () => {
+    publicContext = {
+      ...publicContext,
+      board: {
+        ...publicContext.board,
+        contactCard: {
+          displayName: "Lin",
+          title: "Business lead",
+          phone: "13800000000",
+          email: "lin@example.com",
+          wechat: "lin-work",
+        },
+      },
+    };
+    vi.mocked(getPublicAdmissionShareBoardContextWithSession).mockResolvedValue(
+      publicContext,
+    );
+
+    const response = await GET(
+      new Request("http://localhost/api/public/admission-share/plain-token"),
+      { params },
+    );
+    const body = await response.json();
+
+    expect(Object.keys(body.shareBoard.brand).sort()).toEqual(
+      [
+        "version",
+        "logoText",
+        "logoUrl",
+        "brandName",
+        "brandTagline",
+        "primaryColor",
+      ].sort(),
+    );
+    expect(Object.keys(body.shareBoard.contactCard).sort()).toEqual(
+      ["displayName", "title", "phone", "email", "wechat"].sort(),
+    );
+    for (const forbidden of [
+      "logoStoragePath",
+      "tokenHash",
+      "accessCodeHash",
+      "actor",
+      "internalNote",
+      "sourceDiagnostics",
+      "privateMetadata",
     ]) {
       expect(JSON.stringify(body)).not.toContain(forbidden);
     }
