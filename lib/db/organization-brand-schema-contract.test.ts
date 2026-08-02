@@ -63,6 +63,34 @@ function expectEmergencyShareFilter(source: string): void {
   );
 }
 
+function expectContactCardWritePermissions(source: string): void {
+  const compacted = compact(source);
+  expect(compacted).not.toContain(
+    "create policy organization_contact_cards_owner_delete",
+  );
+  expect(compacted).not.toMatch(
+    /create policy [^;]+ on public\.organization_contact_cards for (?:all|delete) to (?:public|anon|authenticated)/u,
+  );
+  expect(compacted).toContain(
+    "revoke all on table public.organization_contact_cards from public, anon, authenticated;",
+  );
+  expect(compacted).toContain(
+    "grant select, insert, update on table public.organization_contact_cards to authenticated;",
+  );
+  expect(compacted).not.toMatch(
+    /grant (?:all(?: privileges)?|[^;]*\bdelete\b)[^;]* on table public\.organization_contact_cards to (?:public|anon|authenticated);/u,
+  );
+}
+
+function expectContactCardShareLock(source: string): void {
+  const guard = compact(
+    functionSqlFrom(source, "guard_recording_share_contact_card"),
+  );
+  expect(guard).toContain(
+    "where card.id = new.contact_card_id and card.organization_id = new.organization_id and card.status = 'active' for share;",
+  );
+}
+
 describe("organization brand studio schema", () => {
   it("adds versioned brand storage with bounded integer versions and required indexes", () => {
     expect(sql).not.toBe("");
@@ -135,7 +163,7 @@ describe("organization brand studio schema", () => {
       /constraint project_recording_share_boards_contact_card_org_fkey[\s\S]*foreign key \(organization_id, contact_card_id\)[\s\S]*references public\.organization_contact_cards\(organization_id, id\)[\s\S]*on delete set null \(contact_card_id\)/,
     );
     expect(compact(sql)).toContain(
-      "constraint project_recording_share_boards_contact_snapshot_consistency check ( ( contact_card_id is null and contact_card_snapshot is null ) or ( contact_card_id is not null and contact_card_snapshot is not null ) )",
+      "constraint project_recording_share_boards_contact_snapshot_consistency check ( contact_card_id is null or contact_card_snapshot is not null )",
     );
     expect(sql).toMatch(
       /create index project_recording_share_boards_contact_card_idx[\s\S]*on public\.project_recording_share_boards \(contact_card_id, organization_id\)[\s\S]*where contact_card_id is not null/,
@@ -208,7 +236,7 @@ describe("organization brand studio schema", () => {
     );
   });
 
-  it("lets owners read all cards and exact-organization members read only active cards", () => {
+  it("lets owners read all cards and exact-organization members read only active cards without physical authenticated deletion", () => {
     expect(
       compact(policySqlFrom(sql, "organization_contact_cards_member_select")),
     ).toBe(
@@ -224,11 +252,17 @@ describe("organization brand studio schema", () => {
     ).toBe(
       "create policy organization_contact_cards_owner_update on public.organization_contact_cards for update to authenticated using (public.current_user_role(organization_id) = 'owner') with check ( public.current_user_role(organization_id) = 'owner' and updated_by = auth.uid() );",
     );
-    expect(
-      compact(policySqlFrom(sql, "organization_contact_cards_owner_delete")),
-    ).toBe(
-      "create policy organization_contact_cards_owner_delete on public.organization_contact_cards for delete to authenticated using (public.current_user_role(organization_id) = 'owner');",
-    );
+    expectContactCardWritePermissions(sql);
+  });
+
+  it("rejects restoring an authenticated contact-card delete policy", () => {
+    const weakened = `${sql}\ncreate policy organization_contact_cards_owner_delete on public.organization_contact_cards for delete to authenticated using (public.current_user_role(organization_id) = 'owner');`;
+    expect(() => expectContactCardWritePermissions(weakened)).toThrow();
+  });
+
+  it("rejects restoring authenticated delete table privileges", () => {
+    const weakened = `${sql}\ngrant delete on table public.organization_contact_cards to authenticated;`;
+    expect(() => expectContactCardWritePermissions(weakened)).toThrow();
   });
 
   it("freezes contact-card identity while permitting same-organization actor attribution", () => {
@@ -251,19 +285,29 @@ describe("organization brand studio schema", () => {
     expect(guard).toMatch(
       /from public\.organization_contact_cards as card[\s\S]*card\.id = new\.contact_card_id[\s\S]*card\.organization_id = new\.organization_id[\s\S]*card\.status = 'active'/,
     );
+    expectContactCardShareLock(sql);
     expect(guard).toMatch(
-      /new\.contact_card_snapshot := jsonb_strip_nulls\(jsonb_build_object\([\s\S]*'displayname', btrim\(v_card\.display_name\)[\s\S]*'title', btrim\(v_card\.title\)[\s\S]*'phone', nullif\(btrim\(v_card\.phone\), ''\)[\s\S]*'email', nullif\(btrim\(v_card\.email\), ''\)[\s\S]*'wechat', nullif\(btrim\(v_card\.wechat\), ''\)/,
+      /new\.contact_card_snapshot := jsonb_strip_nulls\(jsonb_build_object\([\s\S]*'displayname', btrim\(v_card\.display_name\)[\s\S]*'title', nullif\(btrim\(v_card\.title\), ''\)[\s\S]*'phone', nullif\(btrim\(v_card\.phone\), ''\)[\s\S]*'email', nullif\(btrim\(v_card\.email\), ''\)[\s\S]*'wechat', nullif\(btrim\(v_card\.wechat\), ''\)/,
     );
     expect(guard).toContain("recording_share_contact_card_is_immutable");
     expect(compact(guard)).toContain(
       "if current_user = 'postgres' and new.contact_card_id is null and new.contact_card_snapshot is null then return new;",
     );
     expect(guard).toMatch(
-      /pg_trigger_depth\(\) > 1[\s\S]*new\.contact_card_snapshot := null/,
+      /pg_trigger_depth\(\) > 1[\s\S]*new\.contact_card_snapshot := old\.contact_card_snapshot/,
     );
     expect(sql).toMatch(
       /create trigger project_recording_share_boards_guard_contact_card[\s\S]*before insert or update on public\.project_recording_share_boards[\s\S]*execute function public\.guard_recording_share_contact_card\(\)/,
     );
+  });
+
+  it("rejects removing the contact-card share lock from snapshot derivation", () => {
+    const weakened = sql.replace(
+      "      and card.status = 'active'\n    for share;",
+      "      and card.status = 'active';",
+    );
+    expect(weakened).not.toBe(sql);
+    expect(() => expectContactCardShareLock(weakened)).toThrow();
   });
 
   it("publishes only for an authenticated exact-organization owner under row locks", () => {

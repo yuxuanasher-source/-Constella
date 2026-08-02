@@ -79,14 +79,8 @@ alter table public.project_recording_share_boards
   add column if not exists contact_card_snapshot jsonb,
   add constraint project_recording_share_boards_contact_snapshot_consistency
     check (
-      (
-        contact_card_id is null
-        and contact_card_snapshot is null
-      )
-      or (
-        contact_card_id is not null
-        and contact_card_snapshot is not null
-      )
+      contact_card_id is null
+      or contact_card_snapshot is not null
     ),
   add constraint project_recording_share_boards_contact_card_org_fkey
     foreign key (organization_id, contact_card_id)
@@ -132,7 +126,8 @@ begin
     from public.organization_contact_cards as card
     where card.id = new.contact_card_id
       and card.organization_id = new.organization_id
-      and card.status = 'active';
+      and card.status = 'active'
+    for share;
 
     if not found then
       raise exception 'organization_contact_card_not_active'
@@ -141,7 +136,7 @@ begin
 
     new.contact_card_snapshot := jsonb_strip_nulls(jsonb_build_object(
       'displayName', btrim(v_card.display_name),
-      'title', btrim(v_card.title),
+      'title', nullif(btrim(v_card.title), ''),
       'phone', nullif(btrim(v_card.phone), ''),
       'email', nullif(btrim(v_card.email), ''),
       'wechat', nullif(btrim(v_card.wechat), '')
@@ -157,7 +152,7 @@ begin
   if pg_trigger_depth() > 1
      and old.contact_card_id is not null
      and new.contact_card_id is null then
-    new.contact_card_snapshot := null;
+    new.contact_card_snapshot := old.contact_card_snapshot;
     return new;
   end if;
 
@@ -261,15 +256,9 @@ with check (
   and updated_by = auth.uid()
 );
 
-create policy organization_contact_cards_owner_delete
-on public.organization_contact_cards
-for delete
-to authenticated
-using (public.current_user_role(organization_id) = 'owner');
-
 revoke all on table public.organization_brand_drafts from public, anon;
 revoke all on table public.organization_brand_versions from public, anon;
-revoke all on table public.organization_contact_cards from public, anon;
+revoke all on table public.organization_contact_cards from public, anon, authenticated;
 
 grant select, insert, update, delete
 on table public.organization_brand_drafts
@@ -278,7 +267,7 @@ to authenticated;
 grant select on table public.organization_brand_versions to authenticated;
 revoke insert, update, delete on table public.organization_brand_versions from anon, authenticated, service_role;
 
-grant select, insert, update, delete
+grant select, insert, update
 on table public.organization_contact_cards
 to authenticated;
 
