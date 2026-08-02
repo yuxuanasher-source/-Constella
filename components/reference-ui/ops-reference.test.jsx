@@ -13,6 +13,26 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp, { buildOcrManualConfirmation } from "./ops-reference";
 
+const publishedOrganizationBrand = {
+  schemaVersion: 1,
+  version: 3,
+  logoText: "北辰",
+  logoStoragePath:
+    "11111111-1111-4111-8111-111111111111/brand-logos/33333333-3333-4333-8333-333333333333.webp",
+  brandName: "北辰直播运营",
+  brandTagline: "专业协作，可信交付",
+  primaryColor: "#7A3E00",
+  actionColor: "#663400",
+  softColor: "#F0E7DE",
+  publishedAt: "2026-08-01T00:00:00.000Z",
+  semantic: {
+    success: "#00B42A",
+    warning: "#FF7D00",
+    danger: "#F53F3F",
+    info: "#165DFF",
+  },
+};
+
 const taskProjectCards = [
   {
     id: "project-live",
@@ -2536,10 +2556,7 @@ describe("OpsReferenceApp project smoke", () => {
 
     const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
     expect(within(dialog).getByText("当前品牌")).toBeInTheDocument();
-    expect(within(dialog).getByText("经营舱")).toBeInTheDocument();
-    expect(
-      within(dialog).getByText("MCN OPERATIONS · v1.2"),
-    ).toBeInTheDocument();
+    expect(within(dialog).getByText("未配置组织")).toBeInTheDocument();
     expect(
       within(dialog).queryByLabelText("LOGO 字标"),
     ).not.toBeInTheDocument();
@@ -2571,9 +2588,9 @@ describe("OpsReferenceApp project smoke", () => {
         screen.queryByRole("dialog", { name: "组织功能设置" }),
       ).not.toBeInTheDocument(),
     );
-    const orgSwitcher = (await screen.findByText("未来经营组")).closest(
-      "button",
-    );
+    const orgSwitcher = await screen.findByRole("button", {
+      name: "当前组织设置摘要",
+    });
     expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
     expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
     expect(settingsCall[1].method).toBe("PATCH");
@@ -2614,7 +2631,10 @@ describe("OpsReferenceApp project smoke", () => {
     expect(
       screen.getByRole("dialog", { name: "组织功能设置" }),
     ).toBeInTheDocument();
-    const switcher = screen.getByText("稳定组织").closest("button");
+    const switcher = document.querySelector(
+      'button[aria-label="当前组织设置摘要"]',
+    );
+    expect(switcher).not.toBeNull();
     expect(switcher).toHaveTextContent("当前组织 · 配额 32");
     expect(switcher).toHaveTextContent("已启用 3 项功能");
     expect(screen.queryByRole("button", { name: /不应生效/ })).toBeNull();
@@ -2658,50 +2678,85 @@ describe("OpsReferenceApp project smoke", () => {
     expect(
       screen.getByRole("dialog", { name: "组织功能设置" }),
     ).toBeInTheDocument();
-    const switcher = screen.getByText("权威已写名称").closest("button");
+    const switcher = document.querySelector(
+      'button[aria-label="当前组织设置摘要"]',
+    );
+    expect(switcher).not.toBeNull();
     expect(switcher).toHaveTextContent("当前组织 · 配额 32");
     expect(switcher).toHaveTextContent("已启用 3 项功能");
   });
 
-  it("uses organization logo settings in the sidebar brand mark", () => {
-    render(
+  it("uses the canonical published organization brand in the old shell", () => {
+    const { container } = render(
       <OpsReferenceApp
         initialRoute="warroom"
-        organizationSettings={{ name: "未来经营组", logoText: "未" }}
+        organizationSettings={{
+          name: "北辰机构",
+          brand: publishedOrganizationBrand,
+          logoUrl: "https://signed.example/brand.webp",
+        }}
       />,
     );
 
-    expect(screen.getByLabelText("组织 LOGO")).toHaveTextContent("未");
-    expect(screen.queryByText("JY")).not.toBeInTheDocument();
-  });
-
-  it("uses the default mascot image in the sidebar brand mark", () => {
-    render(<OpsReferenceApp initialRoute="warroom" />);
-
-    const logo = screen.getByLabelText("组织 LOGO");
-    expect(logo).not.toHaveTextContent("JY");
-    expect(screen.getByRole("img", { name: "经营舱品牌标识" })).toHaveAttribute(
-      "src",
-      "/brand/ops-mascot-logo.png",
+    expect(
+      screen.getByRole("img", { name: "北辰直播运营品牌标识" }),
+    ).toHaveAttribute("src", "https://signed.example/brand.webp");
+    expect(screen.getByText("北辰直播运营")).toBeInTheDocument();
+    expect(screen.getByText("专业协作，可信交付")).toBeInTheDocument();
+    expect(screen.getByText("由经营舱提供技术服务")).toBeInTheDocument();
+    expect(screen.getByText("北辰机构")).toBeInTheDocument();
+    expect(container.querySelector(".organization-brand-theme")).toHaveStyle({
+      "--org-brand-action": "#663400",
+      "--org-brand-soft": "#F0E7DE",
+    });
+    expect(container.innerHTML).not.toContain(
+      "11111111-1111-4111-8111-111111111111/brand-logos/33333333-3333-4333-8333-333333333333.webp",
     );
   });
 
-  it("renders custom brand fields passed from server-side organization settings", () => {
+  it("falls back to the canonical wordmark when the old-shell image fails", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        organizationSettings={{
+          name: "北辰机构",
+          brand: publishedOrganizationBrand,
+          logoUrl: "https://signed.example/brand.webp",
+        }}
+      />,
+    );
+
+    fireEvent.error(screen.getByRole("img", { name: "北辰直播运营品牌标识" }));
+
+    expect(
+      screen.queryByRole("img", { name: "北辰直播运营品牌标识" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("ops-reference-brand-mark")).toHaveTextContent(
+      "北辰",
+    );
+  });
+
+  it("does not use flat legacy brand fields or render a broken default image", () => {
     render(
       <OpsReferenceApp
         initialRoute="warroom"
         organizationSettings={{
           name: "未来经营组",
-          logoText: "未",
-          brandName: "未来作战舱",
-          brandTagline: "FUTURE OPS · v9",
+          logoText: "不应使用",
+          logoImage: "/brand/ops-mascot-logo.png",
+          brandName: "不应使用的品牌",
+          brandTagline: "不应使用的口号",
         }}
       />,
     );
 
-    expect(screen.getByText("未来作战舱")).toBeInTheDocument();
-    expect(screen.getByText("FUTURE OPS · v9")).toBeInTheDocument();
-    expect(screen.getByLabelText("组织 LOGO")).toHaveTextContent("未");
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.getByTestId("ops-reference-brand-mark")).toHaveTextContent(
+      "未来",
+    );
+    expect(screen.getAllByText("未来经营组").length).toBeGreaterThan(0);
+    expect(screen.queryByText("不应使用的品牌")).not.toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain("/brand/ops-mascot-logo.png");
   });
 
   it("saves a custom avatar mark from the profile dialog and shows it in the sidebar", async () => {
@@ -2773,7 +2828,7 @@ describe("OpsReferenceApp project smoke", () => {
       />,
     );
 
-    expect(screen.queryByText("星耀传媒测试机构")).not.toBeInTheDocument();
+    expect(screen.getAllByText("星耀传媒测试机构")).toHaveLength(1);
     expect(screen.queryByText("当前组织 · 0 名成员")).not.toBeInTheDocument();
     expect(screen.queryByText(/已启用 \d+ 项功能/)).not.toBeInTheDocument();
     expect(screen.getAllByText("智能作战台").length).toBeGreaterThan(0);
@@ -9456,9 +9511,8 @@ describe("OpsReferenceApp live task smoke", () => {
   it("portals nested live review and preserves the outer modal isolation stack", () => {
     const { reviewDialog, reviewTrigger, taskDrawer } = openNestedLiveReview();
     const outerLayer = taskDrawer.closest(".ops-drawer-layer");
-    const appContainer = document.querySelector(
-      ".ops-reference-shell",
-    )?.parentElement;
+    const appContainer = document.querySelector(".ops-reference-shell")
+      ?.parentElement?.parentElement;
 
     expect(reviewDialog.parentElement).toBe(document.body);
     expect(reviewDialog).not.toHaveAttribute("inert");

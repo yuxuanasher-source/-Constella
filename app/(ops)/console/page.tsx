@@ -2,12 +2,15 @@ import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import { OpsConsoleV2Home } from "@/components/ops-shell/ops-console-v2-home";
 import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
 import { isOpsUiV2Enabled } from "@/features/ui-route-contracts/ops-ui-v2-flag";
+import { getPrivateStorageBucket } from "@/lib/config/env";
 
 import {
   currentUserFromAuth,
   organizationSettingsFromAuth,
   requireConsoleStaffAuth,
 } from "./console-auth";
+
+const CONSOLE_BRAND_LOGO_TTL_SECONDS = 120;
 
 export default async function ConsolePage() {
   const { supabase, auth } = await requireConsoleStaffAuth();
@@ -23,6 +26,14 @@ export default async function ConsolePage() {
 
   const currentUser = currentUserFromAuth(auth);
   const organizationSettings = organizationSettingsFromAuth(auth);
+  const logoUrl = await createConsoleBrandLogoSignedUrl(
+    supabase,
+    organizationSettings.logoStoragePath,
+  );
+  const brandedOrganizationSettings = {
+    ...organizationSettings,
+    logoUrl,
+  };
 
   if (isOpsUiV2Enabled()) {
     return (
@@ -30,7 +41,7 @@ export default async function ConsolePage() {
         dashboardHome={dashboardHome}
         dashboardHomeError={dashboardHomeError}
         currentUser={currentUser}
-        organizationSettings={organizationSettings}
+        organizationSettings={brandedOrganizationSettings}
       />
     );
   }
@@ -41,7 +52,23 @@ export default async function ConsolePage() {
       dashboardHome={dashboardHome}
       dashboardHomeError={dashboardHomeError}
       currentUser={currentUser}
-      organizationSettings={organizationSettings}
+      organizationSettings={brandedOrganizationSettings}
     />
   );
+}
+
+async function createConsoleBrandLogoSignedUrl(
+  supabase: Awaited<ReturnType<typeof requireConsoleStaffAuth>>["supabase"],
+  path: string | null,
+): Promise<string | null> {
+  if (!path) return null;
+
+  try {
+    const { data, error } = await supabase.storage
+      .from(getPrivateStorageBucket())
+      .createSignedUrl(path, CONSOLE_BRAND_LOGO_TTL_SECONDS);
+    return error || !data?.signedUrl ? null : data.signedUrl;
+  } catch {
+    return null;
+  }
 }

@@ -9,6 +9,8 @@ import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
 import HermesSkillCenter from "@/components/ai/hermes-skill-center";
 import { MarketplaceBoard } from "@/components/marketplace/marketplace-board";
+import { OrganizationBrandMark } from "@/components/organization-brand/organization-brand-mark";
+import { OrganizationBrandTheme } from "@/components/organization-brand/organization-brand-theme";
 import { USAGE_TUTORIAL_MD } from "./usage-tutorial-md";
 import { canManageAccounts } from "@/features/account-library/account-library-service";
 import { rankReportQueue } from "@/features/ai/bounded-actions";
@@ -20,6 +22,7 @@ import {
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
 import { resolvePaywall } from "@/features/funnel/paywall";
 import { isCustomSettlementRulesEnabled } from "@/features/settlements/custom-rule-feature-flag";
+import { normalizePublishedBrand } from "@/features/organizations/organization-brand";
 import {
   toPricingResultDto,
   toProjectReviewDto,
@@ -188,10 +191,11 @@ function Button({
   const s = sizes[size];
   const kinds = {
     primary: {
-      bg: "var(--blue-600)",
+      bg: "var(--org-brand-action, var(--blue-600))",
       color: "#fff",
-      border: "1px solid var(--blue-600)",
-      hover: "var(--blue-700)",
+      border: "1px solid var(--org-brand-action, var(--blue-600))",
+      hover:
+        "color-mix(in srgb, var(--org-brand-action, var(--blue-600)) 90%, #000)",
     },
     default: {
       bg: "#fff",
@@ -213,7 +217,7 @@ function Button({
     },
     link: {
       bg: "transparent",
-      color: "var(--blue-600)",
+      color: "var(--org-brand-action, var(--blue-600))",
       border: "none",
       hover: "transparent",
     },
@@ -223,6 +227,7 @@ function Button({
   return (
     <button
       type={type}
+      data-button-kind={kind}
       onClick={onClick}
       disabled={disabled}
       {...buttonProps}
@@ -1009,10 +1014,7 @@ const ORGANIZATION_FEATURE_OPTIONS = [
 const DEFAULT_ORGANIZATION_SETTINGS = {
   id: ORG.id,
   name: ORG.name || "未配置组织",
-  logoText: "JY",
-  logoImage: "/brand/ops-mascot-logo.png",
-  brandName: "经营舱",
-  brandTagline: "MCN OPERATIONS · v1.2",
+  logoUrl: null,
   memberLimit: null,
   plan: "",
   verified: false,
@@ -1030,14 +1032,19 @@ function sliceByCodePoints(value, max) {
   return Array.from(value).slice(0, max).join("");
 }
 
-function normalizeBrandField(value, max, fallback) {
-  return typeof value === "string" && value.trim()
-    ? sliceByCodePoints(value.trim(), max)
-    : fallback;
-}
-
 function normalizeOrganizationSettings(input) {
   const source = input && typeof input === "object" ? input : {};
+  const name =
+    typeof source.name === "string" && source.name.trim()
+      ? source.name.trim()
+      : DEFAULT_ORGANIZATION_SETTINGS.name;
+  const brand =
+    source.brand && typeof source.brand === "object"
+      ? source.brand
+      : normalizePublishedBrand(null, {
+          organizationId: "",
+          organizationName: name,
+        });
   const rawLimit = Number(source.memberLimit ?? source.memberCount);
   const memberLimit =
     Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : null;
@@ -1051,29 +1058,13 @@ function normalizeOrganizationSettings(input) {
   return {
     ...DEFAULT_ORGANIZATION_SETTINGS,
     ...source,
-    name:
-      typeof source.name === "string" && source.name.trim()
-        ? source.name.trim()
-        : DEFAULT_ORGANIZATION_SETTINGS.name,
-    logoText: normalizeBrandField(
-      source.logoText,
-      4,
-      DEFAULT_ORGANIZATION_SETTINGS.logoText,
-    ),
-    logoImage:
-      typeof source.logoImage === "string" && source.logoImage.trim()
-        ? source.logoImage.trim()
-        : DEFAULT_ORGANIZATION_SETTINGS.logoImage,
-    brandName: normalizeBrandField(
-      source.brandName,
-      12,
-      DEFAULT_ORGANIZATION_SETTINGS.brandName,
-    ),
-    brandTagline: normalizeBrandField(
-      source.brandTagline,
-      32,
-      DEFAULT_ORGANIZATION_SETTINGS.brandTagline,
-    ),
+    name,
+    brand,
+    logoUrl:
+      typeof source.logoUrl === "string" &&
+      /^https?:\/\//i.test(source.logoUrl.trim())
+        ? source.logoUrl.trim()
+        : null,
     memberLimit,
     plan:
       typeof source.plan === "string" && source.plan.trim()
@@ -2628,7 +2619,7 @@ export function Sidebar({
       {/* Logo */}
       <div
         style={{
-          height: 56,
+          minHeight: 64,
           display: "flex",
           alignItems: "center",
           gap: 10,
@@ -2663,40 +2654,14 @@ export function Sidebar({
             color: "inherit",
           }}
         >
-          <div
-            aria-label="组织 LOGO"
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 7,
-              background: "linear-gradient(135deg, #1E50C8 0%, #3B6BE6 100%)",
-              color: "#fff",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontWeight: 700,
-              fontSize: 13,
-              letterSpacing: "-0.04em",
-              boxShadow: "0 2px 6px rgba(30,80,200,0.35)",
-              overflow: "hidden",
-            }}
-          >
-            {orgSettings.logoImage &&
-            orgSettings.logoText === DEFAULT_ORGANIZATION_SETTINGS.logoText ? (
-              <img
-                src={orgSettings.logoImage}
-                alt="经营舱品牌标识"
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                  display: "block",
-                }}
-              />
-            ) : (
-              orgSettings.logoText
-            )}
-          </div>
+          <span data-testid="ops-reference-brand-mark">
+            <OrganizationBrandMark
+              className="ops-reference-brand-mark"
+              brandName={orgSettings.brand.brandName}
+              logoText={orgSettings.brand.logoText}
+              logoUrl={orgSettings.logoUrl}
+            />
+          </span>
           <div
             style={{
               display: "flex",
@@ -2711,19 +2676,46 @@ export function Sidebar({
                 fontSize: 14,
                 color: "var(--ink-900)",
                 letterSpacing: "-0.005em",
+                maxWidth: "100%",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
+              title={orgSettings.brand.brandName}
             >
-              {orgSettings.brandName}
+              {orgSettings.brand.brandName}
             </span>
-            <span
-              style={{
-                fontSize: 10.5,
-                color: "var(--ink-400)",
-                letterSpacing: "0.04em",
-              }}
-            >
-              {orgSettings.brandTagline}
-            </span>
+            {orgSettings.brand.brandTagline ? (
+              <span
+                style={{
+                  fontSize: 10.5,
+                  color: "var(--ink-400)",
+                  maxWidth: "100%",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={orgSettings.brand.brandTagline}
+              >
+                {orgSettings.brand.brandTagline}
+              </span>
+            ) : null}
+            {route === "warroom" &&
+            orgSettings.name !== orgSettings.brand.brandName ? (
+              <span
+                style={{
+                  fontSize: 10,
+                  color: "var(--ink-400)",
+                  maxWidth: "100%",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={orgSettings.name}
+              >
+                {orgSettings.name}
+              </span>
+            ) : null}
           </div>
         </button>
         <button
@@ -2778,6 +2770,8 @@ export function Sidebar({
           return (
             <button
               key={it.key}
+              className="ops-reference-nav-item"
+              data-active={active ? "true" : "false"}
               title={badgeLabel}
               aria-label={badgeLabel}
               onClick={() => onNav(it.key)}
@@ -2788,11 +2782,15 @@ export function Sidebar({
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
-                background: active ? "var(--blue-50)" : "transparent",
+                background: active
+                  ? "var(--org-brand-soft, var(--blue-50))"
+                  : "transparent",
                 border: "none",
                 borderRadius: 6,
                 cursor: "pointer",
-                color: active ? "var(--blue-700)" : "var(--ink-500)",
+                color: active
+                  ? "var(--org-brand-action, var(--blue-700))"
+                  : "var(--ink-500)",
                 fontWeight: active ? 600 : 500,
                 fontSize: 13,
                 position: "relative",
@@ -2814,13 +2812,17 @@ export function Sidebar({
                     bottom: 8,
                     width: 3,
                     borderRadius: 999,
-                    background: "var(--blue-600)",
+                    background: "var(--org-brand-action, var(--blue-600))",
                   }}
                 />
               )}
               <IconComp
                 size={16}
-                stroke={active ? "var(--blue-700)" : "var(--ink-400)"}
+                stroke={
+                  active
+                    ? "var(--org-brand-action, var(--blue-700))"
+                    : "var(--ink-400)"
+                }
               />
               <span style={{ flex: 1, textAlign: "left" }}>{it.label}</span>
               {count > 0 && (
@@ -2830,7 +2832,9 @@ export function Sidebar({
                     fontWeight: 600,
                     padding: "0 6px",
                     height: 16,
-                    background: active ? "var(--blue-600)" : "#E1E7F0",
+                    background: active
+                      ? "var(--org-brand-action, var(--blue-600))"
+                      : "#E1E7F0",
                     color: active ? "#fff" : "var(--ink-500)",
                     borderRadius: 999,
                     display: "inline-flex",
@@ -2972,6 +2976,18 @@ export function Sidebar({
           </button>
         </div>
       ) : null}
+      <p
+        style={{
+          margin: "0 18px",
+          padding: "8px 0 0",
+          borderTop: "1px solid var(--line)",
+          color: "var(--ink-400)",
+          fontSize: 10,
+          lineHeight: 1.4,
+        }}
+      >
+        由经营舱提供技术服务
+      </p>
       {/* User */}
       <div
         style={{
@@ -7201,7 +7217,10 @@ function RangeInput({ value, setValue, min, max, step = 1, prefix, suffix }) {
         step={step}
         value={value}
         onChange={(e) => setValue(Number(e.target.value))}
-        style={{ flex: 1, accentColor: "var(--blue-600)" }}
+        style={{
+          flex: 1,
+          accentColor: "var(--org-brand-action, var(--blue-600))",
+        }}
       />
       <div
         style={{
@@ -16731,7 +16750,9 @@ function ReportDetail({ id, reports }) {
               <input
                 type="checkbox"
                 defaultChecked
-                style={{ accentColor: "var(--blue-600)" }}
+                style={{
+                  accentColor: "var(--org-brand-action, var(--blue-600))",
+                }}
               />{" "}
               计入任务结果
             </label>
@@ -24177,33 +24198,13 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
               minWidth: 0,
             }}
           >
-            <span
-              aria-label={`${normalized.brandName}品牌标识`}
-              style={{
-                width: 36,
-                height: 36,
-                flex: "0 0 36px",
-                borderRadius: 6,
-                background: "var(--blue-600)",
-                color: "#fff",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                overflow: "hidden",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              {normalized.logoImage ? (
-                <img
-                  src={normalized.logoImage}
-                  alt=""
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                />
-              ) : (
-                normalized.logoText
-              )}
-            </span>
+            <OrganizationBrandMark
+              className="ops-reference-brand-mark ops-reference-brand-mark--summary"
+              brandName={normalized.brand.brandName}
+              logoText={normalized.brand.logoText}
+              logoUrl={normalized.logoUrl}
+              decorative
+            />
             <span style={{ minWidth: 0, flex: 1 }}>
               <span
                 style={{
@@ -24213,7 +24214,7 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
                   fontWeight: 600,
                 }}
               >
-                {normalized.brandName}
+                {normalized.brand.brandName}
               </span>
               <span
                 style={{
@@ -24224,7 +24225,7 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
                   overflowWrap: "anywhere",
                 }}
               >
-                {normalized.brandTagline || "未设置品牌副标"}
+                {normalized.brand.brandTagline || "未设置品牌副标"}
               </span>
             </span>
           </div>
@@ -24235,7 +24236,7 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
               alignItems: "center",
               minHeight: 32,
               marginTop: 10,
-              color: "var(--blue-700)",
+              color: "var(--org-brand-action, var(--blue-700))",
               fontSize: 12,
               fontWeight: 600,
               textDecoration: "underline",
@@ -24284,7 +24285,10 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
                   type="checkbox"
                   checked={checked}
                   onChange={() => toggleFeature(feature.key)}
-                  style={{ marginTop: 2, accentColor: "var(--blue-600)" }}
+                  style={{
+                    marginTop: 2,
+                    accentColor: "var(--org-brand-action, var(--blue-600))",
+                  }}
                 />
                 <span
                   style={{ display: "flex", flexDirection: "column", gap: 4 }}
@@ -30012,31 +30016,36 @@ export default function OpsReferenceApp({
   currentUser,
   accountLibraryAccounts,
 }) {
+  const normalizedOrganizationSettings =
+    normalizeOrganizationSettings(organizationSettings);
+
   return (
-    <OpsReferenceInner
-      initialRoute={initialRoute}
-      admissionFocusRequest={admissionFocusRequest}
-      liveTasks={liveTasks}
-      liveReports={liveReports}
-      liveBatches={liveBatches}
-      liveBatchDetails={liveBatchDetails}
-      liveSettlementPool={liveSettlementPool}
-      settlementScope={settlementScope}
-      auditEntries={auditEntries}
-      notificationItems={notificationItems}
-      organizationMembers={organizationMembers}
-      organizationMemberPermissions={organizationMemberPermissions}
-      organizationSettings={organizationSettings}
-      billingStatus={billingStatus}
-      complexCost={complexCost}
-      dashboardHome={dashboardHome}
-      dashboardHomeError={dashboardHomeError}
-      projectCards={projectCards}
-      collaborationProjectCards={collaborationProjectCards}
-      streamerCards={streamerCards}
-      applicationQueue={applicationQueue}
-      currentUser={currentUser}
-      accountLibraryAccounts={accountLibraryAccounts}
-    />
+    <OrganizationBrandTheme brand={normalizedOrganizationSettings.brand}>
+      <OpsReferenceInner
+        initialRoute={initialRoute}
+        admissionFocusRequest={admissionFocusRequest}
+        liveTasks={liveTasks}
+        liveReports={liveReports}
+        liveBatches={liveBatches}
+        liveBatchDetails={liveBatchDetails}
+        liveSettlementPool={liveSettlementPool}
+        settlementScope={settlementScope}
+        auditEntries={auditEntries}
+        notificationItems={notificationItems}
+        organizationMembers={organizationMembers}
+        organizationMemberPermissions={organizationMemberPermissions}
+        organizationSettings={normalizedOrganizationSettings}
+        billingStatus={billingStatus}
+        complexCost={complexCost}
+        dashboardHome={dashboardHome}
+        dashboardHomeError={dashboardHomeError}
+        projectCards={projectCards}
+        collaborationProjectCards={collaborationProjectCards}
+        streamerCards={streamerCards}
+        applicationQueue={applicationQueue}
+        currentUser={currentUser}
+        accountLibraryAccounts={accountLibraryAccounts}
+      />
+    </OrganizationBrandTheme>
   );
 }

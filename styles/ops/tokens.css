@@ -10,6 +10,7 @@
   --ops-success: #00b42a;
   --ops-warning: #ff7d00;
   --ops-danger: #f53f3f;
+  --ops-info: #165dff;
   --ops-radius-control: 4px;
   --ops-radius-card: 6px;
   --ops-sidebar-width: 248px;
@@ -18,4 +19,18 @@
   --ops-topbar-height-mobile: 60px;
   --ops-nav-item-height: 38px;
   --ops-nav-badge-size: 20px;
+}
+
+/* Organization identity is intentionally scoped to authenticated console
+   subtrees. Platform identity and public/streamer surfaces keep :root tokens. */
+.organization-brand-theme {
+  --ops-primary: var(--org-brand-action, #165dff);
+  --ops-primary-soft: var(--org-brand-soft, #e8f0ff);
+  --ops-success: #00b42a;
+  --ops-warning: #ff7d00;
+  --ops-danger: #f53f3f;
+  --ops-info: #165dff;
+  --ok-600: #00b42a;
+  --warn-600: #ff7d00;
+  --danger-600: #f53f3f;
 }

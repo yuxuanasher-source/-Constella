@@ -1,5 +1,6 @@
 import { BarChart3 } from "./navigation";
 import { OpsShell } from "./ops-shell";
+import type { PublishedOrganizationBrand } from "@/features/organizations/organization-brand";
 
 type DashboardKpi = {
   label?: string;
@@ -28,12 +29,18 @@ export function OpsConsoleV2Home({
   dashboardHome: unknown;
   dashboardHomeError: string | null;
   currentUser: { name?: string; role?: string };
-  organizationSettings: { name?: string };
+  organizationSettings: {
+    name?: string;
+    brand: PublishedOrganizationBrand;
+    logoUrl?: string | null;
+  };
 }) {
   const kpis = dashboardKpis(dashboardHome);
 
   return (
     <OpsShell
+      brand={organizationSettings.brand}
+      logoUrl={organizationSettings.logoUrl ?? null}
       organizationName={organizationSettings.name ?? "未连接组织"}
       userName={currentUser.name ?? "未登录用户"}
       role={currentUser.role ?? "guest"}
