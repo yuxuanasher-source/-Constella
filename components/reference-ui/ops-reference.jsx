@@ -10130,7 +10130,7 @@ function ProjectSettingsSwitch({ label, checked, onChange, disabled = false }) {
           width: 38,
           height: 22,
           borderRadius: 999,
-          background: checked ? "#2f6fed" : "#cfd6e2",
+          background: checked ? "var(--org-brand-action, #2f6fed)" : "#cfd6e2",
           padding: 2,
           boxSizing: "border-box",
           display: "flex",
@@ -10290,14 +10290,16 @@ function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
         style={{
           width: "100%",
           height: 40,
-          border: `1px solid ${open ? "#b9c9ea" : "#dfe5ee"}`,
+          border: `1px solid ${open ? "var(--org-brand-action, #2f6fed)" : "#dfe5ee"}`,
           borderRadius: 10,
           background: "#fff",
           display: "flex",
           alignItems: "center",
           gap: 8,
           padding: "0 12px",
-          boxShadow: open ? "0 0 0 3px rgba(47, 111, 237, 0.12)" : "none",
+          boxShadow: open
+            ? "0 0 0 3px color-mix(in srgb, var(--org-brand-action, #2f6fed) 18%, transparent)"
+            : "none",
           cursor: "pointer",
           fontFamily: "inherit",
           textAlign: "left",
@@ -10382,7 +10384,7 @@ function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
                     aria-hidden="true"
                     size={14}
                     sw={2}
-                    stroke="#2f6fed"
+                    stroke="var(--org-brand-action, #2f6fed)"
                   />
                 )}
               </button>
@@ -10414,13 +10416,15 @@ function ProjectSettingsDateField({ label, value, onChange }) {
         style={{
           position: "relative",
           height: 38,
-          border: `1px solid ${focused ? "#2f6fed" : "#e4e9f1"}`,
+          border: `1px solid ${focused ? "var(--org-brand-action, #2f6fed)" : "#e4e9f1"}`,
           borderRadius: 10,
           background: "#fff",
           display: "flex",
           alignItems: "center",
           cursor: "pointer",
-          boxShadow: focused ? "0 0 0 3px rgba(47, 111, 237, 0.12)" : "none",
+          boxShadow: focused
+            ? "0 0 0 3px color-mix(in srgb, var(--org-brand-action, #2f6fed) 18%, transparent)"
+            : "none",
           transition: "border-color 120ms ease, box-shadow 120ms ease",
         }}
       >

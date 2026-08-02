@@ -2765,6 +2765,14 @@ describe("OpsReferenceApp project smoke", () => {
       <OpsReferenceApp
         initialRoute="projects"
         projectCards={[projectManagementCards[0]]}
+        streamerCards={[]}
+        applicationQueue={[]}
+        organizationMembers={[]}
+        organizationSettings={{
+          name: "北辰机构",
+          brand: publishedOrganizationBrand,
+          logoUrl: "https://signed.example/brand.webp",
+        }}
       />,
     );
     fireEvent.click(screen.getByText("Alpha Launch"));
@@ -2772,8 +2780,8 @@ describe("OpsReferenceApp project smoke", () => {
 
     const primaryButton = screen.getByRole("button", { name: "保存设置" });
     const projectName = screen.getByLabelText("项目名称");
-    const visibleSwitch =
-      screen.getByLabelText("公开给组织内主播").nextElementSibling;
+    const publicSwitch = screen.getByLabelText("公开给组织内主播");
+    const visibleSwitch = publicSwitch.nextElementSibling;
     const projectSettingsCss = Array.from(document.querySelectorAll("style"))
       .map((style) => style.textContent ?? "")
       .find((css) => css.includes(".ps-btn-primary"));
@@ -2793,6 +2801,48 @@ describe("OpsReferenceApp project smoke", () => {
     expect(projectSettingsCss).toMatch(
       /\.ps-switch input:focus-visible \+ span\s*\{[^}]*outline:\s*2px solid var\(--org-brand-action,\s*#2f6fed\)/,
     );
+
+    fireEvent.click(publicSwitch);
+    expect(publicSwitch).toBeChecked();
+    expect.soft(visibleSwitch).toHaveStyle({
+      background: "var(--org-brand-action, #2f6fed)",
+    });
+
+    const statusPicker = screen.getByRole("combobox", { name: "项目状态" });
+    fireEvent.click(statusPicker);
+    expect
+      .soft(statusPicker.getAttribute("style"))
+      .toContain("border: 1px solid var(--org-brand-action, #2f6fed)");
+    expect
+      .soft(statusPicker.getAttribute("style"))
+      .toContain(
+        "box-shadow: 0 0 0 3px color-mix(in srgb, var(--org-brand-action, #2f6fed) 18%, transparent)",
+      );
+    expect(statusPicker.querySelector('span[aria-hidden="true"]')).toHaveStyle({
+      background: "#12a17c",
+    });
+    const statusListbox = screen.getByRole("listbox", {
+      name: "项目状态选项",
+    });
+    expect
+      .soft(
+        within(statusListbox)
+          .getByRole("option", { selected: true })
+          .querySelector("svg"),
+      )
+      .toHaveAttribute("stroke", "var(--org-brand-action, #2f6fed)");
+
+    const startDate = screen.getByLabelText("开始日期");
+    fireEvent.focus(startDate);
+    const dateControl = startDate.parentElement;
+    expect
+      .soft(dateControl?.getAttribute("style"))
+      .toContain("border: 1px solid var(--org-brand-action, #2f6fed)");
+    expect
+      .soft(dateControl?.getAttribute("style"))
+      .toContain(
+        "box-shadow: 0 0 0 3px color-mix(in srgb, var(--org-brand-action, #2f6fed) 18%, transparent)",
+      );
   });
 
   it("falls back to the canonical wordmark when the old-shell image fails", () => {
