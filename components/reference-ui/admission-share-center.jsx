@@ -407,6 +407,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const taskTabRef = React.useRef(null);
   const centerDialogRef = React.useRef(null);
   const openerRef = React.useRef(null);
+  const wizardOpenerRef = React.useRef(null);
   const restoreTaskFocusAfterDeliveryRef = React.useRef(false);
   const [tab, setTab] = React.useState("library");
   const [candidates, setCandidates] = React.useState([]);
@@ -498,6 +499,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     firstTabRef.current?.focus();
     return () => {
       mountedRef.current = false;
+      wizardOpenerRef.current = null;
       candidateGenerationRef.current += 1;
       taskListGenerationRef.current += 1;
       shareBrandGenerationRef.current += 1;
@@ -516,6 +518,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
 
   React.useLayoutEffect(() => {
     const preservePendingCreate = createPendingRef.current;
+    wizardOpenerRef.current = null;
     currentProjectIdRef.current = project.id;
     candidateGenerationRef.current += 1;
     taskListGenerationRef.current += 1;
@@ -931,7 +934,16 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     });
   };
 
-  const startWizard = async () => {
+  const startWizard = async (event) => {
+    const eventOpener = event?.currentTarget;
+    const center = centerDialogRef.current;
+    wizardOpenerRef.current =
+      eventOpener &&
+      center &&
+      center.contains(eventOpener) &&
+      typeof eventOpener.focus === "function"
+        ? { element: eventOpener, projectId: project.id, center }
+        : null;
     if (!canCreateShare) {
       setMessage(projectGateMessage);
       return;
@@ -1057,6 +1069,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
         presentation: persistedPresentation,
       });
       setSelected(new Map());
+      wizardOpenerRef.current = null;
       setPreflight(null);
       setWizardOpen(false);
       setWizardStep(0);
@@ -1382,6 +1395,8 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
 
   const closeWizard = () => {
     if (createPendingRef.current) return;
+    const restoreContext = wizardOpenerRef.current;
+    wizardOpenerRef.current = null;
     preflightGenerationRef.current += 1;
     setWizardOpen(false);
     setPreflight(null);
@@ -1389,6 +1404,36 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     setWizardError("");
     setWizardProject(null);
     setDraft((current) => ({ ...current, accessCode: "" }));
+    queueMicrotask(() => {
+      const target = restoreContext?.element;
+      const center = restoreContext?.center;
+      if (
+        wizardOpenerRef.current ||
+        !mountedRef.current ||
+        !target ||
+        !center ||
+        restoreContext.projectId !== currentProjectIdRef.current ||
+        centerDialogRef.current !== center ||
+        !target.isConnected ||
+        !center.contains(target) ||
+        target.matches?.(":disabled") ||
+        target.tabIndex < 0 ||
+        target.closest?.("[inert]")
+      ) {
+        return;
+      }
+      const activeElement = document.activeElement;
+      if (
+        activeElement === target ||
+        (activeElement &&
+          activeElement !== document.body &&
+          activeElement !== document.documentElement &&
+          activeElement.isConnected)
+      ) {
+        return;
+      }
+      target.focus({ preventScroll: true });
+    });
   };
 
   const closeDelivery = () => {
@@ -1412,6 +1457,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     taskPreviewGenerationRef.current += 1;
     preflightGenerationRef.current += 1;
     createGenerationRef.current += 1;
+    wizardOpenerRef.current = null;
     setDelivery(null);
     setWizardOpen(false);
     setTaskPreview(null);

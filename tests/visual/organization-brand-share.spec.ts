@@ -611,20 +611,20 @@ function defineBrowserTests() {
       ariaLabel: document.activeElement?.getAttribute("aria-label") ?? null,
       text: document.activeElement?.textContent?.trim().slice(0, 80) ?? null,
     }));
-    await testInfo.attach("wizard-focus-return-candidate", {
+    await expect(createButton).toBeFocused();
+    await testInfo.attach("wizard-focus-return-verified", {
       body: JSON.stringify(focusAfterWizardEscape, null, 2),
       contentType: "application/json",
     });
     await writeFile(
-      testInfo.outputPath("wizard-focus-return-candidate.json"),
+      testInfo.outputPath("wizard-focus-return-verified.json"),
       `${JSON.stringify(focusAfterWizardEscape, null, 2)}\n`,
       "utf8",
     );
     await page.screenshot({
-      path: testInfo.outputPath("wizard-focus-return-candidate.png"),
+      path: testInfo.outputPath("wizard-focus-return-verified.png"),
     });
 
-    await createButton.focus();
     await createButton.press("Enter");
     await wizard.getByRole("button", { name: "下一步" }).click();
     await expect(

@@ -1685,6 +1685,13 @@ describe("AdmissionShareCenter", () => {
   });
 
   it("traps focus in nested dialogs, supports Escape, and restores the opener", async () => {
+    let finishPreflight;
+    actions.preflightAdmissionShareBoard.mockImplementationOnce(() => {
+      document.activeElement?.blur?.();
+      return new Promise((resolve) => {
+        finishPreflight = resolve;
+      });
+    });
     const opener = document.createElement("button");
     opener.textContent = "外部入口";
     document.body.appendChild(opener);
@@ -1702,6 +1709,20 @@ describe("AdmissionShareCenter", () => {
     fireEvent.click(createButton);
 
     const wizard = await screen.findByRole("dialog", { name: "创建录屏分享" });
+    expect(createButton).toBeDisabled();
+    finishPreflight(
+      readyResult([
+        {
+          applicationId: latestCandidate.applicationId,
+          recordingSubmissionId: latestCandidate.recordingSubmissionId,
+          recordingVersion: latestCandidate.recordingVersion,
+          sortOrder: 0,
+        },
+      ]),
+    );
+    expect(
+      await within(wizard).findByRole("button", { name: "下一步" }),
+    ).toBeEnabled();
     expect(center).toHaveAttribute("inert");
     const closeWizard = within(wizard).getByRole("button", {
       name: "关闭创建向导",
@@ -1713,7 +1734,7 @@ describe("AdmissionShareCenter", () => {
     ).toHaveFocus();
     fireEvent.keyDown(wizard, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "创建录屏分享" })).toBeNull();
-    expect(createButton).toHaveFocus();
+    await waitFor(() => expect(createButton).toHaveFocus());
 
     fireEvent.keyDown(center, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
