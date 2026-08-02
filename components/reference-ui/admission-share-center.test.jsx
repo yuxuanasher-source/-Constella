@@ -1684,6 +1684,69 @@ describe("AdmissionShareCenter", () => {
     expect(await screen.findByLabelText("自定义访问码")).toHaveValue("");
   });
 
+  for (const scenario of [
+    { outcome: "resolve", closeWith: "Escape" },
+    { outcome: "reject", closeWith: "button" },
+  ]) {
+    it(`releases a cancelled pending preflight via ${scenario.closeWith} when the stale request ${scenario.outcome}s`, async () => {
+      let resolvePreflight;
+      let rejectPreflight;
+      actions.preflightAdmissionShareBoard.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          resolvePreflight = resolve;
+          rejectPreflight = reject;
+        }),
+      );
+      renderShareCenter(actions);
+
+      fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+      const createButton = screen.getByRole("button", { name: "创建分享" });
+      createButton.focus();
+      fireEvent.click(createButton);
+
+      const wizard = await screen.findByRole("dialog", {
+        name: "创建录屏分享",
+      });
+      expect(createButton).toBeDisabled();
+      if (scenario.closeWith === "Escape") {
+        fireEvent.keyDown(wizard, { key: "Escape" });
+      } else {
+        fireEvent.click(
+          within(wizard).getByRole("button", { name: "关闭创建向导" }),
+        );
+      }
+
+      expect(screen.queryByRole("dialog", { name: "创建录屏分享" })).toBeNull();
+      await waitFor(() => expect(createButton).toBeEnabled());
+      expect(createButton).toHaveFocus();
+
+      const libraryTab = screen.getByRole("tab", { name: "录屏库" });
+      libraryTab.focus();
+      await act(async () => {
+        if (scenario.outcome === "resolve") {
+          resolvePreflight(
+            readyResult([
+              {
+                applicationId: latestCandidate.applicationId,
+                recordingSubmissionId: latestCandidate.recordingSubmissionId,
+                recordingVersion: latestCandidate.recordingVersion,
+                sortOrder: 0,
+              },
+            ]),
+          );
+        } else {
+          rejectPreflight(new Error("stale preflight failure"));
+        }
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByRole("dialog", { name: "创建录屏分享" })).toBeNull();
+      expect(screen.queryByText("stale preflight failure")).toBeNull();
+      expect(createButton).toBeEnabled();
+      expect(libraryTab).toHaveFocus();
+    });
+  }
+
   it("traps focus in nested dialogs, supports Escape, and restores the opener", async () => {
     let finishPreflight;
     actions.preflightAdmissionShareBoard.mockImplementationOnce(() => {

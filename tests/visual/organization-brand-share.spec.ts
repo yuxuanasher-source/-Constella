@@ -110,6 +110,11 @@ type MockState = {
   unexpectedRequests: string[];
 };
 
+type ConsoleShareRouteControl = {
+  waitForFirstPreflight: () => Promise<void>;
+  releaseFirstPreflight: () => void;
+};
+
 type VisualRole = "owner" | "finance" | "service";
 
 const emptyDashboardRestQueryKeys: Record<string, readonly string[]> = {
@@ -576,7 +581,7 @@ function defineBrowserTests() {
   }, testInfo) => {
     await setStaffSession(page.context(), "owner");
     const capturedCreates: Record<string, unknown>[] = [];
-    await installConsoleShareRoutes(page, capturedCreates);
+    const shareRoutes = await installConsoleShareRoutes(page, capturedCreates);
     await openShareCenter(page);
 
     const rejectedFixtureStatuses = await page.evaluate(async () =>
@@ -603,15 +608,47 @@ function defineBrowserTests() {
     await createButton.press("Enter");
     const wizard = page.getByRole("dialog", { name: "创建录屏分享" });
     await expect(wizard).toBeVisible();
-    await expect(wizard.getByLabel("对外联系名片")).toHaveValue("");
+    await shareRoutes.waitForFirstPreflight();
+    await expect(wizard).toContainText("正在逐条检查录屏状态");
     await wizard.getByRole("button", { name: "关闭创建向导" }).press("Escape");
     await expect(wizard).toHaveCount(0);
+    await expect(createButton).toBeEnabled();
+    await expect(createButton).toBeFocused();
+
+    const stalePreflightResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        response.request().method() === "POST" &&
+        url.pathname.endsWith("/admission-share-boards/preflight")
+      );
+    });
+    shareRoutes.releaseFirstPreflight();
+    await stalePreflightResponse;
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolveFrame) => {
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => resolveFrame()),
+          );
+        }),
+    );
+    await expect(wizard).toHaveCount(0);
+    await expect(page.getByText(/分享预检失败/)).toHaveCount(0);
+    await expect(createButton).toBeEnabled();
+    await expect(createButton).toBeFocused();
+
     const focusAfterWizardEscape = await page.evaluate(() => ({
       tagName: document.activeElement?.tagName ?? null,
       ariaLabel: document.activeElement?.getAttribute("aria-label") ?? null,
       text: document.activeElement?.textContent?.trim().slice(0, 80) ?? null,
+      createEnabled:
+        document.activeElement instanceof HTMLButtonElement
+          ? !document.activeElement.disabled
+          : null,
+      staleWizardPresent: Boolean(
+        document.querySelector('[role="dialog"][aria-label="创建录屏分享"]'),
+      ),
     }));
-    await expect(createButton).toBeFocused();
     await testInfo.attach("wizard-focus-return-verified", {
       body: JSON.stringify(focusAfterWizardEscape, null, 2),
       contentType: "application/json",
@@ -1060,7 +1097,7 @@ function defineBrowserTests() {
 async function installConsoleShareRoutes(
   page: Page,
   capturedCreates: Record<string, unknown>[],
-) {
+): Promise<ConsoleShareRouteControl> {
   const candidate = {
     applicationId: "application-1",
     recordingSubmissionId: "recording-1",
@@ -1099,6 +1136,12 @@ async function installConsoleShareRoutes(
     createdAt: "2026-08-01T00:00:00.000Z",
   };
   let createdCount = 0;
+  let shouldHoldFirstPreflight = true;
+  let releaseFirstPreflightRequest: (() => void) | null = null;
+  let markFirstPreflightStarted = () => {};
+  const firstPreflightStarted = new Promise<void>((resolveStarted) => {
+    markFirstPreflightStarted = resolveStarted;
+  });
 
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -1137,6 +1180,13 @@ async function installConsoleShareRoutes(
       const body = request.postDataJSON() as {
         items: Record<string, unknown>[];
       };
+      if (shouldHoldFirstPreflight) {
+        shouldHoldFirstPreflight = false;
+        markFirstPreflightStarted();
+        await new Promise<void>((resolvePending) => {
+          releaseFirstPreflightRequest = resolvePending;
+        });
+      }
       return fulfillJson(route, {
         summary: { ready: body.items.length, warning: 0, blocked: 0 },
         items: body.items.map((item) => ({
@@ -1193,6 +1243,18 @@ async function installConsoleShareRoutes(
     }
     return rejectBrowserRequest(page, route);
   });
+
+  return {
+    waitForFirstPreflight: () => firstPreflightStarted,
+    releaseFirstPreflight: () => {
+      if (!releaseFirstPreflightRequest) {
+        throw new Error("The first share preflight request is not pending");
+      }
+      const release = releaseFirstPreflightRequest;
+      releaseFirstPreflightRequest = null;
+      release();
+    },
+  };
 }
 
 function isAllowedConsoleRequest(method: string, url: URL) {

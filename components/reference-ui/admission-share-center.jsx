@@ -476,6 +476,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const createGenerationRef = React.useRef(0);
   const createPendingRef = React.useRef(false);
   const sensitiveDeliveryPendingRef = React.useRef(false);
+  const wizardFocusRestoreRef = React.useRef(null);
   const deliveryRef = React.useRef(null);
   deliveryRef.current = delivery;
   const issueListGenerationRef = React.useRef(0);
@@ -500,6 +501,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     return () => {
       mountedRef.current = false;
       wizardOpenerRef.current = null;
+      wizardFocusRestoreRef.current = null;
       candidateGenerationRef.current += 1;
       taskListGenerationRef.current += 1;
       shareBrandGenerationRef.current += 1;
@@ -519,6 +521,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   React.useLayoutEffect(() => {
     const preservePendingCreate = createPendingRef.current;
     wizardOpenerRef.current = null;
+    wizardFocusRestoreRef.current = null;
     currentProjectIdRef.current = project.id;
     candidateGenerationRef.current += 1;
     taskListGenerationRef.current += 1;
@@ -644,6 +647,41 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       taskTabRef.current?.focus();
     }
   }, [delivery]);
+
+  React.useLayoutEffect(() => {
+    if (wizardOpen) return;
+    const restoreContext = wizardFocusRestoreRef.current;
+    if (!restoreContext) return;
+    wizardFocusRestoreRef.current = null;
+    const target = restoreContext.element;
+    const center = restoreContext.center;
+    if (
+      wizardOpenerRef.current ||
+      !mountedRef.current ||
+      !target ||
+      !center ||
+      restoreContext.projectId !== currentProjectIdRef.current ||
+      centerDialogRef.current !== center ||
+      !target.isConnected ||
+      !center.contains(target) ||
+      target.matches?.(":disabled") ||
+      target.tabIndex < 0 ||
+      target.closest?.("[inert]")
+    ) {
+      return;
+    }
+    const activeElement = document.activeElement;
+    if (
+      activeElement === target ||
+      (activeElement &&
+        activeElement !== document.body &&
+        activeElement !== document.documentElement &&
+        activeElement.isConnected)
+    ) {
+      return;
+    }
+    target.focus({ preventScroll: true });
+  }, [busy, wizardOpen]);
 
   const loadCandidates = React.useCallback(async () => {
     const requestProjectId = project.id;
@@ -937,6 +975,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const startWizard = async (event) => {
     const eventOpener = event?.currentTarget;
     const center = centerDialogRef.current;
+    wizardFocusRestoreRef.current = null;
     wizardOpenerRef.current =
       eventOpener &&
       center &&
@@ -1397,43 +1436,15 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     if (createPendingRef.current) return;
     const restoreContext = wizardOpenerRef.current;
     wizardOpenerRef.current = null;
+    wizardFocusRestoreRef.current = restoreContext;
     preflightGenerationRef.current += 1;
+    setBusy((current) => (current === "preflight" ? "" : current));
     setWizardOpen(false);
     setPreflight(null);
     setWizardStep(0);
     setWizardError("");
     setWizardProject(null);
     setDraft((current) => ({ ...current, accessCode: "" }));
-    queueMicrotask(() => {
-      const target = restoreContext?.element;
-      const center = restoreContext?.center;
-      if (
-        wizardOpenerRef.current ||
-        !mountedRef.current ||
-        !target ||
-        !center ||
-        restoreContext.projectId !== currentProjectIdRef.current ||
-        centerDialogRef.current !== center ||
-        !target.isConnected ||
-        !center.contains(target) ||
-        target.matches?.(":disabled") ||
-        target.tabIndex < 0 ||
-        target.closest?.("[inert]")
-      ) {
-        return;
-      }
-      const activeElement = document.activeElement;
-      if (
-        activeElement === target ||
-        (activeElement &&
-          activeElement !== document.body &&
-          activeElement !== document.documentElement &&
-          activeElement.isConnected)
-      ) {
-        return;
-      }
-      target.focus({ preventScroll: true });
-    });
   };
 
   const closeDelivery = () => {
@@ -1458,6 +1469,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     preflightGenerationRef.current += 1;
     createGenerationRef.current += 1;
     wizardOpenerRef.current = null;
+    wizardFocusRestoreRef.current = null;
     setDelivery(null);
     setWizardOpen(false);
     setTaskPreview(null);
