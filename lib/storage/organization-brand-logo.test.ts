@@ -181,6 +181,7 @@ describe("normalizeBrandLogo", () => {
     "../another-organization",
     "11111111-1111-4111-8111-111111111111/../../attacker",
     "not-a-uuid",
+    "01924f3e-7b42-7a25-8f4b-8c399c76fb31",
     "11111111-1111-4111-8111-111111111111%2f..%2fattacker",
   ])(
     "rejects an unsafe organization path source: %s",
