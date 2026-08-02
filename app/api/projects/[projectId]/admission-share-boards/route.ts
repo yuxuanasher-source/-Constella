@@ -62,7 +62,12 @@ export async function GET(
         shareBoard: toSafeShareBoardDetail(shareBoard),
       });
     }
-    const cursor = url.searchParams.get("cursor") ?? undefined;
+    const cursor = url.searchParams.has("cursor")
+      ? (url.searchParams.get("cursor") ?? "")
+      : undefined;
+    if (cursor === "") {
+      throw new RouteError("cursor must not be empty", 400);
+    }
     const limit = admissionSharePageLimit(url.searchParams.get("limit"));
     const page = await listInternalAdmissionShareBoardTasks({
       repo,

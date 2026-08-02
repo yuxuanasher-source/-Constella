@@ -438,6 +438,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       currentProjectIdRef.current === requestProjectId &&
       taskListGenerationRef.current === requestGeneration;
     setTasksLoading(true);
+    setTasksLoadingMore(false);
     setTaskError("");
     try {
       if (!actions.listAdmissionShareBoards) {
@@ -1285,8 +1286,15 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
               <div style={{ display: "grid", gap: 20 }}>
                 <ResultPendingTasks
                   tasks={tasks}
+                  loading={tasksLoading}
+                  loadingMore={tasksLoadingMore}
+                  hasMore={Boolean(taskNextCursor)}
+                  error={taskError}
                   submissions={submissions}
                   pendingTasks={pendingTasks}
+                  onRetry={loadTasks}
+                  onLoadMore={loadMoreTasks}
+                  onRetryMore={loadMoreTasks}
                   onViewSubmissions={viewSubmissions}
                 />
                 <PlaybackIssues
@@ -2439,8 +2447,15 @@ function ShareTasks({
 
 function ResultPendingTasks({
   tasks,
+  loading,
+  loadingMore,
+  hasMore,
+  error,
   submissions,
   pendingTasks,
+  onRetry,
+  onLoadMore,
+  onRetryMore,
   onViewSubmissions,
 }) {
   const pendingResults = tasks.filter(
@@ -2474,8 +2489,26 @@ function ResultPendingTasks({
           {pendingResults.length} 个结果
         </span>
       </div>
-      {pendingResults.length === 0 ? (
-        <div style={emptyStyle}>暂无待处理复核结果</div>
+      {loading && tasks.length === 0 ? (
+        <div role="status" aria-label="复核结果待办加载中" style={emptyStyle}>
+          复核结果待办加载中…
+        </div>
+      ) : error && tasks.length === 0 ? (
+        <div role="alert" aria-label="复核结果待办加载失败" style={emptyStyle}>
+          <div>复核结果待办加载失败：{error}</div>
+          <ActionButton
+            style={{ marginTop: 12 }}
+            onClick={() => void onRetry().catch(() => {})}
+          >
+            重试加载复核结果待办
+          </ActionButton>
+        </div>
+      ) : pendingResults.length === 0 ? (
+        <div style={emptyStyle}>
+          {hasMore
+            ? "当前已加载内容中暂无待处理复核结果，可继续加载更多。"
+            : "暂无待处理复核结果"}
+        </div>
       ) : (
         <div style={panelStyle}>
           {pendingResults.map((task, index) => (
@@ -2539,6 +2572,31 @@ function ResultPendingTasks({
           ))}
         </div>
       )}
+      {error && tasks.length > 0 ? (
+        <div
+          role="alert"
+          aria-label="复核结果待办加载更多失败"
+          style={{ ...emptyStyle, marginTop: 12, padding: 14 }}
+        >
+          <div>复核结果待办加载更多失败：{error}</div>
+          <ActionButton
+            style={{ marginTop: 12 }}
+            onClick={() => void onRetryMore().catch(() => {})}
+          >
+            重试加载更多复核结果待办
+          </ActionButton>
+        </div>
+      ) : null}
+      {hasMore && !error ? (
+        <ActionButton
+          aria-label="加载更多复核结果待办"
+          disabled={loadingMore}
+          onClick={() => void onLoadMore().catch(() => {})}
+          style={{ display: "block", margin: "12px auto 0" }}
+        >
+          {loadingMore ? "加载中…" : "加载更多"}
+        </ActionButton>
+      ) : null}
     </section>
   );
 }

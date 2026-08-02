@@ -525,15 +525,53 @@ describe("admission share board service", () => {
     expect(listInternalShareBoardTasks).not.toHaveBeenCalled();
   });
 
-  it("rejects a non-canonical cursor timestamp before the task RPC", async () => {
+  const canonicalCursorPayload = {
+    createdAt: "2026-07-30T00:00:00.000Z",
+    id: "abcdef12-3456-4abc-8def-abcdef123456",
+  };
+  const canonicalCursor = Buffer.from(
+    JSON.stringify(canonicalCursorPayload),
+  ).toString("base64url");
+
+  it.each([
+    [
+      "non-canonical timestamp",
+      Buffer.from(
+        JSON.stringify({
+          ...canonicalCursorPayload,
+          createdAt: "2026-07-30T00:00:00Z",
+        }),
+      ).toString("base64url"),
+    ],
+    ["base64 padding", `${canonicalCursor}=`],
+    ["trailing newline", `${canonicalCursor}\n`],
+    [
+      "extra JSON field",
+      Buffer.from(
+        JSON.stringify({ ...canonicalCursorPayload, extra: true }),
+      ).toString("base64url"),
+    ],
+    [
+      "uppercase UUID",
+      Buffer.from(
+        JSON.stringify({
+          ...canonicalCursorPayload,
+          id: canonicalCursorPayload.id.toUpperCase(),
+        }),
+      ).toString("base64url"),
+    ],
+    [
+      "non-canonical property order",
+      Buffer.from(
+        JSON.stringify({
+          id: canonicalCursorPayload.id,
+          createdAt: canonicalCursorPayload.createdAt,
+        }),
+      ).toString("base64url"),
+    ],
+  ])("rejects a %s cursor before the task RPC", async (_case, cursor) => {
     const listInternalShareBoardTasks = vi.fn();
     const repo = createRepo({ listInternalShareBoardTasks } as never);
-    const cursor = Buffer.from(
-      JSON.stringify({
-        createdAt: "2026-07-30T00:00:00Z",
-        id: "00000000-0000-4000-8000-000000000001",
-      }),
-    ).toString("base64url");
 
     await expect(
       listInternalAdmissionShareBoardTasks({

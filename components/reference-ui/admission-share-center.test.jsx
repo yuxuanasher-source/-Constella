@@ -369,6 +369,63 @@ describe("AdmissionShareCenter", () => {
     expect(actions.listAdmissionShareBoards).toHaveBeenCalledTimes(3);
   });
 
+  it("clears stale load-more pending when a task action refreshes the first page", async () => {
+    let resolveStalePage;
+    const firstTask = shareTask("share-1", "First task");
+    actions.listAdmissionShareBoards
+      .mockResolvedValueOnce({
+        shareBoards: [firstTask],
+        nextCursor: "stale-cursor",
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStalePage = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        shareBoards: [firstTask],
+        nextCursor: "fresh-cursor",
+      })
+      .mockResolvedValueOnce({
+        shareBoards: [shareTask("share-2", "Fresh next page")],
+        nextCursor: null,
+      });
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
+    expect(
+      screen.getByRole("button", { name: "加载更多分享任务" }),
+    ).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("First task 延期至"), {
+      target: { value: "2099-09-01" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "延期 First task" }));
+    await waitFor(() =>
+      expect(actions.listAdmissionShareBoards).toHaveBeenCalledTimes(3),
+    );
+    expect(
+      screen.getByRole("button", { name: "加载更多分享任务" }),
+    ).toBeEnabled();
+
+    resolveStalePage({
+      shareBoards: [shareTask("share-stale", "Stale next page")],
+      nextCursor: null,
+    });
+    await Promise.resolve();
+    expect(screen.queryByText("Stale next page")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
+    expect(await screen.findByText("Fresh next page")).toBeInTheDocument();
+    expect(actions.listAdmissionShareBoards).toHaveBeenNthCalledWith(
+      4,
+      "project-1",
+      "fresh-cursor",
+    );
+  });
+
   it("ignores stale task pages after a project switch", async () => {
     let resolveFirstProject;
     const firstProjectPage = new Promise((resolve) => {
@@ -1034,6 +1091,94 @@ describe("AdmissionShareCenter", () => {
       within(resultPending).getByText("录屏 V2 · 通过"),
     ).toBeInTheDocument();
     expect(within(resultPending).getByText("节奏稳定")).toBeInTheDocument();
+  });
+
+  it("loads later result pages even when the first page has no pending result", async () => {
+    actions.listAdmissionShareBoards
+      .mockResolvedValueOnce({
+        shareBoards: [shareTask("share-open", "仍在复核")],
+        nextCursor: "result-page-2",
+      })
+      .mockResolvedValueOnce({
+        shareBoards: [
+          {
+            ...shareTask("share-submitted", "后页复核结果"),
+            reviewState: "submitted_locked",
+          },
+        ],
+        nextCursor: null,
+      });
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+    expect(screen.queryByText("后页复核结果")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "加载更多复核结果待办" }),
+    );
+
+    expect(await screen.findByText("后页复核结果")).toBeInTheDocument();
+    expect(actions.listAdmissionShareBoards).toHaveBeenNthCalledWith(
+      2,
+      "project-1",
+      "result-page-2",
+    );
+  });
+
+  it("retries the first result task page after an initial failure", async () => {
+    actions.listAdmissionShareBoards
+      .mockRejectedValueOnce(new Error("result list unavailable"))
+      .mockResolvedValueOnce({
+        shareBoards: [
+          {
+            ...shareTask("share-recovered", "恢复的复核结果"),
+            reviewState: "submitted_locked",
+          },
+        ],
+        nextCursor: null,
+      });
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+    expect(
+      await screen.findByRole("alert", { name: "复核结果待办加载失败" }),
+    ).toHaveTextContent("result list unavailable");
+    fireEvent.click(
+      screen.getByRole("button", { name: "重试加载复核结果待办" }),
+    );
+
+    expect(await screen.findByText("恢复的复核结果")).toBeInTheDocument();
+    expect(actions.listAdmissionShareBoards).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps loaded result work visible when loading the next page fails", async () => {
+    actions.listAdmissionShareBoards
+      .mockResolvedValueOnce({
+        shareBoards: [
+          {
+            ...shareTask("share-existing", "已加载复核结果"),
+            reviewState: "submitted_locked",
+          },
+        ],
+        nextCursor: "result-next-page",
+      })
+      .mockRejectedValueOnce(new Error("result next page unavailable"));
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+    expect(await screen.findByText("已加载复核结果")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "加载更多复核结果待办" }),
+    );
+
+    expect(
+      await screen.findByRole("alert", {
+        name: "复核结果待办加载更多失败",
+      }),
+    ).toHaveTextContent("result next page unavailable");
+    expect(screen.getByText("已加载复核结果")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "重试加载更多复核结果待办" }),
+    ).toBeEnabled();
   });
 
   it("shows a scoped retry when playback issue loading fails", async () => {

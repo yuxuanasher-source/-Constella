@@ -1773,7 +1773,8 @@ export async function listInternalAdmissionShareBoardTasks({
   shareBoards: AdmissionShareBoardTaskRecord[];
   nextCursor: string | null;
 }> {
-  const decoded = cursor ? decodeAdmissionShareCursor(cursor) : null;
+  const decoded =
+    cursor === undefined ? null : decodeAdmissionShareCursor(cursor);
   const page = await repo.listInternalShareBoardTasks({
     projectId,
     beforeCreatedAt: decoded?.createdAt,
@@ -3346,7 +3347,6 @@ function decodeAdmissionShareCursor(value: string): {
       typeof decoded.createdAt !== "string" ||
       !parsedCreatedAt ||
       !Number.isFinite(parsedCreatedAt.getTime()) ||
-      parsedCreatedAt.toISOString() !== decoded.createdAt ||
       typeof decoded.id !== "string" ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
         decoded.id,
@@ -3354,7 +3354,16 @@ function decodeAdmissionShareCursor(value: string): {
     ) {
       throw new AdmissionShareCursorError();
     }
-    return { createdAt: decoded.createdAt, id: decoded.id };
+    const canonical = {
+      createdAt: parsedCreatedAt.toISOString(),
+      id: decoded.id.toLowerCase(),
+    };
+    if (
+      encodeAdmissionShareCursor(canonical.createdAt, canonical.id) !== value
+    ) {
+      throw new AdmissionShareCursorError();
+    }
+    return canonical;
   } catch (error) {
     if (error instanceof AdmissionShareCursorError) {
       throw error;

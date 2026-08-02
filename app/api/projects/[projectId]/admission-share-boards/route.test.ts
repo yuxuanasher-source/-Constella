@@ -416,6 +416,15 @@ describe("project admission share-board route", () => {
     });
   });
 
+  it("rejects an explicitly empty cursor instead of treating it as missing", async () => {
+    const response = await GET(new Request("http://localhost/api?cursor="), {
+      params,
+    });
+
+    expect(response.status).toBe(400);
+    expect(listInternalAdmissionShareBoardTasks).not.toHaveBeenCalled();
+  });
+
   it("rejects an out-of-range internal share page size", async () => {
     const response = await GET(new Request("http://localhost/api?limit=51"), {
       params,
