@@ -3727,8 +3727,13 @@ function isCompletedAdmissionShareDraft(
     draft.decision === "selected" ||
     draft.decision === "backup" ||
     ((draft.decision === "rejected" || draft.decision === "needs_changes") &&
-      Boolean(draft.remark.trim()))
+      hasPostgresDefaultBtrimContent(draft.remark))
   );
+}
+
+function hasPostgresDefaultBtrimContent(value: string) {
+  // PostgreSQL btrim(text) removes only U+0020 unless a character set is given.
+  return /[^ ]/u.test(value);
 }
 
 function toSubmitAdmissionReviewResult(

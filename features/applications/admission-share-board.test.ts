@@ -3512,10 +3512,13 @@ describe("admission share board service", () => {
     });
 
     const draftProgressCases = [
-      { decision: "selected", remark: "", completed: 1 },
-      { decision: "backup", remark: "", completed: 1 },
+      { decision: "selected", remark: "   ", completed: 1 },
+      { decision: "backup", remark: "\t", completed: 1 },
       { decision: "rejected", remark: "Reason", completed: 1 },
       { decision: "needs_changes", remark: "Fix opening", completed: 1 },
+      { decision: "rejected", remark: " \t ", completed: 1 },
+      { decision: "needs_changes", remark: " \n ", completed: 1 },
+      { decision: "rejected", remark: " \u00a0 ", completed: 1 },
       { decision: "rejected", remark: "", completed: 0 },
       { decision: "needs_changes", remark: "   ", completed: 0 },
       { decision: "pending", remark: "", completed: 0 },
