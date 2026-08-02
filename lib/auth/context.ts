@@ -1,4 +1,7 @@
 import {
+  AuthInvalidJwtError,
+  isAuthApiError,
+  isAuthRetryableFetchError,
   isAuthSessionMissingError,
   type SupabaseClient,
   type User,
@@ -31,6 +34,47 @@ export class AuthContextUnavailableError extends Error {
     super("Authentication context is unavailable");
     this.name = "AuthContextUnavailableError";
   }
+}
+
+const invalidSessionCodes = new Set([
+  "bad_jwt",
+  "session_not_found",
+  "session_expired",
+  "refresh_token_not_found",
+  "refresh_token_already_used",
+  "no_authorization",
+]);
+
+const infrastructureAuthCodes = new Set([
+  "request_timeout",
+  "hook_timeout",
+  "hook_timeout_after_retry",
+  "over_request_rate_limit",
+  "over_email_send_rate_limit",
+  "over_sms_send_rate_limit",
+]);
+
+function isRejectedSessionError(error: unknown): boolean {
+  if (isAuthSessionMissingError(error)) {
+    return true;
+  }
+  if (isAuthRetryableFetchError(error)) {
+    return false;
+  }
+  if (error instanceof AuthInvalidJwtError) {
+    return true;
+  }
+  if (!isAuthApiError(error)) {
+    return false;
+  }
+  if (error.status >= 500 || infrastructureAuthCodes.has(error.code ?? "")) {
+    return false;
+  }
+  return (
+    invalidSessionCodes.has(error.code ?? "") ||
+    error.status === 401 ||
+    error.status === 403
+  );
 }
 
 type OrganizationRow = {
@@ -94,7 +138,7 @@ export const getAuthenticatedUser = cache(async function getAuthenticatedUser(
   }
 
   if (result.error) {
-    if (isAuthSessionMissingError(result.error)) {
+    if (isRejectedSessionError(result.error)) {
       return null;
     }
     throw new AuthContextUnavailableError();

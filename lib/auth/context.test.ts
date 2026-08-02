@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  AuthApiError,
+  AuthInvalidJwtError,
   AuthRetryableFetchError,
   AuthSessionMissingError,
+  AuthUnknownError,
 } from "@supabase/supabase-js";
 
 import { AuthContextUnavailableError, getAuthContext } from "./context";
@@ -42,6 +45,18 @@ function clientWithQueryResults(input: {
   };
 }
 
+function clientWithAuthError(error: unknown) {
+  return {
+    auth: {
+      getUser: vi.fn(async () => ({
+        data: { user: null },
+        error,
+      })),
+    },
+    from: vi.fn(),
+  };
+}
+
 describe("getAuthContext", () => {
   it("returns null for the documented missing-session auth error", async () => {
     const client = {
@@ -53,6 +68,52 @@ describe("getAuthContext", () => {
       },
       from: vi.fn(),
     };
+
+    await expect(getAuthContext(client as never)).resolves.toBeNull();
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["bad JWT", new AuthApiError("raw bad JWT", 401, "bad_jwt")],
+    ["invalid JWT", new AuthInvalidJwtError("raw invalid JWT")],
+    [
+      "missing session",
+      new AuthApiError("raw session missing", 401, "session_not_found"),
+    ],
+    [
+      "expired session",
+      new AuthApiError("raw session expired", 400, "session_expired"),
+    ],
+    [
+      "missing refresh token",
+      new AuthApiError(
+        "raw refresh token missing",
+        400,
+        "refresh_token_not_found",
+      ),
+    ],
+    [
+      "used refresh token",
+      new AuthApiError(
+        "raw refresh token reused",
+        400,
+        "refresh_token_already_used",
+      ),
+    ],
+    [
+      "missing authorization",
+      new AuthApiError("raw authorization missing", 401, "no_authorization"),
+    ],
+    [
+      "generic unauthorized session rejection",
+      new AuthApiError("raw unauthorized session", 401, "unexpected_session"),
+    ],
+    [
+      "generic forbidden session rejection",
+      new AuthApiError("raw forbidden session", 403, "unexpected_session"),
+    ],
+  ])("returns null for a %s auth rejection", async (_label, error) => {
+    const client = clientWithAuthError(error);
 
     await expect(getAuthContext(client as never)).resolves.toBeNull();
     expect(client.from).not.toHaveBeenCalled();
@@ -74,6 +135,46 @@ describe("getAuthContext", () => {
 
     const failure = await getAuthContext(client as never).catch(
       (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(AuthContextUnavailableError);
+    expect(failure).toMatchObject({
+      name: "AuthContextUnavailableError",
+      message: "Authentication context is unavailable",
+    });
+    expect(JSON.stringify(failure)).not.toContain("password");
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "server failure",
+      new AuthApiError("raw auth server password", 503, "unexpected_failure"),
+    ],
+    [
+      "request timeout",
+      new AuthApiError("raw auth timeout password", 504, "request_timeout"),
+    ],
+    [
+      "rate limit",
+      new AuthApiError(
+        "raw auth rate-limit password",
+        429,
+        "over_request_rate_limit",
+      ),
+    ],
+    [
+      "unknown auth failure",
+      new AuthUnknownError(
+        "raw unknown auth password",
+        new Error("raw network password"),
+      ),
+    ],
+  ])("throws a stable safe error for a resolved %s", async (_label, error) => {
+    const client = clientWithAuthError(error);
+
+    const failure = await getAuthContext(client as never).catch(
+      (caught: unknown) => caught,
     );
 
     expect(failure).toBeInstanceOf(AuthContextUnavailableError);
