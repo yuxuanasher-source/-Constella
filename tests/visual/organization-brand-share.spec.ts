@@ -12,7 +12,21 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
+
+type ImageDecoder = (input: Buffer) => {
+  removeAlpha(): ReturnType<ImageDecoder>;
+  raw(): ReturnType<ImageDecoder>;
+  toBuffer(options: { resolveWithObject: true }): Promise<{
+    data: Buffer;
+    info: { width: number; height: number; channels: number };
+  }>;
+};
+
+const decodeImage = createRequire(resolve(process.cwd(), "package.json"))(
+  "sharp",
+) as ImageDecoder;
 
 const APP_PORT = Number(process.env.TASK11_APP_PORT ?? 3107);
 const APP_URL = `http://127.0.0.1:${APP_PORT}`;
@@ -22,6 +36,120 @@ const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
 const OWNER_ID = "22222222-2222-4222-8222-222222222222";
 const MEMBER_ID = "33333333-3333-4333-8333-333333333333";
 const CONTACT_CARD_ID = "44444444-4444-4444-8444-444444444444";
+const STAGE_MIN_RELATIVE_LUMINANCE = 0.65;
+const CANVAS_MIN_RELATIVE_LUMINANCE = 0.65;
+const STAGE_SCREENSHOT_MIN_RELATIVE_LUMINANCE = 0.65;
+
+type SrgbColor = {
+  red: number;
+  green: number;
+  blue: number;
+  alpha: number;
+};
+
+type ComputedBackgroundLayer = {
+  element: string;
+  backgroundColor: string;
+  backgroundImage: string;
+};
+
+function parseCssSrgbColor(value: string): SrgbColor {
+  const color = value.trim().toLowerCase();
+  if (color === "transparent") {
+    return { red: 0, green: 0, blue: 0, alpha: 0 };
+  }
+
+  const rgbMatch = color.match(/^rgba?\((.*)\)$/u);
+  const srgbMatch = color.match(/^color\(srgb\s+(.*)\)$/u);
+  const body = rgbMatch?.[1] ?? srgbMatch?.[1];
+  if (!body) {
+    throw new Error(`Unsupported computed CSS color: ${value}`);
+  }
+
+  const tokens = body
+    .replaceAll(",", " ")
+    .replaceAll("/", " / ")
+    .trim()
+    .split(/\s+/u);
+  const slashIndex = tokens.indexOf("/");
+  const channelTokens = tokens.slice(0, slashIndex >= 0 ? slashIndex : 3);
+  const alphaToken =
+    slashIndex >= 0
+      ? tokens[slashIndex + 1]
+      : tokens.length === 4
+        ? tokens[3]
+        : undefined;
+  if (channelTokens.length !== 3 || (slashIndex >= 0 && !alphaToken)) {
+    throw new Error(`Malformed computed CSS color: ${value}`);
+  }
+
+  const parseNumber = (token: string, percentageScale: number) => {
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%?$/iu.test(token)) {
+      throw new Error(`Malformed computed CSS color channel: ${value}`);
+    }
+    const numeric = Number.parseFloat(token);
+    if (!Number.isFinite(numeric)) {
+      throw new Error(`Non-finite computed CSS color channel: ${value}`);
+    }
+    return token.endsWith("%") ? numeric / percentageScale : numeric;
+  };
+  const clampUnit = (channel: number) => Math.min(1, Math.max(0, channel));
+  const normalizedChannels = channelTokens.map((token) => {
+    const parsed = parseNumber(token, 100);
+    if (token.endsWith("%")) return clampUnit(parsed);
+    return clampUnit(srgbMatch ? parsed : parsed / 255);
+  });
+  const alpha = alphaToken ? clampUnit(parseNumber(alphaToken, 100)) : 1;
+
+  return {
+    red: normalizedChannels[0]!,
+    green: normalizedChannels[1]!,
+    blue: normalizedChannels[2]!,
+    alpha,
+  };
+}
+
+function compositeSrgb(
+  foreground: SrgbColor,
+  background: SrgbColor,
+): SrgbColor {
+  const alpha = foreground.alpha + background.alpha * (1 - foreground.alpha);
+  if (alpha === 0) return { red: 0, green: 0, blue: 0, alpha: 0 };
+  const compositeChannel = (front: number, back: number) =>
+    (front * foreground.alpha +
+      back * background.alpha * (1 - foreground.alpha)) /
+    alpha;
+  return {
+    red: compositeChannel(foreground.red, background.red),
+    green: compositeChannel(foreground.green, background.green),
+    blue: compositeChannel(foreground.blue, background.blue),
+    alpha,
+  };
+}
+
+function effectiveBackgroundColor(
+  layers: readonly Pick<ComputedBackgroundLayer, "backgroundColor">[],
+): SrgbColor {
+  let effective: SrgbColor = { red: 0, green: 0, blue: 0, alpha: 0 };
+  for (const layer of layers) {
+    effective = compositeSrgb(
+      effective,
+      parseCssSrgbColor(layer.backgroundColor),
+    );
+    if (effective.alpha >= 1) break;
+  }
+  return compositeSrgb(effective, { red: 1, green: 1, blue: 1, alpha: 1 });
+}
+
+function relativeLuminance(color: Pick<SrgbColor, "red" | "green" | "blue">) {
+  const linearize = (channel: number) =>
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  return (
+    0.2126 * linearize(color.red) +
+    0.7152 * linearize(color.green) +
+    0.0722 * linearize(color.blue)
+  );
+}
 const LANDSCAPE_WEBM_BASE64 =
   "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";
 const PORTRAIT_WEBM_BASE64 =
@@ -866,6 +994,7 @@ function defineBrowserTests() {
   test("media source matrix stays light, preserves review state, and records stable screenshots", async ({
     page,
   }, testInfo) => {
+    assertNearOpaqueBlackFailsLightStageThreshold();
     const items = mediaItems();
     const board = publicBoard({ items, allowExternalFallback: true });
     await installPublicRoutes(page, { mediaMatrix: { board } });
@@ -1677,48 +1806,44 @@ async function startVideo(
 async function assertLightStageAndScreenshot(page: Page, path: string) {
   const stage = page.getByRole("region", { name: "录屏媒体工作区" });
   await expect(stage).toBeVisible();
-  const luminances = await page
+  const surfaces = await page
     .locator('[aria-label="录屏媒体工作区"], .recording-media-canvas')
-    .evaluateAll((elements) =>
-      elements.map((element) => {
-        const ownBackground = getComputedStyle(element).backgroundColor;
+    .evaluateAll((elements) => {
+      return elements.map((element) => {
         let current: Element | null = element;
-        let channels: number[] = [];
-        let channelsAreNormalized = false;
+        const layers: ComputedBackgroundLayer[] = [];
         while (current) {
-          const background = getComputedStyle(current).backgroundColor;
-          channels = (background.match(/[\d.]+/g) ?? []).map(Number);
-          channelsAreNormalized = background.startsWith("color(srgb ");
-          const alpha = channels[3] ?? 1;
-          if (channels.length >= 3 && alpha >= 0.95) break;
+          const style = getComputedStyle(current);
+          layers.push({
+            element:
+              current.getAttribute("aria-label") ??
+              current.getAttribute("class") ??
+              current.tagName,
+            backgroundColor: style.backgroundColor,
+            backgroundImage: style.backgroundImage,
+          });
           current = current.parentElement;
         }
-        const rgb = (
-          channels.slice(0, 3).length === 3
-            ? channels.slice(0, 3)
-            : [255, 255, 255]
-        ).map((channel) => {
-          const normalized = channelsAreNormalized ? channel : channel / 255;
-          return normalized <= 0.04045
-            ? normalized / 12.92
-            : ((normalized + 0.055) / 1.055) ** 2.4;
-        });
         return {
-          selector:
-            element.getAttribute("aria-label") ??
-            element.getAttribute("class") ??
-            element.tagName,
-          ownBackground,
-          effectiveBackground: channels.join(","),
-          luminance: 0.2126 * rgb[0]! + 0.7152 * rgb[1]! + 0.0722 * rgb[2]!,
+          surface: element.classList.contains("recording-media-canvas")
+            ? ("canvas" as const)
+            : ("stage" as const),
+          layers,
         };
-      }),
-    );
-  expect(luminances).toHaveLength(2);
-  for (const surface of luminances) {
-    expect(surface.luminance, JSON.stringify(surface)).toBeGreaterThanOrEqual(
-      0.35,
-    );
+      });
+    });
+  expect(surfaces).toHaveLength(2);
+  for (const surface of surfaces) {
+    const effective = effectiveBackgroundColor(surface.layers);
+    const luminance = relativeLuminance(effective);
+    const minimum =
+      surface.surface === "stage"
+        ? STAGE_MIN_RELATIVE_LUMINANCE
+        : CANVAS_MIN_RELATIVE_LUMINANCE;
+    expect(
+      luminance,
+      JSON.stringify({ ...surface, effective, luminance, minimum }),
+    ).toBeGreaterThanOrEqual(minimum);
   }
   const stageBox = await stage.boundingBox();
   const workspaceBox = await page
@@ -1727,7 +1852,59 @@ async function assertLightStageAndScreenshot(page: Page, path: string) {
   expect(stageBox?.width ?? 0).toBeLessThan(
     workspaceBox?.width ?? Number.MAX_SAFE_INTEGER,
   );
-  await stage.screenshot({ path, animations: "disabled" });
+  const screenshot = await stage.screenshot({ path, animations: "disabled" });
+  const hasGradient = surfaces.some((surface) =>
+    surface.layers.some((layer) => layer.backgroundImage !== "none"),
+  );
+  if (hasGradient) {
+    const { data, info } = await decodeImage(screenshot)
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const inset = Math.min(6, Math.floor((info.width - 1) / 2));
+    const xCoordinates = [
+      inset,
+      Math.floor(info.width / 2),
+      info.width - 1 - inset,
+    ];
+    const yCoordinates = [inset, info.height - 1 - inset];
+    const keyPixels = yCoordinates.flatMap((y) =>
+      xCoordinates.map((x) => {
+        const offset = (y * info.width + x) * info.channels;
+        return {
+          red: (data[offset] ?? 0) / 255,
+          green: (data[offset + 1] ?? 0) / 255,
+          blue: (data[offset + 2] ?? 0) / 255,
+        };
+      }),
+    );
+    const keyLuminances = keyPixels.map(relativeLuminance);
+    expect(
+      Math.min(...keyLuminances),
+      JSON.stringify({ keyPixels, keyLuminances }),
+    ).toBeGreaterThanOrEqual(STAGE_SCREENSHOT_MIN_RELATIVE_LUMINANCE);
+    const palette = new Set(
+      keyPixels.map(
+        ({ red, green, blue }) =>
+          `${Math.floor(red * 31)}:${Math.floor(green * 31)}:${Math.floor(blue * 31)}`,
+      ),
+    );
+    expect(palette.size, JSON.stringify({ keyPixels })).toBeGreaterThanOrEqual(
+      2,
+    );
+  }
+}
+
+function assertNearOpaqueBlackFailsLightStageThreshold() {
+  const nearOpaqueBlackOverWhite = effectiveBackgroundColor([
+    { backgroundColor: "rgba(0, 0, 0, 0.94)" },
+    { backgroundColor: "rgb(255, 255, 255)" },
+  ]);
+  const luminance = relativeLuminance(nearOpaqueBlackOverWhite);
+  expect(
+    luminance,
+    JSON.stringify({ nearOpaqueBlackOverWhite, luminance }),
+  ).toBeLessThan(STAGE_MIN_RELATIVE_LUMINANCE);
 }
 
 function ownerStudio(brand: typeof baseBrand) {
