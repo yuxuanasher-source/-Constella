@@ -1,5 +1,3 @@
-import { NextResponse } from "next/server";
-
 import {
   getPublicAdmissionShareBrandLogoPath,
   PublicAdmissionShareError,
@@ -19,6 +17,7 @@ const BRAND_LOGO_CONTENT_TYPES = new Set([
   "image/png",
   "image/webp",
 ]);
+export const BRAND_LOGO_FETCH_TIMEOUT_MS = 5_000;
 
 export async function GET(
   request: Request,
@@ -49,11 +48,13 @@ export async function GET(
     }
 
     if (new URL(request.url).searchParams.get("asset") !== "1") {
-      const assetUrl = new URL(request.url);
-      assetUrl.hash = "";
-      assetUrl.search = "";
-      assetUrl.searchParams.set("asset", "1");
-      return NextResponse.redirect(assetUrl, 302);
+      return new Response(null, {
+        status: 302,
+        headers: {
+          "Cache-Control": "private, no-store",
+          Location: `/api/public/admission-share/${encodeURIComponent(token)}/brand-logo?asset=1`,
+        },
+      });
     }
 
     let upstream: Response;
@@ -68,10 +69,20 @@ export async function GET(
       if (!signedUrl) {
         throw brandLogoUnavailable();
       }
-      upstream = await fetch(signedUrl, {
-        cache: "no-store",
-        redirect: "error",
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        BRAND_LOGO_FETCH_TIMEOUT_MS,
+      );
+      try {
+        upstream = await fetch(signedUrl, {
+          cache: "no-store",
+          redirect: "error",
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
     } catch {
       throw brandLogoUnavailable();
     }
@@ -80,18 +91,27 @@ export async function GET(
       upstream.headers.get("content-type"),
     );
     if (!upstream.ok || !upstream.body || !contentType) {
+      await cancelUpstreamBody(upstream);
       throw brandLogoUnavailable();
     }
     return new Response(upstream.body, {
       status: 200,
       headers: {
-        "Cache-Control": "private, max-age=300, must-revalidate",
+        "Cache-Control": "private, no-store",
         "Content-Type": contentType,
         "X-Content-Type-Options": "nosniff",
       },
     });
   } catch (error) {
     return publicAdmissionShareErrorResponse(error);
+  }
+}
+
+async function cancelUpstreamBody(response: Response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Reject the upstream safely even if its body cannot be cancelled.
   }
 }
 

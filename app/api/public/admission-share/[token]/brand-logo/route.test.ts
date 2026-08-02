@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GET } from "./route";
+import { BRAND_LOGO_FETCH_TIMEOUT_MS, GET } from "./route";
 
 import {
   getPublicAdmissionShareBrandLogoPath,
@@ -66,7 +66,7 @@ const upstreamFetch = vi.fn();
 
 function request(asset = false) {
   return new Request(
-    `http://localhost/api/public/admission-share/plain-token/brand-logo${asset ? "?asset=1" : ""}`,
+    `http://127.0.0.1:3000/api/public/admission-share/plain-token/brand-logo${asset ? "?asset=1" : ""}`,
   );
 }
 
@@ -112,10 +112,10 @@ describe("public admission share brand logo route", () => {
     vi.unstubAllGlobals();
   });
 
-  it("redirects only to the same-origin opaque asset stage before signing or fetching", async () => {
+  it("redirects with an origin-relative opaque asset path before signing or fetching", async () => {
     const response = await GET(
       new Request(
-        "http://localhost/api/public/admission-share/plain-token/brand-logo?accessCode=must-not-be-read&private=must-not-survive",
+        "http://127.0.0.1:3000/api/public/admission-share/plain-token/brand-logo?accessCode=must-not-be-read&private=must-not-survive",
       ),
       { params },
     );
@@ -123,8 +123,10 @@ describe("public admission share brand logo route", () => {
     expect(response.status).toBe(302);
     const location = response.headers.get("location");
     expect(location).toBe(
-      "http://localhost/api/public/admission-share/plain-token/brand-logo?asset=1",
+      "/api/public/admission-share/plain-token/brand-logo?asset=1",
     );
+    expect(location).not.toContain("127.0.0.1");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
     expectNoPrivateLocation(response);
     expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
       supabase,
@@ -145,15 +147,16 @@ describe("public admission share brand logo route", () => {
     const location = initial.headers.get("location");
     expect(location).toBeTruthy();
 
-    const asset = await GET(new Request(location!), { params });
+    const asset = await GET(
+      new Request(new URL(location!, "http://127.0.0.1:3000")),
+      { params },
+    );
 
     expect(asset.status).toBe(200);
     expect(asset.headers.get("location")).toBeNull();
     expect(asset.headers.get("content-type")).toBe("image/webp");
     expect(asset.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(asset.headers.get("cache-control")).toBe(
-      "private, max-age=300, must-revalidate",
-    );
+    expect(asset.headers.get("cache-control")).toBe("private, no-store");
     expect(asset.headers.get("set-cookie")).toBeNull();
     expect(asset.headers.get("x-internal-source")).toBeNull();
     await expect(asset.arrayBuffer()).resolves.toEqual(upstreamBytes.buffer);
@@ -173,6 +176,7 @@ describe("public admission share brand logo route", () => {
     expect(upstreamFetch).toHaveBeenCalledWith(signedUrl, {
       cache: "no-store",
       redirect: "error",
+      signal: expect.any(AbortSignal),
     });
     expectNoPrivateLocation(asset);
     expect(JSON.stringify([...asset.headers])).not.toContain(privateLogoPath);
@@ -194,6 +198,83 @@ describe("public admission share brand logo route", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toBe(contentType);
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+    },
+  );
+
+  it("encodes the route token instead of reflecting request origin or query input", async () => {
+    const response = await GET(
+      new Request(
+        "http://127.0.0.1:3000/api/public/admission-share/ignored/brand-logo?asset=0&next=https://attacker.example",
+      ),
+      { params: Promise.resolve({ token: "token/with?#reserved" }) },
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      "/api/public/admission-share/token%2Fwith%3F%23reserved/brand-logo?asset=1",
+    );
+    expect(response.headers.get("location")).not.toContain("attacker.example");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("aborts a stalled upstream fetch after the short server timeout", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    upstreamFetch.mockImplementationOnce((_url, init) => {
+      signal = init?.signal as AbortSignal | undefined;
+      if (!signal) {
+        return Promise.reject(new Error("missing abort signal"));
+      }
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      });
+    });
+
+    try {
+      const pending = GET(request(true), { params });
+      await vi.advanceTimersByTimeAsync(BRAND_LOGO_FETCH_TIMEOUT_MS);
+      const response = await pending;
+
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal?.aborted).toBe(true);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+      expect(JSON.stringify(await response.json())).not.toContain(signedUrl);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["non-ok status", 403, "image/webp"],
+    ["unsafe MIME", 200, "image/svg+xml"],
+  ])(
+    "cancels the upstream body rejected for %s without leaking cancellation errors",
+    async (_label, status, contentType) => {
+      const cancel = vi.fn().mockRejectedValue(new Error(privateLogoPath));
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(upstreamBytes);
+        },
+        cancel,
+      });
+      upstreamFetch.mockResolvedValueOnce(
+        new Response(body, {
+          status,
+          headers: { "Content-Type": contentType },
+        }),
+      );
+
+      const response = await GET(request(true), { params });
+
+      expect(response.status).toBe(404);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(await response.json())).not.toContain(
+        privateLogoPath,
+      );
     },
   );
 

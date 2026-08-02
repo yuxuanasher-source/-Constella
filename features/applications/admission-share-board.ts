@@ -165,6 +165,9 @@ export type AdmissionShareBoardRepository = {
   getPublicShareBoardSnapshot(
     tokenHash: string,
   ): Promise<PublicAdmissionShareBoardSnapshot | null>;
+  getPublicShareBrandLogoAccess?(
+    tokenHash: string,
+  ): Promise<PublicAdmissionShareBrandLogoAccess | null>;
   listReviewDrafts(shareBoardId: string): Promise<AdmissionReviewDraftDto[]>;
   saveReviewDraft(
     input: SaveAdmissionReviewDraftPersistenceInput,
@@ -378,6 +381,16 @@ export type PublicAdmissionShareBoardSnapshot = AdmissionShareBoardRecord & {
   latestSubmission: PublicAdmissionShareSubmissionSummary | null;
   items: PublicAdmissionShareItemSnapshot[];
 };
+
+export type PublicAdmissionShareBrandLogoAccess = Pick<
+  AdmissionShareBoardRecord,
+  | "id"
+  | "organizationId"
+  | "accessCodeHash"
+  | "status"
+  | "expiresAt"
+  | "brandSnapshot"
+>;
 
 type AdmissionSharePresentationItemSnapshot = Omit<
   PublicAdmissionShareItemSnapshot,
@@ -1023,6 +1036,34 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     };
   }
 
+  async getPublicShareBrandLogoAccess(
+    tokenHash: string,
+  ): Promise<PublicAdmissionShareBrandLogoAccess | null> {
+    const { data, error } = await this.client
+      .from("project_recording_share_boards")
+      .select(
+        "id, organization_id, access_code_hash, status, expires_at, brand_snapshot",
+      )
+      .eq("token_hash", tokenHash)
+      .maybeSingle<PublicAdmissionShareBrandLogoAccessRow>();
+
+    if (error) {
+      throw error;
+    }
+    if (!data) {
+      return null;
+    }
+
+    return {
+      id: data.id,
+      organizationId: data.organization_id,
+      accessCodeHash: data.access_code_hash,
+      status: data.status,
+      expiresAt: data.expires_at,
+      brandSnapshot: data.brand_snapshot,
+    };
+  }
+
   async listReviewDrafts(
     shareBoardId: string,
   ): Promise<AdmissionReviewDraftDto[]> {
@@ -1474,6 +1515,15 @@ type AdmissionShareBoardWithProjectRow = AdmissionShareBoardRow & {
         product_name: string | null;
       }>
     | null;
+};
+
+type PublicAdmissionShareBrandLogoAccessRow = {
+  id: string;
+  organization_id: string;
+  access_code_hash: string | null;
+  status: AdmissionShareBoardRecord["status"];
+  expires_at: string;
+  brand_snapshot: unknown;
 };
 
 type PublicShareItemRow = {
@@ -2432,7 +2482,6 @@ export async function getPublicAdmissionShareBrandLogoPath({
   accessCode,
   sessionToken,
   now = new Date().toISOString(),
-  onViewAuditError = observeViewAuditError,
 }: {
   repo: AdmissionShareBoardRepository;
   accessStore?: AdmissionShareAccessStore;
@@ -2440,23 +2489,20 @@ export async function getPublicAdmissionShareBrandLogoPath({
   accessCode?: string;
   sessionToken?: string;
   now?: string;
-  onViewAuditError?: (error: unknown) => void;
 }): Promise<string | null> {
-  const snapshot = await requirePublicSnapshot({
+  const access = await requireAvailablePublicBrandLogoAccess({
     repo,
-    accessStore,
     token,
+    now,
+  });
+  await requirePublicSnapshotAccess({
+    snapshot: access,
+    accessStore,
     accessCode,
     sessionToken,
     now,
   });
-  await markShareBoardViewedBestEffort(
-    repo,
-    snapshot.id,
-    now,
-    onViewAuditError,
-  );
-  return normalizedAdmissionShareBrand(snapshot).logoStoragePath;
+  return normalizedAdmissionShareBrand(access).logoStoragePath;
 }
 
 const admissionSharePlaybackIssueCodes =
@@ -3209,14 +3255,16 @@ async function requirePublicSnapshot({
   });
 }
 
-async function requirePublicSnapshotAccess({
+async function requirePublicSnapshotAccess<
+  T extends Pick<AdmissionShareBoardRecord, "id" | "accessCodeHash">,
+>({
   snapshot,
   accessStore,
   accessCode,
   sessionToken,
   now,
 }: {
-  snapshot: PublicAdmissionShareBoardSnapshot;
+  snapshot: T;
   accessStore?: AdmissionShareAccessStore;
   accessCode?: string;
   sessionToken?: string;
@@ -3257,6 +3305,48 @@ async function requirePublicSnapshotAccess({
       : "Access code is required",
     401,
   );
+}
+
+async function requireAvailablePublicBrandLogoAccess({
+  repo,
+  token,
+  now,
+}: {
+  repo: AdmissionShareBoardRepository;
+  token: string;
+  now: string;
+}) {
+  const tokenHash = hashShareSecret(token.trim());
+  if (!repo.getPublicShareBrandLogoAccess) {
+    throw new PublicAdmissionShareError(
+      "SHARE_SERVICE_UNAVAILABLE",
+      "Public share service is unavailable",
+      503,
+    );
+  }
+  const access = await repo.getPublicShareBrandLogoAccess(tokenHash);
+  if (!access) {
+    throw new PublicAdmissionShareError(
+      "SHARE_NOT_AVAILABLE",
+      "Share link is not available",
+      404,
+    );
+  }
+  if (access.status === "revoked") {
+    throw new PublicAdmissionShareError(
+      "SHARE_REVOKED",
+      "Share link is revoked",
+      410,
+    );
+  }
+  if (access.status !== "active" || access.expiresAt <= now) {
+    throw new PublicAdmissionShareError(
+      "SHARE_EXPIRED",
+      "Share link is expired",
+      410,
+    );
+  }
+  return access;
 }
 
 async function requirePublicReviewDraftSnapshot({

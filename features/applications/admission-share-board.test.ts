@@ -88,6 +88,9 @@ function createRepo(
     listPlaybackIssues: vi.fn().mockResolvedValue([]),
     resolvePlaybackIssue: vi.fn(),
     getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+    getPublicShareBrandLogoAccess: vi
+      .fn()
+      .mockResolvedValue(publicBrandLogoAccess()),
     submitReview: vi.fn(),
     listReviewSubmissions: vi.fn().mockResolvedValue([]),
     upsertVendorReviews: vi.fn(),
@@ -1840,23 +1843,23 @@ describe("admission share board service", () => {
       createSession: vi.fn(),
       hasValidSession: vi.fn().mockResolvedValue(true),
     };
+    const getPublicShareBrandLogoAccess = vi.fn().mockResolvedValue(
+      publicBrandLogoAccess({
+        organizationId,
+        accessCodeHash: hashAdmissionShareAccessCode("2468"),
+        brandSnapshot: {
+          schemaVersion: 1,
+          version: 4,
+          logoText: "星河",
+          logoStoragePath,
+          brandName: "星河直播",
+          brandTagline: "专业直播运营",
+          primaryColor: "#165DFF",
+        },
+      }),
+    );
     const repo = createRepo({
-      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
-        publicSnapshot({
-          organizationId,
-          accessCodeHash: hashAdmissionShareAccessCode("2468"),
-          brandSnapshot: {
-            schemaVersion: 1,
-            version: 4,
-            logoText: "星河",
-            logoStoragePath,
-            brandName: "星河直播",
-            brandTagline: "专业直播运营",
-            primaryColor: "#165DFF",
-          },
-          brandVersion: 4,
-        }),
-      ),
+      getPublicShareBrandLogoAccess,
     });
 
     const path = await getPublicAdmissionShareBrandLogoPath({
@@ -1873,6 +1876,11 @@ describe("admission share board service", () => {
       sessionToken: "opaque-session-token",
       now: "2026-06-07T01:00:00.000Z",
     });
+    expect(getPublicShareBrandLogoAccess).toHaveBeenCalledWith(
+      hashShareSecret("plain-token"),
+    );
+    expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+    expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
   });
 
   it("returns no public logo path for a missing or cross-organization snapshot path", async () => {
@@ -1888,8 +1896,8 @@ describe("admission share board service", () => {
       "21c6fe42-0cb5-4309-a5f2-9b28bf867bac/brand-logos/8732c883-7ea9-4db0-9b29-4a77e1f8c79e.webp",
     ]) {
       const repo = createRepo({
-        getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
-          publicSnapshot({
+        getPublicShareBrandLogoAccess: vi.fn().mockResolvedValue(
+          publicBrandLogoAccess({
             organizationId,
             brandSnapshot: {
               schemaVersion: 1,
@@ -1913,7 +1921,61 @@ describe("admission share board service", () => {
           now: "2026-06-07T01:00:00.000Z",
         }),
       ).resolves.toBeNull();
+      expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+      expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
     }
+  });
+
+  it("does not trust a logo path from an unknown brand schema", async () => {
+    const repo = createRepo({
+      getPublicShareBrandLogoAccess: vi.fn().mockResolvedValue(
+        publicBrandLogoAccess({
+          organizationId: "org-1",
+          brandSnapshot: {
+            schemaVersion: 999,
+            logoStoragePath: "org-1/brand-logos/untrusted.webp",
+          },
+        }),
+      ),
+    });
+
+    await expect(
+      getPublicAdmissionShareBrandLogoPath({
+        repo,
+        token: "plain-token",
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).resolves.toBeNull();
+    expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+    expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
+  });
+
+  it("uses only the lightweight access gate on both brand-logo stages", async () => {
+    const getPublicShareBrandLogoAccess = vi.fn().mockResolvedValue(
+      publicBrandLogoAccess({
+        organizationId: "org-1",
+        brandSnapshot: {
+          schemaVersion: 1,
+          logoStoragePath: "org-1/brand-logos/private.webp",
+        },
+      }),
+    );
+    const repo = createRepo({ getPublicShareBrandLogoAccess });
+
+    await getPublicAdmissionShareBrandLogoPath({
+      repo,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+    await getPublicAdmissionShareBrandLogoPath({
+      repo,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(getPublicShareBrandLogoAccess).toHaveBeenCalledTimes(2);
+    expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+    expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1926,9 +1988,16 @@ describe("admission share board service", () => {
     ],
   ] as const)(
     "keeps logo reads behind the public share lifecycle gate: %s",
-    async (snapshot, code, statusCode) => {
+    async (access, code, statusCode) => {
       const repo = createRepo({
-        getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(snapshot),
+        getPublicShareBrandLogoAccess: vi.fn().mockResolvedValue(
+          access
+            ? publicBrandLogoAccess({
+                status: access.status,
+                expiresAt: access.expiresAt,
+              })
+            : null,
+        ),
       });
 
       await expect(
@@ -1938,6 +2007,8 @@ describe("admission share board service", () => {
           now: "2026-06-07T01:00:00.000Z",
         }),
       ).rejects.toMatchObject({ code, statusCode });
+      expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+      expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
     },
   );
 
@@ -1948,8 +2019,8 @@ describe("admission share board service", () => {
       hasValidSession: vi.fn().mockResolvedValue(false),
     };
     const repo = createRepo({
-      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
-        publicSnapshot({
+      getPublicShareBrandLogoAccess: vi.fn().mockResolvedValue(
+        publicBrandLogoAccess({
           accessCodeHash: hashAdmissionShareAccessCode("2468"),
         }),
       ),
@@ -1967,6 +2038,64 @@ describe("admission share board service", () => {
       code: "ACCESS_CODE_REQUIRED",
       statusCode: 401,
     });
+    expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+    expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
+  });
+
+  it("selects only lifecycle, access, and brand fields for a logo read", async () => {
+    const row = {
+      id: "share-1",
+      organization_id: "org-1",
+      access_code_hash: hashAdmissionShareAccessCode("2468"),
+      status: "active",
+      expires_at: "2026-06-14T00:00:00.000Z",
+      brand_snapshot: {
+        schemaVersion: 1,
+        logoStoragePath: "org-1/brand-logos/private.webp",
+      },
+    };
+    const maybeSingle = vi.fn().mockResolvedValue({ data: row, error: null });
+    const eq = vi.fn().mockReturnValue({ maybeSingle });
+    const select = vi.fn().mockReturnValue({ eq });
+    const from = vi.fn().mockReturnValue({ select });
+    const repo = new SupabaseAdmissionShareBoardRepository({ from } as never);
+    const lightweightRepo = repo as unknown as {
+      getPublicShareBrandLogoAccess: (
+        tokenHash: string,
+      ) => Promise<Record<string, unknown> | null>;
+    };
+
+    expect(lightweightRepo.getPublicShareBrandLogoAccess).toBeTypeOf(
+      "function",
+    );
+    await expect(
+      lightweightRepo.getPublicShareBrandLogoAccess("hashed-token"),
+    ).resolves.toEqual({
+      id: "share-1",
+      organizationId: "org-1",
+      accessCodeHash: row.access_code_hash,
+      status: "active",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+      brandSnapshot: row.brand_snapshot,
+    });
+    expect(from).toHaveBeenCalledTimes(1);
+    expect(from).toHaveBeenCalledWith("project_recording_share_boards");
+    expect(select).toHaveBeenCalledWith(
+      "id, organization_id, access_code_hash, status, expires_at, brand_snapshot",
+    );
+    const selected = String(select.mock.calls[0]?.[0]);
+    for (const forbidden of [
+      "projects(",
+      "project_recording_share_items",
+      "recording_submissions",
+      "project_applications",
+      "review_state",
+      "contact_card",
+      "allow_vendor_submit",
+    ]) {
+      expect(selected).not.toContain(forbidden);
+    }
+    expect(eq).toHaveBeenCalledWith("token_hash", "hashed-token");
   });
 
   it("resolves private recording playback sources only after share gating", async () => {
@@ -4435,6 +4564,21 @@ function publicSnapshot(overrides: Record<string, unknown> = {}) {
       total: 2,
     },
     latestSubmission: null,
+    ...overrides,
+  };
+}
+
+function publicBrandLogoAccess(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "share-1",
+    organizationId: "org-1",
+    accessCodeHash: null,
+    status: "active" as const,
+    expiresAt: "2026-06-14T00:00:00.000Z",
+    brandSnapshot: {
+      schemaVersion: 1,
+      logoStoragePath: null,
+    },
     ...overrides,
   };
 }
