@@ -24,6 +24,7 @@
     "verify:xingyao-hermes-release": "node scripts/verify-xingyao-hermes-release.mjs",
     "test:xingyao-hermes-e2e": "node scripts/test-xingyao-hermes-e2e.mjs --local",
     "test:ops-visual": "playwright test tests/visual/arco-redesign.spec.ts",
+    "test:organization-brand-share": "playwright test --config=playwright.task11.config.ts",
     "platform-admin:grant": "node scripts/grant-platform-admin.mjs",
     "test:dto-contracts": "vitest run features/dto-contracts/api-dto-contract.test.ts",
     "test:golden": "vitest run features/regression/settlement-golden-path.test.ts",

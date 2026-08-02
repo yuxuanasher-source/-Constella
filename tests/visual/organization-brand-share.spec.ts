@@ -77,6 +77,28 @@ const disabledContactCard = {
   status: "disabled",
 };
 
+const serverPersistedBrand = {
+  ...publishedBrand,
+  version: 41,
+  logoText: "云证",
+  brandName: "云证专业交付",
+  brandTagline: "服务端固化的专业复核快照",
+  primaryColor: "#0F766E",
+  actionColor: "#115E59",
+  softColor: "#CCFBF1",
+  publishedAt: "2026-08-02T09:15:00.000Z",
+};
+
+const serverPersistedContactCard = {
+  ...contactCard,
+  displayName: "周顾问（服务端快照）",
+  title: "品牌交付顾问",
+  phone: "13900000000",
+  email: "zhou.persisted@example.test",
+  wechat: "persisted-zhou",
+  updatedAt: "2026-08-02T09:15:00.000Z",
+};
+
 type ServerMode = {
   opsV2: boolean;
   brandUi: boolean;
@@ -85,7 +107,72 @@ type ServerMode = {
 type MockState = {
   brand: typeof baseBrand;
   mode: ServerMode;
+  unexpectedRequests: string[];
 };
+
+type VisualRole = "owner" | "finance" | "service";
+
+const emptyDashboardRestQueryKeys: Record<string, readonly string[]> = {
+  project_applications: ["select", "organization_id", "order"],
+  live_tasks: ["select", "organization_id", "order", "limit"],
+  live_reports: [
+    "select",
+    "status",
+    "organization_id",
+    "order",
+    "limit",
+    "enter_settlement_pool",
+    "created_at",
+  ],
+  settlement_batches: ["select", "organization_id", "order", "limit"],
+  notifications: ["select", "organization_id", "or", "order", "limit"],
+  projects: [
+    "select",
+    "organization_id",
+    "settlement_batches.limit",
+    "live_reports.status",
+    "live_reports.settled_batch_item_id",
+    "live_reports.or",
+    "live_reports.limit",
+    "order",
+    "limit",
+  ],
+  ai_conversations: [
+    "select",
+    "organization_id",
+    "owner_user_id",
+    "status",
+    "order",
+    "limit",
+  ],
+  ai_drafts: ["select", "organization_id", "status", "order", "limit"],
+  marketplace_applications: [
+    "select",
+    "status",
+    "applicant_organization_id",
+    "order",
+    "limit",
+  ],
+  marketplace_postings: [
+    "select",
+    "organization_id",
+    "status",
+    "order",
+    "limit",
+  ],
+};
+
+const task11RestQueryKeys: Record<string, readonly string[]> = {
+  profiles: ["select", "id"],
+  organization_members: ["select", "user_id", "status", "order"],
+  organizations: ["select", "id"],
+  organization_brand_drafts: ["select", "organization_id"],
+  organization_brand_versions: ["select", "organization_id", "order", "limit"],
+  organization_contact_cards: ["select", "organization_id", "status", "order"],
+  ...emptyDashboardRestQueryKeys,
+};
+
+const unexpectedBrowserRequests = new WeakMap<Page, string[]>();
 
 if (process.argv.includes("--serve-task11")) {
   void serveTask11();
@@ -97,6 +184,7 @@ async function serveTask11() {
   const state: MockState = {
     brand: structuredClone(baseBrand),
     mode: { opsV2: false, brandUi: true },
+    unexpectedRequests: [],
   };
   let nextProcess: ChildProcess | null = null;
   let restarting = Promise.resolve();
@@ -145,7 +233,15 @@ async function serveTask11() {
       }
       if (url.pathname === "/__task11/reset" && request.method === "POST") {
         state.brand = structuredClone(baseBrand);
+        state.unexpectedRequests = [];
         return json(response, 200, { ok: true });
+      }
+      if (url.pathname === "/__task11/unexpected" && request.method === "GET") {
+        const unexpected = [...state.unexpectedRequests];
+        if (url.searchParams.get("clear") === "1") {
+          state.unexpectedRequests = [];
+        }
+        return json(response, 200, { unexpected });
       }
       if (url.pathname === "/__task11/brand" && request.method === "POST") {
         const body = await readJson(request);
@@ -174,6 +270,12 @@ async function serveTask11() {
       }
       if (url.pathname === "/auth/v1/user") {
         const role = roleFromRequest(request);
+        if (request.method !== "GET") {
+          return rejectUnexpectedRest(state, response, request, url);
+        }
+        if (role !== "owner" && role !== "finance") {
+          return json(response, 401, { message: "invalid visual session" });
+        }
         const userId = role === "owner" ? OWNER_ID : MEMBER_ID;
         return json(response, 200, {
           id: userId,
@@ -189,80 +291,94 @@ async function serveTask11() {
           updated_at: "2026-08-01T00:00:00.000Z",
         });
       }
-      if (url.pathname.startsWith("/rest/v1/profiles")) {
-        const role = roleFromRequest(request);
-        return postgrest(response, request, {
-          full_name: role === "owner" ? "Owner Visual" : "Member Visual",
-          requires_onboarding: false,
-          avatar_text: role === "owner" ? "OV" : "MV",
-          avatar_url: null,
-        });
-      }
-      if (url.pathname.startsWith("/rest/v1/organization_members")) {
-        const role = roleFromRequest(request);
-        return json(response, 200, [
-          {
-            organization_id: ORGANIZATION_ID,
-            role,
-            created_at: "2026-08-01T00:00:00.000Z",
-            organizations: {
-              name: "星耀 MCN",
-              branding: state.brand,
-            },
-          },
-        ]);
-      }
-      if (url.pathname.startsWith("/rest/v1/organizations")) {
-        return postgrest(response, request, {
-          id: ORGANIZATION_ID,
-          name: "星耀 MCN",
-          branding: state.brand,
-          branding_version: state.brand.version,
-        });
-      }
-      if (url.pathname.startsWith("/rest/v1/organization_brand_drafts")) {
-        const role = roleFromRequest(request);
-        return postgrest(
-          response,
-          request,
-          role === "owner"
-            ? {
-                organization_id: ORGANIZATION_ID,
-                base_version: state.brand.version,
-                content: {
-                  logoText: state.brand.logoText,
-                  logoStoragePath: null,
-                  brandName: `${state.brand.brandName}草稿`,
-                  brandTagline: state.brand.brandTagline,
-                  primaryColor: state.brand.primaryColor,
-                },
-                updated_by: OWNER_ID,
-                updated_at: "2026-08-02T07:00:00.000Z",
-              }
-            : null,
-        );
-      }
-      if (url.pathname.startsWith("/rest/v1/organization_brand_versions")) {
-        return json(response, 200, [
-          {
-            organization_id: ORGANIZATION_ID,
-            version: state.brand.version,
-            content: state.brand,
-            published_by: OWNER_ID,
-            published_at: state.brand.publishedAt ?? "2026-08-01T08:00:00.000Z",
-          },
-        ]);
-      }
-      if (url.pathname.startsWith("/rest/v1/organization_contact_cards")) {
-        const role = roleFromRequest(request);
-        const cards =
-          role === "owner"
-            ? [contactCardRow(), disabledCardRow()]
-            : [contactCardRow()];
-        return json(response, 200, cards);
-      }
       if (url.pathname.startsWith("/rest/v1/")) {
-        return json(response, 200, [], { "Content-Range": "0-0/0" });
+        const role = roleFromRequest(request);
+        if (!role) {
+          return json(response, 401, { message: "invalid visual session" });
+        }
+        if (!isAllowedRestRequest(request, url)) {
+          return rejectUnexpectedRest(state, response, request, url);
+        }
+        const fixtureRole = role === "finance" ? "finance" : "owner";
+        if (url.pathname === "/rest/v1/profiles") {
+          return postgrest(response, request, {
+            full_name:
+              fixtureRole === "owner" ? "Owner Visual" : "Member Visual",
+            requires_onboarding: false,
+            avatar_text: fixtureRole === "owner" ? "OV" : "MV",
+            avatar_url: null,
+          });
+        }
+        if (url.pathname === "/rest/v1/organization_members") {
+          return json(response, 200, [
+            {
+              organization_id: ORGANIZATION_ID,
+              role: fixtureRole,
+              created_at: "2026-08-01T00:00:00.000Z",
+              organizations: {
+                name: "星耀 MCN",
+                branding: state.brand,
+              },
+            },
+          ]);
+        }
+        if (url.pathname === "/rest/v1/organizations") {
+          return postgrest(response, request, {
+            id: ORGANIZATION_ID,
+            name: "星耀 MCN",
+            branding: state.brand,
+            branding_version: state.brand.version,
+          });
+        }
+        if (url.pathname === "/rest/v1/organization_brand_drafts") {
+          return postgrest(
+            response,
+            request,
+            fixtureRole === "owner"
+              ? {
+                  organization_id: ORGANIZATION_ID,
+                  base_version: state.brand.version,
+                  content: {
+                    logoText: state.brand.logoText,
+                    logoStoragePath: null,
+                    brandName: `${state.brand.brandName}草稿`,
+                    brandTagline: state.brand.brandTagline,
+                    primaryColor: state.brand.primaryColor,
+                  },
+                  updated_by: OWNER_ID,
+                  updated_at: "2026-08-02T07:00:00.000Z",
+                }
+              : null,
+          );
+        }
+        if (url.pathname === "/rest/v1/organization_brand_versions") {
+          return json(response, 200, [
+            {
+              organization_id: ORGANIZATION_ID,
+              version: state.brand.version,
+              content: state.brand,
+              published_by: OWNER_ID,
+              published_at:
+                state.brand.publishedAt ?? "2026-08-01T08:00:00.000Z",
+            },
+          ]);
+        }
+        if (url.pathname === "/rest/v1/organization_contact_cards") {
+          const cards =
+            fixtureRole === "owner"
+              ? [contactCardRow(), disabledCardRow()]
+              : [contactCardRow()];
+          return json(response, 200, cards);
+        }
+        if (
+          Object.hasOwn(
+            emptyDashboardRestQueryKeys,
+            url.pathname.slice("/rest/v1/".length),
+          )
+        ) {
+          return json(response, 200, [], { "Content-Range": "0-0/0" });
+        }
+        return rejectUnexpectedRest(state, response, request, url);
       }
       return json(response, 404, { message: "fixture endpoint not found" });
     } catch (error) {
@@ -289,21 +405,73 @@ async function serveTask11() {
 function defineBrowserTests() {
   test.describe.configure({ mode: "serial" });
 
-  test.beforeEach(({}, testInfo) => {
+  test.beforeEach(async ({ page, request }, testInfo) => {
     testInfo.setTimeout(120_000);
-  });
-
-  test.beforeAll(async ({ request }) => {
+    unexpectedBrowserRequests.set(page, []);
     await expect(
       (await request.post(`${MOCK_URL}/__task11/reset`)).ok(),
     ).toBeTruthy();
     await setServerMode(request, { opsV2: false, brandUi: true });
   });
 
+  test.afterEach(async ({ page, request }) => {
+    expect(unexpectedBrowserRequests.get(page) ?? []).toEqual([]);
+    const response = await request.get(
+      `${MOCK_URL}/__task11/unexpected?clear=1`,
+    );
+    expect(response.ok()).toBeTruthy();
+    const audit = (await response.json()) as { unexpected: string[] };
+    expect(audit.unexpected).toEqual([]);
+  });
+
   test("owner publishes once and both console shells refresh while members stay read-only", async ({
     page,
     request,
   }) => {
+    await expect((await request.get(`${MOCK_URL}/auth/v1/user`)).status()).toBe(
+      401,
+    );
+    await expect(
+      (
+        await request.get(`${MOCK_URL}/auth/v1/user`, {
+          headers: { Authorization: "Bearer invalid" },
+        })
+      ).status(),
+    ).toBe(401);
+    const serviceHeaders = {
+      Authorization: "Bearer task11-visual-service-role-key",
+    };
+    await expect(
+      (
+        await request.get(`${MOCK_URL}/rest/v1/not_allowed?select=*`, {
+          headers: serviceHeaders,
+        })
+      ).status(),
+    ).toBe(404);
+    await expect(
+      (
+        await request.post(`${MOCK_URL}/rest/v1/profiles?select=*`, {
+          headers: serviceHeaders,
+        })
+      ).status(),
+    ).toBe(404);
+    await expect(
+      (
+        await request.get(`${MOCK_URL}/rest/v1/profiles?select=*&evil=1`, {
+          headers: serviceHeaders,
+        })
+      ).status(),
+    ).toBe(404);
+    const rejectedRest = await request.get(
+      `${MOCK_URL}/__task11/unexpected?clear=1`,
+    );
+    expect(rejectedRest.ok()).toBeTruthy();
+    expect((await rejectedRest.json()).unexpected).toEqual([
+      "GET /rest/v1/not_allowed?select=*",
+      "POST /rest/v1/profiles?select=*",
+      "GET /rest/v1/profiles?select=*&evil=1",
+    ]);
+
     await setStaffSession(page.context(), "owner");
     let savePayload: Record<string, unknown> | null = null;
     let publishPayload: Record<string, unknown> | null = null;
@@ -411,6 +579,24 @@ function defineBrowserTests() {
     await installConsoleShareRoutes(page, capturedCreates);
     await openShareCenter(page);
 
+    const rejectedFixtureStatuses = await page.evaluate(async () =>
+      Promise.all([
+        fetch("/api/task11-not-allowed").then((response) => response.status),
+        fetch("/api/applications", { method: "POST" }).then(
+          (response) => response.status,
+        ),
+        fetch("/api/organization/brand?unexpected=1").then(
+          (response) => response.status,
+        ),
+      ]),
+    );
+    expect(rejectedFixtureStatuses).toEqual([404, 404, 404]);
+    expect(takeUnexpectedBrowserRequests(page)).toEqual([
+      "GET /api/task11-not-allowed",
+      "POST /api/applications",
+      "GET /api/organization/brand?unexpected=1",
+    ]);
+
     const createButton = page.getByRole("button", { name: "创建分享" });
     await page.getByRole("checkbox", { name: /选择 Streamer One/ }).check();
     await createButton.focus();
@@ -447,7 +633,8 @@ function defineBrowserTests() {
     await wizard.getByRole("button", { name: "确认生成" }).click();
     const delivery = page.getByRole("dialog", { name: "一次性交付信息" });
     await expect(delivery).toContainText("服务端已保存：无名片");
-    await expect(delivery).toContainText(publishedBrand.brandName);
+    await expect(delivery).toContainText(serverPersistedBrand.brandName);
+    await expect(delivery).not.toContainText(publishedBrand.brandName);
     await delivery.getByRole("button", { name: "关闭交付信息" }).click();
 
     await page.getByRole("tab", { name: "录屏库" }).click();
@@ -460,7 +647,11 @@ function defineBrowserTests() {
     ).toContainText(contactCard.displayName);
     await wizard.getByRole("button", { name: "确认生成" }).click();
     await expect(delivery).toContainText("服务端已保存：带名片");
-    await expect(delivery).toContainText(contactCard.displayName);
+    await expect(delivery).toContainText(serverPersistedBrand.brandName);
+    await expect(delivery).toContainText(
+      serverPersistedContactCard.displayName,
+    );
+    await expect(delivery).not.toContainText(contactCard.displayName);
     await delivery.getByRole("button", { name: "关闭交付信息" }).click();
 
     expect(capturedCreates).toHaveLength(2);
@@ -483,7 +674,11 @@ function defineBrowserTests() {
     });
     await expect(oldPreview).toContainText(baseBrand.brandName);
     await expect(oldPreview).not.toContainText(publishedBrand.brandName);
+    await expect(oldPreview).not.toContainText(serverPersistedBrand.brandName);
     await expect(oldPreview).toContainText(disabledContactCard.displayName);
+    await expect(oldPreview).not.toContainText(
+      serverPersistedContactCard.displayName,
+    );
     await expect(page.locator("body")).not.toContainText(
       "organizations/private",
     );
@@ -531,8 +726,14 @@ function defineBrowserTests() {
   test("access-code, expired, and revoked gates remain authoritative", async ({
     page,
   }) => {
-    const board = publicBoard({ items: [mediaItems()[0]] });
-    await installPublicRoutes(page, {
+    const board = publicBoard({
+      brand: {
+        ...publicBrand(publishedBrand),
+        logoUrl: "/api/public/admission-share/protectedShare/brand-logo",
+      },
+      items: [mediaItems("protectedShare")[0]],
+    });
+    const publicAudit = await installPublicRoutes(page, {
       protectedShare: { board, accessRequired: true },
       expiredShare: {
         error: { status: 410, code: "SHARE_EXPIRED", error: "分享已过期。" },
@@ -548,12 +749,65 @@ function defineBrowserTests() {
       exact: true,
     });
     await expect(accessCode).toBeFocused();
+    const preAuthenticationStatuses = await page.evaluate(async () =>
+      Promise.all([
+        fetch("/api/public/admission-share/protectedShare/brand-logo").then(
+          (response) => response.status,
+        ),
+        fetch(
+          "/api/public/admission-share/protectedShare/recordings/original-landscape",
+        ).then((response) => response.status),
+        fetch("/api/public/admission-share/protectedShare/drafts").then(
+          (response) => response.status,
+        ),
+        fetch("/api/public/admission-share/protectedShare/access").then(
+          (response) => response.status,
+        ),
+        fetch("/api/public/admission-share/protectedShare/unknown").then(
+          (response) => response.status,
+        ),
+      ]),
+    );
+    expect(preAuthenticationStatuses).toEqual([401, 401, 401, 404, 404]);
+    expect(publicAudit.servedProtectedResources).toEqual([]);
+    expect(takeUnexpectedBrowserRequests(page)).toEqual([
+      "GET /api/public/admission-share/protectedShare/access",
+      "GET /api/public/admission-share/protectedShare/unknown",
+    ]);
+
+    await accessCode.fill("wrong-access-code");
+    await page.getByRole("button", { name: "验证访问码" }).click();
+    await expect(
+      page.getByRole("alert", { name: "访问码验证错误" }),
+    ).toContainText("访问码错误");
+    await expect(accessCode).toBeFocused();
     await accessCode.fill("visual-access-code");
     await page.getByRole("button", { name: "验证访问码" }).click();
     await expect(
       page.getByRole("region", { name: "录屏复核工作台" }),
     ).toBeVisible();
     await expect(page).toHaveURL(/protectedShare$/);
+    const postAuthenticationStatuses = await page.evaluate(async () =>
+      Promise.all([
+        fetch("/api/public/admission-share/protectedShare/brand-logo").then(
+          (response) => response.status,
+        ),
+        fetch(
+          "/api/public/admission-share/protectedShare/recordings/original-landscape",
+        ).then((response) => response.status),
+        fetch("/api/public/admission-share/protectedShare/drafts").then(
+          (response) => response.status,
+        ),
+      ]),
+    );
+    expect(postAuthenticationStatuses).toEqual([200, 200, 200]);
+    expect(publicAudit.servedProtectedResources).toEqual(
+      expect.arrayContaining([
+        "GET /api/public/admission-share/protectedShare/brand-logo",
+        "GET /api/public/admission-share/protectedShare/recordings/original-landscape",
+        "GET /api/public/admission-share/protectedShare/drafts",
+      ]),
+    );
 
     await page.goto("/share/admission/expiredShare");
     await expect(
@@ -702,6 +956,18 @@ function defineBrowserTests() {
       await expect(workspace).toBeVisible();
       const box = await workspace.boundingBox();
       expect(box?.width ?? 0).toBeLessThanOrEqual(viewport.width);
+      const overflow = await page.evaluate(() => ({
+        rootClientWidth: document.documentElement.clientWidth,
+        rootScrollWidth: document.documentElement.scrollWidth,
+        bodyClientWidth: document.body.clientWidth,
+        bodyScrollWidth: document.body.scrollWidth,
+      }));
+      expect(overflow.rootScrollWidth).toBeLessThanOrEqual(
+        overflow.rootClientWidth + 1,
+      );
+      expect(overflow.bodyScrollWidth).toBeLessThanOrEqual(
+        overflow.bodyClientWidth + 1,
+      );
       await page.screenshot({
         path: testInfo.outputPath(`viewport-${viewport.name}.png`),
         animations: "disabled",
@@ -838,6 +1104,9 @@ async function installConsoleShareRoutes(
     const request = route.request();
     const url = new URL(request.url());
     const pathname = url.pathname;
+    if (!isAllowedConsoleRequest(request.method(), url)) {
+      return rejectBrowserRequest(page, route);
+    }
     if (pathname === "/api/applications/admission-board") {
       return fulfillJson(route, {
         projects: [admissionProjectBoard()],
@@ -847,6 +1116,12 @@ async function installConsoleShareRoutes(
       return fulfillJson(route, { applications: [] });
     if (pathname === "/api/admission-review/metrics")
       return fulfillJson(route, { metrics: [] });
+    if (pathname === "/api/ai/conversations")
+      return fulfillJson(route, { conversations: [] });
+    if (pathname === "/api/ai/drafts")
+      return fulfillJson(route, { drafts: [] });
+    if (pathname === "/api/marketplace/intel")
+      return fulfillJson(route, { intel: [] });
     if (pathname === "/api/organization/brand") {
       return fulfillJson(route, { studio: ownerStudio(publishedBrand) });
     }
@@ -878,7 +1153,9 @@ async function installConsoleShareRoutes(
         capturedCreates.push(body);
         createdCount += 1;
         const selectedContact =
-          body.contactCardId === CONTACT_CARD_ID ? contactCard : null;
+          body.contactCardId === CONTACT_CARD_ID
+            ? serverPersistedContactCard
+            : null;
         return fulfillJson(route, {
           shareBoard: {
             id: `share-created-${createdCount}`,
@@ -886,7 +1163,9 @@ async function installConsoleShareRoutes(
             presentation: persistedPresentation({
               id: `share-created-${createdCount}`,
               title: `服务端已保存：${selectedContact ? "带名片" : "无名片"}`,
-              brand: publicBrand(publishedBrand),
+              brandVersion: serverPersistedBrand.version,
+              contactCardId: selectedContact?.id ?? null,
+              brand: publicBrand(serverPersistedBrand),
               contactCard: selectedContact,
             }),
           },
@@ -912,8 +1191,61 @@ async function installConsoleShareRoutes(
     if (pathname.endsWith("/admission-share-playback-issues")) {
       return fulfillJson(route, { issues: [] });
     }
-    return fulfillJson(route, {});
+    return rejectBrowserRequest(page, route);
   });
+}
+
+function isAllowedConsoleRequest(method: string, url: URL) {
+  const noQuery = url.search === "";
+  const exact = (pathname: string, expectedMethod = "GET") =>
+    url.pathname === pathname && method === expectedMethod && noQuery;
+
+  if (exact("/api/applications")) return true;
+  if (exact("/api/applications/admission-board")) return true;
+  if (
+    url.pathname === "/api/admission-review/metrics" &&
+    method === "GET" &&
+    url.searchParams.size === 1 &&
+    url.searchParams.get("limit") === "200"
+  ) {
+    return true;
+  }
+  if (exact("/api/organization/brand")) return true;
+  if (exact("/api/organization/contact-cards")) return true;
+  if (exact("/api/ai/conversations")) return true;
+  if (
+    url.pathname === "/api/ai/drafts" &&
+    method === "GET" &&
+    url.searchParams.size === 1 &&
+    url.searchParams.get("status") === "pending"
+  ) {
+    return true;
+  }
+  if (exact("/api/marketplace/intel")) return true;
+  if (
+    exact("/api/projects/project-1/admission-share-candidates") ||
+    exact("/api/projects/project-1/admission-share-boards/preflight", "POST") ||
+    exact("/api/projects/project-1/admission-share-boards", "POST")
+  ) {
+    return true;
+  }
+  if (
+    url.pathname === "/api/projects/project-1/admission-share-boards" &&
+    method === "GET"
+  ) {
+    return (
+      noQuery ||
+      (url.searchParams.size === 1 &&
+        url.searchParams.get("boardId") === "share-old")
+    );
+  }
+  return (
+    url.pathname ===
+      "/api/projects/project-1/admission-share-playback-issues" &&
+    method === "GET" &&
+    url.searchParams.size === 1 &&
+    url.searchParams.get("status") === "open"
+  );
 }
 
 async function openShareCenter(page: Page) {
@@ -938,11 +1270,16 @@ type PublicRouteFixture = {
   error?: { status: number; code: string; error: string };
 };
 
+type PublicRouteAudit = {
+  servedProtectedResources: string[];
+};
+
 async function installPublicRoutes(
   page: Page,
   fixtures: Record<string, PublicRouteFixture>,
 ) {
   const authenticated = new Set<string>();
+  const audit: PublicRouteAudit = { servedProtectedResources: [] };
   await page.route("**/api/public/admission-share/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -952,6 +1289,50 @@ async function installPublicRoutes(
     if (!fixture)
       return fulfillJson(route, { code: "NOT_FOUND", error: "Not found" }, 404);
     const suffix = parts.slice(4);
+
+    if (suffix.length === 1 && suffix[0] === "access") {
+      if (
+        request.method() !== "POST" ||
+        url.search ||
+        !request.headers()["content-type"]?.startsWith("application/json")
+      ) {
+        return rejectBrowserRequest(page, route);
+      }
+      const body = safePostDataJson(request.postData());
+      if (
+        !isRecord(body) ||
+        Object.keys(body).length !== 1 ||
+        body.accessCode !== "visual-access-code"
+      ) {
+        return fulfillJson(
+          route,
+          { code: "ACCESS_CODE_INVALID", error: "访问码错误，请重新输入。" },
+          401,
+        );
+      }
+      authenticated.add(token);
+      return fulfillJson(route, { authenticated: true });
+    }
+
+    if (!isAllowedPublicRequest(request.method(), url, suffix)) {
+      return rejectBrowserRequest(page, route);
+    }
+
+    if (fixture.error) {
+      return fulfillJson(route, fixture.error, fixture.error.status);
+    }
+    if (fixture.accessRequired && !authenticated.has(token)) {
+      return fulfillJson(
+        route,
+        { code: "ACCESS_CODE_REQUIRED", error: "请输入访问码后继续。" },
+        401,
+      );
+    }
+    if (fixture.accessRequired && suffix.length > 0) {
+      audit.servedProtectedResources.push(
+        `${request.method()} ${url.pathname}${url.search}`,
+      );
+    }
 
     if (suffix[0] === "brand-logo") {
       if (fixture.failLogo) return route.abort("failed");
@@ -980,10 +1361,6 @@ async function installPublicRoutes(
         body: Buffer.from(fixture, "base64"),
       });
     }
-    if (suffix[0] === "access") {
-      authenticated.add(token);
-      return fulfillJson(route, { authenticated: true });
-    }
     if (suffix[0] === "drafts" && suffix.length === 1) {
       return fulfillJson(route, { drafts: [] });
     }
@@ -996,15 +1373,6 @@ async function installPublicRoutes(
         revision: Number(body.expectedRevision ?? 0) + 1,
         updatedAt: "2026-08-02T09:00:00.000Z",
       });
-    }
-    if (fixture.error)
-      return fulfillJson(route, fixture.error, fixture.error.status);
-    if (fixture.accessRequired && !authenticated.has(token)) {
-      return fulfillJson(
-        route,
-        { code: "ACCESS_CODE_REQUIRED", error: "请输入访问码后继续。" },
-        401,
-      );
     }
     return fulfillJson(route, {
       shareBoard: fixture.board,
@@ -1026,6 +1394,40 @@ async function installPublicRoutes(
       ].join(""),
     }),
   );
+  return audit;
+}
+
+function isAllowedPublicRequest(method: string, url: URL, suffix: string[]) {
+  if (url.search) return false;
+  if (suffix.length === 0) return method === "GET";
+  if (suffix.length === 1 && suffix[0] === "brand-logo") {
+    return method === "GET";
+  }
+  if (suffix.length === 1 && suffix[0] === "drafts") {
+    return method === "GET";
+  }
+  if (suffix.length === 2 && suffix[0] === "drafts") {
+    return method === "PUT" && Boolean(suffix[1]);
+  }
+  if (suffix.length === 2 && suffix[0] === "recordings") {
+    return method === "GET" && Boolean(suffix[1]);
+  }
+  return (
+    suffix.length === 3 &&
+    suffix[0] === "recordings" &&
+    Boolean(suffix[1]) &&
+    suffix[2] === "issues" &&
+    method === "POST"
+  );
+}
+
+function safePostDataJson(postData: string | null): unknown {
+  if (!postData) return null;
+  try {
+    return JSON.parse(postData);
+  } catch {
+    return null;
+  }
 }
 
 function publicBoard(overrides: Record<string, unknown> = {}) {
@@ -1213,11 +1615,49 @@ async function startVideo(
 async function assertLightStageAndScreenshot(page: Page, path: string) {
   const stage = page.getByRole("region", { name: "录屏媒体工作区" });
   await expect(stage).toBeVisible();
-  const background = await stage.evaluate(
-    (element) => getComputedStyle(element).backgroundColor,
-  );
-  expect(background).not.toBe("rgb(0, 0, 0)");
-  expect(background).not.toBe("rgba(0, 0, 0, 1)");
+  const luminances = await page
+    .locator('[aria-label="录屏媒体工作区"], .recording-media-canvas')
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const ownBackground = getComputedStyle(element).backgroundColor;
+        let current: Element | null = element;
+        let channels: number[] = [];
+        let channelsAreNormalized = false;
+        while (current) {
+          const background = getComputedStyle(current).backgroundColor;
+          channels = (background.match(/[\d.]+/g) ?? []).map(Number);
+          channelsAreNormalized = background.startsWith("color(srgb ");
+          const alpha = channels[3] ?? 1;
+          if (channels.length >= 3 && alpha >= 0.95) break;
+          current = current.parentElement;
+        }
+        const rgb = (
+          channels.slice(0, 3).length === 3
+            ? channels.slice(0, 3)
+            : [255, 255, 255]
+        ).map((channel) => {
+          const normalized = channelsAreNormalized ? channel : channel / 255;
+          return normalized <= 0.04045
+            ? normalized / 12.92
+            : ((normalized + 0.055) / 1.055) ** 2.4;
+        });
+        return {
+          selector:
+            element.getAttribute("aria-label") ??
+            element.getAttribute("class") ??
+            element.tagName,
+          ownBackground,
+          effectiveBackground: channels.join(","),
+          luminance: 0.2126 * rgb[0]! + 0.7152 * rgb[1]! + 0.0722 * rgb[2]!,
+        };
+      }),
+    );
+  expect(luminances).toHaveLength(2);
+  for (const surface of luminances) {
+    expect(surface.luminance, JSON.stringify(surface)).toBeGreaterThanOrEqual(
+      0.35,
+    );
+  }
   const stageBox = await stage.boundingBox();
   const workspaceBox = await page
     .getByRole("region", { name: "录屏复核工作台" })
@@ -1402,19 +1842,76 @@ function createVisualJwt(payload: Record<string, unknown>) {
   })}.task11-signature`;
 }
 
-function roleFromRequest(request: IncomingMessage) {
-  const token = String(request.headers.authorization ?? "").replace(
-    /^Bearer\s+/i,
-    "",
-  );
+function roleFromRequest(request: IncomingMessage): VisualRole | null {
+  const authorization = String(request.headers.authorization ?? "");
+  if (!/^Bearer\s+\S+$/i.test(authorization)) return null;
+  const token = authorization.replace(/^Bearer\s+/i, "");
+  if (token === "task11-visual-service-role-key") return "service";
   try {
     const payload = JSON.parse(
       Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"),
-    );
-    return payload.visual_role === "finance" ? "finance" : "owner";
+    ) as Record<string, unknown>;
+    if (
+      payload.aud !== "authenticated" ||
+      typeof payload.exp !== "number" ||
+      payload.exp <= Math.floor(Date.now() / 1000) ||
+      ![OWNER_ID, MEMBER_ID].includes(String(payload.sub ?? ""))
+    ) {
+      return null;
+    }
+    if (payload.visual_role === "owner" && payload.sub === OWNER_ID) {
+      return "owner";
+    }
+    if (payload.visual_role === "finance" && payload.sub === MEMBER_ID) {
+      return "finance";
+    }
+    return null;
   } catch {
-    return "owner";
+    return null;
   }
+}
+
+function isAllowedRestRequest(request: IncomingMessage, url: URL) {
+  if (request.method !== "GET") return false;
+  const table = url.pathname.slice("/rest/v1/".length);
+  const allowedKeys = task11RestQueryKeys[table];
+  if (!allowedKeys || !url.searchParams.has("select")) return false;
+  const keys = [...new Set(url.searchParams.keys())];
+  if (keys.some((key) => !allowedKeys.includes(key))) return false;
+
+  for (const [key, value] of url.searchParams) {
+    if (key === "organization_id" && value !== `eq.${ORGANIZATION_ID}`) {
+      return false;
+    }
+    if (key === "id") {
+      const expectedIds =
+        table === "organizations"
+          ? [`eq.${ORGANIZATION_ID}`]
+          : [`eq.${OWNER_ID}`, `eq.${MEMBER_ID}`];
+      if (!expectedIds.includes(value)) return false;
+    }
+    if (
+      key === "user_id" &&
+      ![`eq.${OWNER_ID}`, `eq.${MEMBER_ID}`].includes(value)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function rejectUnexpectedRest(
+  state: MockState,
+  response: ServerResponse,
+  request: IncomingMessage,
+  url: URL,
+) {
+  const signature = `${request.method ?? "UNKNOWN"} ${url.pathname}${url.search}`;
+  state.unexpectedRequests.push(signature);
+  return json(response, 404, {
+    code: "TASK11_FIXTURE_REJECTED",
+    message: `fixture rejected ${signature}`,
+  });
 }
 
 function contactCardRow() {
@@ -1566,4 +2063,27 @@ function fulfillJson(route: Route, body: unknown, status = 200) {
     contentType: "application/json",
     body: JSON.stringify(body),
   });
+}
+
+function rejectBrowserRequest(page: Page, route: Route) {
+  const request = route.request();
+  const url = new URL(request.url());
+  const signature = `${request.method()} ${url.pathname}${url.search}`;
+  const unexpected = unexpectedBrowserRequests.get(page) ?? [];
+  unexpected.push(signature);
+  unexpectedBrowserRequests.set(page, unexpected);
+  return fulfillJson(
+    route,
+    {
+      code: "TASK11_FIXTURE_REJECTED",
+      error: `fixture rejected ${signature}`,
+    },
+    404,
+  );
+}
+
+function takeUnexpectedBrowserRequests(page: Page) {
+  const unexpected = [...(unexpectedBrowserRequests.get(page) ?? [])];
+  unexpectedBrowserRequests.set(page, []);
+  return unexpected;
 }
