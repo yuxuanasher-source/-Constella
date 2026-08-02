@@ -26,6 +26,7 @@
 .ops-v2-brand-link,
 .ops-v2-mobile-brand-link {
   min-width: 0;
+  min-height: 44px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -58,7 +59,7 @@
 }
 
 .ops-v2-brand-tagline {
-  color: var(--ops-text-3);
+  color: var(--ops-text-2);
   font-size: 11px;
   line-height: 1.25;
   display: -webkit-box;
@@ -127,9 +128,7 @@
   color: var(--org-brand-action, var(--blue-700));
 }
 
-.organization-brand-theme
-  .ops-reference-shell
-  button[data-button-kind="primary"] {
+.organization-brand-theme button[data-button-kind="primary"] {
   border-color: var(--org-brand-action, var(--blue-600));
   background: var(--org-brand-action, var(--blue-600));
 }
@@ -138,7 +137,7 @@
   margin: auto 18px 14px;
   padding-top: 10px;
   border-top: 1px solid var(--ops-border);
-  color: var(--ops-text-3);
+  color: var(--ops-text-2);
   font-size: 10px;
   line-height: 1.4;
 }
@@ -173,7 +172,7 @@
 
 .organization-brand-theme
   :where(a, button, input, select, textarea):focus-visible {
-  outline: 2px solid var(--org-brand-action, #165dff);
+  outline: 2px solid var(--org-brand-action, #165dff) !important;
   outline-offset: 2px;
 }
 
@@ -285,6 +284,7 @@
 
   .ops-v2-mobile-brand-link {
     max-width: 100%;
+    flex: 1;
   }
 
   .ops-v2-mobile-brand .ops-v2-brand-center-label {

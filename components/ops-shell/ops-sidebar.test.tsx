@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
@@ -26,6 +29,26 @@ const BRAND: PublishedOrganizationBrand = {
 };
 
 describe("OpsSidebar", () => {
+  it("keeps compact brand copy readable and the mobile brand target tappable", () => {
+    const foundations = readFileSync(
+      path.join(process.cwd(), "styles/ops/foundations.css"),
+      "utf8",
+    );
+
+    expect(foundations).toMatch(
+      /\.ops-v2-brand-tagline\s*\{[^}]*color:\s*var\(--ops-text-2\)/,
+    );
+    expect(foundations).toMatch(
+      /\.ops-v2-service-signature\s*\{[^}]*color:\s*var\(--ops-text-2\)/,
+    );
+    expect(foundations).toMatch(
+      /\.ops-v2-mobile-brand-link\s*\{[^}]*min-height:\s*44px;/,
+    );
+    expect(foundations).toMatch(
+      /@media \(max-width: 900px\)[\s\S]*\.ops-v2-mobile-brand-link\s*\{[^}]*flex:\s*1;/,
+    );
+  });
+
   it("leads with the organization brand and keeps Brand Center secondary", () => {
     render(
       <OpsSidebar

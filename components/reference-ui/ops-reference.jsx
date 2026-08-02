@@ -10,7 +10,10 @@ import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
 import HermesSkillCenter from "@/components/ai/hermes-skill-center";
 import { MarketplaceBoard } from "@/components/marketplace/marketplace-board";
 import { OrganizationBrandMark } from "@/components/organization-brand/organization-brand-mark";
-import { OrganizationBrandTheme } from "@/components/organization-brand/organization-brand-theme";
+import {
+  OrganizationBrandPortal,
+  OrganizationBrandTheme,
+} from "@/components/organization-brand/organization-brand-theme";
 import { USAGE_TUTORIAL_MD } from "./usage-tutorial-md";
 import { canManageAccounts } from "@/features/account-library/account-library-service";
 import { rankReportQueue } from "@/features/ai/bounded-actions";
@@ -2532,8 +2535,17 @@ function useModalLayerIsolation(layerRef, onActivate, onRestore) {
     const layer = layerRef.current;
     if (!body || !layer) return undefined;
 
+    let activeBodyChild = layer;
+    while (
+      activeBodyChild.parentElement &&
+      activeBodyChild.parentElement !== body
+    ) {
+      activeBodyChild = activeBodyChild.parentElement;
+    }
+    if (activeBodyChild.parentElement !== body) return undefined;
+
     const siblings = Array.from(body.children).filter(
-      (element) => element !== layer,
+      (element) => element !== activeBodyChild,
     );
 
     siblings.forEach(acquireBodySiblingIsolation);
@@ -2630,7 +2642,6 @@ export function Sidebar({
         <button
           ref={organizationSettingsButtonRef}
           type="button"
-          tabIndex={-1}
           data-focus-restore="true"
           aria-label={
             route === "export"
@@ -3506,7 +3517,10 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
   }
   // 传送到 body：侧边栏 aside 用 position:sticky 会形成独立层叠上下文，
   // 弹窗若留在其中会被根级 position:fixed 的 AI 助手面板盖住。
-  return createPortal(dialog, document.body);
+  return createPortal(
+    <OrganizationBrandPortal>{dialog}</OrganizationBrandPortal>,
+    document.body,
+  );
 }
 
 export function TopBar({
@@ -9909,8 +9923,8 @@ const PROJECT_SETTINGS_SURFACE_CSS = `
   .ps-control::placeholder { color: #a4afc2; }
   .ps-control:hover:not(:disabled) { border-color: #b9c9ea; }
   .ps-control:focus {
-    border-color: #2f6fed;
-    box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.12);
+    border-color: var(--org-brand-action, #2f6fed);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--org-brand-action, #2f6fed) 18%, transparent);
   }
   .ps-control:disabled {
     color: #8a97ad;
@@ -9948,13 +9962,15 @@ const PROJECT_SETTINGS_SURFACE_CSS = `
   .ps-btn:disabled { opacity: 0.55; cursor: not-allowed; }
   .ps-btn-primary {
     border: none;
-    background: #2f6fed;
+    background: var(--org-brand-action, #2f6fed);
     color: #fff;
     font-weight: 600;
     padding: 0 18px;
-    box-shadow: 0 6px 14px -6px rgba(47, 111, 237, 0.55);
+    box-shadow: 0 6px 14px -6px color-mix(in srgb, var(--org-brand-action, #2f6fed) 55%, transparent);
   }
-  .ps-btn-primary:hover:not(:disabled) { background: #245ed6; }
+  .ps-btn-primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--org-brand-action, #2f6fed) 86%, #000);
+  }
   .ps-btn-secondary {
     border: 1px solid #dfe5ee;
     background: #fff;
@@ -9982,7 +9998,8 @@ const PROJECT_SETTINGS_SURFACE_CSS = `
     font-size: 12px;
   }
   .ps-switch input:focus-visible + span {
-    box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.25);
+    outline: 2px solid var(--org-brand-action, #2f6fed);
+    outline-offset: 2px;
   }
 `;
 
@@ -22251,7 +22268,10 @@ function LiveReviewDrawer({
   );
 
   if (typeof document === "undefined") return dialog;
-  return createPortal(dialog, document.body);
+  return createPortal(
+    <OrganizationBrandPortal>{dialog}</OrganizationBrandPortal>,
+    document.body,
+  );
 }
 
 function ReviewAssistList({ title, items, tone }) {
@@ -22866,7 +22886,10 @@ function Drawer({ children, onClose, onKeyDown, suspended = false, title }) {
   );
 
   if (typeof document === "undefined") return layer;
-  return createPortal(layer, document.body);
+  return createPortal(
+    <OrganizationBrandPortal>{layer}</OrganizationBrandPortal>,
+    document.body,
+  );
 }
 
 // ===== src\screen-org.jsx =====
@@ -27481,17 +27504,18 @@ function OpsReferenceInner({
       }
 
       const activeElement = globalThis.document?.activeElement;
-      if (event.shiftKey) {
-        if (activeElement === first || !drawer.contains(activeElement)) {
-          event.preventDefault();
-          last.focus();
-        }
+      const activeIndex = focusable.indexOf(activeElement);
+      if (activeIndex < 0) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
         return;
       }
-      if (activeElement === last || !drawer.contains(activeElement)) {
-        event.preventDefault();
-        first.focus();
-      }
+
+      event.preventDefault();
+      const nextIndex = event.shiftKey
+        ? (activeIndex - 1 + focusable.length) % focusable.length
+        : (activeIndex + 1) % focusable.length;
+      focusable[nextIndex].focus();
     };
 
     globalThis.document?.addEventListener(

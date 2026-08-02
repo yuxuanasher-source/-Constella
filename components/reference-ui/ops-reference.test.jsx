@@ -291,20 +291,26 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     renderShell();
     fireEvent.click(screen.getByLabelText("打开主导航"));
 
+    const brandSettingsButton = screen.getByRole("button", {
+      name: /未配置组织.*组织设置/,
+    });
     const closeButton = screen.getByLabelText("关闭主导航");
     const accountSummary = screen.getByRole("button", { name: /账号菜单/ });
 
     expect(closeButton).toHaveFocus();
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
-    expect(accountSummary).toHaveFocus();
+    expect(brandSettingsButton).toHaveFocus();
 
     fireEvent.keyDown(document, { key: "Tab" });
     expect(closeButton).toHaveFocus();
 
+    accountSummary.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(brandSettingsButton).toHaveFocus();
+
     fireEvent.click(accountSummary);
     const logout = screen.getByRole("menuitem", { name: "退出登录" });
-    expect(closeButton).toHaveFocus();
-
+    brandSettingsButton.focus();
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
     expect(logout).toHaveFocus();
   });
@@ -411,6 +417,33 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     expect(dialog).toContainElement(container.ownerDocument.activeElement);
   });
 
+  it("keeps profile modal branding and focus inside the portal boundary", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="export"
+        organizationSettings={{
+          name: "北辰机构",
+          brand: publishedOrganizationBrand,
+          logoUrl: "https://signed.example/brand.webp",
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "个人资料" }));
+
+    const dialog = screen.getByRole("dialog", { name: "个人资料" });
+    const portal = dialog.closest(".organization-brand-theme-portal");
+    expect(portal).toHaveClass("organization-brand-theme");
+    expect(portal).toHaveStyle({
+      "--org-brand-action": "#663400",
+      "--org-brand-soft": "#F0E7DE",
+    });
+    expect(
+      within(dialog).getByRole("button", { name: "保存头像" }),
+    ).toHaveAttribute("data-button-kind", "primary");
+    expect(within(dialog).getByRole("button", { name: "关闭" })).toHaveFocus();
+  });
+
   it("deactivates the mobile drawer before opening organization settings", () => {
     stubMobileViewport();
     const { container } = renderShell();
@@ -474,7 +507,11 @@ describe("OpsReferenceApp responsive navigation shell", () => {
 
       const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
       const layer = dialog.closest(".ops-drawer-layer");
-      expect(layer?.parentElement).toBe(document.body);
+      const portal = layer?.closest(".organization-brand-theme-portal");
+      expect(portal).toHaveClass("organization-brand-theme");
+      expect(portal?.parentElement).toBe(document.body);
+      expect(portal).not.toHaveAttribute("inert");
+      expect(portal).not.toHaveAttribute("aria-hidden");
       expect(layer).not.toHaveAttribute("inert");
       expect(layer).not.toHaveAttribute("aria-hidden");
       expect(container).toHaveAttribute("inert");
@@ -2712,8 +2749,49 @@ describe("OpsReferenceApp project smoke", () => {
     expect(
       container.querySelector('button[data-button-kind="link"]'),
     ).toHaveStyle({ color: "var(--blue-600)" });
+    const brandSettingsButton = screen.getByRole("button", {
+      name: "组织品牌设置入口",
+    });
+    expect(brandSettingsButton).not.toHaveAttribute("tabindex", "-1");
+    brandSettingsButton.focus();
+    expect(brandSettingsButton).toHaveFocus();
     expect(container.innerHTML).not.toContain(
       "11111111-1111-4111-8111-111111111111/brand-logos/33333333-3333-4333-8333-333333333333.webp",
+    );
+  });
+
+  it("brands the real project settings controls and their visible focus states", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[projectManagementCards[0]]}
+      />,
+    );
+    fireEvent.click(screen.getByText("Alpha Launch"));
+    fireEvent.click(screen.getByRole("button", { name: "项目设置" }));
+
+    const primaryButton = screen.getByRole("button", { name: "保存设置" });
+    const projectName = screen.getByLabelText("项目名称");
+    const visibleSwitch =
+      screen.getByLabelText("公开给组织内主播").nextElementSibling;
+    const projectSettingsCss = Array.from(document.querySelectorAll("style"))
+      .map((style) => style.textContent ?? "")
+      .find((css) => css.includes(".ps-btn-primary"));
+
+    expect(primaryButton).toHaveClass("ps-btn-primary");
+    expect(projectName).toHaveClass("ps-control");
+    expect(visibleSwitch?.tagName).toBe("SPAN");
+    expect(projectSettingsCss).toMatch(
+      /\.ps-btn-primary\s*\{[^}]*background:\s*var\(--org-brand-action,\s*#2f6fed\)/,
+    );
+    expect(projectSettingsCss).toMatch(
+      /\.ps-btn-primary:hover:not\(:disabled\)\s*\{[^}]*color-mix\([^}]*var\(--org-brand-action,\s*#2f6fed\)/,
+    );
+    expect(projectSettingsCss).toMatch(
+      /\.ps-control:focus\s*\{[^}]*border-color:\s*var\(--org-brand-action,\s*#2f6fed\)[^}]*color-mix\(/,
+    );
+    expect(projectSettingsCss).toMatch(
+      /\.ps-switch input:focus-visible \+ span\s*\{[^}]*outline:\s*2px solid var\(--org-brand-action,\s*#2f6fed\)/,
     );
   });
 
@@ -9514,14 +9592,19 @@ describe("OpsReferenceApp live task smoke", () => {
   it("portals nested live review and preserves the outer modal isolation stack", () => {
     const { reviewDialog, reviewTrigger, taskDrawer } = openNestedLiveReview();
     const outerLayer = taskDrawer.closest(".ops-drawer-layer");
+    const outerPortal = outerLayer?.closest(".organization-brand-theme-portal");
+    const reviewPortal = reviewDialog.closest(
+      ".organization-brand-theme-portal",
+    );
     const appContainer = document.querySelector(".ops-reference-shell")
       ?.parentElement?.parentElement;
 
-    expect(reviewDialog.parentElement).toBe(document.body);
-    expect(reviewDialog).not.toHaveAttribute("inert");
-    expect(reviewDialog).not.toHaveAttribute("aria-hidden");
-    expect(outerLayer).toHaveAttribute("inert");
-    expect(outerLayer).toHaveAttribute("aria-hidden", "true");
+    expect(reviewPortal).toHaveClass("organization-brand-theme");
+    expect(reviewPortal?.parentElement).toBe(document.body);
+    expect(reviewPortal).not.toHaveAttribute("inert");
+    expect(reviewPortal).not.toHaveAttribute("aria-hidden");
+    expect(outerPortal).toHaveAttribute("inert");
+    expect(outerPortal).toHaveAttribute("aria-hidden", "true");
     expect(taskDrawer).not.toHaveAttribute("aria-modal");
     expect(appContainer).toHaveAttribute("inert");
     expect(appContainer).toHaveAttribute("aria-hidden", "true");
@@ -9530,8 +9613,8 @@ describe("OpsReferenceApp live task smoke", () => {
 
     expect(reviewTrigger).toHaveFocus();
     expect(taskDrawer).toHaveAttribute("aria-modal", "true");
-    expect(outerLayer).not.toHaveAttribute("inert");
-    expect(outerLayer).not.toHaveAttribute("aria-hidden");
+    expect(outerPortal).not.toHaveAttribute("inert");
+    expect(outerPortal).not.toHaveAttribute("aria-hidden");
     expect(appContainer).toHaveAttribute("inert");
     expect(appContainer).toHaveAttribute("aria-hidden", "true");
 

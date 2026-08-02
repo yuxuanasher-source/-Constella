@@ -1,6 +1,13 @@
-import type { CSSProperties, ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 
 import type { PublishedOrganizationBrand } from "@/features/organizations/organization-brand";
+
+const OrganizationBrandStyleContext = createContext<CSSProperties | null>(null);
 
 export function OrganizationBrandTheme({
   brand,
@@ -16,7 +23,24 @@ export function OrganizationBrandTheme({
   } as CSSProperties;
 
   return (
-    <div className="organization-brand-theme" style={style}>
+    <OrganizationBrandStyleContext.Provider value={style}>
+      <div className="organization-brand-theme" style={style}>
+        {children}
+      </div>
+    </OrganizationBrandStyleContext.Provider>
+  );
+}
+
+export function OrganizationBrandPortal({ children }: { children: ReactNode }) {
+  const style = useContext(OrganizationBrandStyleContext);
+
+  if (!style) return <>{children}</>;
+
+  return (
+    <div
+      className="organization-brand-theme organization-brand-theme-portal"
+      style={style}
+    >
       {children}
     </div>
   );
