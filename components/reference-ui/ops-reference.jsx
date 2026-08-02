@@ -217,7 +217,7 @@ function Button({
     },
     link: {
       bg: "transparent",
-      color: "var(--org-brand-action, var(--blue-600))",
+      color: "var(--blue-600)",
       border: "none",
       hover: "transparent",
     },

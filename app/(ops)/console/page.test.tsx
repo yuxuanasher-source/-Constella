@@ -285,7 +285,25 @@ describe("console route", () => {
         role: "owner",
       });
 
-      const { container } = render(await ConsolePage());
+      const renderedShell = await ConsolePage();
+      const clientOrganizationSettings = (
+        renderedShell.props as {
+          organizationSettings: {
+            brand: PublishedOrganizationBrand;
+            logoStoragePath: string | null;
+            logoUrl: string | null;
+          };
+        }
+      ).organizationSettings;
+      const renderedShellProps = JSON.stringify(renderedShell.props);
+
+      expect(clientOrganizationSettings.logoStoragePath).toBeNull();
+      expect(clientOrganizationSettings.brand.logoStoragePath).toBeNull();
+      expect(renderedShellProps).not.toContain(
+        "11111111-1111-4111-8111-111111111111/brand-logos/33333333-3333-4333-8333-333333333333.webp",
+      );
+
+      const { container } = render(renderedShell);
 
       expect(getPrivateStorageBucket).toHaveBeenCalledOnce();
       expect(from).toHaveBeenCalledWith("jy-private");

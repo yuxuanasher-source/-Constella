@@ -2709,6 +2709,9 @@ describe("OpsReferenceApp project smoke", () => {
       "--org-brand-action": "#663400",
       "--org-brand-soft": "#F0E7DE",
     });
+    expect(
+      container.querySelector('button[data-button-kind="link"]'),
+    ).toHaveStyle({ color: "var(--blue-600)" });
     expect(container.innerHTML).not.toContain(
       "11111111-1111-4111-8111-111111111111/brand-logos/33333333-3333-4333-8333-333333333333.webp",
     );

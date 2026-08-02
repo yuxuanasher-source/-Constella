@@ -27,6 +27,74 @@ const BRAND: PublishedOrganizationBrand = {
   },
 };
 
+function extractFlatCssBlock(stylesheet: string, selector: string) {
+  const selectorStart = stylesheet.indexOf(selector);
+  if (selectorStart < 0) {
+    throw new Error(`Missing CSS selector: ${selector}`);
+  }
+
+  const openingBrace = stylesheet.indexOf("{", selectorStart + selector.length);
+  if (openingBrace < 0) {
+    throw new Error(`Missing opening brace for CSS selector: ${selector}`);
+  }
+  if (stylesheet.slice(selectorStart, openingBrace).trim() !== selector) {
+    throw new Error(`Unexpected CSS selector header: ${selector}`);
+  }
+
+  const closingBrace = stylesheet.indexOf("}", openingBrace + 1);
+  if (closingBrace < 0) {
+    throw new Error(`Missing closing brace for CSS selector: ${selector}`);
+  }
+
+  return stylesheet.slice(openingBrace + 1, closingBrace);
+}
+
+function readDeclarations(block: string) {
+  return new Map(
+    block
+      .split(";")
+      .map((declaration) => declaration.trim())
+      .filter(Boolean)
+      .map((declaration) => {
+        const separator = declaration.indexOf(":");
+        return [
+          declaration.slice(0, separator).trim(),
+          declaration.slice(separator + 1).trim(),
+        ] as const;
+      }),
+  );
+}
+
+function expectScopedConsoleTokens(stylesheet: string) {
+  const scopedBlock = extractFlatCssBlock(
+    stylesheet,
+    ".organization-brand-theme",
+  );
+  const declarations = readDeclarations(scopedBlock);
+
+  expect(declarations.get("--ops-primary")).toMatch(
+    /^var\(--org-brand-action(?:,|\))/,
+  );
+  expect(declarations.get("--ops-primary-soft")).toMatch(
+    /^var\(--org-brand-soft(?:,|\))/,
+  );
+
+  const fixedSemanticTokens = {
+    "--ops-success": "#00B42A",
+    "--ops-warning": "#FF7D00",
+    "--ops-danger": "#F53F3F",
+    "--ops-info": "#165DFF",
+    "--ok-600": "#00B42A",
+    "--warn-600": "#FF7D00",
+    "--danger-600": "#F53F3F",
+  };
+  Object.entries(fixedSemanticTokens).forEach(([token, expected]) => {
+    const value = declarations.get(token);
+    expect(value?.toLowerCase()).toBe(expected.toLowerCase());
+    expect(value).not.toContain("var(--org-brand-");
+  });
+}
+
 describe("OrganizationBrandTheme", () => {
   it("scopes the published organization palette to its child subtree", () => {
     const { container } = render(
@@ -56,19 +124,7 @@ describe("OrganizationBrandTheme", () => {
       "utf8",
     );
 
-    expect(tokens).toMatch(
-      /\.organization-brand-theme\s*\{[\s\S]*--ops-primary:\s*var\(--org-brand-action/,
-    );
-    expect(tokens).toMatch(
-      /\.organization-brand-theme\s*\{[\s\S]*--ops-primary-soft:\s*var\(--org-brand-soft/,
-    );
-    expect(tokens).toMatch(/--ops-success:\s*#00B42A/i);
-    expect(tokens).toMatch(/--ops-warning:\s*#FF7D00/i);
-    expect(tokens).toMatch(/--ops-danger:\s*#F53F3F/i);
-    expect(tokens).not.toMatch(
-      /--(?:ops-(?:success|warning|danger)|ok-600|warn-600|danger-600):[^;]*var\(--org-brand-/,
-    );
-    expect(tokens).not.toMatch(/--blue-[^:]+:[^;]*var\(--org-brand-/);
+    expectScopedConsoleTokens(tokens);
     expect(foundations).toMatch(
       /\.organization-brand-theme\s+\.ops-reference-nav-item\[data-active="true"\][\s\S]*var\(--org-brand-soft[\s\S]*var\(--org-brand-action/,
     );
@@ -82,5 +138,27 @@ describe("OrganizationBrandTheme", () => {
       /\.organization-brand-theme[\s\S]*input\[type="checkbox"\][\s\S]*accent-color:\s*var\(--org-brand-action/,
     );
     expect(foundations).toMatch(/prefers-reduced-motion:\s*reduce/);
+  });
+
+  it("does not let correct root semantics mask a mutated scoped token", () => {
+    const tokens = fs.readFileSync(
+      path.join(process.cwd(), "styles/ops/tokens.css"),
+      "utf8",
+    );
+    const scopedBlock = extractFlatCssBlock(
+      tokens,
+      ".organization-brand-theme",
+    );
+    const mutatedBlock = scopedBlock.replace(
+      /--ops-success:\s*#[0-9a-f]+;/i,
+      "--ops-success: var(--org-brand-action);",
+    );
+    const mutatedTokens = tokens.replace(scopedBlock, mutatedBlock);
+
+    expect(mutatedBlock).not.toBe(scopedBlock);
+    expect(extractFlatCssBlock(mutatedTokens, ":root")).toMatch(
+      /--ops-success:\s*#00b42a/i,
+    );
+    expect(() => expectScopedConsoleTokens(mutatedTokens)).toThrow();
   });
 });

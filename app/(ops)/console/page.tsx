@@ -28,10 +28,15 @@ export default async function ConsolePage() {
   const organizationSettings = organizationSettingsFromAuth(auth);
   const logoUrl = await createConsoleBrandLogoSignedUrl(
     supabase,
-    organizationSettings.logoStoragePath,
+    organizationSettings.brand.logoStoragePath,
   );
-  const brandedOrganizationSettings = {
+  const clientOrganizationSettings = {
     ...organizationSettings,
+    brand: {
+      ...organizationSettings.brand,
+      logoStoragePath: null,
+    },
+    logoStoragePath: null,
     logoUrl,
   };
 
@@ -41,7 +46,7 @@ export default async function ConsolePage() {
         dashboardHome={dashboardHome}
         dashboardHomeError={dashboardHomeError}
         currentUser={currentUser}
-        organizationSettings={brandedOrganizationSettings}
+        organizationSettings={clientOrganizationSettings}
       />
     );
   }
@@ -52,7 +57,7 @@ export default async function ConsolePage() {
       dashboardHome={dashboardHome}
       dashboardHomeError={dashboardHomeError}
       currentUser={currentUser}
-      organizationSettings={brandedOrganizationSettings}
+      organizationSettings={clientOrganizationSettings}
     />
   );
 }
