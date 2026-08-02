@@ -456,6 +456,8 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [contactCardsError, setContactCardsError] = React.useState("");
   const [taskPreview, setTaskPreview] = React.useState(null);
   const [delivery, setDelivery] = React.useState(null);
+  const [sensitiveDeliveryPending, setSensitiveDeliveryPending] =
+    React.useState(false);
   const [taskExpiresAt, setTaskExpiresAt] = React.useState({});
   const [reopenReasons, setReopenReasons] = React.useState({});
   const [submissions, setSubmissions] = React.useState({});
@@ -472,6 +474,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const preflightGenerationRef = React.useRef(0);
   const createGenerationRef = React.useRef(0);
   const createPendingRef = React.useRef(false);
+  const sensitiveDeliveryPendingRef = React.useRef(false);
   const deliveryRef = React.useRef(null);
   deliveryRef.current = delivery;
   const issueListGenerationRef = React.useRef(0);
@@ -503,6 +506,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       preflightGenerationRef.current += 1;
       createGenerationRef.current += 1;
       createPendingRef.current = false;
+      sensitiveDeliveryPendingRef.current = false;
       issueListGenerationRef.current += 1;
       issueResolveGenerations.clear();
       resolvingIssueIds.clear();
@@ -1225,26 +1229,41 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   };
 
   const rotateTaskToken = async (task) => {
-    if (!actions.rotateAdmissionShareBoardToken) return;
+    if (
+      !actions.rotateAdmissionShareBoardToken ||
+      sensitiveDeliveryPendingRef.current
+    ) {
+      return;
+    }
+    sensitiveDeliveryPendingRef.current = true;
+    setSensitiveDeliveryPending(true);
     const requestProject = {
       id: project.id,
       name: project.name,
     };
-    const result = await runTaskAction(
-      task.id,
-      () => actions.rotateAdmissionShareBoardToken(requestProject.id, task.id),
-      "",
-      { refresh: false, previewTask: task },
-    );
-    if (result) {
-      setDelivery({
-        kind: "reset",
-        projectId: requestProject.id,
-        projectName: requestProject.name || requestProject.id,
-        title: `${task.title}（已重置）`,
-        shareUrl: result?.shareUrl || "",
-        accessCode: result?.accessCode || "",
-      });
+    try {
+      const result = await runTaskAction(
+        task.id,
+        () =>
+          actions.rotateAdmissionShareBoardToken(requestProject.id, task.id),
+        "",
+        { refresh: false, previewTask: task },
+      );
+      if (result && mountedRef.current) {
+        const nextDelivery = {
+          kind: "reset",
+          projectId: requestProject.id,
+          projectName: requestProject.name || requestProject.id,
+          title: `${task.title}（已重置）`,
+          shareUrl: result?.shareUrl || "",
+          accessCode: result?.accessCode || "",
+        };
+        deliveryRef.current = nextDelivery;
+        setDelivery(nextDelivery);
+      }
+    } finally {
+      sensitiveDeliveryPendingRef.current = false;
+      if (mountedRef.current) setSensitiveDeliveryPending(false);
     }
   };
 
@@ -1380,7 +1399,13 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   };
 
   const closeCenter = () => {
-    if (createPendingRef.current || deliveryRef.current) return;
+    if (
+      createPendingRef.current ||
+      sensitiveDeliveryPendingRef.current ||
+      deliveryRef.current
+    ) {
+      return;
+    }
     candidateGenerationRef.current += 1;
     shareBrandGenerationRef.current += 1;
     contactCardGenerationRef.current += 1;
@@ -1395,6 +1420,10 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     onClose?.();
   };
 
+  const centerMessage = sensitiveDeliveryPending
+    ? "正在重置分享链接，请等待一次性交付信息返回…"
+    : message;
+
   return (
     <>
       <style>{admissionShareCss}</style>
@@ -1403,6 +1432,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
         className="admission-share-center"
         role="dialog"
         aria-modal="true"
+        aria-busy={sensitiveDeliveryPending ? "true" : undefined}
         aria-hidden={wizardOpen || Boolean(delivery) ? "true" : undefined}
         inert={wizardOpen || Boolean(delivery)}
         aria-label={`${project.name || "项目"} 录屏分享中心`}
@@ -1465,7 +1495,11 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
             </div>
             <ActionButton
               aria-label="关闭录屏分享中心"
-              disabled={busy === "create" || Boolean(delivery)}
+              disabled={
+                busy === "create" ||
+                sensitiveDeliveryPending ||
+                Boolean(delivery)
+              }
               onClick={closeCenter}
             >
               关闭
@@ -1555,15 +1589,15 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
             aria-live="polite"
             role="status"
             style={{
-              minHeight: message ? 37 : 0,
-              padding: message ? "9px 20px" : 0,
-              borderBottom: message ? "1px solid var(--line)" : 0,
-              background: message ? "var(--blue-50)" : "transparent",
+              minHeight: centerMessage ? 37 : 0,
+              padding: centerMessage ? "9px 20px" : 0,
+              borderBottom: centerMessage ? "1px solid var(--line)" : 0,
+              background: centerMessage ? "var(--blue-50)" : "transparent",
               color: "var(--blue-700)",
               fontSize: 13,
             }}
           >
-            {message}
+            {centerMessage}
           </div>
 
           <main

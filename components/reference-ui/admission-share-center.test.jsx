@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -1239,6 +1240,112 @@ describe("AdmissionShareCenter", () => {
     );
     expect(await screen.findByText("轮换后预览")).toBeInTheDocument();
     expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("locks every center close path until a pending token rotation is delivered", async () => {
+    const task = shareTask("share-rotate-lock", "一次性轮换任务");
+    const onClose = vi.fn();
+    let finishRotate;
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.rotateAdmissionShareBoardToken.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishRotate = resolve;
+        }),
+    );
+    renderShareCenter(actions, onClose);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    const rotateButton = await screen.findByRole("button", {
+      name: "重置分享链接",
+    });
+    act(() => {
+      rotateButton.click();
+      rotateButton.click();
+    });
+
+    const center = screen.getByRole("dialog", {
+      name: "Alpha Project 录屏分享中心",
+    });
+    expect(center).toHaveAttribute("aria-busy", "true");
+    expect(
+      screen.getByText("正在重置分享链接，请等待一次性交付信息返回…"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "关闭录屏分享中心" }),
+    ).toBeDisabled();
+    fireEvent.keyDown(center, { key: "Escape" });
+    fireEvent.click(center);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(actions.rotateAdmissionShareBoardToken).toHaveBeenCalledTimes(1);
+
+    finishRotate({
+      shareUrl: "https://app.example/share/admission/new-one-time-token",
+      accessCode: "13572468",
+    });
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    expect(delivery).toHaveTextContent(
+      "https://app.example/share/admission/new-one-time-token",
+    );
+    expect(delivery).toHaveTextContent("13572468");
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      within(delivery).getByRole("button", { name: "关闭交付信息" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "关闭录屏分享中心" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("unlocks token rotation after a safe failure and allows retry or close", async () => {
+    const task = shareTask("share-rotate-failure", "轮换失败任务");
+    const onClose = vi.fn();
+    let failRotate;
+    const failure = new Error(
+      "postgres tokenHash organizations/private/rotate-token",
+    );
+    failure.status = 503;
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.rotateAdmissionShareBoardToken.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          failRotate = () => reject(failure);
+        }),
+    );
+    renderShareCenter(actions, onClose);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "重置分享链接" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "关闭录屏分享中心" }),
+    ).toBeDisabled();
+
+    failRotate();
+    expect(
+      await screen.findByText("分享任务操作失败，请稍后重试"),
+    ).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("postgres");
+    expect(document.body).not.toHaveTextContent("organizations/private");
+    expect(
+      screen.getByRole("dialog", {
+        name: "Alpha Project 录屏分享中心",
+      }),
+    ).not.toHaveAttribute("aria-busy");
+    expect(screen.getByRole("button", { name: "重置分享链接" })).toBeEnabled();
+    const closeButton = screen.getByRole("button", {
+      name: "关闭录屏分享中心",
+    });
+    expect(closeButton).toBeEnabled();
+    fireEvent.click(closeButton);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("ignores stale contact-card loads after a project switch", async () => {
