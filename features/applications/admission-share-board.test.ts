@@ -3063,6 +3063,8 @@ describe("admission share board service", () => {
   });
 
   it("paginates 1001 public items, drafts, and final receipt rows without losing shared presentation fields", async () => {
+    const receiptRemark = "  \t\n\u00a0Precise review\u00a0\n\t  ";
+    const postgresTrimmedReceiptRemark = "\t\n\u00a0Precise review\u00a0\n\t";
     const boardRow = publicBoardRow({ review_state: "in_progress" });
     const itemRows = Array.from({ length: 1001 }, (_, index) =>
       publicItemRow(index, {
@@ -3153,7 +3155,7 @@ describe("admission share board service", () => {
       id: `receipt-${index.toString().padStart(4, "0")}`,
       recording_submission_id: item.recording_submission_id,
       decision: "selected",
-      remark: "",
+      remark: index === 0 ? receiptRemark : "",
       reason_codes: [],
     }));
     const itemPage = pagedSelect(itemRows);
@@ -3215,6 +3217,9 @@ describe("admission share board service", () => {
     expect(snapshot?.items[1]?.streamer.accountLabel).toBe(
       "Bilibili / early-account",
     );
+    expect(snapshot?.items[0]?.finalReview?.remark).toBe(
+      postgresTrimmedReceiptRemark,
+    );
     expect(itemPage.range.mock.calls).toEqual([
       [0, 999],
       [1000, 1999],
@@ -3233,9 +3238,16 @@ describe("admission share board service", () => {
       ...snapshot!,
       tokenHash: undefined,
       accessCodeHash: undefined,
-      items: snapshot!.items.map(({ storagePath, ...item }) => ({
+      items: snapshot!.items.map(({ storagePath, ...item }, index) => ({
         ...item,
         hasPrivateStorage: Boolean(storagePath),
+        finalReview:
+          index === 0 && item.finalReview
+            ? {
+                ...item.finalReview,
+                remark: postgresTrimmedReceiptRemark,
+              }
+            : item.finalReview,
       })),
     };
     expect(toAdmissionSharePresentation(safeInternalSnapshot)).toEqual(

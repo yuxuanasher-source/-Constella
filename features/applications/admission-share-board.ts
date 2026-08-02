@@ -1326,7 +1326,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
         item.recording_submission_id,
         {
           decision: item.decision,
-          remark: item.remark?.trim() || "",
+          remark: trimPostgresBtrimSpaces(item.remark),
           reasonCodes: item.reason_codes,
           submittedAt: latestRow.submitted_at,
         },
@@ -3820,6 +3820,10 @@ function isAdmissionReviewDraftComplete(row: AdmissionReviewDraftRow) {
   // PostgreSQL btrim(text) removes U+0020 spaces by default, not every JS
   // whitespace character. Keep public progress identical to the SQL aggregate.
   return /[^ ]/u.test(row.remark ?? "");
+}
+
+function trimPostgresBtrimSpaces(value: string | null) {
+  return (value ?? "").replace(/^ +| +$/gu, "");
 }
 
 function accountLabel(
