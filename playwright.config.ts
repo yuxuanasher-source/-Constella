@@ -2,6 +2,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 const PORT = Number(process.env.OPS_VISUAL_PORT ?? 3107);
 const baseURL = `http://127.0.0.1:${PORT}`;
+const task11Requested = process.argv.some((argument) =>
+  argument.includes("organization-brand-share.spec"),
+);
 const webServerEnv = {
   NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL ?? baseURL,
   NEXT_PUBLIC_SUPABASE_ANON_KEY:
@@ -30,14 +33,34 @@ export default defineConfig({
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
-  webServer: {
-    command: `pnpm dev --hostname 127.0.0.1 --port ${PORT}`,
-    url: baseURL,
-    env: webServerEnv,
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
+  webServer: task11Requested
+    ? {
+        command:
+          "pnpm exec tsx tests/visual/organization-brand-share.spec.ts --serve-task11",
+        url: baseURL,
+        env: {
+          ...process.env,
+          TASK11_APP_PORT: String(PORT),
+        },
+        reuseExistingServer: false,
+        timeout: 180_000,
+      }
+    : {
+        command: `pnpm dev --hostname 127.0.0.1 --port ${PORT}`,
+        url: baseURL,
+        env: webServerEnv,
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+      },
   projects: [
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        ...browserChannel,
+        viewport: { width: 1440, height: 900 },
+      },
+    },
     {
       name: "chromium-1920",
       use: {
