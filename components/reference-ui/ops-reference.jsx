@@ -28036,6 +28036,56 @@ function OpsReferenceInner({
       return Array.isArray(body.candidates) ? body.candidates : [];
     };
 
+    const getAdmissionShareBrandPreview = async () => {
+      const body = await fetchJson(
+        "/api/organization/brand",
+        "get admission share brand preview failed",
+        { method: "GET" },
+      );
+      const published = body?.studio?.published || {};
+      return {
+        version:
+          Number.isSafeInteger(published.version) && published.version >= 0
+            ? published.version
+            : 0,
+        logoText:
+          typeof published.logoText === "string" ? published.logoText : "组织",
+        brandName:
+          typeof published.brandName === "string"
+            ? published.brandName
+            : "组织",
+        brandTagline:
+          typeof published.brandTagline === "string"
+            ? published.brandTagline
+            : "",
+        primaryColor:
+          typeof published.primaryColor === "string"
+            ? published.primaryColor
+            : "#4E5969",
+      };
+    };
+
+    const listAdmissionShareContactCards = async () => {
+      const body = await fetchJson(
+        "/api/organization/contact-cards",
+        "list admission share contact cards failed",
+        { method: "GET" },
+      );
+      return (Array.isArray(body.contactCards) ? body.contactCards : [])
+        .filter((card) => card?.status === "active")
+        .map((card) => ({
+          id: typeof card.id === "string" ? card.id : "",
+          displayName:
+            typeof card.displayName === "string" ? card.displayName : "",
+          title: typeof card.title === "string" ? card.title : "",
+          phone: typeof card.phone === "string" ? card.phone : null,
+          email: typeof card.email === "string" ? card.email : null,
+          wechat: typeof card.wechat === "string" ? card.wechat : null,
+          status: "active",
+        }))
+        .filter((card) => card.id && card.displayName);
+    };
+
     const openAdmissionShareCandidatePlayback = (
       projectId,
       recordingSubmissionId,
@@ -28078,6 +28128,23 @@ function OpsReferenceInner({
           typeof body.nextCursor === "string" && body.nextCursor.trim()
             ? body.nextCursor.trim()
             : null,
+      };
+    };
+
+    const getAdmissionShareBoardDetail = async (projectId, shareBoardId) => {
+      const body = await fetchJson(
+        `/api/projects/${encodeURIComponent(
+          projectId,
+        )}/admission-share-boards?boardId=${encodeURIComponent(shareBoardId)}`,
+        "get admission share board detail failed",
+        { method: "GET" },
+      );
+      return {
+        id:
+          typeof body?.shareBoard?.id === "string"
+            ? body.shareBoard.id
+            : shareBoardId,
+        presentation: body?.shareBoard?.presentation || null,
       };
     };
 
@@ -28272,9 +28339,12 @@ function OpsReferenceInner({
       requestRecordingAiAnalysis,
       confirmRecordingProfileInsight,
       listAdmissionShareCandidates,
+      getAdmissionShareBrandPreview,
+      listAdmissionShareContactCards,
       openAdmissionShareCandidatePlayback,
       preflightAdmissionShareBoard,
       listAdmissionShareBoards,
+      getAdmissionShareBoardDetail,
       createAdmissionShareBoard,
       extendAdmissionShareBoard,
       reopenAdmissionShareBoard,

@@ -9703,6 +9703,160 @@ describe("OpsReferenceApp admission smoke", () => {
     ).toHaveLength(2);
   });
 
+  it("loads whitelisted share branding and an existing board presentation through focused actions", async () => {
+    const boardId = "00000000-0000-4000-8000-000000000001";
+    const presentation = {
+      id: boardId,
+      brandVersion: 3,
+      contactCardId: null,
+      title: "持久化分享预览",
+      purpose: "核对同源字段",
+      mode: "preview",
+      status: "active",
+      reviewState: "not_started",
+      roundNumber: 2,
+      expiresAt: "2099-08-01T00:00:00.000Z",
+      project: { id: "project-1", name: "Fixture Project", code: "FP-001" },
+      progress: { completed: 0, total: 1 },
+      latestSubmission: null,
+      brand: {
+        logoText: "北辰",
+        brandName: "北辰直播运营",
+        brandTagline: "专业协作，可信交付",
+        primaryColor: "#7A3E00",
+      },
+      contactCard: null,
+      items: [
+        {
+          applicationId: "app-1",
+          recordingSubmissionId: "recording-1",
+          recordingVersion: 3,
+          sourceHealth: "original_ready",
+          streamer: {
+            id: "streamer-1",
+            displayName: "主播甲",
+            accountLabel: "dy-1",
+          },
+          finalReview: null,
+        },
+      ],
+      sourceDiagnostics: [],
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target === "/api/applications/admission-board") {
+        return admissionBoardResponse();
+      }
+      if (target === "/api/projects/project-1/admission-share-candidates") {
+        return { ok: true, json: async () => ({ candidates: [] }) };
+      }
+      if (
+        target === "/api/projects/project-1/admission-share-boards" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareBoards: [admissionShareTask(boardId, "持久化分享预览")],
+            nextCursor: null,
+          }),
+        };
+      }
+      if (target === "/api/organization/brand") {
+        return {
+          ok: true,
+          json: async () => ({
+            studio: {
+              published: {
+                ...publishedOrganizationBrand,
+                logoStoragePath: "organizations/private/brand.webp",
+              },
+            },
+          }),
+        };
+      }
+      if (target === "/api/organization/contact-cards") {
+        return {
+          ok: true,
+          json: async () => ({
+            contactCards: [
+              {
+                id: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+                displayName: "林商务",
+                title: "品牌合作负责人",
+                phone: "13800000000",
+                email: null,
+                wechat: null,
+                status: "active",
+                internalNote: "must-not-reach-preview",
+              },
+              {
+                id: "8c3a9444-b47a-4b29-93d7-b31a650da43b",
+                displayName: "停用联系人",
+                title: "旧对接人",
+                status: "disabled",
+              },
+            ],
+          }),
+        };
+      }
+      if (
+        target ===
+        `/api/projects/project-1/admission-share-boards?boardId=${boardId}`
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareBoard: {
+              id: boardId,
+              presentation,
+              tokenHash: "must-never-render",
+            },
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={pagedShareAdmissionApplications()}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "录屏分享中心" }),
+    );
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "查看 持久化分享预览 分享预览",
+      }),
+    );
+
+    expect(
+      await screen.findByRole("region", {
+        name: "持久化分享预览 已保存分享预览",
+      }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/organization/brand",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/organization/contact-cards",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/projects/project-1/admission-share-boards?boardId=${boardId}`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(document.body).not.toHaveTextContent("organizations/private");
+    expect(document.body).not.toHaveTextContent("must-never-render");
+    expect(document.body).not.toHaveTextContent("must-not-reach-preview");
+  });
+
   it("stops a repeated admission share cursor and exposes a safe task-load error", async () => {
     const fetchMock = vi.fn(async (url, init) => {
       const target = String(url);

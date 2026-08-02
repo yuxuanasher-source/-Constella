@@ -90,9 +90,87 @@ const candidates = [
 
 const project = {
   id: "project-1",
+  code: "ALPHA-01",
   name: "Alpha Project",
   status: "active",
 };
+
+const publishedShareBrand = {
+  version: 4,
+  logoText: "星河",
+  brandName: "星河直播运营",
+  brandTagline: "专业协作，可信交付",
+  primaryColor: "#6B3F1D",
+};
+
+const activeContactCard = {
+  id: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+  displayName: "林商务",
+  title: "品牌合作负责人",
+  phone: "13800000000",
+  email: "lin@example.com",
+  wechat: "xinghe-lin",
+  status: "active",
+};
+
+const disabledContactCard = {
+  ...activeContactCard,
+  id: "8c3a9444-b47a-4b29-93d7-b31a650da43b",
+  displayName: "旧联系人",
+  status: "disabled",
+};
+
+function persistedPresentation(overrides = {}) {
+  return {
+    id: "share-1",
+    brandVersion: 4,
+    contactCardId: activeContactCard.id,
+    title: "服务端持久化复核",
+    purpose: "供品牌方确认本轮候选",
+    mode: "formal_review",
+    status: "active",
+    reviewState: "not_started",
+    roundNumber: 3,
+    expiresAt: "2099-08-01T00:00:00.000Z",
+    project: {
+      id: "project-1",
+      name: "持久化项目名称",
+      code: "PERSIST-01",
+    },
+    progress: { completed: 0, total: 2 },
+    latestSubmission: null,
+    brand: publishedShareBrand,
+    contactCard: activeContactCard,
+    items: [
+      {
+        applicationId: "app-1",
+        recordingSubmissionId: "recording-v1",
+        recordingVersion: 1,
+        sourceHealth: "original_ready",
+        streamer: {
+          id: "streamer-1",
+          displayName: "主播甲",
+          accountLabel: "dy_1",
+        },
+        finalReview: null,
+      },
+      {
+        applicationId: "app-3",
+        recordingSubmissionId: "recording-external",
+        recordingVersion: 1,
+        sourceHealth: "external_only",
+        streamer: {
+          id: "streamer-3",
+          displayName: "主播丙",
+          accountLabel: "ks_3",
+        },
+        finalReview: null,
+      },
+    ],
+    sourceDiagnostics: [],
+    ...overrides,
+  };
+}
 
 function readyResult(items) {
   return {
@@ -108,6 +186,12 @@ function readyResult(items) {
 
 function createActions() {
   return {
+    getAdmissionShareBrandPreview: vi
+      .fn()
+      .mockResolvedValue(publishedShareBrand),
+    listAdmissionShareContactCards: vi
+      .fn()
+      .mockResolvedValue([activeContactCard, disabledContactCard]),
     listAdmissionShareCandidates: vi.fn().mockResolvedValue(candidates),
     openAdmissionShareCandidatePlayback: vi.fn(),
     preflightAdmissionShareBoard: vi
@@ -120,10 +204,20 @@ function createActions() {
       nextCursor: null,
     }),
     createAdmissionShareBoard: vi.fn().mockResolvedValue({
-      shareBoard: { id: "share-1", mode: "formal_review" },
+      shareBoard: {
+        id: "share-1",
+        mode: "formal_review",
+        presentation: persistedPresentation(),
+      },
       shareUrl: "https://app.example/share/admission/plain-token",
       accessCode: "24681024",
     }),
+    getAdmissionShareBoardDetail: vi.fn().mockImplementation((_projectId, id) =>
+      Promise.resolve({
+        id,
+        presentation: persistedPresentation({ id }),
+      }),
+    ),
     extendAdmissionShareBoard: vi.fn().mockResolvedValue({ ok: true }),
     reopenAdmissionShareBoard: vi.fn().mockResolvedValue({ ok: true }),
     rotateAdmissionShareBoardToken: vi.fn().mockResolvedValue({
@@ -545,6 +639,300 @@ describe("AdmissionShareCenter", () => {
     expect(screen.queryByText("24681024")).not.toBeInTheDocument();
     expect(
       screen.queryByText("https://app.example/share/admission/plain-token"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("defaults to no contact, lists only active cards, and submits only the governed card id", async () => {
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+
+    const contactSelect = await screen.findByLabelText("对外联系名片");
+    expect(contactSelect).toHaveValue("");
+    expect(
+      within(contactSelect).getByText("不展示联系方式"),
+    ).toBeInTheDocument();
+    expect(within(contactSelect).getByText(/林商务/)).toBeInTheDocument();
+    expect(
+      within(contactSelect).queryByText(/旧联系人/),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(contactSelect, {
+      target: { value: activeContactCard.id },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    const preview = screen.getByRole("region", {
+      name: "将要创建的外部分享预览",
+    });
+    expect(within(preview).getByText("星河直播运营")).toBeInTheDocument();
+    expect(
+      within(preview).getByText(/项目 Alpha Project · ALPHA-01/),
+    ).toBeInTheDocument();
+    expect(within(preview).getByText("林商务")).toBeInTheDocument();
+    expect(
+      within(preview).getByText(/创建成功后以服务端快照为准/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+    await waitFor(() =>
+      expect(actions.createAdmissionShareBoard).toHaveBeenCalledTimes(1),
+    );
+    const payload = actions.createAdmissionShareBoard.mock.calls[0][1];
+    expect(payload.contactCardId).toBe(activeContactCard.id);
+    expect(payload).not.toHaveProperty("brandSnapshot");
+    expect(payload).not.toHaveProperty("contactCardSnapshot");
+    expect(payload).not.toHaveProperty("brandVersion");
+    expect(JSON.stringify(payload)).not.toMatch(/logoStoragePath|storagePath/u);
+  });
+
+  it("keeps the no-contact path usable while cards fail and supports a safe retry", async () => {
+    actions.listAdmissionShareContactCards
+      .mockRejectedValueOnce(new Error("名片服务暂不可用"))
+      .mockResolvedValueOnce([activeContactCard]);
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+
+    expect(
+      await screen.findByRole("alert", { name: "联系名片加载失败" }),
+    ).toHaveTextContent("不影响选择不展示");
+    expect(screen.getByLabelText("对外联系名片")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "重试加载联系名片" }));
+    expect(
+      await screen.findByRole("option", { name: /林商务/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+    await waitFor(() =>
+      expect(actions.createAdmissionShareBoard).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      actions.createAdmissionShareBoard.mock.calls[0][1].contactCardId,
+    ).toBeNull();
+  });
+
+  it("replaces the unsaved preview with the POST persisted presentation in delivery", async () => {
+    let finishCreate;
+    actions.createAdmissionShareBoard.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishCreate = resolve;
+        }),
+    );
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.change(await screen.findByLabelText("分享名称"), {
+      target: { value: "浏览器临时标题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    expect(screen.getByText("浏览器临时标题")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+
+    finishCreate({
+      shareBoard: {
+        id: "share-1",
+        presentation: persistedPresentation(),
+      },
+      shareUrl: "https://app.example/share/admission/plain-token",
+      accessCode: "24681024",
+    });
+
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    const savedPreview = within(delivery).getByRole("region", {
+      name: "已保存的外部分享预览",
+    });
+    expect(
+      within(savedPreview).getByText("服务端持久化复核"),
+    ).toBeInTheDocument();
+    expect(
+      within(savedPreview).getByText(/持久化项目名称/),
+    ).toBeInTheDocument();
+    expect(within(savedPreview).getByText(/PERSIST-01/)).toBeInTheDocument();
+    expect(
+      within(savedPreview).queryByText("浏览器临时标题"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("loads an existing persisted preview on demand and keeps a disabled card snapshot visible", async () => {
+    const detail = persistedPresentation({
+      id: "00000000-0000-4000-8000-000000000001",
+      contactCardId: disabledContactCard.id,
+      contactCard: {
+        displayName: "旧联系人",
+        title: "原品牌对接人",
+        phone: "13900000000",
+      },
+      logoStoragePath: "organizations/private/logo.webp",
+      tokenHash: "must-never-render",
+      items: [
+        {
+          ...persistedPresentation().items[0],
+          storagePath: "organizations/private/recording.mp4",
+        },
+      ],
+    });
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [
+        shareTask("00000000-0000-4000-8000-000000000001", "历史品牌复核"),
+      ],
+      nextCursor: null,
+    });
+    actions.getAdmissionShareBoardDetail.mockResolvedValue({
+      id: detail.id,
+      presentation: detail,
+      accessCodeHash: "must-never-render-either",
+    });
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "查看 历史品牌复核 分享预览" }),
+    );
+
+    expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledWith(
+      "project-1",
+      "00000000-0000-4000-8000-000000000001",
+    );
+    const preview = await screen.findByRole("region", {
+      name: "历史品牌复核 已保存分享预览",
+    });
+    expect(within(preview).getByText("旧联系人")).toBeInTheDocument();
+    expect(within(preview).getByText(/原品牌对接人/)).toBeInTheDocument();
+    expect(preview).toHaveTextContent("主播甲");
+    expect(preview).not.toHaveTextContent("must-never-render");
+    expect(preview).not.toHaveTextContent("organizations/private");
+    expect(preview.querySelectorAll("li")).toHaveLength(1);
+  });
+
+  it("deduplicates pending detail clicks, retries errors, and ignores a stale project response", async () => {
+    let finishOldDetail;
+    const oldDetail = new Promise((resolve) => {
+      finishOldDetail = resolve;
+    });
+    actions.listAdmissionShareBoards.mockImplementation((projectId) =>
+      Promise.resolve({
+        shareBoards: [
+          shareTask(
+            projectId === "project-1"
+              ? "00000000-0000-4000-8000-000000000001"
+              : "00000000-0000-4000-8000-000000000002",
+            projectId === "project-1" ? "旧项目任务" : "新项目任务",
+          ),
+        ],
+        nextCursor: null,
+      }),
+    );
+    actions.getAdmissionShareBoardDetail.mockReturnValueOnce(oldDetail);
+    const view = renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    const oldButton = await screen.findByRole("button", {
+      name: "查看 旧项目任务 分享预览",
+    });
+    fireEvent.click(oldButton);
+    fireEvent.click(oldButton);
+    expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <AdmissionShareCenter
+        project={{
+          ...project,
+          id: "project-2",
+          name: "Beta Project",
+          code: "BETA-02",
+        }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("新项目任务")).toBeInTheDocument();
+    finishOldDetail({
+      id: "00000000-0000-4000-8000-000000000001",
+      presentation: persistedPresentation({ title: "不应出现的旧详情" }),
+    });
+    await Promise.resolve();
+    expect(screen.queryByText("不应出现的旧详情")).not.toBeInTheDocument();
+  });
+
+  it("retries a failed persisted preview without falling back to current organization state", async () => {
+    const task = shareTask(
+      "00000000-0000-4000-8000-000000000001",
+      "可重试历史任务",
+    );
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.getAdmissionShareBoardDetail
+      .mockRejectedValueOnce(new Error("详情服务暂不可用"))
+      .mockResolvedValueOnce({
+        id: task.id,
+        presentation: persistedPresentation({
+          id: task.id,
+          brand: { ...publishedShareBrand, brandName: "历史快照品牌" },
+        }),
+      });
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "查看 可重试历史任务 分享预览",
+      }),
+    );
+    expect(
+      await screen.findByRole("alert", {
+        name: "可重试历史任务 分享预览加载失败",
+      }),
+    ).toHaveTextContent("详情服务暂不可用");
+    expect(screen.queryByText("星河直播运营")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "重试 可重试历史任务 分享预览",
+      }),
+    );
+    expect(await screen.findByText("历史快照品牌")).toBeInTheDocument();
+    expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores stale contact-card loads after a project switch", async () => {
+    let finishOldCards;
+    const oldCards = new Promise((resolve) => {
+      finishOldCards = resolve;
+    });
+    const newCard = {
+      ...activeContactCard,
+      id: "7b2a8333-a36a-4a18-82c6-a20a540ca32a",
+      displayName: "新项目联系人",
+    };
+    actions.listAdmissionShareContactCards
+      .mockReturnValueOnce(oldCards)
+      .mockResolvedValueOnce([newCard]);
+    const view = renderShareCenter(actions);
+    view.rerender(
+      <AdmissionShareCenter
+        project={{
+          ...project,
+          id: "project-2",
+          name: "Beta Project",
+          code: "BETA-02",
+        }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    expect(
+      await screen.findByRole("option", { name: /新项目联系人/ }),
+    ).toBeInTheDocument();
+    finishOldCards([activeContactCard]);
+    await Promise.resolve();
+    expect(
+      screen.queryByRole("option", { name: /林商务/ }),
     ).not.toBeInTheDocument();
   });
 
