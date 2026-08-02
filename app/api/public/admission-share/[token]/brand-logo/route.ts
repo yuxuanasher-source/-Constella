@@ -58,6 +58,7 @@ export async function GET(
     }
 
     let upstream: Response;
+    let lifecycle: BrandLogoFetchLifecycle | null = null;
     try {
       const signed = await createSignedDownloadUrl({
         client: supabase,
@@ -69,19 +70,16 @@ export async function GET(
       if (!signedUrl) {
         throw brandLogoUnavailable();
       }
-      const controller = new AbortController();
-      const timeout = setTimeout(
-        () => controller.abort(),
-        BRAND_LOGO_FETCH_TIMEOUT_MS,
-      );
+      lifecycle = createBrandLogoFetchLifecycle();
       try {
         upstream = await fetch(signedUrl, {
           cache: "no-store",
           redirect: "error",
-          signal: controller.signal,
+          signal: lifecycle.signal,
         });
-      } finally {
-        clearTimeout(timeout);
+      } catch (error) {
+        lifecycle.finish();
+        throw error;
       }
     } catch {
       throw brandLogoUnavailable();
@@ -91,10 +89,12 @@ export async function GET(
       upstream.headers.get("content-type"),
     );
     if (!upstream.ok || !upstream.body || !contentType) {
+      lifecycle?.finish();
       await cancelUpstreamBody(upstream);
       throw brandLogoUnavailable();
     }
-    return new Response(upstream.body, {
+    const responseBody = controlledBrandLogoBody(upstream.body, lifecycle);
+    return new Response(responseBody, {
       status: 200,
       headers: {
         "Cache-Control": "private, no-store",
@@ -103,8 +103,142 @@ export async function GET(
       },
     });
   } catch (error) {
-    return publicAdmissionShareErrorResponse(error);
+    const response = publicAdmissionShareErrorResponse(error);
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
   }
+}
+
+type BrandLogoFetchLifecycle = {
+  signal: AbortSignal;
+  attachTimeoutHandler(handler: (reason: DOMException) => void): void;
+  finish(): boolean;
+};
+
+function createBrandLogoFetchLifecycle(): BrandLogoFetchLifecycle {
+  const abortController = new AbortController();
+  const timeoutReason = new DOMException(
+    "Brand logo upstream timed out",
+    "TimeoutError",
+  );
+  let finished = false;
+  let timeoutHandler: ((reason: DOMException) => void) | null = null;
+  const timeout = setTimeout(() => {
+    if (finished) {
+      return;
+    }
+    abortController.abort(timeoutReason);
+    timeoutHandler?.(timeoutReason);
+  }, BRAND_LOGO_FETCH_TIMEOUT_MS);
+
+  return {
+    signal: abortController.signal,
+    attachTimeoutHandler(handler) {
+      if (finished) {
+        return;
+      }
+      timeoutHandler = handler;
+      if (abortController.signal.aborted) {
+        handler(timeoutReason);
+      }
+    },
+    finish() {
+      if (finished) {
+        return false;
+      }
+      finished = true;
+      timeoutHandler = null;
+      clearTimeout(timeout);
+      return true;
+    },
+  };
+}
+
+function controlledBrandLogoBody(
+  upstreamBody: ReadableStream<Uint8Array>,
+  lifecycle: BrandLogoFetchLifecycle,
+) {
+  const reader = upstreamBody.getReader();
+  let terminated = false;
+  let readerReleased = false;
+  let cancelPromise: Promise<void> | null = null;
+
+  const releaseReader = () => {
+    if (readerReleased) {
+      return;
+    }
+    try {
+      reader.releaseLock();
+      readerReleased = true;
+    } catch {
+      // A pending read will release the lock when it settles.
+    }
+  };
+  const cancelReader = (reason: unknown) => {
+    cancelPromise ??= reader
+      .cancel(reason)
+      .catch(() => undefined)
+      .finally(releaseReader);
+    return cancelPromise;
+  };
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      lifecycle.attachTimeoutHandler((reason) => {
+        if (terminated) {
+          return;
+        }
+        terminated = true;
+        lifecycle.finish();
+        try {
+          controller.error(reason);
+        } catch {
+          // The downstream may already have cancelled the stream.
+        }
+        void cancelReader(reason);
+      });
+    },
+    async pull(controller) {
+      if (terminated) {
+        releaseReader();
+        return;
+      }
+      try {
+        const result = await reader.read();
+        if (terminated) {
+          releaseReader();
+          return;
+        }
+        if (result.done) {
+          terminated = true;
+          lifecycle.finish();
+          releaseReader();
+          controller.close();
+          return;
+        }
+        controller.enqueue(result.value);
+      } catch (error) {
+        if (terminated) {
+          releaseReader();
+          return;
+        }
+        terminated = true;
+        lifecycle.finish();
+        try {
+          controller.error(error);
+        } finally {
+          await cancelReader(error);
+        }
+      }
+    },
+    async cancel(reason) {
+      if (!terminated) {
+        terminated = true;
+        lifecycle.finish();
+      }
+      await cancelReader(reason);
+    },
+  });
 }
 
 async function cancelUpstreamBody(response: Response) {

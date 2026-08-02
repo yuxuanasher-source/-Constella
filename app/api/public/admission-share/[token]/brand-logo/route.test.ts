@@ -242,7 +242,127 @@ describe("public admission share brand logo route", () => {
       expect(signal?.aborted).toBe(true);
       expect(response.status).toBe(404);
       expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(JSON.stringify(await response.json())).not.toContain(signedUrl);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the timeout active after headers and terminates a stalled response body", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const firstChunk = new Uint8Array([1, 2, 3]);
+    const stalledBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(firstChunk);
+      },
+      cancel,
+    });
+    upstreamFetch.mockImplementationOnce((_url, init) => {
+      signal = init?.signal as AbortSignal | undefined;
+      return Promise.resolve(
+        new Response(stalledBody, {
+          status: 200,
+          headers: { "Content-Type": "image/webp" },
+        }),
+      );
+    });
+
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const response = await GET(request(true), { params });
+      reader = response.body!.getReader();
+      await expect(reader.read()).resolves.toEqual({
+        done: false,
+        value: firstChunk,
+      });
+      const pendingRead = reader.read().then(
+        (value) => ({ state: "resolved" as const, value }),
+        (error: unknown) => ({ state: "rejected" as const, error }),
+      );
+
+      await vi.advanceTimersByTimeAsync(BRAND_LOGO_FETCH_TIMEOUT_MS);
+
+      expect(signal?.aborted).toBe(true);
+      await expect(pendingRead).resolves.toMatchObject({ state: "rejected" });
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      await reader?.cancel("test cleanup").catch(() => undefined);
+      vi.useRealTimers();
+    }
+  });
+
+  it("streams multiple chunks completely and clears the lifecycle timeout on done", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const cancel = vi.fn();
+    const first = new Uint8Array([1, 2]);
+    const second = new Uint8Array([3, 4, 5]);
+    upstreamFetch.mockImplementationOnce((_url, init) => {
+      signal = init?.signal as AbortSignal | undefined;
+      return Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(first);
+              controller.enqueue(second);
+              controller.close();
+            },
+            cancel,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "image/webp" },
+          },
+        ),
+      );
+    });
+
+    try {
+      const response = await GET(request(true), { params });
+
+      await expect(response.arrayBuffer()).resolves.toEqual(
+        new Uint8Array([...first, ...second]).buffer,
+      );
+      await vi.advanceTimersByTimeAsync(BRAND_LOGO_FETCH_TIMEOUT_MS * 2);
+      expect(signal?.aborted).toBe(false);
+      expect(cancel).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("propagates downstream cancellation and prevents a later timeout abort", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    upstreamFetch.mockImplementationOnce((_url, init) => {
+      signal = init?.signal as AbortSignal | undefined;
+      return Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            cancel,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "image/webp" },
+          },
+        ),
+      );
+    });
+    const cancelReason = new Error("client stopped reading");
+
+    try {
+      const response = await GET(request(true), { params });
+      const reader = response.body!.getReader();
+
+      await reader.cancel(cancelReason);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(cancel).toHaveBeenCalledWith(cancelReason);
+      await vi.advanceTimersByTimeAsync(BRAND_LOGO_FETCH_TIMEOUT_MS * 2);
+      expect(signal?.aborted).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -271,6 +391,7 @@ describe("public admission share brand logo route", () => {
       const response = await GET(request(true), { params });
 
       expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(cancel).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(await response.json())).not.toContain(
         privateLogoPath,
@@ -285,6 +406,7 @@ describe("public admission share brand logo route", () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(JSON.stringify(await response.json())).not.toContain(
       privateLogoPath,
     );
@@ -304,6 +426,7 @@ describe("public admission share brand logo route", () => {
 
       expect(response.status).toBe(404);
       expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(serialized).not.toContain(privateLogoPath);
       expect(serialized).not.toContain(unsafeSignedUrl);
       expect(upstreamFetch).not.toHaveBeenCalled();
@@ -360,6 +483,7 @@ describe("public admission share brand logo route", () => {
 
       expect(response.status).toBe(404);
       expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(serialized).not.toContain(privateLogoPath);
       expect(serialized).not.toContain(signedUrl);
       expect(errorSpy).not.toHaveBeenCalled();
@@ -385,6 +509,7 @@ describe("public admission share brand logo route", () => {
 
       expect(response.status).toBe(statusCode);
       expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(JSON.stringify(await response.json())).not.toContain(
         "private failure",
       );
