@@ -238,6 +238,7 @@ export type OrganizationBrandStudioDto = {
   versions?: Array<{
     version: number;
     publishedAt: string;
+    publishedByLabel: string;
     brand: PublishedOrganizationBrand;
   }>;
 };
@@ -339,6 +340,7 @@ export class OrganizationBrandService {
       .map((version) => ({
         version: version.version,
         publishedAt: version.publishedAt,
+        publishedByLabel: publicationActorLabel(version, actor),
         brand: normalizePublishedBrand(
           mergeRecord(version.content, {
             version: version.version,
@@ -761,6 +763,19 @@ function toContactCardDto(
     createdAt: card.createdAt,
     updatedAt: card.updatedAt,
   };
+}
+
+function publicationActorLabel(
+  version: OrganizationBrandVersionRecord,
+  actor: OrganizationBrandActor,
+): string {
+  if (!version.publishedBy) {
+    return "历史发布记录";
+  }
+  if (version.publishedBy === actor.userId) {
+    return actor.name?.trim() || "你";
+  }
+  return "其他组织负责人";
 }
 
 function cardAuditSnapshot(

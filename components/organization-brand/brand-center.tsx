@@ -37,6 +37,16 @@ type ConflictState = {
   online: PublishedOrganizationBrand;
 };
 
+type BrandFieldKey = "logoText" | "brandName" | "brandTagline" | "primaryColor";
+type BrandLogoClientErrorCode =
+  | "BRAND_LOGO_INVALID_FILE"
+  | "BRAND_LOGO_TOO_LARGE"
+  | "BRAND_LOGO_INVALID_CONTENT"
+  | "BRAND_LOGO_PREPARATION_UNAVAILABLE"
+  | "BRAND_LOGO_UPLOAD_FAILED"
+  | "ORGANIZATION_BRAND_LOGO_UNAVAILABLE"
+  | "UNKNOWN";
+
 export type OrganizationBrandCenterProps = {
   initialStudio: OrganizationBrandStudioDto;
   canEdit: boolean;
@@ -50,6 +60,106 @@ const emptyContactForm: ContactForm = {
   email: "",
   wechat: "",
 };
+
+const BRAND_LOGO_MAX_BYTES = 2 * 1024 * 1024;
+const BRAND_LOGO_MAX_INPUT_PIXELS = 16_777_216;
+const BRAND_LOGO_MAX_OUTPUT_EDGE = 1024;
+const BRAND_LOGO_WEBP_QUALITY = 0.88;
+const allowedBrandLogoTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+const fieldErrorIds: Record<BrandFieldKey, string> = {
+  logoText: "brand-logo-text-error",
+  brandName: "brand-name-error",
+  brandTagline: "brand-tagline-error",
+  primaryColor: "brand-primary-color-error",
+};
+
+class BrandLogoClientError extends Error {
+  constructor(readonly code: BrandLogoClientErrorCode) {
+    super(code);
+    this.name = "BrandLogoClientError";
+  }
+}
+
+export async function prepareBrandLogoForUpload(file: File): Promise<File> {
+  if (!allowedBrandLogoTypes.has(file.type) || file.size <= 0) {
+    throw new BrandLogoClientError("BRAND_LOGO_INVALID_FILE");
+  }
+  if (file.size > BRAND_LOGO_MAX_BYTES) {
+    throw new BrandLogoClientError("BRAND_LOGO_TOO_LARGE");
+  }
+  if (
+    typeof globalThis.createImageBitmap !== "function" ||
+    typeof document === "undefined"
+  ) {
+    throw new BrandLogoClientError("BRAND_LOGO_PREPARATION_UNAVAILABLE");
+  }
+
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await globalThis.createImageBitmap(file);
+  } catch {
+    throw new BrandLogoClientError("BRAND_LOGO_INVALID_CONTENT");
+  }
+
+  try {
+    if (
+      !Number.isFinite(bitmap.width) ||
+      !Number.isFinite(bitmap.height) ||
+      bitmap.width <= 0 ||
+      bitmap.height <= 0 ||
+      bitmap.width * bitmap.height > BRAND_LOGO_MAX_INPUT_PIXELS
+    ) {
+      throw new BrandLogoClientError("BRAND_LOGO_INVALID_CONTENT");
+    }
+    const sourceEdge = Math.min(bitmap.width, bitmap.height);
+    const outputEdge = Math.min(sourceEdge, BRAND_LOGO_MAX_OUTPUT_EDGE);
+    const canvas = document.createElement("canvas");
+    canvas.width = outputEdge;
+    canvas.height = outputEdge;
+    const context = canvas.getContext("2d");
+    if (!context || typeof canvas.toBlob !== "function") {
+      throw new BrandLogoClientError("BRAND_LOGO_PREPARATION_UNAVAILABLE");
+    }
+    context.drawImage(
+      bitmap,
+      (bitmap.width - sourceEdge) / 2,
+      (bitmap.height - sourceEdge) / 2,
+      sourceEdge,
+      sourceEdge,
+      0,
+      0,
+      outputEdge,
+      outputEdge,
+    );
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (value) =>
+          value
+            ? resolve(value)
+            : reject(new BrandLogoClientError("BRAND_LOGO_INVALID_CONTENT")),
+        "image/webp",
+        BRAND_LOGO_WEBP_QUALITY,
+      );
+    });
+    if (blob.size > BRAND_LOGO_MAX_BYTES) {
+      throw new BrandLogoClientError("BRAND_LOGO_TOO_LARGE");
+    }
+    const baseName = file.name.replace(/\.[^.]+$/u, "").trim() || "logo";
+    return new File([blob], `${baseName}.webp`, {
+      type: "image/webp",
+      lastModified: Date.now(),
+    });
+  } catch (error) {
+    if (error instanceof BrandLogoClientError) throw error;
+    throw new BrandLogoClientError("BRAND_LOGO_INVALID_CONTENT");
+  } finally {
+    bitmap.close();
+  }
+}
 
 const brandFields: Array<{
   key: keyof OrganizationBrandSource;
@@ -88,9 +198,39 @@ export function OrganizationBrandCenter({
   const [uploadState, setUploadState] = useState<
     "idle" | "uploading" | "success" | "cancelled" | "error"
   >("idle");
-  const [localLogoUrl, setLocalLogoUrl] = useState<string | null>(null);
+  const [publishedLogoUrl, setPublishedLogoUrl] = useState(
+    initialLogoUrls.published,
+  );
+  const [draftLogoUrl, setDraftLogoUrl] = useState(
+    initialLogoUrls.draft ??
+      (initialDraft.content.logoStoragePath ===
+      initialStudio.published.logoStoragePath
+        ? initialLogoUrls.published
+        : null),
+  );
+  const [provisionalLogoUrl, setProvisionalLogoUrl] = useState<string | null>(
+    null,
+  );
+  const [publishedByLabel, setPublishedByLabel] = useState<string | null>(() =>
+    canEdit
+      ? (initialStudio.versions?.find(
+          (version) => version.version === initialStudio.published.version,
+        )?.publishedByLabel ?? "历史发布记录")
+      : null,
+  );
   const uploadController = useRef<AbortController | null>(null);
-  const localLogoUrlRef = useRef<string | null>(null);
+  const publishedLogoUrlRef = useRef(publishedLogoUrl);
+  const draftLogoUrlRef = useRef(draftLogoUrl);
+  const provisionalLogoUrlRef = useRef<string | null>(null);
+  const ownedLogoUrlsRef = useRef(new Set<string>());
+  const brandInputRefs = useRef<Record<BrandFieldKey, HTMLInputElement | null>>(
+    {
+      logoText: null,
+      brandName: null,
+      brandTagline: null,
+      primaryColor: null,
+    },
+  );
   const [newCard, setNewCard] = useState<ContactForm>(emptyContactForm);
   const [cardForms, setCardForms] = useState<Record<string, ContactForm>>(() =>
     Object.fromEntries(
@@ -103,11 +243,13 @@ export function OrganizationBrandCenter({
   >({});
 
   useEffect(() => {
+    const ownedLogoUrls = ownedLogoUrlsRef.current;
     return () => {
       uploadController.current?.abort();
-      if (localLogoUrlRef.current) {
-        URL.revokeObjectURL(localLogoUrlRef.current);
+      for (const url of ownedLogoUrls) {
+        URL.revokeObjectURL(url);
       }
+      ownedLogoUrls.clear();
     };
   }, []);
 
@@ -132,12 +274,8 @@ export function OrganizationBrandCenter({
     published,
   ]);
   const previewLogoUrl = canEdit
-    ? (localLogoUrl ??
-      initialLogoUrls.draft ??
-      (draft.content.logoStoragePath === published.logoStoragePath
-        ? initialLogoUrls.published
-        : null))
-    : initialLogoUrls.published;
+    ? (provisionalLogoUrl ?? draftLogoUrl)
+    : publishedLogoUrl;
 
   const updateDraftField = <K extends keyof OrganizationBrandSource>(
     key: K,
@@ -157,6 +295,30 @@ export function OrganizationBrandCenter({
     });
   };
 
+  const createOwnedLogoUrl = (blob: Blob) => {
+    const url = URL.createObjectURL(blob);
+    ownedLogoUrlsRef.current.add(url);
+    return url;
+  };
+
+  const revokeOwnedLogoUrl = (url: string | null) => {
+    if (url && ownedLogoUrlsRef.current.delete(url)) {
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const clearProvisionalLogoUrl = () => {
+    const current = provisionalLogoUrlRef.current;
+    provisionalLogoUrlRef.current = null;
+    setProvisionalLogoUrl(null);
+    revokeOwnedLogoUrl(current);
+  };
+
+  const installProvisionalLogoUrl = (url: string) => {
+    provisionalLogoUrlRef.current = url;
+    setProvisionalLogoUrl(url);
+  };
+
   const validateDraft = () => {
     const errors: Record<string, string> = {};
     const logoLength = Array.from(draft.content.logoText.trim()).length;
@@ -171,7 +333,15 @@ export function OrganizationBrandCenter({
       errors.primaryColor = "品牌主色需使用 #RRGGBB 格式。";
     }
     setFieldErrors(errors);
-    return Object.keys(errors).length === 0;
+    const firstInvalidField = (
+      ["logoText", "brandName", "brandTagline", "primaryColor"] as const
+    ).find((field) => Boolean(errors[field]));
+    if (firstInvalidField) {
+      setAnnouncement(`品牌资料校验失败：${errors[firstInvalidField]}`);
+      brandInputRefs.current[firstInvalidField]?.focus();
+      return false;
+    }
+    return true;
   };
 
   const handleLogoUpload = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -179,29 +349,54 @@ export function OrganizationBrandCenter({
     if (!file) return;
 
     uploadController.current?.abort();
-    if (localLogoUrlRef.current) URL.revokeObjectURL(localLogoUrlRef.current);
-    const objectUrl = URL.createObjectURL(file);
-    localLogoUrlRef.current = objectUrl;
-    setLocalLogoUrl(objectUrl);
+    clearProvisionalLogoUrl();
+    const rawUrl = createOwnedLogoUrl(file);
+    let uploadPreviewUrl = rawUrl;
+    installProvisionalLogoUrl(rawUrl);
     const controller = new AbortController();
     uploadController.current = controller;
     setUploadState("uploading");
     setAnnouncement("LOGO 正在上传，可随时取消。");
 
     try {
+      const preparedFile = await prepareBrandLogoForUpload(file);
+      if (controller.signal.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      const preparedUrl = createOwnedLogoUrl(preparedFile);
+      clearProvisionalLogoUrl();
+      uploadPreviewUrl = preparedUrl;
+      installProvisionalLogoUrl(preparedUrl);
       const body = new FormData();
-      body.append("logo", file);
+      body.append("logo", preparedFile);
       const response = await fetch("/api/organization/brand/logo", {
         method: "POST",
         body,
         signal: controller.signal,
       });
       const payload = (await safeJson(response)) as {
+        code?: unknown;
         logoStoragePath?: unknown;
       };
-      if (!response.ok || typeof payload.logoStoragePath !== "string") {
-        throw new Error("upload_failed");
+      if (controller.signal.aborted) {
+        throw new DOMException("Aborted", "AbortError");
       }
+      if (!response.ok || typeof payload.logoStoragePath !== "string") {
+        throw new BrandLogoClientError(
+          normalizeBrandLogoErrorCode(payload.code),
+        );
+      }
+      const previousDraftUrl = draftLogoUrlRef.current;
+      if (
+        previousDraftUrl !== preparedUrl &&
+        previousDraftUrl !== publishedLogoUrlRef.current
+      ) {
+        revokeOwnedLogoUrl(previousDraftUrl);
+      }
+      draftLogoUrlRef.current = preparedUrl;
+      setDraftLogoUrl(preparedUrl);
+      provisionalLogoUrlRef.current = null;
+      setProvisionalLogoUrl(null);
       updateDraftField("logoStoragePath", payload.logoStoragePath);
       setUploadState("success");
       setAnnouncement("上传完成，待保存");
@@ -211,7 +406,12 @@ export function OrganizationBrandCenter({
         setAnnouncement("上传已取消，本地草稿已保留。");
       } else {
         setUploadState("error");
-        setAnnouncement("LOGO 上传失败，本地草稿已保留，请重试。");
+        setAnnouncement(brandLogoErrorMessage(error));
+      }
+      if (provisionalLogoUrlRef.current === uploadPreviewUrl) {
+        clearProvisionalLogoUrl();
+      } else {
+        revokeOwnedLogoUrl(uploadPreviewUrl);
       }
     } finally {
       if (uploadController.current === controller)
@@ -226,7 +426,10 @@ export function OrganizationBrandCenter({
     };
     const refresh = await fetch("/api/organization/brand", { method: "GET" });
     const refreshPayload = (await safeJson(refresh)) as {
-      studio?: { published?: PublishedOrganizationBrand };
+      studio?: {
+        published?: PublishedOrganizationBrand;
+        versions?: OrganizationBrandStudioDto["versions"];
+      };
     };
     const online = refreshPayload.studio?.published;
     if (!refresh.ok || !online) throw new Error("refresh_failed");
@@ -235,7 +438,20 @@ export function OrganizationBrandCenter({
       Number.isInteger(errorPayload.latestVersion)
         ? errorPayload.latestVersion
         : online.version;
+    const previousPublishedLogoUrl = publishedLogoUrlRef.current;
+    if (online.logoStoragePath !== published.logoStoragePath) {
+      publishedLogoUrlRef.current = null;
+      setPublishedLogoUrl(null);
+      if (previousPublishedLogoUrl !== draftLogoUrlRef.current) {
+        revokeOwnedLogoUrl(previousPublishedLogoUrl);
+      }
+    }
     setPublished(online);
+    setPublishedByLabel(
+      refreshPayload.studio?.versions?.find(
+        (version) => version.version === online.version,
+      )?.publishedByLabel ?? "其他组织负责人",
+    );
     setConflict({ latestVersion, online });
     setSaveState("conflict");
     setPublishState("conflict");
@@ -302,7 +518,30 @@ export function OrganizationBrandCenter({
         throw new Error("publish_failed");
       }
       const nextSource = sourceFromPublished(payload.published);
+      const previousPublishedLogoUrl = publishedLogoUrlRef.current;
+      const previousDraftLogoUrl = draftLogoUrlRef.current;
+      const nextPublishedLogoUrl = payload.published.logoStoragePath
+        ? payload.published.logoStoragePath === published.logoStoragePath
+          ? previousPublishedLogoUrl
+          : payload.published.logoStoragePath === draft.content.logoStoragePath
+            ? previousDraftLogoUrl
+            : null
+        : null;
+      publishedLogoUrlRef.current = nextPublishedLogoUrl;
+      draftLogoUrlRef.current = nextPublishedLogoUrl;
+      setPublishedLogoUrl(nextPublishedLogoUrl);
+      setDraftLogoUrl(nextPublishedLogoUrl);
+      if (previousPublishedLogoUrl !== nextPublishedLogoUrl) {
+        revokeOwnedLogoUrl(previousPublishedLogoUrl);
+      }
+      if (
+        previousDraftLogoUrl !== nextPublishedLogoUrl &&
+        previousDraftLogoUrl !== previousPublishedLogoUrl
+      ) {
+        revokeOwnedLogoUrl(previousDraftLogoUrl);
+      }
       setPublished(payload.published);
+      setPublishedByLabel("你");
       setDraft({
         baseVersion: payload.version,
         content: nextSource,
@@ -318,6 +557,20 @@ export function OrganizationBrandCenter({
       setPublishState("error");
       setAnnouncement("品牌发布失败，线上版本未改变，请重试。");
     }
+  };
+
+  const removeDraftLogo = () => {
+    uploadController.current?.abort();
+    clearProvisionalLogoUrl();
+    const previousDraftLogoUrl = draftLogoUrlRef.current;
+    draftLogoUrlRef.current = null;
+    setDraftLogoUrl(null);
+    if (previousDraftLogoUrl !== publishedLogoUrlRef.current) {
+      revokeOwnedLogoUrl(previousDraftLogoUrl);
+    }
+    updateDraftField("logoStoragePath", null);
+    setUploadState("idle");
+    setAnnouncement("草稿 LOGO 已移除，保存并发布后生效。");
   };
 
   const acceptConflictVersion = () => {
@@ -489,7 +742,11 @@ export function OrganizationBrandCenter({
                 <h2 id="current-brand-title">
                   {canEdit ? "当前线上版本" : "当前已发布品牌"}
                 </h2>
-                <p>发布于 {formatDate(published.publishedAt)}</p>
+                <p>
+                  {canEdit
+                    ? `发布者 ${publishedByLabel} · ${formatDate(published.publishedAt)}`
+                    : `发布于 ${formatDate(published.publishedAt)}`}
+                </p>
               </div>
               <span className={styles.versionBadge}>v{published.version}</span>
             </div>
@@ -497,7 +754,7 @@ export function OrganizationBrandCenter({
               <OrganizationBrandMark
                 brandName={published.brandName}
                 logoText={published.logoText}
-                logoUrl={initialLogoUrls.published}
+                logoUrl={publishedLogoUrl}
                 className={styles.summaryMark}
               />
               <div>
@@ -553,6 +810,15 @@ export function OrganizationBrandCenter({
                         取消上传
                       </button>
                     ) : null}
+                    {draft.content.logoStoragePath || previewLogoUrl ? (
+                      <button
+                        type="button"
+                        className={styles.secondaryButton}
+                        onClick={removeDraftLogo}
+                      >
+                        移除草稿 LOGO
+                      </button>
+                    ) : null}
                     <span className={styles.fieldHint}>
                       JPEG、PNG 或 WebP，服务端会校验并规范化。
                     </span>
@@ -568,45 +834,79 @@ export function OrganizationBrandCenter({
                 ) : null}
 
                 <div className={styles.fieldGrid}>
-                  <BrandField label="LOGO 字标" error={fieldErrors.logoText}>
+                  <BrandField
+                    label="LOGO 字标"
+                    error={fieldErrors.logoText}
+                    errorId={fieldErrorIds.logoText}
+                  >
                     <input
+                      ref={(node) => {
+                        brandInputRefs.current.logoText = node;
+                      }}
                       aria-label="LOGO 字标"
                       value={draft.content.logoText}
                       onChange={(event) =>
                         updateDraftField("logoText", event.target.value)
                       }
                       aria-invalid={Boolean(fieldErrors.logoText)}
+                      aria-describedby={
+                        fieldErrors.logoText
+                          ? fieldErrorIds.logoText
+                          : undefined
+                      }
                     />
                   </BrandField>
                   <BrandField
                     label="品牌名称"
                     error={fieldErrors.brandName}
+                    errorId={fieldErrorIds.brandName}
                     wide
                   >
                     <input
+                      ref={(node) => {
+                        brandInputRefs.current.brandName = node;
+                      }}
                       aria-label="品牌名称"
                       value={draft.content.brandName}
                       onChange={(event) =>
                         updateDraftField("brandName", event.target.value)
                       }
                       aria-invalid={Boolean(fieldErrors.brandName)}
+                      aria-describedby={
+                        fieldErrors.brandName
+                          ? fieldErrorIds.brandName
+                          : undefined
+                      }
                     />
                   </BrandField>
                   <BrandField
                     label="品牌副标"
                     error={fieldErrors.brandTagline}
+                    errorId={fieldErrorIds.brandTagline}
                     wide
                   >
                     <input
+                      ref={(node) => {
+                        brandInputRefs.current.brandTagline = node;
+                      }}
                       aria-label="品牌副标"
                       value={draft.content.brandTagline}
                       onChange={(event) =>
                         updateDraftField("brandTagline", event.target.value)
                       }
                       aria-invalid={Boolean(fieldErrors.brandTagline)}
+                      aria-describedby={
+                        fieldErrors.brandTagline
+                          ? fieldErrorIds.brandTagline
+                          : undefined
+                      }
                     />
                   </BrandField>
-                  <BrandField label="品牌主色" error={fieldErrors.primaryColor}>
+                  <BrandField
+                    label="品牌主色"
+                    error={fieldErrors.primaryColor}
+                    errorId={fieldErrorIds.primaryColor}
+                  >
                     <div className={styles.colorControl}>
                       <input
                         type="color"
@@ -626,12 +926,20 @@ export function OrganizationBrandCenter({
                         }
                       />
                       <input
+                        ref={(node) => {
+                          brandInputRefs.current.primaryColor = node;
+                        }}
                         aria-label="品牌主色"
                         value={draft.content.primaryColor}
                         onChange={(event) =>
                           updateDraftField("primaryColor", event.target.value)
                         }
                         aria-invalid={Boolean(fieldErrors.primaryColor)}
+                        aria-describedby={
+                          fieldErrors.primaryColor
+                            ? fieldErrorIds.primaryColor
+                            : undefined
+                        }
                       />
                     </div>
                   </BrandField>
@@ -718,7 +1026,10 @@ export function OrganizationBrandCenter({
                     {initialStudio.versions.map((version) => (
                       <li key={version.version}>
                         <strong>v{version.version}</strong>
-                        <span>{formatDate(version.publishedAt)}</span>
+                        <span>
+                          {version.publishedByLabel} ·{" "}
+                          {formatDate(version.publishedAt)}
+                        </span>
                       </li>
                     ))}
                   </ul>
@@ -777,11 +1088,13 @@ export function OrganizationBrandCenter({
 function BrandField({
   label,
   error,
+  errorId,
   wide = false,
   children,
 }: {
   label: string;
   error?: string;
+  errorId?: string;
   wide?: boolean;
   children: React.ReactNode;
 }) {
@@ -789,7 +1102,11 @@ function BrandField({
     <label className={wide ? styles.fieldWide : styles.field}>
       <span>{label}</span>
       {children}
-      {error ? <small className={styles.errorText}>{error}</small> : null}
+      {error ? (
+        <small id={errorId} className={styles.errorText}>
+          {error}
+        </small>
+      ) : null}
     </label>
   );
 }
@@ -1248,6 +1565,49 @@ async function safeJson(response: Response): Promise<unknown> {
     return await response.json();
   } catch {
     return {};
+  }
+}
+
+function normalizeBrandLogoErrorCode(value: unknown): BrandLogoClientErrorCode {
+  switch (value) {
+    case "BRAND_LOGO_INVALID_FILE":
+    case "BRAND_LOGO_INVALID_REQUEST":
+    case "INVALID_FILE":
+      return "BRAND_LOGO_INVALID_FILE";
+    case "BRAND_LOGO_TOO_LARGE":
+    case "TOO_LARGE":
+      return "BRAND_LOGO_TOO_LARGE";
+    case "BRAND_LOGO_INVALID_CONTENT":
+    case "INVALID_CONTENT":
+      return "BRAND_LOGO_INVALID_CONTENT";
+    case "BRAND_LOGO_UPLOAD_FAILED":
+    case "UPLOAD_FAILED":
+      return "BRAND_LOGO_UPLOAD_FAILED";
+    case "ORGANIZATION_BRAND_LOGO_UNAVAILABLE":
+    case "UNAVAILABLE":
+      return "ORGANIZATION_BRAND_LOGO_UNAVAILABLE";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+function brandLogoErrorMessage(error: unknown): string {
+  const code =
+    error instanceof BrandLogoClientError ? error.code : ("UNKNOWN" as const);
+  switch (code) {
+    case "BRAND_LOGO_INVALID_FILE":
+      return "仅支持 JPEG、PNG 或 WebP 图片。";
+    case "BRAND_LOGO_TOO_LARGE":
+      return "LOGO 图片不能超过 2 MB。";
+    case "BRAND_LOGO_INVALID_CONTENT":
+      return "图片内容无效或像素尺寸过大，请更换图片。";
+    case "BRAND_LOGO_PREPARATION_UNAVAILABLE":
+      return "当前浏览器无法安全处理 LOGO，请更换浏览器或图片。";
+    case "BRAND_LOGO_UPLOAD_FAILED":
+    case "ORGANIZATION_BRAND_LOGO_UNAVAILABLE":
+      return "LOGO 服务暂时不可用，请稍后重试。";
+    default:
+      return "LOGO 上传失败，请重试。";
   }
 }
 

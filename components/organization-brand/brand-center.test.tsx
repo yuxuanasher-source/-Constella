@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   OrganizationBrandCenter,
+  prepareBrandLogoForUpload,
   type OrganizationBrandCenterProps,
 } from "./brand-center";
 import { OrganizationBrandMark } from "./organization-brand-mark";
@@ -56,6 +57,7 @@ const ownerStudio: OrganizationBrandCenterProps["initialStudio"] = {
       version: 3,
       publishedAt: published.publishedAt!,
       brand: published,
+      publishedByLabel: "其他组织负责人",
     },
   ],
   contactCards: [
@@ -110,14 +112,30 @@ function renderOwner(props: Partial<OrganizationBrandCenterProps> = {}) {
 describe("OrganizationBrandCenter", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 800, height: 600, close: vi.fn() })),
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      drawImage: vi.fn(),
+    } as never);
+    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(
+      (callback) => {
+        callback(new Blob(["prepared-webp"], { type: "image/webp" }));
+      },
+    );
     vi.stubGlobal("URL", {
       ...URL,
-      createObjectURL: vi.fn(() => "blob:local-logo"),
+      createObjectURL: vi
+        .fn()
+        .mockReturnValueOnce("blob:raw-logo")
+        .mockReturnValue("blob:prepared-logo"),
       revokeObjectURL: vi.fn(),
     });
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -127,6 +145,7 @@ describe("OrganizationBrandCenter", () => {
     expect(screen.getByRole("heading", { name: "品牌中心" })).toBeVisible();
     expect(screen.getByText("当前线上版本 v3")).toBeVisible();
     expect(screen.getAllByText(/发布于/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/发布者 其他组织负责人/)).toBeVisible();
     expect(screen.getByText("未发布草稿")).toBeVisible();
     expect(screen.getByText("预览，不会在发布前影响线上")).toBeVisible();
     expect(screen.getByLabelText("品牌名称")).toHaveValue("星耀经营舱草稿");
@@ -157,10 +176,35 @@ describe("OrganizationBrandCenter", () => {
     expect(screen.queryByText("旧联系人")).not.toBeInTheDocument();
     expect(screen.queryByText("未发布草稿")).not.toBeInTheDocument();
     expect(screen.queryByText("发布历史")).not.toBeInTheDocument();
+    expect(screen.queryByText(/发布者/)).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "保存草稿" }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("联系名片管理")).not.toBeInTheDocument();
+  });
+
+  it("center-crops and converts an accepted source logo into a matching WebP file", async () => {
+    const source = new File(["logo"], "square.source.png", {
+      type: "image/png",
+    });
+
+    const result = await prepareBrandLogoForUpload(source);
+
+    expect(result.name).toBe("square.source.webp");
+    expect(result.type).toBe("image/webp");
+    const context = vi.mocked(HTMLCanvasElement.prototype.getContext).mock
+      .results[0]?.value as { drawImage: ReturnType<typeof vi.fn> };
+    expect(context.drawImage).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 800, height: 600 }),
+      100,
+      0,
+      600,
+      600,
+      0,
+      0,
+      600,
+      600,
+    );
   });
 
   it("validates by Unicode code points and keeps upload, save and publication states separate", async () => {
@@ -191,7 +235,7 @@ describe("OrganizationBrandCenter", () => {
     );
     expect(screen.getByAltText("星耀经营舱草稿品牌标识")).toHaveAttribute(
       "src",
-      "blob:local-logo",
+      "blob:prepared-logo",
     );
     expect(screen.getByText("当前线上版本 v3")).toBeVisible();
     expect(screen.queryByText("品牌已发布")).not.toBeInTheDocument();
@@ -200,6 +244,51 @@ describe("OrganizationBrandCenter", () => {
     expect(init).toMatchObject({ method: "POST" });
     expect(init?.body).toBeInstanceOf(FormData);
     expect(Array.from((init?.body as FormData).keys())).toEqual(["logo"]);
+    const prepared = (init?.body as FormData).get("logo") as File;
+    expect(prepared).toBeInstanceOf(File);
+    expect(prepared.type).toBe("image/webp");
+    expect(prepared.name).toBe("logo.webp");
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:raw-logo");
+  });
+
+  it("associates every validation error, announces the first one and focuses its field", () => {
+    renderOwner();
+    const logoText = screen.getByLabelText("LOGO 字标");
+    const brandName = screen.getByLabelText("品牌名称");
+    const tagline = screen.getByLabelText("品牌副标");
+    const color = screen.getByRole("textbox", { name: "品牌主色" });
+
+    fireEvent.change(logoText, { target: { value: "一二三四五六七八九" } });
+    fireEvent.change(brandName, { target: { value: " " } });
+    fireEvent.change(tagline, { target: { value: "副".repeat(81) } });
+    fireEvent.change(color, { target: { value: "#BAD" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+
+    expect(logoText).toHaveAttribute("aria-invalid", "true");
+    expect(logoText).toHaveAttribute(
+      "aria-describedby",
+      "brand-logo-text-error",
+    );
+    expect(brandName).toHaveAttribute("aria-describedby", "brand-name-error");
+    expect(tagline).toHaveAttribute("aria-describedby", "brand-tagline-error");
+    expect(color).toHaveAttribute(
+      "aria-describedby",
+      "brand-primary-color-error",
+    );
+    expect(screen.getByText("LOGO 字标最多 8 个字符。")).toHaveAttribute(
+      "id",
+      "brand-logo-text-error",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "品牌资料校验失败：LOGO 字标最多 8 个字符。",
+    );
+    expect(logoText).toHaveFocus();
+
+    fireEvent.change(logoText, { target: { value: "星耀" } });
+    expect(logoText).not.toHaveAttribute("aria-describedby");
+    expect(
+      screen.queryByText("LOGO 字标最多 8 个字符。"),
+    ).not.toBeInTheDocument();
   });
 
   it("lets an in-flight upload be cancelled without discarding the local draft", async () => {
@@ -231,6 +320,136 @@ describe("OrganizationBrandCenter", () => {
       ),
     );
     expect(screen.getByLabelText("品牌名称")).toHaveValue("保留的本地草稿");
+    expect(screen.getByAltText("保留的本地草稿品牌标识")).toHaveAttribute(
+      "src",
+      "https://signed.example/draft",
+    );
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:raw-logo");
+  });
+
+  it("restores the previous draft image and storage path when the server rejects an upload", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ code: "BRAND_LOGO_INVALID_CONTENT" }, 422),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          draft: ownerStudio.draft,
+        }),
+      );
+    renderOwner();
+
+    fireEvent.change(screen.getByLabelText("上传 LOGO 图片"), {
+      target: {
+        files: [new File(["logo"], "new-logo.png", { type: "image/png" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "图片内容无效或像素尺寸过大",
+      ),
+    );
+    expect(screen.getByAltText("星耀经营舱草稿品牌标识")).toHaveAttribute(
+      "src",
+      "https://signed.example/draft",
+    );
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:prepared-logo");
+
+    fireEvent.change(screen.getByLabelText("品牌名称"), {
+      target: { value: "仍使用原图" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
+      logoStoragePath: published.logoStoragePath,
+    });
+  });
+
+  it.each([
+    {
+      name: "invalid format",
+      file: () => new File(["svg"], "logo.svg", { type: "image/svg+xml" }),
+      message: "仅支持 JPEG、PNG 或 WebP 图片。",
+    },
+    {
+      name: "oversized bytes",
+      file: () =>
+        new File([new Uint8Array(2 * 1024 * 1024 + 1)], "logo.png", {
+          type: "image/png",
+        }),
+      message: "LOGO 图片不能超过 2 MB。",
+    },
+  ])(
+    "rejects $name before making an upload request",
+    async ({ file, message }) => {
+      const fetchMock = vi.mocked(fetch);
+      renderOwner();
+
+      fireEvent.change(screen.getByLabelText("上传 LOGO 图片"), {
+        target: { files: [file()] },
+      });
+
+      await waitFor(() =>
+        expect(screen.getByRole("status")).toHaveTextContent(message),
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.getByAltText("星耀经营舱草稿品牌标识")).toHaveAttribute(
+        "src",
+        "https://signed.example/draft",
+      );
+    },
+  );
+
+  it("reports excessive source pixels safely and closes the decoded bitmap", async () => {
+    const close = vi.fn();
+    vi.mocked(createImageBitmap).mockResolvedValueOnce({
+      width: 5000,
+      height: 5000,
+      close,
+    } as never);
+    renderOwner();
+
+    fireEvent.change(screen.getByLabelText("上传 LOGO 图片"), {
+      target: {
+        files: [new File(["logo"], "large.png", { type: "image/png" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "图片内容无效或像素尺寸过大",
+      ),
+    );
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("maps unavailable upload codes without exposing raw server diagnostics", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(
+        {
+          code: "ORGANIZATION_BRAND_LOGO_UNAVAILABLE",
+          error: "raw bucket diagnostics",
+        },
+        503,
+      ),
+    );
+    renderOwner();
+
+    fireEvent.change(screen.getByLabelText("上传 LOGO 图片"), {
+      target: {
+        files: [new File(["logo"], "logo.png", { type: "image/png" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "LOGO 服务暂时不可用，请稍后重试。",
+      ),
+    );
+    expect(document.body).not.toHaveTextContent("raw bucket diagnostics");
   });
 
   it("saves the five governed fields and publishes only after the exact inline confirmation", async () => {
@@ -287,7 +506,124 @@ describe("OrganizationBrandCenter", () => {
       expectedVersion: 3,
     });
     expect(screen.getByText("当前线上版本 v4")).toBeVisible();
+    expect(screen.getByText(/发布者 你/)).toBeVisible();
     expect(screen.getByLabelText("品牌名称")).toHaveValue("已保存草稿");
+  });
+
+  it("promotes a successfully uploaded draft logo into the current online summary only after publish", async () => {
+    const nextPath =
+      "11111111-1111-4111-8111-111111111111/brand-logos/77777777-7777-4777-8777-777777777777.webp";
+    const nextContent = {
+      ...ownerStudio.draft!.content,
+      logoStoragePath: nextPath,
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        jsonResponse({ logoStoragePath: nextPath, contentType: "image/webp" }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          draft: { ...ownerStudio.draft, content: nextContent },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          version: 4,
+          published: {
+            ...published,
+            version: 4,
+            logoStoragePath: nextPath,
+            publishedAt: "2026-08-02T08:00:00.000Z",
+          },
+        }),
+      );
+    renderOwner();
+    const onlineSection = screen
+      .getByRole("heading", { name: "当前线上版本" })
+      .closest("section")!;
+
+    fireEvent.change(screen.getByLabelText("上传 LOGO 图片"), {
+      target: {
+        files: [new File(["logo"], "new.png", { type: "image/png" })],
+      },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("上传完成，待保存"),
+    );
+    expect(within(onlineSection).getByRole("img")).toHaveAttribute(
+      "src",
+      "https://signed.example/published",
+    );
+    expect(screen.getByAltText("星耀经营舱草稿品牌标识")).toHaveAttribute(
+      "src",
+      "blob:prepared-logo",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("草稿已保存"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "准备发布" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认发布草稿" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("品牌已发布为 v4"),
+    );
+    expect(within(onlineSection).getByRole("img")).toHaveAttribute(
+      "src",
+      "blob:prepared-logo",
+    );
+    expect(screen.getByText(/发布者 你/)).toBeVisible();
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith("blob:prepared-logo");
+  });
+
+  it("keeps the online logo until a saved logo removal is published", async () => {
+    const withoutLogo = {
+      ...ownerStudio.draft!.content,
+      logoStoragePath: null,
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        jsonResponse({
+          draft: { ...ownerStudio.draft, content: withoutLogo },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          version: 4,
+          published: {
+            ...published,
+            version: 4,
+            logoStoragePath: null,
+            publishedAt: "2026-08-02T08:00:00.000Z",
+          },
+        }),
+      );
+    renderOwner();
+    const onlineSection = screen
+      .getByRole("heading", { name: "当前线上版本" })
+      .closest("section")!;
+
+    fireEvent.click(screen.getByRole("button", { name: "移除草稿 LOGO" }));
+
+    expect(within(onlineSection).getByRole("img")).toHaveAttribute(
+      "src",
+      "https://signed.example/published",
+    );
+    expect(
+      screen.queryByAltText("星耀经营舱草稿品牌标识"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(
+      JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)),
+    ).toMatchObject({ logoStoragePath: null });
+    fireEvent.click(screen.getByRole("button", { name: "准备发布" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认发布草稿" }));
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("品牌已发布为 v4"),
+    );
+    expect(within(onlineSection).queryByRole("img")).not.toBeInTheDocument();
   });
 
   it("preserves the local draft on 409, shows field differences and requires explicit re-confirmation", async () => {

@@ -157,6 +157,7 @@ describe("OrganizationBrandService", () => {
     });
     expect(studio).not.toHaveProperty("draft");
     expect(studio).not.toHaveProperty("versions");
+    expect(JSON.stringify(studio)).not.toContain("publishedByLabel");
     expect(JSON.stringify(studio)).not.toContain("never expose");
     expect(repo.getDraft).not.toHaveBeenCalled();
     expect(repo.listVersions).not.toHaveBeenCalled();
@@ -229,10 +230,38 @@ describe("OrganizationBrandService", () => {
         version: 3,
         publishedAt: "2026-08-01T12:00:00.000Z",
         brand: expect.objectContaining({ version: 3, brandName: "Demo Brand" }),
+        publishedByLabel: "其他组织负责人",
       },
     ]);
     expect(JSON.stringify(studio)).not.toContain("private-user-id");
     expect(JSON.stringify(studio)).not.toContain("unknown");
+  });
+
+  it("labels the owner's own and legacy publication history without exposing user ids", async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.listVersions).mockResolvedValue([
+      {
+        organizationId: ORGANIZATION_ID,
+        version: 3,
+        content: publishedContent,
+        publishedAt: "2026-08-01T12:00:00.000Z",
+        publishedBy: USER_ID,
+      },
+      {
+        organizationId: ORGANIZATION_ID,
+        version: 2,
+        content: publishedContent,
+        publishedAt: "2026-07-01T12:00:00.000Z",
+      },
+    ]);
+    const service = new OrganizationBrandService(repo, audit);
+
+    const studio = await service.getOrganizationBrandStudio(owner);
+
+    expect(studio.versions?.map((version) => version.publishedByLabel)).toEqual(
+      ["Owner", "历史发布记录"],
+    );
+    expect(JSON.stringify(studio)).not.toContain(USER_ID);
   });
 
   it("maps malformed persisted draft data to a safe backend error", async () => {
