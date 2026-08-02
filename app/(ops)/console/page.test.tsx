@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
-import { getAuthContext } from "@/lib/auth/context";
+import type { PublishedOrganizationBrand } from "@/features/organizations/organization-brand";
+import { getAuthContext, type AuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
 import { organizationSettingsFromAuth } from "./console-auth";
@@ -144,8 +145,6 @@ describe("console route", () => {
           brandName: "Demo Console",
           brandTagline: "Make work visible",
           primaryColor: "#123456",
-          actionColor: "#123456",
-          softColor: "#E3E7EB",
           logoStoragePath: null,
         }),
       }),
@@ -240,34 +239,48 @@ describe("console route", () => {
 });
 
 describe("organizationSettingsFromAuth", () => {
-  it("returns a canonical brand while keeping legacy flat fields", () => {
-    const settings = organizationSettingsFromAuth({
-      userId: "user-legacy",
-      email: "legacy@example.test",
-      name: "Legacy Owner",
+  it("preserves the canonical brand and projects only compatibility fields", () => {
+    const brand: PublishedOrganizationBrand = {
+      schemaVersion: 1,
+      version: 4,
+      logoText: "北辰",
+      logoStoragePath:
+        "11111111-1111-4111-8111-111111111111/brand-logos/33333333-3333-4333-8333-333333333333.webp",
+      brandName: "北辰经营舱",
+      brandTagline: "稳健增长",
+      primaryColor: "#123456",
+      actionColor: "#123456",
+      softColor: "#E3E7EB",
+      publishedAt: "2026-08-01T00:00:00.000Z",
+      semantic: {
+        success: "#00B42A",
+        warning: "#FF7D00",
+        danger: "#F53F3F",
+        info: "#165DFF",
+      },
+    };
+    const auth: AuthContext = {
+      userId: "user-current",
+      email: "current@example.test",
+      name: "Current Owner",
       organizationId: "11111111-1111-4111-8111-111111111111",
       organizationName: "北辰机构",
-      organizationBranding: {
-        logoText: " 北辰 ",
-        brandName: " 北辰经营舱 ",
-        brandTagline: " 稳健增长 ",
-        primaryColor: "invalid",
-      },
+      organizationBranding: brand,
       role: "owner",
-    } as never);
+    };
 
-    expect(settings.brand).toMatchObject({
-      schemaVersion: 1,
+    const settings = organizationSettingsFromAuth(auth);
+
+    expect(settings.brand).toBe(brand);
+    expect(settings).toEqual({
+      name: "北辰机构",
+      brand,
       logoText: "北辰",
       brandName: "北辰经营舱",
       brandTagline: "稳健增长",
-      primaryColor: "#165DFF",
-    });
-    expect(settings).toMatchObject({
-      logoText: "北辰",
-      brandName: "北辰经营舱",
-      brandTagline: "稳健增长",
-      primaryColor: "#165DFF",
+      primaryColor: "#123456",
+      logoStoragePath:
+        "11111111-1111-4111-8111-111111111111/brand-logos/33333333-3333-4333-8333-333333333333.webp",
     });
   });
 });

@@ -50,12 +50,22 @@ export function currentUserFromAuth(auth: AuthContext) {
 }
 
 export function organizationSettingsFromAuth(auth: AuthContext) {
-  const brand = normalizePublishedBrand(auth.organizationBranding, {
-    organizationId: auth.organizationId,
-    organizationName: auth.organizationName,
-  });
+  const brand =
+    auth.organizationBranding ??
+    normalizePublishedBrand(null, {
+      organizationId: auth.organizationId,
+      organizationName: auth.organizationName,
+    });
 
-  return { name: auth.organizationName, brand, ...brand };
+  return {
+    name: auth.organizationName,
+    brand,
+    logoText: brand.logoText,
+    brandName: brand.brandName,
+    brandTagline: brand.brandTagline,
+    primaryColor: brand.primaryColor,
+    logoStoragePath: brand.logoStoragePath,
+  };
 }
 
 // 加载当前角色的经营闭环看板 DTO，供作战台（ScreenRoleHome）渲染。

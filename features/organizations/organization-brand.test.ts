@@ -16,6 +16,79 @@ const identity = {
 };
 
 describe("normalizePublishedBrand", () => {
+  it("accepts missing schemaVersion as legacy branding", () => {
+    const brand = normalizePublishedBrand(
+      {
+        logoText: " 星 ",
+        brandName: " 星耀经营舱 ",
+        brandTagline: " 专业让价值被看见 ",
+      },
+      identity,
+    );
+
+    expect(brand).toMatchObject({
+      schemaVersion: BRAND_SCHEMA_VERSION,
+      logoText: "星",
+      brandName: "星耀经营舱",
+      brandTagline: "专业让价值被看见",
+    });
+  });
+
+  it("accepts numeric schemaVersion 1 as the current contract", () => {
+    const brand = normalizePublishedBrand(
+      {
+        schemaVersion: 1,
+        version: 7,
+        logoText: "当前",
+        brandName: "当前品牌",
+        brandTagline: "当前标语",
+        primaryColor: "#123456",
+        publishedAt: "2026-08-01T12:34:56.789Z",
+      },
+      identity,
+    );
+
+    expect(brand).toMatchObject({
+      schemaVersion: BRAND_SCHEMA_VERSION,
+      version: 7,
+      logoText: "当前",
+      brandName: "当前品牌",
+      brandTagline: "当前标语",
+      primaryColor: "#123456",
+      publishedAt: "2026-08-01T12:34:56.789Z",
+    });
+  });
+
+  it.each([undefined, 0, 2, 99, "1", "future", null, {}, Number.NaN])(
+    "falls back to safe legacy defaults for unsupported schemaVersion %p",
+    (schemaVersion) => {
+      const brand = normalizePublishedBrand(
+        {
+          schemaVersion,
+          version: 41,
+          logoText: "不可信",
+          logoStoragePath: `${ORGANIZATION_ID}/brand-logos/${LOGO_ID}.webp`,
+          brandName: "不可信品牌",
+          brandTagline: "不可信标语",
+          primaryColor: "#123456",
+          publishedAt: "2026-08-01T12:34:56.789Z",
+        },
+        identity,
+      );
+
+      expect(brand).toMatchObject({
+        schemaVersion: BRAND_SCHEMA_VERSION,
+        version: 0,
+        logoText: "北辰",
+        logoStoragePath: null,
+        brandName: "北辰机构",
+        brandTagline: "",
+        primaryColor: DEFAULT_BRAND_PRIMARY,
+        publishedAt: null,
+      });
+    },
+  );
+
   it("trims and caps the published text fields", () => {
     const brand = normalizePublishedBrand(
       {
@@ -53,6 +126,47 @@ describe("normalizePublishedBrand", () => {
         normalizePublishedBrand({ primaryColor }, identity).primaryColor,
       ).toBe(DEFAULT_BRAND_PRIMARY);
     }
+  });
+
+  it.each([
+    [0, 0],
+    [2_147_483_647, 2_147_483_647],
+    [2_147_483_648, 0],
+    [-1, 0],
+    [Number.MAX_SAFE_INTEGER + 1, 0],
+    [1e20, 0],
+    [1.5, 0],
+  ])("normalizes publication version %p to %p", (version, expected) => {
+    expect(
+      normalizePublishedBrand({ schemaVersion: 1, version }, identity).version,
+    ).toBe(expected);
+  });
+
+  it.each(["2026-08-01T12:34:56.789Z", "2026-08-01T20:34:56+08:00"])(
+    "accepts a bounded ISO-8601 publishedAt timestamp: %s",
+    (publishedAt) => {
+      expect(
+        normalizePublishedBrand({ schemaVersion: 1, publishedAt }, identity)
+          .publishedAt,
+      ).toBe(publishedAt);
+    },
+  );
+
+  it.each([
+    "not-a-date",
+    "2026-02-30T12:34:56.789Z",
+    "2026-08-01",
+    "2026-08-01 12:34:56Z",
+    `${"2".repeat(80)}-08-01T12:34:56.789Z`,
+    `${" ".repeat(40)}2026-08-01T12:34:56.789Z`,
+    "2026-08-01T12:34:56.789Z-extra",
+    "",
+    null,
+  ])("drops an unsafe publishedAt value: %p", (publishedAt) => {
+    expect(
+      normalizePublishedBrand({ schemaVersion: 1, publishedAt }, identity)
+        .publishedAt,
+    ).toBeNull();
   });
 
   it("always derives an action color with WCAG AA contrast against white", () => {
