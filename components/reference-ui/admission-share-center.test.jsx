@@ -685,6 +685,37 @@ describe("AdmissionShareCenter", () => {
     expect(JSON.stringify(payload)).not.toMatch(/logoStoragePath|storagePath/u);
   });
 
+  it("requires an explicit contact-card choice for every newly created share", async () => {
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.change(await screen.findByLabelText("对外联系名片"), {
+      target: { value: activeContactCard.id },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "关闭交付信息" }),
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "录屏库" }));
+    fireEvent.click(screen.getByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    expect(await screen.findByLabelText("对外联系名片")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+
+    await waitFor(() =>
+      expect(actions.createAdmissionShareBoard).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      actions.createAdmissionShareBoard.mock.calls[0][1].contactCardId,
+    ).toBe(activeContactCard.id);
+    expect(
+      actions.createAdmissionShareBoard.mock.calls[1][1].contactCardId,
+    ).toBeNull();
+  });
+
   it("keeps the no-contact path usable while cards fail and supports a safe retry", async () => {
     actions.listAdmissionShareContactCards
       .mockRejectedValueOnce(new Error("名片服务暂不可用"))

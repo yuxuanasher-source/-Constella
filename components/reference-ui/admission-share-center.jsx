@@ -953,7 +953,11 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       setPreflight(null);
       setWizardOpen(false);
       setWizardStep(0);
-      setDraft((current) => ({ ...current, accessCode: "" }));
+      setDraft((current) => ({
+        ...current,
+        accessCode: "",
+        contactCardId: null,
+      }));
       setMessage("分享任务已创建；链接和访问码仅在本次弹窗展示");
       await loadTasks().catch(() => {});
     } catch (error) {
