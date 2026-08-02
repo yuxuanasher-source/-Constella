@@ -29167,10 +29167,6 @@ function OpsReferenceInner({
       memberLimit: input?.memberLimit,
       features: input?.features,
     };
-    setOrganizationSettingsState((current) =>
-      mergeOrganizationSettings(current, nonBrandPatch),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
     const response = await fetch("/api/organization/settings", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -29178,6 +29174,19 @@ function OpsReferenceInner({
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (body.code === "ORGANIZATION_SETTINGS_AUDIT_FAILED") {
+        const authoritativeName =
+          typeof body.organization?.name === "string" &&
+          body.organization.name.trim()
+            ? body.organization.name.trim()
+            : null;
+        if (authoritativeName) {
+          setOrganizationSettingsState((current) =>
+            mergeOrganizationSettings(current, { name: authoritativeName }),
+          );
+        }
+        throw new Error("名称已更新但审计失败，请刷新确认");
+      }
       throw new Error(
         response.status === 403
           ? "仅负责人可以修改组织品牌设置。"

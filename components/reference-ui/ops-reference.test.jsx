@@ -2525,7 +2525,7 @@ describe("OpsReferenceApp project smoke", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<OpsReferenceApp initialRoute="warroom" />);
+    render(<OpsReferenceApp initialRoute="projects" />);
 
     fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
     fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
@@ -2558,12 +2558,6 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByLabelText("厂家门户"));
     fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
 
-    const orgSwitcher = (await screen.findByText("未来经营组")).closest(
-      "button",
-    );
-    expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
-    expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
-
     // 旧入口只持久化组织名称，不再携带任何品牌字段。
     let settingsCall;
     await waitFor(() => {
@@ -2572,17 +2566,102 @@ describe("OpsReferenceApp project smoke", () => {
       );
       expect(settingsCall).toBeTruthy();
     });
-    expect(screen.queryByText("当前组织 · 配额 48")).not.toBeInTheDocument();
-    expect(screen.queryByText("已启用 4 项功能")).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /未来经营组/ }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("dialog", { name: "组织功能设置" }),
-    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "组织功能设置" }),
+      ).not.toBeInTheDocument(),
+    );
+    const orgSwitcher = (await screen.findByText("未来经营组")).closest(
+      "button",
+    );
+    expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
+    expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
     expect(settingsCall[1].method).toBe("PATCH");
     expect(JSON.parse(settingsCall[1].body)).toEqual({ name: "未来经营组" });
   }, 15000);
+
+  it("keeps global organization settings unchanged when the legacy settings request fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({
+          code: "ORGANIZATION_SETTINGS_UNAVAILABLE",
+          error: "temporary",
+        }),
+      })),
+    );
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        organizationSettings={{ name: "稳定组织", memberLimit: 32 }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
+    fireEvent.change(screen.getByLabelText("组织名称"), {
+      target: { value: "不应生效" },
+    });
+    fireEvent.change(screen.getByLabelText("成员规模"), {
+      target: { value: "48" },
+    });
+    fireEvent.click(screen.getByLabelText("厂家门户"));
+    fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
+
+    expect(await screen.findByText("temporary")).toBeVisible();
+    expect(
+      screen.getByRole("dialog", { name: "组织功能设置" }),
+    ).toBeInTheDocument();
+    const switcher = screen.getByText("稳定组织").closest("button");
+    expect(switcher).toHaveTextContent("当前组织 · 配额 32");
+    expect(switcher).toHaveTextContent("已启用 3 项功能");
+    expect(screen.queryByRole("button", { name: /不应生效/ })).toBeNull();
+  });
+
+  it("merges only the authoritative name and keeps the drawer open when settings audit fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({
+          code: "ORGANIZATION_SETTINGS_AUDIT_FAILED",
+          error: "raw audit diagnostics",
+          organization: { id: "org-1", name: "权威已写名称" },
+        }),
+      })),
+    );
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        organizationSettings={{ name: "旧组织", memberLimit: 32 }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
+    fireEvent.change(screen.getByLabelText("组织名称"), {
+      target: { value: "请求名称" },
+    });
+    fireEvent.change(screen.getByLabelText("成员规模"), {
+      target: { value: "48" },
+    });
+    fireEvent.click(screen.getByLabelText("厂家门户"));
+    fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
+
+    expect(
+      await screen.findByText("名称已更新但审计失败，请刷新确认"),
+    ).toBeVisible();
+    expect(document.body).not.toHaveTextContent("raw audit diagnostics");
+    expect(
+      screen.getByRole("dialog", { name: "组织功能设置" }),
+    ).toBeInTheDocument();
+    const switcher = screen.getByText("权威已写名称").closest("button");
+    expect(switcher).toHaveTextContent("当前组织 · 配额 32");
+    expect(switcher).toHaveTextContent("已启用 3 项功能");
+  });
 
   it("uses organization logo settings in the sidebar brand mark", () => {
     render(

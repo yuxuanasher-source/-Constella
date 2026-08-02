@@ -36,6 +36,7 @@ type ConflictState = {
   latestVersion: number;
   online: PublishedOrganizationBrand;
 };
+type BrandMutationKind = "save" | "publish";
 
 type BrandFieldKey = "logoText" | "brandName" | "brandTagline" | "primaryColor";
 type BrandLogoClientErrorCode =
@@ -198,6 +199,9 @@ export function OrganizationBrandCenter({
   const [uploadState, setUploadState] = useState<
     "idle" | "uploading" | "success" | "cancelled" | "error"
   >("idle");
+  const [uploadPending, setUploadPending] = useState(false);
+  const [brandMutationKind, setBrandMutationKind] =
+    useState<BrandMutationKind | null>(null);
   const [publishedLogoUrl, setPublishedLogoUrl] = useState(
     initialLogoUrls.published,
   );
@@ -215,10 +219,19 @@ export function OrganizationBrandCenter({
     canEdit
       ? (initialStudio.versions?.find(
           (version) => version.version === initialStudio.published.version,
-        )?.publishedByLabel ?? "历史发布记录")
+        )?.publishedByLabel ?? null)
       : null,
   );
   const uploadController = useRef<AbortController | null>(null);
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadPendingRef = useRef(false);
+  const uploadGenerationRef = useRef(0);
+  const draftRevisionRef = useRef(0);
+  const mutationRequestCounterRef = useRef(0);
+  const brandMutationInFlightRef = useRef<{
+    kind: BrandMutationKind;
+    token: number;
+  } | null>(null);
   const publishedLogoUrlRef = useRef(publishedLogoUrl);
   const draftLogoUrlRef = useRef(draftLogoUrl);
   const provisionalLogoUrlRef = useRef<string | null>(null);
@@ -237,7 +250,14 @@ export function OrganizationBrandCenter({
       initialStudio.contactCards.map((card) => [card.id, formFromCard(card)]),
     ),
   );
-  const [cardBusyId, setCardBusyId] = useState<string | null>(null);
+  const [cardBusyKeys, setCardBusyKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const cardOperationCounterRef = useRef(0);
+  const cardOperationTokensRef = useRef(new Map<string, number>());
+  const [cardFormDirtyIds, setCardFormDirtyIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [emergencyForms, setEmergencyForms] = useState<
     Record<string, { reason: string; acknowledged: boolean }>
   >({});
@@ -276,11 +296,73 @@ export function OrganizationBrandCenter({
   const previewLogoUrl = canEdit
     ? (provisionalLogoUrl ?? draftLogoUrl)
     : publishedLogoUrl;
+  const brandHistory = useMemo(() => {
+    const byVersion = new Map(
+      (initialStudio.versions ?? []).map((version) => [
+        version.version,
+        version,
+      ]),
+    );
+    if (published.publishedAt && publishedByLabel) {
+      byVersion.set(published.version, {
+        version: published.version,
+        publishedAt: published.publishedAt,
+        publishedByLabel,
+        brand: published,
+      });
+    }
+    return [...byVersion.values()].sort((left, right) => {
+      return right.version - left.version;
+    });
+  }, [initialStudio.versions, published, publishedByLabel]);
+  const brandMutationBusy = brandMutationKind !== null;
+
+  const beginBrandMutation = (kind: BrandMutationKind) => {
+    if (brandMutationInFlightRef.current || uploadPendingRef.current) {
+      return null;
+    }
+    const token = ++mutationRequestCounterRef.current;
+    brandMutationInFlightRef.current = { kind, token };
+    setBrandMutationKind(kind);
+    return token;
+  };
+
+  const finishBrandMutation = (kind: BrandMutationKind, token: number) => {
+    const current = brandMutationInFlightRef.current;
+    if (current?.kind === kind && current.token === token) {
+      brandMutationInFlightRef.current = null;
+      setBrandMutationKind(null);
+    }
+  };
+
+  const isCurrentBrandMutation = (kind: BrandMutationKind, token: number) => {
+    const current = brandMutationInFlightRef.current;
+    return current?.kind === kind && current.token === token;
+  };
+
+  const beginCardOperation = (key: string) => {
+    if (cardOperationTokensRef.current.has(key)) return null;
+    const token = ++cardOperationCounterRef.current;
+    cardOperationTokensRef.current.set(key, token);
+    setCardBusyKeys((current) => new Set(current).add(key));
+    return token;
+  };
+
+  const finishCardOperation = (key: string, token: number) => {
+    if (cardOperationTokensRef.current.get(key) !== token) return;
+    cardOperationTokensRef.current.delete(key);
+    setCardBusyKeys((current) => {
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+  };
 
   const updateDraftField = <K extends keyof OrganizationBrandSource>(
     key: K,
     value: OrganizationBrandSource[K],
   ) => {
+    draftRevisionRef.current += 1;
     setDraft((current) => ({
       ...current,
       content: { ...current.content, [key]: value },
@@ -344,11 +426,31 @@ export function OrganizationBrandCenter({
     return true;
   };
 
+  const cancelLogoUpload = () => {
+    if (!uploadPendingRef.current) return;
+    uploadGenerationRef.current += 1;
+    uploadController.current?.abort();
+    uploadController.current = null;
+    if (logoInputRef.current) logoInputRef.current.value = "";
+    uploadPendingRef.current = false;
+    setUploadPending(false);
+    clearProvisionalLogoUrl();
+    setUploadState("cancelled");
+    setAnnouncement("上传已取消，本地草稿已保留。");
+  };
+
   const handleLogoUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (brandMutationInFlightRef.current || uploadPendingRef.current) {
+      event.target.value = "";
+      return;
+    }
 
-    uploadController.current?.abort();
+    setPublishConfirmation(false);
+    uploadPendingRef.current = true;
+    setUploadPending(true);
+    const generation = ++uploadGenerationRef.current;
     clearProvisionalLogoUrl();
     const rawUrl = createOwnedLogoUrl(file);
     let uploadPreviewUrl = rawUrl;
@@ -360,7 +462,10 @@ export function OrganizationBrandCenter({
 
     try {
       const preparedFile = await prepareBrandLogoForUpload(file);
-      if (controller.signal.aborted) {
+      if (
+        controller.signal.aborted ||
+        generation !== uploadGenerationRef.current
+      ) {
         throw new DOMException("Aborted", "AbortError");
       }
       const preparedUrl = createOwnedLogoUrl(preparedFile);
@@ -378,7 +483,10 @@ export function OrganizationBrandCenter({
         code?: unknown;
         logoStoragePath?: unknown;
       };
-      if (controller.signal.aborted) {
+      if (
+        controller.signal.aborted ||
+        generation !== uploadGenerationRef.current
+      ) {
         throw new DOMException("Aborted", "AbortError");
       }
       if (!response.ok || typeof payload.logoStoragePath !== "string") {
@@ -401,6 +509,10 @@ export function OrganizationBrandCenter({
       setUploadState("success");
       setAnnouncement("上传完成，待保存");
     } catch (error) {
+      if (generation !== uploadGenerationRef.current) {
+        revokeOwnedLogoUrl(uploadPreviewUrl);
+        return;
+      }
       if (isAbortError(error)) {
         setUploadState("cancelled");
         setAnnouncement("上传已取消，本地草稿已保留。");
@@ -414,8 +526,13 @@ export function OrganizationBrandCenter({
         revokeOwnedLogoUrl(uploadPreviewUrl);
       }
     } finally {
-      if (uploadController.current === controller)
+      if (generation === uploadGenerationRef.current) {
+        uploadPendingRef.current = false;
+        setUploadPending(false);
+      }
+      if (uploadController.current === controller) {
         uploadController.current = null;
+      }
       event.target.value = "";
     }
   };
@@ -460,7 +577,17 @@ export function OrganizationBrandCenter({
   };
 
   const saveDraft = async () => {
-    if (!validateDraft() || conflict) return;
+    if (
+      conflict ||
+      brandMutationInFlightRef.current ||
+      uploadPendingRef.current ||
+      !validateDraft()
+    ) {
+      return;
+    }
+    const token = beginBrandMutation("save");
+    if (token === null) return;
+    const requestRevision = draftRevisionRef.current;
     setSaveState("working");
     setAnnouncement("正在保存草稿。");
     try {
@@ -476,24 +603,53 @@ export function OrganizationBrandCenter({
           primaryColor: draft.content.primaryColor.toUpperCase(),
         }),
       });
+      if (!isCurrentBrandMutation("save", token)) return;
       if (response.status === 409) {
         await loadConflict(response);
         return;
       }
       const payload = (await safeJson(response)) as { draft?: DraftState };
+      if (!isCurrentBrandMutation("save", token)) return;
       if (!response.ok || !payload.draft) throw new Error("save_failed");
-      setDraft(payload.draft);
-      setDraftDirty(false);
-      setSaveState("success");
-      setAnnouncement("草稿已保存，尚未发布。");
+      if (draftRevisionRef.current === requestRevision) {
+        setDraft(payload.draft);
+        setDraftDirty(false);
+        setSaveState("success");
+        setAnnouncement("草稿已保存，尚未发布。");
+      } else {
+        setDraft((current) => ({
+          ...current,
+          baseVersion: payload.draft!.baseVersion,
+          persisted: false,
+          updatedAt: payload.draft!.updatedAt,
+        }));
+        setDraftDirty(true);
+        setSaveState("idle");
+        setAnnouncement("旧快照已保存，本地仍有待保存修改。");
+      }
     } catch {
-      setSaveState("error");
-      setAnnouncement("草稿保存失败，请重试。");
+      if (isCurrentBrandMutation("save", token)) {
+        setSaveState("error");
+        setAnnouncement("草稿保存失败，请重试。");
+      }
+    } finally {
+      finishBrandMutation("save", token);
     }
   };
 
   const publishDraft = async () => {
-    if (draftDirty || conflict || !validateDraft()) return;
+    if (
+      draftDirty ||
+      conflict ||
+      brandMutationInFlightRef.current ||
+      uploadPendingRef.current ||
+      !validateDraft()
+    ) {
+      return;
+    }
+    const token = beginBrandMutation("publish");
+    if (token === null) return;
+    const requestRevision = draftRevisionRef.current;
     setPublishState("working");
     setAnnouncement("正在发布品牌草稿。");
     try {
@@ -502,6 +658,7 @@ export function OrganizationBrandCenter({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ expectedVersion: draft.baseVersion }),
       });
+      if (!isCurrentBrandMutation("publish", token)) return;
       if (response.status === 409) {
         await loadConflict(response);
         return;
@@ -510,6 +667,7 @@ export function OrganizationBrandCenter({
         version?: number;
         published?: PublishedOrganizationBrand;
       };
+      if (!isCurrentBrandMutation("publish", token)) return;
       if (
         !response.ok ||
         !payload.published ||
@@ -520,6 +678,7 @@ export function OrganizationBrandCenter({
       const nextSource = sourceFromPublished(payload.published);
       const previousPublishedLogoUrl = publishedLogoUrlRef.current;
       const previousDraftLogoUrl = draftLogoUrlRef.current;
+      const requestUnchanged = draftRevisionRef.current === requestRevision;
       const nextPublishedLogoUrl = payload.published.logoStoragePath
         ? payload.published.logoStoragePath === published.logoStoragePath
           ? previousPublishedLogoUrl
@@ -527,40 +686,64 @@ export function OrganizationBrandCenter({
             ? previousDraftLogoUrl
             : null
         : null;
+      const retainedDraftLogoUrl = requestUnchanged
+        ? nextPublishedLogoUrl
+        : previousDraftLogoUrl;
       publishedLogoUrlRef.current = nextPublishedLogoUrl;
-      draftLogoUrlRef.current = nextPublishedLogoUrl;
       setPublishedLogoUrl(nextPublishedLogoUrl);
-      setDraftLogoUrl(nextPublishedLogoUrl);
-      if (previousPublishedLogoUrl !== nextPublishedLogoUrl) {
-        revokeOwnedLogoUrl(previousPublishedLogoUrl);
-      }
       if (
-        previousDraftLogoUrl !== nextPublishedLogoUrl &&
-        previousDraftLogoUrl !== previousPublishedLogoUrl
+        previousPublishedLogoUrl !== nextPublishedLogoUrl &&
+        previousPublishedLogoUrl !== retainedDraftLogoUrl
       ) {
-        revokeOwnedLogoUrl(previousDraftLogoUrl);
+        revokeOwnedLogoUrl(previousPublishedLogoUrl);
       }
       setPublished(payload.published);
       setPublishedByLabel("你");
-      setDraft({
-        baseVersion: payload.version,
-        content: nextSource,
-        persisted: false,
-        updatedAt: null,
-      });
-      setDraftDirty(false);
+      if (requestUnchanged) {
+        draftLogoUrlRef.current = nextPublishedLogoUrl;
+        setDraftLogoUrl(nextPublishedLogoUrl);
+        if (
+          previousDraftLogoUrl !== nextPublishedLogoUrl &&
+          previousDraftLogoUrl !== previousPublishedLogoUrl
+        ) {
+          revokeOwnedLogoUrl(previousDraftLogoUrl);
+        }
+        setDraft({
+          baseVersion: payload.version,
+          content: nextSource,
+          persisted: false,
+          updatedAt: null,
+        });
+        setDraftDirty(false);
+      } else {
+        setDraft((current) => ({
+          ...current,
+          baseVersion: payload.version!,
+          persisted: false,
+          updatedAt: null,
+        }));
+        setDraftDirty(true);
+      }
       setPublishConfirmation(false);
       setPublishState("success");
       setSaveState("idle");
-      setAnnouncement(`品牌已发布为 v${payload.version}。`);
+      setAnnouncement(
+        requestUnchanged
+          ? `品牌已发布为 v${payload.version}。`
+          : `品牌已发布为 v${payload.version}；本地仍有待保存修改。`,
+      );
     } catch {
-      setPublishState("error");
-      setAnnouncement("品牌发布失败，线上版本未改变，请重试。");
+      if (isCurrentBrandMutation("publish", token)) {
+        setPublishState("error");
+        setAnnouncement("品牌发布失败，线上版本未改变，请重试。");
+      }
+    } finally {
+      finishBrandMutation("publish", token);
     }
   };
 
   const removeDraftLogo = () => {
-    uploadController.current?.abort();
+    if (brandMutationInFlightRef.current || uploadPendingRef.current) return;
     clearProvisionalLogoUrl();
     const previousDraftLogoUrl = draftLogoUrlRef.current;
     draftLogoUrlRef.current = null;
@@ -575,6 +758,7 @@ export function OrganizationBrandCenter({
 
   const acceptConflictVersion = () => {
     if (!conflict) return;
+    draftRevisionRef.current += 1;
     setDraft((current) => ({
       ...current,
       baseVersion: conflict.latestVersion,
@@ -591,13 +775,19 @@ export function OrganizationBrandCenter({
     );
   };
 
+  const openPublishConfirmation = () => {
+    if (brandMutationInFlightRef.current || uploadPendingRef.current) return;
+    setPublishConfirmation(true);
+  };
+
   const createCard = async (event: FormEvent) => {
     event.preventDefault();
     if (!newCard.displayName.trim() || !hasContact(newCard)) {
       setAnnouncement("联系名片需填写姓名和至少一种公开联系方式。");
       return;
     }
-    setCardBusyId("new");
+    const operationToken = beginCardOperation("new");
+    if (operationToken === null) return;
     try {
       const response = await fetch("/api/organization/contact-cards", {
         method: "POST",
@@ -619,7 +809,7 @@ export function OrganizationBrandCenter({
     } catch {
       setAnnouncement("联系名片创建失败，请重试。");
     } finally {
-      setCardBusyId(null);
+      finishCardOperation("new", operationToken);
     }
   };
 
@@ -629,7 +819,7 @@ export function OrganizationBrandCenter({
       setAnnouncement("联系名片需填写姓名和至少一种公开联系方式。");
       return;
     }
-    await patchCard(card, contactPayload(form), "联系名片已更新。");
+    await patchCard(card, contactPayload(form), "联系名片已更新。", "profile");
   };
 
   const toggleCardStatus = async (card: OrganizationContactCardDto) => {
@@ -638,6 +828,7 @@ export function OrganizationBrandCenter({
       card,
       { status },
       status === "active" ? "联系名片已启用。" : "联系名片已停用。",
+      "status",
     );
   };
 
@@ -645,8 +836,10 @@ export function OrganizationBrandCenter({
     card: OrganizationContactCardDto,
     changes: Record<string, unknown>,
     successMessage: string,
+    operation: "profile" | "status",
   ) => {
-    setCardBusyId(card.id);
+    const operationToken = beginCardOperation(card.id);
+    if (operationToken === null) return;
     try {
       const response = await fetch(
         `/api/organization/contact-cards/${card.id}`,
@@ -661,27 +854,49 @@ export function OrganizationBrandCenter({
       };
       if (!response.ok || !payload.contactCard)
         throw new Error("update_failed");
-      setCards((current) =>
-        current.map((item) =>
-          item.id === payload.contactCard!.id ? payload.contactCard! : item,
-        ),
-      );
-      setCardForms((current) => ({
-        ...current,
-        [payload.contactCard!.id]: formFromCard(payload.contactCard!),
-      }));
+      if (cardOperationTokensRef.current.get(card.id) !== operationToken)
+        return;
+      if (operation === "profile") {
+        setCards((current) =>
+          current.map((item) =>
+            item.id === payload.contactCard!.id ? payload.contactCard! : item,
+          ),
+        );
+        setCardForms((current) => ({
+          ...current,
+          [payload.contactCard!.id]: formFromCard(payload.contactCard!),
+        }));
+        setCardFormDirtyIds((current) => {
+          const next = new Set(current);
+          next.delete(card.id);
+          return next;
+        });
+      } else {
+        setCards((current) =>
+          current.map((item) =>
+            item.id === payload.contactCard!.id
+              ? {
+                  ...item,
+                  status: payload.contactCard!.status,
+                  updatedAt: payload.contactCard!.updatedAt,
+                }
+              : item,
+          ),
+        );
+      }
       setAnnouncement(successMessage);
     } catch {
       setAnnouncement("联系名片更新失败，请重试。");
     } finally {
-      setCardBusyId(null);
+      finishCardOperation(card.id, operationToken);
     }
   };
 
   const emergencyRemove = async (card: OrganizationContactCardDto) => {
     const form = emergencyForms[card.id] ?? { reason: "", acknowledged: false };
     if (!form.reason.trim() || !form.acknowledged) return;
-    setCardBusyId(card.id);
+    const operationToken = beginCardOperation(card.id);
+    if (operationToken === null) return;
     try {
       const response = await fetch(
         `/api/organization/contact-cards/${card.id}/emergency-remove`,
@@ -710,8 +925,22 @@ export function OrganizationBrandCenter({
     } catch {
       setAnnouncement("紧急移除失败，请核对原因后重试。");
     } finally {
-      setCardBusyId(null);
+      finishCardOperation(card.id, operationToken);
     }
+  };
+
+  const updateCardForm = (
+    cardId: string,
+    next: React.SetStateAction<ContactForm>,
+  ) => {
+    setCardForms((current) => {
+      const currentForm = current[cardId] ?? emptyContactForm;
+      return {
+        ...current,
+        [cardId]: typeof next === "function" ? next(currentForm) : next,
+      };
+    });
+    setCardFormDirtyIds((current) => new Set(current).add(cardId));
   };
 
   return (
@@ -744,7 +973,9 @@ export function OrganizationBrandCenter({
                 </h2>
                 <p>
                   {canEdit
-                    ? `发布者 ${publishedByLabel} · ${formatDate(published.publishedAt)}`
+                    ? publishedByLabel
+                      ? `发布者 ${publishedByLabel} · ${formatDate(published.publishedAt)}`
+                      : formatDate(published.publishedAt)
                     : `发布于 ${formatDate(published.publishedAt)}`}
                 </p>
               </div>
@@ -794,18 +1025,19 @@ export function OrganizationBrandCenter({
                     <label className={styles.fileButton}>
                       <span>上传 LOGO</span>
                       <input
+                        ref={logoInputRef}
                         type="file"
                         accept="image/jpeg,image/png,image/webp"
                         aria-label="上传 LOGO 图片"
                         onChange={handleLogoUpload}
-                        disabled={uploadState === "uploading"}
+                        disabled={uploadPending || brandMutationBusy}
                       />
                     </label>
                     {uploadState === "uploading" ? (
                       <button
                         type="button"
                         className={styles.secondaryButton}
-                        onClick={() => uploadController.current?.abort()}
+                        onClick={cancelLogoUpload}
                       >
                         取消上传
                       </button>
@@ -815,6 +1047,7 @@ export function OrganizationBrandCenter({
                         type="button"
                         className={styles.secondaryButton}
                         onClick={removeDraftLogo}
+                        disabled={uploadPending || brandMutationBusy}
                       >
                         移除草稿 LOGO
                       </button>
@@ -844,6 +1077,7 @@ export function OrganizationBrandCenter({
                         brandInputRefs.current.logoText = node;
                       }}
                       aria-label="LOGO 字标"
+                      disabled={brandMutationBusy}
                       value={draft.content.logoText}
                       onChange={(event) =>
                         updateDraftField("logoText", event.target.value)
@@ -867,6 +1101,7 @@ export function OrganizationBrandCenter({
                         brandInputRefs.current.brandName = node;
                       }}
                       aria-label="品牌名称"
+                      disabled={brandMutationBusy}
                       value={draft.content.brandName}
                       onChange={(event) =>
                         updateDraftField("brandName", event.target.value)
@@ -890,6 +1125,7 @@ export function OrganizationBrandCenter({
                         brandInputRefs.current.brandTagline = node;
                       }}
                       aria-label="品牌副标"
+                      disabled={brandMutationBusy}
                       value={draft.content.brandTagline}
                       onChange={(event) =>
                         updateDraftField("brandTagline", event.target.value)
@@ -911,6 +1147,7 @@ export function OrganizationBrandCenter({
                       <input
                         type="color"
                         aria-label="选择品牌主色"
+                        disabled={brandMutationBusy}
                         value={
                           /^#[0-9A-F]{6}$/u.test(
                             draft.content.primaryColor.toUpperCase(),
@@ -930,6 +1167,7 @@ export function OrganizationBrandCenter({
                           brandInputRefs.current.primaryColor = node;
                         }}
                         aria-label="品牌主色"
+                        disabled={brandMutationBusy}
                         value={draft.content.primaryColor}
                         onChange={(event) =>
                           updateDraftField("primaryColor", event.target.value)
@@ -958,16 +1196,19 @@ export function OrganizationBrandCenter({
                     type="button"
                     className={styles.primaryButton}
                     onClick={saveDraft}
-                    disabled={saveState === "working" || Boolean(conflict)}
+                    disabled={
+                      brandMutationBusy || uploadPending || Boolean(conflict)
+                    }
                   >
                     {saveState === "working" ? "保存中…" : "保存草稿"}
                   </button>
                   <button
                     type="button"
                     className={styles.secondaryButton}
-                    onClick={() => setPublishConfirmation(true)}
+                    onClick={openPublishConfirmation}
                     disabled={
-                      publishState === "working" ||
+                      brandMutationBusy ||
+                      uploadPending ||
                       draftDirty ||
                       Boolean(conflict)
                     }
@@ -986,7 +1227,7 @@ export function OrganizationBrandCenter({
                         type="button"
                         className={styles.primaryButton}
                         onClick={publishDraft}
-                        disabled={publishState === "working"}
+                        disabled={brandMutationBusy || uploadPending}
                       >
                         {publishState === "working"
                           ? "发布中…"
@@ -996,6 +1237,7 @@ export function OrganizationBrandCenter({
                         type="button"
                         className={styles.textButton}
                         onClick={() => setPublishConfirmation(false)}
+                        disabled={brandMutationBusy}
                       >
                         取消
                       </button>
@@ -1009,8 +1251,9 @@ export function OrganizationBrandCenter({
                 newCard={newCard}
                 setNewCard={setNewCard}
                 cardForms={cardForms}
-                setCardForms={setCardForms}
-                busyId={cardBusyId}
+                dirtyIds={cardFormDirtyIds}
+                busyKeys={cardBusyKeys}
+                onFormChange={updateCardForm}
                 onCreate={createCard}
                 onUpdate={updateCard}
                 onToggle={toggleCardStatus}
@@ -1019,11 +1262,11 @@ export function OrganizationBrandCenter({
                 onEmergency={emergencyRemove}
               />
 
-              {initialStudio.versions?.length ? (
+              {brandHistory.length ? (
                 <details className={styles.historySection}>
                   <summary>发布历史</summary>
                   <ul>
-                    {initialStudio.versions.map((version) => (
+                    {brandHistory.map((version) => (
                       <li key={version.version}>
                         <strong>v{version.version}</strong>
                         <span>
@@ -1158,10 +1401,12 @@ function ContactCardManager(props: {
   newCard: ContactForm;
   setNewCard: React.Dispatch<React.SetStateAction<ContactForm>>;
   cardForms: Record<string, ContactForm>;
-  setCardForms: React.Dispatch<
-    React.SetStateAction<Record<string, ContactForm>>
-  >;
-  busyId: string | null;
+  dirtyIds: Set<string>;
+  busyKeys: Set<string>;
+  onFormChange: (
+    cardId: string,
+    next: React.SetStateAction<ContactForm>,
+  ) => void;
   onCreate: (event: FormEvent) => void;
   onUpdate: (card: OrganizationContactCardDto) => void;
   onToggle: (card: OrganizationContactCardDto) => void;
@@ -1191,13 +1436,14 @@ function ContactCardManager(props: {
             prefix="新名片"
             value={props.newCard}
             onChange={props.setNewCard}
+            disabled={props.busyKeys.has("new")}
           />
           <button
             type="submit"
             className={styles.primaryButton}
-            disabled={props.busyId === "new"}
+            disabled={props.busyKeys.has("new")}
           >
-            {props.busyId === "new" ? "创建中…" : "创建联系名片"}
+            {props.busyKeys.has("new") ? "创建中…" : "创建联系名片"}
           </button>
         </form>
       </details>
@@ -1208,12 +1454,16 @@ function ContactCardManager(props: {
             reason: "",
             acknowledged: false,
           };
+          const cardBusy = props.busyKeys.has(card.id);
           return (
             <article key={card.id} className={styles.contactItem}>
               <div className={styles.contactItemHeader}>
                 <div>
                   <strong>{card.displayName}</strong>
                   <span>{card.title || "未填写职务"}</span>
+                  {props.dirtyIds.has(card.id) ? (
+                    <span className={styles.pendingBadge}>资料待保存</span>
+                  ) : null}
                 </div>
                 <span
                   className={
@@ -1235,7 +1485,7 @@ function ContactCardManager(props: {
                   type="button"
                   className={styles.secondaryButton}
                   onClick={() => props.onToggle(card)}
-                  disabled={props.busyId === card.id}
+                  disabled={cardBusy}
                 >
                   {card.status === "active"
                     ? `停用${card.displayName}`
@@ -1248,19 +1498,14 @@ function ContactCardManager(props: {
                   <ContactInputs
                     prefix={card.displayName}
                     value={form}
-                    onChange={(next) =>
-                      props.setCardForms((current) => ({
-                        ...current,
-                        [card.id]:
-                          typeof next === "function" ? next(form) : next,
-                      }))
-                    }
+                    onChange={(next) => props.onFormChange(card.id, next)}
+                    disabled={cardBusy}
                   />
                   <button
                     type="button"
                     className={styles.primaryButton}
                     onClick={() => props.onUpdate(card)}
-                    disabled={props.busyId === card.id}
+                    disabled={cardBusy}
                   >
                     保存{card.displayName}名片
                   </button>
@@ -1277,6 +1522,7 @@ function ContactCardManager(props: {
                     <textarea
                       aria-label="紧急移除原因"
                       value={emergency.reason}
+                      disabled={cardBusy}
                       onChange={(event) =>
                         props.setEmergencyForms((current) => ({
                           ...current,
@@ -1293,6 +1539,7 @@ function ContactCardManager(props: {
                       type="checkbox"
                       aria-label="我理解该操作会影响所有有效分享"
                       checked={emergency.acknowledged}
+                      disabled={cardBusy}
                       onChange={(event) =>
                         props.setEmergencyForms((current) => ({
                           ...current,
@@ -1312,7 +1559,7 @@ function ContactCardManager(props: {
                     disabled={
                       !emergency.reason.trim() ||
                       !emergency.acknowledged ||
-                      props.busyId === card.id
+                      cardBusy
                     }
                   >
                     确认从所有有效分享中紧急移除
@@ -1331,10 +1578,12 @@ function ContactInputs({
   prefix,
   value,
   onChange,
+  disabled = false,
 }: {
   prefix: string;
   value: ContactForm;
   onChange: React.Dispatch<React.SetStateAction<ContactForm>>;
+  disabled?: boolean;
 }) {
   const set = (key: keyof ContactForm, next: string) =>
     onChange((current) => ({ ...current, [key]: next }));
@@ -1345,6 +1594,7 @@ function ContactInputs({
         <input
           aria-label={`${prefix}姓名`}
           value={value.displayName}
+          disabled={disabled}
           onChange={(event) => set("displayName", event.target.value)}
         />
       </label>
@@ -1353,6 +1603,7 @@ function ContactInputs({
         <input
           aria-label={`${prefix}职务`}
           value={value.title}
+          disabled={disabled}
           onChange={(event) => set("title", event.target.value)}
         />
       </label>
@@ -1361,6 +1612,7 @@ function ContactInputs({
         <input
           aria-label={`${prefix}电话`}
           value={value.phone}
+          disabled={disabled}
           onChange={(event) => set("phone", event.target.value)}
         />
       </label>
@@ -1370,6 +1622,7 @@ function ContactInputs({
           type="email"
           aria-label={`${prefix}邮箱`}
           value={value.email}
+          disabled={disabled}
           onChange={(event) => set("email", event.target.value)}
         />
       </label>
@@ -1378,6 +1631,7 @@ function ContactInputs({
         <input
           aria-label={`${prefix}微信`}
           value={value.wechat}
+          disabled={disabled}
           onChange={(event) => set("wechat", event.target.value)}
         />
       </label>
@@ -1456,7 +1710,7 @@ function InternalPreview({
         <div className={styles.previewTask}>
           <span>录屏复核</span>
           <strong>检查候选主播资料</strong>
-          <button type="button">开始处理</button>
+          <span className={styles.previewAction}>开始处理</span>
         </div>
         <div className={styles.previewTable}>
           <span>项目</span>
@@ -1518,7 +1772,7 @@ function PublicPreview({
       </div>
       <footer>
         <span>3 条录屏</span>
-        <button type="button">开始复核</button>
+        <span className={styles.previewAction}>开始复核</span>
       </footer>
     </section>
   );

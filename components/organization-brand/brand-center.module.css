@@ -725,8 +725,7 @@
   font-size: 11px;
 }
 
-.previewTask button,
-.publicPreview button {
+.previewAction {
   min-height: 28px;
   padding: 0 10px;
   border: 1px solid var(--preview-action);
@@ -734,6 +733,9 @@
   color: #fff;
   background: var(--preview-action);
   font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .previewTable {
@@ -861,6 +863,23 @@
 
   .previewBrandRow small {
     display: none;
+  }
+
+  .primaryButton,
+  .secondaryButton,
+  .dangerButton,
+  .textButton,
+  .fileButton,
+  .previewTabs button,
+  .field input,
+  .fieldWide input,
+  .contactFields input,
+  .dangerBody textarea,
+  .contactDetails summary,
+  .inlineDetails summary,
+  .dangerDetails summary,
+  .historySection summary {
+    min-height: 44px;
   }
 }
 

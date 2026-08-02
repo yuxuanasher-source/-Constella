@@ -95,6 +95,16 @@ function jsonResponse(body: unknown, status = 200) {
   } as Response;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function renderOwner(props: Partial<OrganizationBrandCenterProps> = {}) {
   return render(
     <OrganizationBrandCenter
@@ -508,6 +518,180 @@ describe("OrganizationBrandCenter", () => {
     expect(screen.getByText("当前线上版本 v4")).toBeVisible();
     expect(screen.getByText(/发布者 你/)).toBeVisible();
     expect(screen.getByLabelText("品牌名称")).toHaveValue("已保存草稿");
+    const history = screen.getByText("发布历史").closest("details")!;
+    fireEvent.click(within(history).getByText("发布历史"));
+    expect(within(history).getByText("v4")).toBeVisible();
+    expect(within(history).getByText(/你/)).toBeVisible();
+  });
+
+  it("does not invent a publisher label for an unpublished legacy organization", () => {
+    renderOwner({
+      initialStudio: {
+        ...ownerStudio,
+        published: { ...published, version: 0, publishedAt: null },
+        versions: [],
+      },
+    });
+
+    expect(screen.getByText("尚未发布")).toBeVisible();
+    expect(screen.queryByText(/历史发布记录/)).not.toBeInTheDocument();
+    expect(screen.queryByText("发布历史")).not.toBeInTheDocument();
+  });
+
+  it("keeps edits made after a deferred save started instead of applying the stale response", async () => {
+    const saveResponse = deferred<Response>();
+    vi.mocked(fetch).mockReturnValueOnce(saveResponse.promise);
+    renderOwner();
+
+    fireEvent.change(screen.getByLabelText("品牌名称"), {
+      target: { value: "请求快照" },
+    });
+    const saveButton = screen.getByRole("button", { name: "保存草稿" });
+    fireEvent.click(saveButton);
+    fireEvent.click(saveButton);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByLabelText("品牌名称"), {
+      target: { value: "请求后的本地修改" },
+    });
+    saveResponse.resolve(
+      jsonResponse({
+        draft: {
+          ...ownerStudio.draft,
+          content: {
+            ...ownerStudio.draft!.content,
+            brandName: "请求快照",
+          },
+        },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "旧快照已保存，本地仍有待保存修改",
+      ),
+    );
+    expect(screen.getByLabelText("品牌名称")).toHaveValue("请求后的本地修改");
+    expect(screen.getByText("待保存")).toBeVisible();
+  });
+
+  it("updates the online version but preserves defensive local edits made before a deferred publish returns", async () => {
+    const publishResponse = deferred<Response>();
+    vi.mocked(fetch).mockReturnValueOnce(publishResponse.promise);
+    renderOwner();
+
+    fireEvent.click(screen.getByRole("button", { name: "准备发布" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认发布草稿" }));
+    fireEvent.change(screen.getByLabelText("品牌副标"), {
+      target: { value: "发布请求后的防御性修改" },
+    });
+    publishResponse.resolve(
+      jsonResponse({
+        version: 4,
+        published: {
+          ...published,
+          version: 4,
+          brandName: ownerStudio.draft!.content.brandName,
+          brandTagline: ownerStudio.draft!.content.brandTagline,
+          primaryColor: ownerStudio.draft!.content.primaryColor,
+          publishedAt: "2026-08-02T08:00:00.000Z",
+        },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "品牌已发布为 v4；本地仍有待保存修改",
+      ),
+    );
+    expect(screen.getByText("当前线上版本 v4")).toBeVisible();
+    expect(screen.getByLabelText("品牌副标")).toHaveValue(
+      "发布请求后的防御性修改",
+    );
+    expect(screen.getByText(/基于线上 v4/)).toBeVisible();
+    expect(screen.getByText("待保存")).toBeVisible();
+  });
+
+  it("blocks save and publish synchronously while a deferred logo upload is pending", async () => {
+    const uploadResponse = deferred<Response>();
+    vi.mocked(fetch).mockReturnValueOnce(uploadResponse.promise);
+    renderOwner();
+
+    fireEvent.click(screen.getByRole("button", { name: "准备发布" }));
+    fireEvent.change(screen.getByLabelText("上传 LOGO 图片"), {
+      target: {
+        files: [new File(["logo"], "pending.png", { type: "image/png" })],
+      },
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "确认发布草稿" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存草稿" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "准备发布" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    fireEvent.click(screen.getByRole("button", { name: "准备发布" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe(
+      "/api/organization/brand/logo",
+    );
+
+    uploadResponse.resolve(
+      jsonResponse({
+        logoStoragePath:
+          "11111111-1111-4111-8111-111111111111/brand-logos/pending.webp",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("上传完成，待保存"),
+    );
+    expect(screen.getByText("待保存")).toBeVisible();
+  });
+
+  it("ignores a cancelled preparation that resolves after a replacement upload", async () => {
+    const firstBitmap = deferred<ImageBitmap>();
+    const secondBitmap = deferred<ImageBitmap>();
+    vi.mocked(createImageBitmap)
+      .mockReturnValueOnce(firstBitmap.promise)
+      .mockReturnValueOnce(secondBitmap.promise);
+    vi.mocked(URL.createObjectURL)
+      .mockReset()
+      .mockReturnValueOnce("blob:first-raw")
+      .mockReturnValueOnce("blob:second-raw")
+      .mockReturnValueOnce("blob:second-prepared");
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        logoStoragePath:
+          "11111111-1111-4111-8111-111111111111/brand-logos/second.webp",
+      }),
+    );
+    renderOwner();
+
+    fireEvent.change(screen.getByLabelText("上传 LOGO 图片"), {
+      target: {
+        files: [new File(["first"], "first.png", { type: "image/png" })],
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "取消上传" }));
+    fireEvent.change(screen.getByLabelText("上传 LOGO 图片"), {
+      target: {
+        files: [new File(["second"], "second.png", { type: "image/png" })],
+      },
+    });
+
+    firstBitmap.resolve({ width: 400, height: 400, close: vi.fn() } as never);
+    secondBitmap.resolve({ width: 800, height: 600, close: vi.fn() } as never);
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("上传完成，待保存"),
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const uploaded = vi.mocked(fetch).mock.calls[0][1]?.body as FormData;
+    expect((uploaded.get("logo") as File).name).toBe("second.webp");
+    expect(screen.getByAltText("星耀经营舱草稿品牌标识")).toHaveAttribute(
+      "src",
+      "blob:second-prepared",
+    );
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:first-raw");
   });
 
   it("promotes a successfully uploaded draft logo into the current online summary only after publish", async () => {
@@ -687,6 +871,12 @@ describe("OrganizationBrandCenter", () => {
       expectedVersion: 4,
       brandName: "我的本地草稿",
     });
+    const history = screen.getByText("发布历史").closest("details")!;
+    fireEvent.click(within(history).getByText("发布历史"));
+    expect(within(history).getByText("v4")).toBeVisible();
+    expect(
+      within(history).getAllByText(/其他组织负责人/).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it("requires a conflicted publish to be re-saved against the adopted online version", async () => {
@@ -725,6 +915,10 @@ describe("OrganizationBrandCenter", () => {
     expect(
       screen.getByRole("region", { name: "内部工作台预览" }),
     ).toHaveTextContent("星耀经营舱草稿");
+    expect(
+      screen.queryByRole("button", { name: "开始处理" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("开始处理")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "公开分享" }));
     const publicPreview = screen.getByRole("region", { name: "公开分享预览" });
     expect(publicPreview).toHaveTextContent("星耀经营舱草稿");
@@ -732,6 +926,10 @@ describe("OrganizationBrandCenter", () => {
     expect(publicPreview).not.toHaveTextContent("v3");
     expect(publicPreview).not.toHaveTextContent("22222222-2222");
     expect(container).not.toHaveTextContent("logoStoragePath");
+    expect(
+      screen.queryByRole("button", { name: "开始复核" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("开始复核")).toBeVisible();
   });
 
   it("creates, updates, disables and emergency-removes governed contact cards", async () => {
@@ -812,6 +1010,73 @@ describe("OrganizationBrandCenter", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[3][1]?.body))).toEqual({
       reason: "联系人信息需要立即撤回",
     });
+  });
+
+  it("keeps an unsaved card form edit when a status response returns old profile fields", async () => {
+    const toggleResponse = deferred<Response>();
+    vi.mocked(fetch).mockReturnValueOnce(toggleResponse.promise);
+    renderOwner();
+
+    fireEvent.click(screen.getByText("编辑 王负责人"));
+    fireEvent.change(screen.getByLabelText("王负责人职务"), {
+      target: { value: "尚未保存的新职务" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "停用王负责人" }));
+    toggleResponse.resolve(
+      jsonResponse({
+        contactCard: {
+          ...ownerStudio.contactCards[0],
+          title: "商务负责人",
+          status: "disabled",
+        },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "启用王负责人" }),
+      ).toBeVisible(),
+    );
+    expect(screen.getByLabelText("王负责人职务")).toHaveValue(
+      "尚未保存的新职务",
+    );
+  });
+
+  it("allows different cards to finish mutations out of order without clearing each other", async () => {
+    const firstResponse = deferred<Response>();
+    const secondResponse = deferred<Response>();
+    vi.mocked(fetch)
+      .mockReturnValueOnce(firstResponse.promise)
+      .mockReturnValueOnce(secondResponse.promise);
+    renderOwner();
+
+    fireEvent.click(screen.getByRole("button", { name: "停用王负责人" }));
+    fireEvent.click(screen.getByRole("button", { name: "启用旧联系人" }));
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    secondResponse.resolve(
+      jsonResponse({
+        contactCard: { ...ownerStudio.contactCards[1], status: "active" },
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "停用旧联系人" }),
+      ).toBeVisible(),
+    );
+    expect(screen.getByRole("button", { name: "停用王负责人" })).toBeDisabled();
+
+    firstResponse.resolve(
+      jsonResponse({
+        contactCard: { ...ownerStudio.contactCards[0], status: "disabled" },
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "启用王负责人" }),
+      ).toBeVisible(),
+    );
+    expect(screen.getByRole("button", { name: "停用旧联系人" })).toBeEnabled();
   });
 
   it("keeps retryable local state and announces asynchronous failures", async () => {

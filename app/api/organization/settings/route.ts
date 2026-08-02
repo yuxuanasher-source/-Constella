@@ -78,6 +78,12 @@ export async function PATCH(request: Request) {
     if (!current.data) {
       return safeError("Organization not found", 404, "ORGANIZATION_NOT_FOUND");
     }
+    const currentName = current.data.name.trim();
+    if (currentName === body.name) {
+      return NextResponse.json({
+        organization: { id: current.data.id, name: currentName },
+      });
+    }
 
     const update = await admin
       .from("organizations")
@@ -116,6 +122,9 @@ export async function PATCH(request: Request) {
         "Organization settings changed, but its audit record could not be written",
         503,
         "ORGANIZATION_SETTINGS_AUDIT_FAILED",
+        {
+          organization: { id: update.data.id, name: update.data.name },
+        },
       );
     }
 
@@ -147,6 +156,11 @@ async function readInspectionBody(
   }
 }
 
-function safeError(message: string, status: number, code: string) {
-  return NextResponse.json({ error: message, code }, { status });
+function safeError(
+  message: string,
+  status: number,
+  code: string,
+  details: Record<string, unknown> = {},
+) {
+  return NextResponse.json({ error: message, code, ...details }, { status });
 }

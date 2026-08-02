@@ -60,6 +60,7 @@ function jsonRequest(body: Record<string, unknown>) {
 describe("PATCH /api/organization/settings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined as never);
     vi.mocked(createSupabaseServerClient).mockResolvedValue({} as never);
     vi.mocked(getAuthContext).mockResolvedValue({
       userId: "user-1",
@@ -91,6 +92,40 @@ describe("PATCH /api/organization/settings", () => {
         changedFields: ["name"],
       }),
     );
+  });
+
+  it("returns the canonical current organization without updating or auditing a no-op name", async () => {
+    const admin = buildAdminClient({
+      current: { id: "org-1", name: "星耀 MCN" },
+    });
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(admin.client as never);
+
+    const { PATCH } = await import("./route");
+    const response = await PATCH(jsonRequest({ name: "  星耀 MCN  " }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      organization: { id: "org-1", name: "星耀 MCN" },
+    });
+    expect(admin.update).not.toHaveBeenCalled();
+    expect(writeAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("returns the authoritative written organization when audit persistence fails", async () => {
+    const admin = buildAdminClient();
+    vi.mocked(createSupabaseAdminClient).mockReturnValue(admin.client as never);
+    vi.mocked(writeAuditLog).mockRejectedValueOnce(new Error("audit down"));
+
+    const { PATCH } = await import("./route");
+    const response = await PATCH(jsonRequest({ name: "星耀 MCN" }));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "Organization settings changed, but its audit record could not be written",
+      code: "ORGANIZATION_SETTINGS_AUDIT_FAILED",
+      organization: { id: "org-1", name: "星耀 MCN" },
+    });
   });
 
   it.each(["logoText", "brandName", "brandTagline"])(
