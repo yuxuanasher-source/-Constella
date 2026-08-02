@@ -1,0 +1,166 @@
+create or replace function public.save_organization_brand_draft(
+  p_organization_id uuid,
+  p_expected_version integer,
+  p_content jsonb
+)
+returns table (
+  organization_id uuid,
+  base_version integer,
+  content jsonb,
+  updated_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor_user_id uuid := auth.uid();
+  v_organization public.organizations%rowtype;
+  v_logo_text text;
+  v_logo_storage_path text;
+  v_brand_name text;
+  v_brand_tagline text;
+  v_primary_color text;
+  v_canonical_content jsonb;
+  v_updated_at timestamptz := clock_timestamp();
+begin
+  if v_actor_user_id is null
+     or public.current_user_role(p_organization_id)
+       is distinct from 'owner'::public.app_role then
+    raise exception 'insufficient_privilege'
+      using errcode = '42501';
+  end if;
+
+  select organization.*
+  into v_organization
+  from public.organizations as organization
+  where organization.id = p_organization_id
+  for update;
+
+  if not found then
+    raise exception 'insufficient_privilege'
+      using errcode = '42501';
+  end if;
+
+  if p_expected_version is null or p_expected_version < 0 then
+    raise exception 'brand_draft_invalid_expected_version'
+      using errcode = '22023';
+  end if;
+
+  if p_expected_version is distinct from v_organization.branding_version then
+    raise exception 'brand_version_conflict'
+      using errcode = '40001';
+  end if;
+
+  if jsonb_typeof(p_content) is distinct from 'object' then
+    raise exception 'brand_draft_invalid'
+      using errcode = '22023';
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_object_keys(p_content) as draft_field(key)
+    where not (
+      draft_field.key = any (
+        array[
+          'logoText',
+          'logoStoragePath',
+          'brandName',
+          'brandTagline',
+          'primaryColor'
+        ]::text[]
+      )
+    )
+  ) then
+    raise exception 'brand_draft_unknown_field'
+      using errcode = '22023';
+  end if;
+
+  if jsonb_typeof(p_content -> 'logoText') is distinct from 'string'
+     or jsonb_typeof(p_content -> 'brandName') is distinct from 'string'
+     or jsonb_typeof(p_content -> 'brandTagline') is distinct from 'string'
+     or jsonb_typeof(p_content -> 'primaryColor') is distinct from 'string'
+     or jsonb_typeof(p_content -> 'logoStoragePath') is null
+     or jsonb_typeof(p_content -> 'logoStoragePath')
+       not in ('string', 'null') then
+    raise exception 'brand_draft_invalid_type'
+      using errcode = '22023';
+  end if;
+
+  v_logo_text := btrim(p_content ->> 'logoText');
+  v_logo_storage_path := nullif(
+    btrim(p_content ->> 'logoStoragePath'),
+    ''
+  );
+  v_brand_name := btrim(p_content ->> 'brandName');
+  v_brand_tagline := btrim(p_content ->> 'brandTagline');
+  v_primary_color := upper(btrim(p_content ->> 'primaryColor'));
+
+  if char_length(v_logo_text) not between 1 and 8
+     or char_length(v_brand_name) not between 1 and 40
+     or char_length(v_brand_tagline) > 80 then
+    raise exception 'brand_draft_invalid_length'
+      using errcode = '22023';
+  end if;
+
+  if v_primary_color !~ '^#[0-9A-F]{6}$' then
+    raise exception 'brand_draft_invalid_color'
+      using errcode = '22023';
+  end if;
+
+  if v_logo_storage_path is not null
+     and v_logo_storage_path !~* format(
+       '^%s/brand-logos/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.webp$',
+       p_organization_id::text
+     ) then
+    raise exception 'brand_draft_invalid_logo_path'
+      using errcode = '22023';
+  end if;
+
+  v_canonical_content := jsonb_build_object(
+    'logoText', v_logo_text,
+    'logoStoragePath', v_logo_storage_path,
+    'brandName', v_brand_name,
+    'brandTagline', v_brand_tagline,
+    'primaryColor', v_primary_color
+  );
+
+  insert into public.organization_brand_drafts as saved_draft (
+    organization_id,
+    base_version,
+    content,
+    updated_by,
+    updated_at
+  ) values (
+    p_organization_id,
+    v_organization.branding_version,
+    v_canonical_content,
+    v_actor_user_id,
+    v_updated_at
+  )
+  on conflict on constraint organization_brand_drafts_pkey do update
+  set
+    base_version = excluded.base_version,
+    content = excluded.content,
+    updated_by = excluded.updated_by,
+    updated_at = excluded.updated_at
+  returning saved_draft.updated_at into v_updated_at;
+
+  return query
+  select
+    p_organization_id,
+    v_organization.branding_version,
+    v_canonical_content,
+    v_updated_at;
+end;
+$$;
+
+revoke insert, update, delete
+on table public.organization_brand_drafts
+from authenticated;
+
+revoke all on function public.save_organization_brand_draft(uuid, integer, jsonb)
+from public, anon, authenticated, service_role;
+
+grant execute on function public.save_organization_brand_draft(uuid, integer, jsonb)
+to authenticated;
