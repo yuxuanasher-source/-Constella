@@ -256,10 +256,22 @@ describe("AdmissionSharePageClient", () => {
     expect(stageRule).toMatch(/background:\s*linear-gradient/u);
     expect(stageRule).not.toMatch(/(?:#000(?:000)?|black|--ink-900)/iu);
     expect(css).toMatch(
+      /\.recording-poster__play[\s\S]*?var\(--share-brand-action/u,
+    );
+    expect(css).not.toMatch(
+      /\.recording-poster__play[\s\S]*?background:\s*var\(--share-brand(?:,|\))/u,
+    );
+    expect(css).toMatch(
       /\.recording-media-canvas\[data-orientation="portrait"\][\s\S]*?width:\s*min\(100%,\s*430px\)/u,
     );
     expect(css).toMatch(
       /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?transition:\s*none/u,
+    );
+    expect(css).toMatch(
+      /@media\s*\(forced-colors:\s*active\)[\s\S]*?ButtonText[\s\S]*?outline/u,
+    );
+    expect(css).toMatch(
+      /@media\s*\(forced-colors:\s*active\)[\s\S]*?box-shadow:\s*none/u,
     );
   });
 

@@ -25,6 +25,7 @@ import {
 } from "react";
 
 import { normalizeAbsoluteHttpUrl } from "@/lib/http/safe-public-url";
+import { normalizePublishedBrand } from "@/features/organizations/organization-brand";
 
 import type {
   AdmissionSharePlaybackSource,
@@ -718,33 +719,120 @@ function BrandedActiveRecordingPane({
   const canPlayInline =
     sourceType === "original" || Boolean(embedUrl) || isDirectExternal;
   const [mediaState, setMediaState] = useState<MediaStageState>(() =>
-    sourceType === "none" ? "unavailable" : "idle",
+    sourceType === "none" || !canPlayInline ? "unavailable" : "idle",
   );
   const [playbackAttempt, setPlaybackAttempt] = useState(0);
   const [aspectRatio, setAspectRatio] = useState("16 / 9");
   const [orientation, setOrientation] = useState<"landscape" | "portrait">(
     "landscape",
   );
+  const mediaStageRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const embedRef = useRef<HTMLIFrameElement>(null);
+  const playbackAttemptRef = useRef(0);
+  const focusTransferRef = useRef<{
+    anchor: HTMLElement;
+    attempt: number;
+    consumed: boolean;
+  } | null>(null);
+  const pendingMediaFocusAttemptRef = useRef<number | null>(null);
+  const derivedBrand = useMemo(
+    () =>
+      normalizePublishedBrand(
+        { primaryColor: brand.primaryColor },
+        {
+          organizationId: "00000000-0000-4000-8000-000000000000",
+          organizationName: brand.brandName,
+        },
+      ),
+    [brand.brandName, brand.primaryColor],
+  );
   const shouldMountInlineMedia =
     canPlayInline && (mediaState === "loading" || mediaState === "playing");
   const stageStyle = {
-    "--share-brand": brand.primaryColor,
-    "--share-brand-soft": `color-mix(in srgb, ${brand.primaryColor} 10%, white)`,
+    "--share-brand-seed": derivedBrand.primaryColor,
+    "--share-brand-action": derivedBrand.actionColor,
+    "--share-brand-soft": derivedBrand.softColor,
   } as CSSProperties;
   const canvasStyle = {
     "--recording-aspect-ratio": aspectRatio,
   } as CSSProperties;
 
-  const startPlayback = () => {
+  useEffect(() => {
+    const revokeOnExternalFocus = (event: FocusEvent) => {
+      const grant = focusTransferRef.current;
+      const target = event.target;
+      const stage = mediaStageRef.current;
+      if (
+        !grant ||
+        !(target instanceof HTMLElement) ||
+        target === grant.anchor ||
+        target === stage ||
+        stage?.contains(target)
+      ) {
+        return;
+      }
+      focusTransferRef.current = null;
+      pendingMediaFocusAttemptRef.current = null;
+    };
+    document.addEventListener("focusin", revokeOnExternalFocus);
+    return () => {
+      document.removeEventListener("focusin", revokeOnExternalFocus);
+      focusTransferRef.current = null;
+      pendingMediaFocusAttemptRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (mediaState !== "playing") {
+      return;
+    }
+    const pendingAttempt = pendingMediaFocusAttemptRef.current;
+    pendingMediaFocusAttemptRef.current = null;
+    if (pendingAttempt !== playbackAttemptRef.current) {
+      return;
+    }
+    const target = videoRef.current ?? embedRef.current;
+    if (target?.isConnected) {
+      target.focus();
+    }
+  }, [mediaState]);
+
+  const armFocusTransfer = (anchor: HTMLElement, attempt: number) => {
+    focusTransferRef.current = { anchor, attempt, consumed: false };
+  };
+
+  const queueFocusTransferOnce = (attempt: number) => {
+    const grant = focusTransferRef.current;
+    if (!grant || grant.attempt !== attempt || grant.consumed) {
+      return;
+    }
+    grant.consumed = true;
+    pendingMediaFocusAttemptRef.current = attempt;
+  };
+
+  const startPlayback = (trigger: HTMLButtonElement) => {
     if (!canPlayInline) {
       setMediaState("unavailable");
       return;
     }
+    pendingMediaFocusAttemptRef.current = null;
+    armFocusTransfer(trigger, playbackAttemptRef.current);
     setMediaState("loading");
   };
 
-  const retryPlayback = () => {
-    setPlaybackAttempt((current) => current + 1);
+  const retryPlayback = (trigger: HTMLButtonElement) => {
+    const nextAttempt = playbackAttemptRef.current + 1;
+    pendingMediaFocusAttemptRef.current = null;
+    playbackAttemptRef.current = nextAttempt;
+    setPlaybackAttempt(nextAttempt);
+    const stage = mediaStageRef.current;
+    if (stage) {
+      stage.focus();
+      armFocusTransfer(stage, nextAttempt);
+    } else {
+      armFocusTransfer(trigger, nextAttempt);
+    }
     setMediaState("loading");
   };
 
@@ -765,15 +853,28 @@ function BrandedActiveRecordingPane({
     setOrientation(videoHeight > videoWidth ? "portrait" : "landscape");
   };
 
-  const markVideoPlaying = (event: SyntheticEvent<HTMLVideoElement>) => {
+  const markVideoPlaying = (attempt: number) => {
+    if (attempt !== playbackAttemptRef.current) {
+      return;
+    }
+    queueFocusTransferOnce(attempt);
     setMediaState("playing");
-    event.currentTarget.focus();
   };
-  const markEmbedPlaying = (event: SyntheticEvent<HTMLIFrameElement>) => {
+  const markEmbedPlaying = (attempt: number) => {
+    if (attempt !== playbackAttemptRef.current) {
+      return;
+    }
+    queueFocusTransferOnce(attempt);
     setMediaState("playing");
-    event.currentTarget.focus();
   };
-  const markError = () => setMediaState("error");
+  const markError = (attempt: number) => {
+    if (attempt !== playbackAttemptRef.current) {
+      return;
+    }
+    focusTransferRef.current = null;
+    pendingMediaFocusAttemptRef.current = null;
+    setMediaState("error");
+  };
 
   return (
     <section aria-label="录屏播放器" className="recording-media-pane">
@@ -793,11 +894,13 @@ function BrandedActiveRecordingPane({
       </header>
 
       <div
+        ref={mediaStageRef}
         aria-label="录屏媒体工作区"
         className="recording-media-stage"
         data-state={mediaState}
         role="region"
         style={stageStyle}
+        tabIndex={-1}
       >
         <div
           className="recording-media-canvas"
@@ -806,6 +909,7 @@ function BrandedActiveRecordingPane({
         >
           {shouldMountInlineMedia && embedUrl ? (
             <iframe
+              ref={embedRef}
               key={`${item.recordingSubmissionId}:${playbackAttempt}`}
               title="外部平台录屏"
               aria-label={`${item.streamer.displayName || "主播"} 外部录屏播放器`}
@@ -813,11 +917,12 @@ function BrandedActiveRecordingPane({
               allow="autoplay; fullscreen; picture-in-picture"
               allowFullScreen
               tabIndex={0}
-              onLoad={markEmbedPlaying}
-              onError={markError}
+              onLoad={() => markEmbedPlaying(playbackAttempt)}
+              onError={() => markError(playbackAttempt)}
             />
           ) : shouldMountInlineMedia && sourceType === "original" ? (
             <video
+              ref={videoRef}
               key={`${item.recordingSubmissionId}:${playbackAttempt}`}
               aria-label={`${item.streamer.displayName || "主播"} 原始录屏播放器`}
               src={item.playbackUrl}
@@ -825,13 +930,14 @@ function BrandedActiveRecordingPane({
               autoPlay
               tabIndex={0}
               preload="metadata"
-              onCanPlay={markVideoPlaying}
-              onPlaying={markVideoPlaying}
+              onCanPlay={() => markVideoPlaying(playbackAttempt)}
+              onPlaying={() => markVideoPlaying(playbackAttempt)}
               onLoadedMetadata={updateIntrinsicRatio}
-              onError={markError}
+              onError={() => markError(playbackAttempt)}
             />
           ) : shouldMountInlineMedia && isDirectExternal ? (
             <video
+              ref={videoRef}
               key={`${item.recordingSubmissionId}:${playbackAttempt}`}
               aria-label={`${item.streamer.displayName || "主播"} 外部录屏播放器`}
               src={item.playbackUrl}
@@ -839,10 +945,10 @@ function BrandedActiveRecordingPane({
               autoPlay
               tabIndex={0}
               preload="metadata"
-              onCanPlay={markVideoPlaying}
-              onPlaying={markVideoPlaying}
+              onCanPlay={() => markVideoPlaying(playbackAttempt)}
+              onPlaying={() => markVideoPlaying(playbackAttempt)}
               onLoadedMetadata={updateIntrinsicRatio}
-              onError={markError}
+              onError={() => markError(playbackAttempt)}
             />
           ) : null}
 
@@ -928,7 +1034,7 @@ function BrandedRecordingPoster({
   projectName: string;
   roundNumber: number;
   isLoading: boolean;
-  onPlay: () => void;
+  onPlay: (trigger: HTMLButtonElement) => void;
 }) {
   return (
     <section
@@ -945,9 +1051,9 @@ function BrandedRecordingPoster({
           type="button"
           aria-disabled={isLoading}
           className="recording-poster__play min-h-11"
-          onClick={() => {
+          onClick={(event) => {
             if (!isLoading) {
-              onPlay();
+              onPlay(event.currentTarget);
             }
           }}
         >
@@ -989,7 +1095,7 @@ function BrandedPlaybackFallback({
   sourceType: AdmissionSharePlaybackSource;
   projectName: string;
   roundNumber: number;
-  onRetryPlayback: () => void;
+  onRetryPlayback: (trigger: HTMLButtonElement) => void;
 }) {
   const externalOnly = sourceType === "external" && !item.hasPrivateStorage;
   return (
@@ -1012,7 +1118,7 @@ function BrandedPlaybackFallback({
         <button
           type="button"
           className="recording-media-action recording-media-action--primary min-h-11"
-          onClick={onRetryPlayback}
+          onClick={(event) => onRetryPlayback(event.currentTarget)}
         >
           <RotateCcw className="h-4 w-4" aria-hidden="true" />
           {externalOnly ? "重试外部视频" : "重试原始视频"}

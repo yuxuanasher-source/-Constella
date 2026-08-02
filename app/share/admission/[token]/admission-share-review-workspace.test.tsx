@@ -8,6 +8,8 @@ import {
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { relativeContrast } from "@/features/organizations/organization-brand";
+
 import {
   AdmissionShareReviewWorkspace,
   type AdmissionShareReviewWorkspaceProps,
@@ -330,6 +332,30 @@ describe("AdmissionShareReviewWorkspace", () => {
     expect(document.body.textContent).not.toContain("认证");
   });
 
+  it.each(["#FFFFFF", "#ADD8E6", "#FFFF00"])(
+    "derives a WCAG AA action color instead of using the light seed %s",
+    (primaryColor) => {
+      render(
+        <AdmissionShareReviewWorkspace
+          {...formalProps}
+          board={{
+            ...brandedFormalBoard,
+            brand: { ...brandedFormalBoard.brand, primaryColor },
+          }}
+          brandUiEnabled
+        />,
+      );
+
+      const stage = screen.getByRole("region", { name: "录屏媒体工作区" });
+      const actionColor = stage.style.getPropertyValue("--share-brand-action");
+      expect(actionColor).toMatch(/^#[0-9A-F]{6}$/u);
+      expect(actionColor).not.toBe(primaryColor);
+      expect(relativeContrast(actionColor, "#FFFFFF")).toBeGreaterThanOrEqual(
+        4.5,
+      );
+    },
+  );
+
   it("keeps the poster through loading and reveals a portrait video at its reduced intrinsic ratio", () => {
     render(
       <AdmissionShareReviewWorkspace
@@ -372,12 +398,157 @@ describe("AdmissionShareReviewWorkspace", () => {
       "9 / 16",
     );
 
-    fireEvent.playing(video);
+    const focusVideo = vi.spyOn(video, "focus");
+    fireEvent.canPlay(video);
     expect(stage).toHaveAttribute("data-state", "playing");
+    expect(focusVideo).toHaveBeenCalledTimes(1);
     expect(video).toHaveFocus();
+    fireEvent.playing(video);
+    expect(focusVideo).toHaveBeenCalledTimes(1);
     expect(
       screen.queryByRole("region", { name: "待判断主播 录屏待播放" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not steal focus when the reviewer leaves the loading poster", () => {
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={brandedFormalBoard}
+        brandUiEnabled
+      />,
+    );
+
+    const playButton = screen.getByRole("button", { name: "播放录屏" });
+    playButton.focus();
+    fireEvent.click(playButton);
+    const video = screen.getByLabelText("待判断主播 原始录屏播放器");
+    const focusVideo = vi.spyOn(video, "focus");
+    const remark = screen.getByLabelText("当前录屏备注");
+    remark.focus();
+
+    fireEvent.canPlay(video);
+    fireEvent.playing(video);
+
+    expect(remark).toHaveFocus();
+    expect(focusVideo).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("region", { name: "录屏媒体工作区" }),
+    ).toHaveAttribute("data-state", "playing");
+  });
+
+  it("transfers focus to an external embed at most once", () => {
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={{
+          ...brandedFormalBoard,
+          items: [
+            {
+              ...brandedFormalBoard.items[1],
+              externalUrl: "https://www.youtube.com/watch?v=video-2",
+            },
+          ],
+        }}
+        activeRecordingId="recording-2"
+        brandUiEnabled
+      />,
+    );
+
+    const playButton = screen.getByRole("button", { name: "播放录屏" });
+    playButton.focus();
+    fireEvent.click(playButton);
+    const embed = screen.getByTitle("外部平台录屏");
+    const focusEmbed = vi.spyOn(embed, "focus");
+
+    fireEvent.load(embed);
+    fireEvent.load(embed);
+
+    expect(focusEmbed).toHaveBeenCalledTimes(1);
+    expect(embed).toHaveFocus();
+  });
+
+  it("resets focus ownership for retry and ignores the stale media attempt", () => {
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={brandedFormalBoard}
+        brandUiEnabled
+      />,
+    );
+
+    const firstPlay = screen.getByRole("button", { name: "播放录屏" });
+    firstPlay.focus();
+    fireEvent.click(firstPlay);
+    const firstVideo = screen.getByLabelText("待判断主播 原始录屏播放器");
+    const focusFirstVideo = vi.spyOn(firstVideo, "focus");
+    fireEvent.error(firstVideo);
+
+    const retry = screen.getByRole("button", { name: "重试原始视频" });
+    retry.focus();
+    fireEvent.click(retry);
+    const stage = screen.getByRole("region", { name: "录屏媒体工作区" });
+    const secondVideo = screen.getByLabelText("待判断主播 原始录屏播放器");
+    const focusSecondVideo = vi.spyOn(secondVideo, "focus");
+
+    fireEvent.canPlay(firstVideo);
+    expect(focusFirstVideo).not.toHaveBeenCalled();
+    expect(stage).toHaveFocus();
+
+    fireEvent.canPlay(secondVideo);
+    expect(focusSecondVideo).toHaveBeenCalledTimes(1);
+    expect(secondVideo).toHaveFocus();
+  });
+
+  it("resets media focus ownership when the active recording changes", () => {
+    const switchableBoard = {
+      ...brandedFormalBoard,
+      items: [
+        brandedFormalBoard.items[0],
+        {
+          ...brandedFormalBoard.items[1],
+          externalUrl: "https://video.example/recording-2.mp4",
+        },
+      ],
+    };
+    const { rerender } = render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={switchableBoard}
+        brandUiEnabled
+      />,
+    );
+
+    const firstPlay = screen.getByRole("button", { name: "播放录屏" });
+    firstPlay.focus();
+    fireEvent.click(firstPlay);
+    const firstVideo = screen.getByLabelText("待判断主播 原始录屏播放器");
+    const focusFirstVideo = vi.spyOn(firstVideo, "focus");
+
+    rerender(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={switchableBoard}
+        activeRecordingId="recording-2"
+        brandUiEnabled
+      />,
+    );
+    const secondPlay = screen.getByRole("button", { name: "播放录屏" });
+    secondPlay.focus();
+    fireEvent.click(secondPlay);
+    const secondVideo = screen.getByLabelText("已完成主播 外部录屏播放器");
+
+    fireEvent.canPlay(firstVideo);
+    expect(focusFirstVideo).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("region", { name: "录屏媒体工作区" }),
+    ).toHaveAttribute("data-state", "loading");
+
+    fireEvent.canPlay(secondVideo);
+    expect(secondVideo).toHaveFocus();
+    expect(
+      screen.getByRole("region", { name: "录屏媒体工作区" }),
+    ).toHaveAttribute("data-state", "playing");
   });
 
   it("falls back to 16:9 metadata without changing the active item or draft", () => {
@@ -520,6 +691,38 @@ describe("AdmissionShareReviewWorkspace", () => {
     expect(unavailableAlert).toHaveTextContent("Alpha Project · 第 1 轮");
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("javascript:");
+  });
+
+  it("shows a safe non-embeddable external source immediately without a fake play step", () => {
+    render(
+      <AdmissionShareReviewWorkspace
+        {...formalProps}
+        board={{
+          ...brandedFormalBoard,
+          items: [
+            {
+              ...brandedFormalBoard.items[1],
+              externalUrl: "https://video.example/recording-2",
+            },
+          ],
+        }}
+        activeRecordingId="recording-2"
+        brandUiEnabled
+      />,
+    );
+
+    expect(
+      screen.getByRole("region", { name: "录屏媒体工作区" }),
+    ).toHaveAttribute("data-state", "unavailable");
+    expect(
+      screen.queryByRole("button", { name: "播放录屏" }),
+    ).not.toBeInTheDocument();
+    const externalLink = screen.getByRole("link", { name: "打开外部录屏" });
+    expect(externalLink).toHaveAttribute(
+      "href",
+      "https://video.example/recording-2",
+    );
+    expect(externalLink).toHaveAttribute("rel", "noopener noreferrer");
   });
 
   it.each([

@@ -60,7 +60,7 @@
 .recording-poster__play:focus-visible {
   box-shadow:
     0 0 0 2px #fff,
-    0 0 0 4px var(--share-brand, var(--blue-500));
+    0 0 0 4px var(--share-brand-action, var(--blue-600));
 }
 
 .recording-media-pane__report:disabled {
@@ -155,8 +155,8 @@
 
 .recording-poster__play,
 .recording-media-action--primary {
-  border: 1px solid var(--share-brand, var(--blue-600));
-  background: var(--share-brand, var(--blue-600));
+  border: 1px solid var(--share-brand-action, var(--blue-600));
+  background: var(--share-brand-action, var(--blue-600));
   color: #fff;
 }
 
@@ -214,7 +214,7 @@
 }
 
 .recording-media-action:hover {
-  border-color: var(--share-brand, var(--blue-300));
+  border-color: var(--share-brand-action, var(--blue-600));
 }
 
 @media (min-width: 640px) {
@@ -234,5 +234,34 @@
   .recording-media-canvas video,
   .recording-media-canvas iframe {
     transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .recording-media-pane__report,
+  .recording-media-action,
+  .recording-poster__play {
+    border: 2px solid ButtonText;
+    background: ButtonFace;
+    color: ButtonText;
+    box-shadow: none;
+    outline: 2px solid ButtonText;
+    outline-offset: 2px;
+    forced-color-adjust: auto;
+  }
+
+  .recording-media-pane__report:focus-visible,
+  .recording-media-action:focus-visible,
+  .recording-poster__play:focus-visible {
+    border-color: Highlight;
+    box-shadow: none;
+    outline-color: Highlight;
+  }
+
+  .recording-media-pane__report:disabled,
+  .recording-poster__play[aria-disabled="true"] {
+    border-color: GrayText;
+    color: GrayText;
+    outline-color: GrayText;
   }
 }
