@@ -3209,6 +3209,11 @@ describe("admission share board service", () => {
     itemQuery.order.mockReturnValue(itemQuery);
     const itemEq = vi.fn().mockReturnValue(itemQuery);
     const itemSelect = vi.fn().mockReturnValue({ eq: itemEq });
+    const draftRange = vi.fn().mockResolvedValue({ data: [], error: null });
+    const draftQuery = { order: vi.fn(), range: draftRange };
+    draftQuery.order.mockReturnValue(draftQuery);
+    const draftEq = vi.fn().mockReturnValue(draftQuery);
+    const draftSelect = vi.fn().mockReturnValue({ eq: draftEq });
     const submissionRange = vi
       .fn()
       .mockResolvedValue({ data: submissionRows, error: null });
@@ -3230,6 +3235,9 @@ describe("admission share board service", () => {
       }
       if (table === "project_recording_share_items") {
         return { select: itemSelect };
+      }
+      if (table === "project_recording_vendor_review_drafts") {
+        return { select: draftSelect };
       }
       if (table === "project_recording_vendor_review_submissions") {
         return { select: submissionSelect };
@@ -3265,12 +3273,14 @@ describe("admission share board service", () => {
     expect(from.mock.calls.map(([table]) => table)).toEqual([
       "project_recording_share_boards",
       "project_recording_share_items",
+      "project_recording_vendor_review_drafts",
       "project_recording_vendor_review_submissions",
       "project_recording_vendor_review_submission_items",
     ]);
-    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).not.toHaveBeenCalled();
     expect(boardEq).toHaveBeenCalledWith("project_id", "project-1");
     expect(itemEq).toHaveBeenCalledWith("project_id", "project-1");
+    expect(draftEq).toHaveBeenCalledWith("project_id", "project-1");
     expect(submissionEq).toHaveBeenCalledWith("project_id", "project-1");
     expect(receiptEq).toHaveBeenCalledWith("project_id", "project-1");
     expect(itemQuery.order.mock.calls).toEqual([
@@ -3337,6 +3347,12 @@ describe("admission share board service", () => {
     const itemSelect = vi.fn().mockReturnValue({
       eq: vi.fn().mockReturnValue(itemQuery),
     });
+    const draftRange = vi.fn().mockResolvedValue({ data: [], error: null });
+    const draftQuery = { order: vi.fn(), range: draftRange };
+    draftQuery.order.mockReturnValue(draftQuery);
+    const draftSelect = vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue(draftQuery),
+    });
     const submissionRange = vi.fn().mockResolvedValue({
       data: [
         {
@@ -3393,6 +3409,9 @@ describe("admission share board service", () => {
       }
       if (table === "project_recording_share_items") {
         return { select: itemSelect };
+      }
+      if (table === "project_recording_vendor_review_drafts") {
+        return { select: draftSelect };
       }
       if (table === "project_recording_vendor_review_submissions") {
         return { select: submissionSelect };
@@ -3452,7 +3471,13 @@ describe("admission share board service", () => {
       eq: vi.fn().mockReturnValue(boardQuery),
     });
 
-    const itemRange = vi.fn().mockResolvedValue({ data: [], error: null });
+    const itemRows = boardRows.map((board, index) =>
+      internalShareItemRow(board.id, `rec-${index}`, 0),
+    );
+    const itemRange = vi
+      .fn()
+      .mockResolvedValueOnce({ data: itemRows.slice(0, 1000), error: null })
+      .mockResolvedValueOnce({ data: itemRows.slice(1000), error: null });
     const itemQuery = { order: vi.fn(), range: itemRange };
     itemQuery.order.mockReturnValue(itemQuery);
     const itemSelect = vi.fn().mockReturnValue({
@@ -3486,6 +3511,35 @@ describe("admission share board service", () => {
       eq: vi.fn().mockReturnValue(submissionQuery),
     });
 
+    const draftProgressCases = [
+      { decision: "selected", remark: "", completed: 1 },
+      { decision: "backup", remark: "", completed: 1 },
+      { decision: "rejected", remark: "Reason", completed: 1 },
+      { decision: "needs_changes", remark: "Fix opening", completed: 1 },
+      { decision: "rejected", remark: "", completed: 0 },
+      { decision: "needs_changes", remark: "   ", completed: 0 },
+      { decision: "pending", remark: "", completed: 0 },
+    ];
+    const draftRows = boardRows.map((board, index) => {
+      const progressCase =
+        draftProgressCases[index % draftProgressCases.length];
+      return {
+        share_board_id: board.id,
+        recording_submission_id: `rec-${index}`,
+        decision: progressCase?.decision,
+        remark: progressCase?.remark,
+      };
+    });
+    const draftRange = vi
+      .fn()
+      .mockResolvedValueOnce({ data: draftRows.slice(0, 1000), error: null })
+      .mockResolvedValueOnce({ data: draftRows.slice(1000), error: null });
+    const draftQuery = { order: vi.fn(), range: draftRange };
+    draftQuery.order.mockReturnValue(draftQuery);
+    const draftSelect = vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue(draftQuery),
+    });
+
     const receiptRange = vi.fn().mockResolvedValue({ data: [], error: null });
     const receiptQuery = { order: vi.fn(), range: receiptRange };
     receiptQuery.order.mockReturnValue(receiptQuery);
@@ -3503,14 +3557,18 @@ describe("admission share board service", () => {
       if (table === "project_recording_vendor_review_submissions") {
         return { select: submissionSelect };
       }
+      if (table === "project_recording_vendor_review_drafts") {
+        return { select: draftSelect };
+      }
       if (table === "project_recording_vendor_review_submission_items") {
         return { select: receiptSelect };
       }
       throw new Error(`unexpected collection table: ${table}`);
     });
+    const rpc = vi.fn().mockResolvedValue({ data: [], error: null });
     const repo = new SupabaseAdmissionShareBoardRepository({
       from,
-      rpc: vi.fn().mockResolvedValue({ data: [], error: null }),
+      rpc,
     } as never);
 
     const hydrations = await repo.listInternalShareBoardHydrations("project-1");
@@ -3523,7 +3581,24 @@ describe("admission share board service", () => {
       [0, 999],
       [1000, 1999],
     ]);
+    expect(draftRange.mock.calls).toEqual([
+      [0, 999],
+      [1000, 1999],
+    ]);
     expect(hydrations).toHaveLength(1001);
+    expect(
+      hydrations.slice(0, draftProgressCases.length).map((hydration) => ({
+        taskCompleted: hydration.task.draftCompletedCount,
+        presentationCompleted: hydration.snapshot.progress.completed,
+      })),
+    ).toEqual(
+      draftProgressCases.map(({ completed }) => ({
+        taskCompleted: completed,
+        presentationCompleted: completed,
+      })),
+    );
+    expect(hydrations[1000]?.task.itemCount).toBe(1);
+    expect(rpc).not.toHaveBeenCalled();
     expect(receiptIn).toHaveBeenCalledTimes(11);
     expect(
       receiptIn.mock.calls.every(

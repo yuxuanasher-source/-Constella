@@ -693,9 +693,9 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       return [];
     }
 
-    const [itemRows, progressByBoard, submissionRows] = await Promise.all([
+    const [itemRows, draftRows, submissionRows] = await Promise.all([
       this.listInternalShareItemRows(projectId),
-      listAdmissionShareBoardProgress(this.client, [projectId]),
+      this.listInternalDraftProgressRows(projectId),
       this.listInternalSubmissionRows(projectId),
     ]);
 
@@ -704,6 +704,17 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       const boardItems = itemsByBoard.get(item.share_board_id) ?? [];
       boardItems.push(item);
       itemsByBoard.set(item.share_board_id, boardItems);
+    }
+
+    const completedDraftCountByBoard = new Map<string, number>();
+    for (const draft of draftRows) {
+      if (!isCompletedAdmissionShareDraft(draft)) {
+        continue;
+      }
+      completedDraftCountByBoard.set(
+        draft.share_board_id,
+        (completedDraftCountByBoard.get(draft.share_board_id) ?? 0) + 1,
+      );
     }
 
     const latestSubmissionByBoard = new Map<
@@ -757,9 +768,12 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
           },
         ]),
       );
-      const progress = progressByBoard.get(board.id) ?? {
+      const progress = {
         itemCount: boardItems.length,
-        draftCompletedCount: 0,
+        draftCompletedCount: Math.min(
+          completedDraftCountByBoard.get(board.id) ?? 0,
+          boardItems.length,
+        ),
       };
       const completed =
         board.review_state === "submitted_locked" && latestSubmission
@@ -868,6 +882,29 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
         throw error;
       }
       const page = (data ?? []) as InternalAdmissionReviewSubmissionRow[];
+      rows.push(...page);
+      if (page.length < INTERNAL_SHARE_BATCH_PAGE_SIZE) {
+        return rows;
+      }
+    }
+  }
+
+  private async listInternalDraftProgressRows(
+    projectId: string,
+  ): Promise<InternalAdmissionReviewDraftProgressRow[]> {
+    const rows: InternalAdmissionReviewDraftProgressRow[] = [];
+    for (let from = 0; ; from += INTERNAL_SHARE_BATCH_PAGE_SIZE) {
+      const { data, error } = await this.client
+        .from("project_recording_vendor_review_drafts")
+        .select("share_board_id, recording_submission_id, decision, remark")
+        .eq("project_id", projectId)
+        .order("share_board_id", { ascending: true })
+        .order("recording_submission_id", { ascending: true })
+        .range(from, from + INTERNAL_SHARE_BATCH_PAGE_SIZE - 1);
+      if (error) {
+        throw error;
+      }
+      const page = (data ?? []) as InternalAdmissionReviewDraftProgressRow[];
       rows.push(...page);
       if (page.length < INTERNAL_SHARE_BATCH_PAGE_SIZE) {
         return rows;
@@ -1646,6 +1683,13 @@ type InternalShareItemRow = PublicShareItemRow & {
 
 type InternalAdmissionReviewSubmissionRow = AdmissionReviewSubmissionRow & {
   share_board_id: string;
+};
+
+type InternalAdmissionReviewDraftProgressRow = {
+  share_board_id: string;
+  recording_submission_id: string;
+  decision: VendorAdmissionDecision;
+  remark: string;
 };
 
 type InternalPublicSubmissionReceiptItemRow = PublicSubmissionReceiptItemRow & {
@@ -3674,6 +3718,17 @@ function toReviewDraftDto(
     revision: row.revision,
     updatedAt: row.updated_at,
   };
+}
+
+function isCompletedAdmissionShareDraft(
+  draft: InternalAdmissionReviewDraftProgressRow,
+) {
+  return (
+    draft.decision === "selected" ||
+    draft.decision === "backup" ||
+    ((draft.decision === "rejected" || draft.decision === "needs_changes") &&
+      Boolean(draft.remark.trim()))
+  );
 }
 
 function toSubmitAdmissionReviewResult(
