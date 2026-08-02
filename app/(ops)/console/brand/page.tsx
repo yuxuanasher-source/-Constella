@@ -7,7 +7,6 @@ import {
   OrganizationBrandService,
   type OrganizationBrandStudioDto,
 } from "@/features/organizations/organization-brand-service";
-import { writeAuditLog } from "@/lib/audit/audit";
 import { getPrivateStorageBucket } from "@/lib/config/env";
 
 const BRAND_LOGO_SIGNED_URL_TTL_SECONDS = 120;
@@ -16,7 +15,6 @@ export default async function OrganizationBrandPage() {
   const { supabase, auth } = await requireConsoleStaffAuth();
   const service = new OrganizationBrandService(
     new SupabaseOrganizationBrandRepository(supabase),
-    (input) => writeAuditLog(supabase, input),
   );
 
   let loaded:

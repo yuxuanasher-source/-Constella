@@ -6,7 +6,6 @@ import {
   OrganizationBrandServiceError,
   organizationBrandPublishRequestSchema,
 } from "@/features/organizations/organization-brand-service";
-import { writeAuditLog } from "@/lib/audit/audit";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { ValidationError, parseJsonBody } from "@/lib/http/parse-json-body";
@@ -30,7 +29,6 @@ export async function POST(request: Request) {
     );
     const service = new OrganizationBrandService(
       new SupabaseOrganizationBrandRepository(supabase),
-      (auditInput) => writeAuditLog(supabase, auditInput),
     );
     return NextResponse.json(await service.publishBrand(auth, input));
   } catch (error) {
@@ -46,6 +44,9 @@ function errorResponse(error: unknown) {
         code: error.code,
         ...(error.latestVersion !== undefined
           ? { latestVersion: error.latestVersion }
+          : {}),
+        ...(error.latestDraftRevision !== undefined
+          ? { latestDraftRevision: error.latestDraftRevision }
           : {}),
       },
       { status: error.status },

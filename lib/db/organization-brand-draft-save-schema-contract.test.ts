@@ -38,34 +38,47 @@ describe("organization brand atomic draft save schema", () => {
       /v_actor_user_id is null[\s\S]*public\.current_user_role\(p_organization_id\)[\s\S]*'owner'/,
     );
     expect(fn).toMatch(
-      /returns table \([\s\S]*organization_id uuid[\s\S]*base_version integer[\s\S]*content jsonb[\s\S]*updated_at timestamptz/,
+      /returns table \([\s\S]*organization_id uuid[\s\S]*base_version integer[\s\S]*draft_revision integer[\s\S]*content jsonb[\s\S]*updated_at timestamptz/,
     );
+    expect(fn).toMatch(/p_expected_draft_revision integer/);
   });
 
-  it("locks the organization before comparing the expected version and upserting", () => {
+  it("locks the organization and draft before comparing both CAS tokens", () => {
     const fn = functionSql();
     const lock = fn.indexOf("from public.organizations as organization");
     const versionCheck = fn.indexOf(
       "p_expected_version is distinct from v_organization.branding_version",
     );
-    const upsert = fn.indexOf("insert into public.organization_brand_drafts");
+    const draftLock = fn.indexOf(
+      "from public.organization_brand_drafts as draft",
+    );
+    const revisionCheck = fn.indexOf(
+      "p_expected_draft_revision is distinct from v_draft.draft_revision",
+    );
+    const write = fn.indexOf("update public.organization_brand_drafts");
 
     expect(lock).toBeGreaterThan(-1);
     expect(fn.slice(lock, versionCheck)).toContain("for update");
     expect(versionCheck).toBeGreaterThan(lock);
-    expect(fn.slice(versionCheck, upsert)).toContain("brand_version_conflict");
-    expect(upsert).toBeGreaterThan(versionCheck);
-    expect(fn.slice(upsert)).toContain(
-      "on conflict on constraint organization_brand_drafts_pkey",
+    expect(fn.slice(versionCheck, draftLock)).toContain(
+      "brand_version_conflict",
     );
-    expect(fn.slice(upsert)).toContain("base_version = excluded.base_version");
+    expect(draftLock).toBeGreaterThan(versionCheck);
+    expect(fn.slice(draftLock, revisionCheck)).toContain("for update");
+    expect(revisionCheck).toBeGreaterThan(draftLock);
+    expect(fn.slice(revisionCheck, write)).toContain("brand_draft_conflict");
+    expect(write).toBeGreaterThan(revisionCheck);
+    expect(fn).toMatch(
+      /if not found then[\s\S]*p_expected_draft_revision is distinct from 0[\s\S]*brand_draft_conflict[\s\S]*v_next_draft_revision := 1/,
+    );
+    expect(fn).toMatch(/v_next_draft_revision := v_draft\.draft_revision \+ 1/);
   });
 
   it("validates and canonicalizes only the five source fields", () => {
     const fn = functionSql();
 
     expect(fn).toMatch(
-      /p_expected_version is null[\s\S]*p_expected_version < 0[\s\S]*brand_draft_invalid_expected_version/,
+      /p_expected_version is null[\s\S]*p_expected_version < 0[\s\S]*p_expected_draft_revision is null[\s\S]*p_expected_draft_revision < 0[\s\S]*brand_draft_invalid_expected_version/,
     );
     expect(fn).toMatch(/jsonb_typeof\(p_content\) is distinct from 'object'/);
     expect(fn).toMatch(
@@ -98,19 +111,13 @@ describe("organization brand atomic draft save schema", () => {
     );
   });
 
-  it("binds organization, version, and provenance to locked server values", () => {
+  it("binds organization, versions, and provenance to locked server values", () => {
     const fn = compact(functionSql());
 
+    expect(fn).toContain("draft_revision = v_next_draft_revision");
+    expect(fn).toContain("updated_by = v_actor_user_id");
     expect(fn).toContain(
-      "values ( p_organization_id, v_organization.branding_version, v_canonical_content, v_actor_user_id, v_updated_at )",
-    );
-    expect(fn).toContain("updated_by = excluded.updated_by");
-    expect(fn).toContain("updated_at = excluded.updated_at");
-    expect(fn).toContain(
-      "returning saved_draft.updated_at into v_updated_at; return query",
-    );
-    expect(fn).toContain(
-      "return query select p_organization_id, v_organization.branding_version, v_canonical_content, v_updated_at;",
+      "return query select p_organization_id, v_organization.branding_version, v_next_draft_revision, v_canonical_content, v_updated_at;",
     );
   });
 
@@ -121,10 +128,10 @@ describe("organization brand atomic draft save schema", () => {
       "revoke insert, update, delete on table public.organization_brand_drafts from authenticated;",
     );
     expect(compacted).toContain(
-      "revoke all on function public.save_organization_brand_draft(uuid, integer, jsonb) from public, anon, authenticated, service_role;",
+      "revoke all on function public.save_organization_brand_draft(uuid, integer, integer, jsonb) from public, anon, authenticated, service_role;",
     );
     expect(compacted).toContain(
-      "grant execute on function public.save_organization_brand_draft(uuid, integer, jsonb) to authenticated;",
+      "grant execute on function public.save_organization_brand_draft(uuid, integer, integer, jsonb) to authenticated;",
     );
     expect(compacted).not.toMatch(
       /grant execute on function public\.save_organization_brand_draft\([^;]+\) to (?:public|anon|service_role)/u,

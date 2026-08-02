@@ -51,13 +51,18 @@ describe("POST /api/organization/brand/publish", () => {
 
   it("returns 401 without auth", async () => {
     vi.mocked(getAuthContext).mockResolvedValue(null);
-    expect((await POST(request({ expectedVersion: 3 }))).status).toBe(401);
+    expect(
+      (await POST(request({ expectedVersion: 3, expectedDraftRevision: 7 })))
+        .status,
+    ).toBe(401);
   });
 
   it("returns a safe 503 when the server client is unavailable", async () => {
     vi.mocked(createSupabaseServerClient).mockResolvedValue(null);
 
-    const response = await POST(request({ expectedVersion: 3 }));
+    const response = await POST(
+      request({ expectedVersion: 3, expectedDraftRevision: 7 }),
+    );
 
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({
@@ -72,7 +77,9 @@ describe("POST /api/organization/brand/publish", () => {
       new Error("raw membership database password"),
     );
 
-    const response = await POST(request({ expectedVersion: 3 }));
+    const response = await POST(
+      request({ expectedVersion: 3, expectedDraftRevision: 7 }),
+    );
 
     expect(response.status).toBe(503);
     const body = await response.json();
@@ -95,12 +102,20 @@ describe("POST /api/organization/brand/publish", () => {
         403,
       ),
     );
-    expect((await POST(request({ expectedVersion: 3 }))).status).toBe(403);
+    expect(
+      (await POST(request({ expectedVersion: 3, expectedDraftRevision: 7 })))
+        .status,
+    ).toBe(403);
   });
 
   it.each([
-    { expectedVersion: -1 },
-    { expectedVersion: 3, organizationId: auth.organizationId },
+    { expectedVersion: -1, expectedDraftRevision: 7 },
+    { expectedVersion: 3, expectedDraftRevision: -1 },
+    {
+      expectedVersion: 3,
+      expectedDraftRevision: 7,
+      organizationId: auth.organizationId,
+    },
   ])("rejects invalid or injected body %#", async (body) => {
     const response = await POST(request(body));
     expect(response.status).toBe(400);
@@ -110,10 +125,15 @@ describe("POST /api/organization/brand/publish", () => {
   it("publishes through the service and returns the canonical result", async () => {
     const result = { version: 4, published: { version: 4, brandName: "Demo" } };
     publish.mockResolvedValue(result);
-    const response = await POST(request({ expectedVersion: 3 }));
+    const response = await POST(
+      request({ expectedVersion: 3, expectedDraftRevision: 7 }),
+    );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual(result);
-    expect(publish).toHaveBeenCalledWith(auth, { expectedVersion: 3 });
+    expect(publish).toHaveBeenCalledWith(auth, {
+      expectedVersion: 3,
+      expectedDraftRevision: 7,
+    });
   });
 
   it("returns safe version conflicts and backend failures", async () => {
@@ -125,12 +145,16 @@ describe("POST /api/organization/brand/publish", () => {
         4,
       ),
     );
-    const conflict = await POST(request({ expectedVersion: 3 }));
+    const conflict = await POST(
+      request({ expectedVersion: 3, expectedDraftRevision: 7 }),
+    );
     expect(conflict.status).toBe(409);
     await expect(conflict.json()).resolves.toMatchObject({ latestVersion: 4 });
 
     publish.mockRejectedValueOnce(new Error("raw SQL secret"));
-    const unavailable = await POST(request({ expectedVersion: 3 }));
+    const unavailable = await POST(
+      request({ expectedVersion: 3, expectedDraftRevision: 7 }),
+    );
     expect(unavailable.status).toBe(503);
     expect(JSON.stringify(await unavailable.json())).not.toContain("raw SQL");
   });

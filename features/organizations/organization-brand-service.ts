@@ -14,6 +14,7 @@ export const EMERGENCY_REASON_MAX_LENGTH = 500;
 
 const uuidSchema = z.uuid();
 const expectedVersionSchema = z.number().int().min(0).max(MAX_POSTGRES_INTEGER);
+const expectedDraftRevisionSchema = expectedVersionSchema;
 
 function boundedTrimmedString(min: number, max: number) {
   return z
@@ -53,6 +54,7 @@ export const organizationBrandSourceSchema = z.strictObject({
 
 export const organizationBrandDraftRequestSchema = z.strictObject({
   expectedVersion: expectedVersionSchema,
+  expectedDraftRevision: expectedDraftRevisionSchema,
   logoText: organizationBrandSourceSchema.shape.logoText,
   logoStoragePath: organizationBrandSourceSchema.shape.logoStoragePath,
   brandName: organizationBrandSourceSchema.shape.brandName,
@@ -62,6 +64,7 @@ export const organizationBrandDraftRequestSchema = z.strictObject({
 
 export const organizationBrandPublishRequestSchema = z.strictObject({
   expectedVersion: expectedVersionSchema,
+  expectedDraftRevision: expectedDraftRevisionSchema,
 });
 
 const contactCardSourceSchema = z
@@ -124,6 +127,7 @@ export type OrganizationBrandOrganizationRecord = {
 export type OrganizationBrandDraftRecord = {
   organizationId: string;
   baseVersion: number;
+  draftRevision: number;
   content: unknown;
   updatedAt: string;
   updatedBy?: string;
@@ -169,11 +173,13 @@ export type OrganizationBrandRepository = {
   saveDraft(input: {
     organizationId: string;
     expectedVersion: number;
+    expectedDraftRevision: number;
     content: OrganizationBrandSource;
   }): Promise<OrganizationBrandDraftRecord>;
   publishBrand(input: {
     organizationId: string;
     expectedVersion: number;
+    expectedDraftRevision: number;
   }): Promise<OrganizationBrandVersionRecord>;
   listContactCards(
     organizationId: string,
@@ -184,7 +190,6 @@ export type OrganizationBrandRepository = {
   ): Promise<OrganizationContactCardRecord | null>;
   createContactCard(input: {
     organizationId: string;
-    actorUserId: string;
     displayName: string;
     title: string;
     phone: string | null;
@@ -195,7 +200,6 @@ export type OrganizationBrandRepository = {
   updateContactCard(input: {
     organizationId: string;
     cardId: string;
-    actorUserId: string;
     changes: Partial<{
       displayName: string;
       title: string;
@@ -231,6 +235,7 @@ export type OrganizationBrandStudioDto = {
   permissions: { canManageBrand: boolean };
   draft?: {
     baseVersion: number;
+    draftRevision: number;
     content: OrganizationBrandSource;
     persisted: boolean;
     updatedAt: string | null;
@@ -253,6 +258,7 @@ export class OrganizationBrandServiceError extends Error {
     public readonly code: string,
     public readonly status: number,
     public readonly latestVersion?: number,
+    public readonly latestDraftRevision?: number,
   ) {
     super(message);
     this.name = "OrganizationBrandServiceError";
@@ -262,8 +268,10 @@ export class OrganizationBrandServiceError extends Error {
 export class OrganizationBrandService {
   constructor(
     private readonly repo: OrganizationBrandRepository,
-    private readonly audit: OrganizationBrandAuditWriter,
-  ) {}
+    _legacyAuditWriter?: OrganizationBrandAuditWriter,
+  ) {
+    void _legacyAuditWriter;
+  }
 
   async getOrganizationBrandStudio(
     actor: OrganizationBrandActor,
@@ -325,12 +333,14 @@ export class OrganizationBrandService {
     studio.draft = draft
       ? {
           baseVersion: draft.baseVersion,
+          draftRevision: draft.draftRevision,
           content: sourceContentFromUnknown(draft.content),
           persisted: true,
           updatedAt: draft.updatedAt,
         }
       : {
           baseVersion: organization.brandingVersion,
+          draftRevision: 0,
           content: sourceFromPublished(published),
           persisted: false,
           updatedAt: null,
@@ -365,6 +375,7 @@ export class OrganizationBrandService {
       const saved = await this.repo.saveDraft({
         organizationId: actor.organizationId,
         expectedVersion: parsed.expectedVersion,
+        expectedDraftRevision: parsed.expectedDraftRevision,
         content: {
           logoText: parsed.logoText,
           logoStoragePath: parsed.logoStoragePath,
@@ -375,11 +386,22 @@ export class OrganizationBrandService {
       });
       return {
         baseVersion: saved.baseVersion,
+        draftRevision: saved.draftRevision,
         content: sourceContentFromUnknown(saved.content),
         persisted: true,
         updatedAt: saved.updatedAt,
       };
     } catch (error) {
+      if (databaseErrorText(error).includes("brand_draft_conflict")) {
+        const latest = await this.loadLatestBrandTokens(actor.organizationId);
+        throw serviceError(
+          "Organization brand draft changed",
+          "BRAND_DRAFT_CONFLICT",
+          409,
+          latest.latestVersion,
+          latest.latestDraftRevision,
+        );
+      }
       if (databaseErrorText(error).includes("brand_version_conflict")) {
         let latestVersion: number | undefined;
         try {
@@ -411,6 +433,7 @@ export class OrganizationBrandService {
       const result = await this.repo.publishBrand({
         organizationId: actor.organizationId,
         expectedVersion: parsed.expectedVersion,
+        expectedDraftRevision: parsed.expectedDraftRevision,
       });
       return {
         version: result.version,
@@ -426,6 +449,16 @@ export class OrganizationBrandService {
         ),
       };
     } catch (error) {
+      if (databaseErrorText(error).includes("brand_draft_conflict")) {
+        const latest = await this.loadLatestBrandTokens(actor.organizationId);
+        throw serviceError(
+          "Organization brand draft changed",
+          "BRAND_DRAFT_CONFLICT",
+          409,
+          latest.latestVersion,
+          latest.latestDraftRevision,
+        );
+      }
       if (databaseErrorText(error).includes("brand_version_conflict")) {
         let latestVersion: number | undefined;
         try {
@@ -482,7 +515,6 @@ export class OrganizationBrandService {
     try {
       created = await this.repo.createContactCard({
         organizationId: actor.organizationId,
-        actorUserId: actor.userId,
         ...normalized,
         status: "active",
       });
@@ -490,24 +522,7 @@ export class OrganizationBrandService {
       throw mapRepositoryError(error);
     }
     assertCardOrganization(created, actor.organizationId);
-    const dto = toContactCardDto(created);
-
-    await this.writeCardAudit({
-      actor,
-      action: "create",
-      card: dto,
-      before: {},
-      after: cardAuditSnapshot(dto),
-      changedFields: [
-        "displayName",
-        "title",
-        "phone",
-        "email",
-        "wechat",
-        "status",
-      ],
-    });
-    return dto;
+    return toContactCardDto(created);
   }
 
   async updateContactCard(
@@ -556,7 +571,6 @@ export class OrganizationBrandService {
       updated = await this.repo.updateContactCard({
         organizationId: actor.organizationId,
         cardId,
-        actorUserId: actor.userId,
         changes: Object.fromEntries(
           changedFields.map((field) => [field, normalized[field]]),
         ),
@@ -571,17 +585,7 @@ export class OrganizationBrandService {
         404,
       );
     }
-    const beforeDto = toContactCardDto(before);
-    const afterDto = toContactCardDto(updated);
-    await this.writeCardAudit({
-      actor,
-      action: "update",
-      card: afterDto,
-      before: cardAuditSnapshot(beforeDto),
-      after: cardAuditSnapshot(afterDto),
-      changedFields: [...changedFields],
-    });
-    return afterDto;
+    return toContactCardDto(updated);
   }
 
   async emergencyRemoveContactCard(
@@ -606,35 +610,21 @@ export class OrganizationBrandService {
     }
   }
 
-  private async writeCardAudit(input: {
-    actor: OrganizationBrandActor;
-    action: "create" | "update";
-    card: OrganizationContactCardDto;
-    before: Record<string, unknown>;
-    after: Record<string, unknown>;
-    changedFields: string[];
-  }): Promise<void> {
+  private async loadLatestBrandTokens(organizationId: string): Promise<{
+    latestVersion?: number;
+    latestDraftRevision?: number;
+  }> {
     try {
-      await this.audit({
-        organizationId: input.actor.organizationId,
-        actorUserId: input.actor.userId,
-        actorName: input.actor.name,
-        actorRole: input.actor.role,
-        action: input.action,
-        module: "organization_brand",
-        objectType: "organization_contact_card",
-        objectId: input.card.id,
-        objectName: input.card.displayName,
-        before: input.before,
-        after: input.after,
-        changedFields: input.changedFields,
-      });
+      const [organization, draft] = await Promise.all([
+        this.repo.getOrganization(organizationId),
+        this.repo.getDraft(organizationId),
+      ]);
+      return {
+        latestVersion: organization?.brandingVersion,
+        latestDraftRevision: draft?.draftRevision ?? 0,
+      };
     } catch {
-      throw serviceError(
-        "Contact card changed, but its audit record could not be written",
-        "CONTACT_CARD_AUDIT_FAILED",
-        503,
-      );
+      return {};
     }
   }
 }
@@ -778,22 +768,6 @@ function publicationActorLabel(
   return "其他组织负责人";
 }
 
-function cardAuditSnapshot(
-  card: OrganizationContactCardDto,
-): Record<string, unknown> {
-  return {
-    id: card.id,
-    displayName: card.displayName,
-    title: card.title,
-    phone: card.phone,
-    email: card.email,
-    wechat: card.wechat,
-    status: card.status,
-    createdAt: card.createdAt,
-    updatedAt: card.updatedAt,
-  };
-}
-
 function mergeRecord(
   value: unknown,
   overrides: Record<string, unknown>,
@@ -842,7 +816,7 @@ function mapRepositoryError(error: unknown): OrganizationBrandServiceError {
       404,
     );
   }
-  if (text.includes("insufficient_privilege") || text.includes("42501")) {
+  if (text.includes("insufficient_privilege")) {
     return serviceError(
       "Only organization owners can manage brand settings",
       "ORGANIZATION_BRAND_FORBIDDEN",
@@ -861,11 +835,13 @@ function serviceError(
   code: string,
   status: number,
   latestVersion?: number,
+  latestDraftRevision?: number,
 ): OrganizationBrandServiceError {
   return new OrganizationBrandServiceError(
     message,
     code,
     status,
     latestVersion,
+    latestDraftRevision,
   );
 }

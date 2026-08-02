@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 
-import { writeAuditLog } from "@/lib/audit/audit";
 import { getAuthContext, type AuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { ValidationError, parseJsonBody } from "@/lib/http/parse-json-body";
@@ -59,7 +58,6 @@ async function routeContext(): Promise<{
     auth,
     service: new OrganizationBrandService(
       new SupabaseOrganizationBrandRepository(supabase),
-      (input) => writeAuditLog(supabase, input),
     ),
   };
 }
@@ -79,6 +77,9 @@ function errorResponse(error: unknown) {
         code: error.code,
         ...(error.latestVersion !== undefined
           ? { latestVersion: error.latestVersion }
+          : {}),
+        ...(error.latestDraftRevision !== undefined
+          ? { latestDraftRevision: error.latestDraftRevision }
           : {}),
       },
       { status: error.status },

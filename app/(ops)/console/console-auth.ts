@@ -8,8 +8,11 @@ import {
 } from "@/features/dashboards/role-home-loader";
 import { normalizePublishedBrand } from "@/features/organizations/organization-brand";
 import { getAuthContext, type AuthContext } from "@/lib/auth/context";
+import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { isMcnStaff } from "@/lib/rbac/roles";
+
+const CONSOLE_BRAND_LOGO_TTL_SECONDS = 120;
 
 export async function requireConsoleStaffAuth() {
   const supabase = await createSupabaseServerClient();
@@ -66,6 +69,43 @@ export function organizationSettingsFromAuth(auth: AuthContext) {
     primaryColor: brand.primaryColor,
     logoStoragePath: brand.logoStoragePath,
   };
+}
+
+export async function organizationSettingsForClient(
+  supabase: SupabaseClient,
+  auth: AuthContext,
+) {
+  const settings = organizationSettingsFromAuth(auth);
+  const logoUrl = await createConsoleBrandLogoSignedUrl(
+    supabase,
+    settings.brand.logoStoragePath,
+  );
+
+  return {
+    ...settings,
+    brand: {
+      ...settings.brand,
+      logoStoragePath: null,
+    },
+    logoStoragePath: null,
+    logoUrl,
+  };
+}
+
+async function createConsoleBrandLogoSignedUrl(
+  supabase: SupabaseClient,
+  path: string | null,
+): Promise<string | null> {
+  if (!path) return null;
+
+  try {
+    const { data, error } = await supabase.storage
+      .from(getPrivateStorageBucket())
+      .createSignedUrl(path, CONSOLE_BRAND_LOGO_TTL_SECONDS);
+    return error || !data?.signedUrl ? null : data.signedUrl;
+  } catch {
+    return null;
+  }
 }
 
 // 加载当前角色的经营闭环看板 DTO，供作战台（ScreenRoleHome）渲染。

@@ -1,11 +1,13 @@
 create or replace function public.save_organization_brand_draft(
   p_organization_id uuid,
   p_expected_version integer,
+  p_expected_draft_revision integer,
   p_content jsonb
 )
 returns table (
   organization_id uuid,
   base_version integer,
+  draft_revision integer,
   content jsonb,
   updated_at timestamptz
 )
@@ -16,6 +18,9 @@ as $$
 declare
   v_actor_user_id uuid := auth.uid();
   v_organization public.organizations%rowtype;
+  v_draft public.organization_brand_drafts%rowtype;
+  v_has_draft boolean := false;
+  v_next_draft_revision integer;
   v_logo_text text;
   v_logo_storage_path text;
   v_brand_name text;
@@ -42,7 +47,10 @@ begin
       using errcode = '42501';
   end if;
 
-  if p_expected_version is null or p_expected_version < 0 then
+  if p_expected_version is null
+     or p_expected_version < 0
+     or p_expected_draft_revision is null
+     or p_expected_draft_revision < 0 then
     raise exception 'brand_draft_invalid_expected_version'
       using errcode = '22023';
   end if;
@@ -50,6 +58,31 @@ begin
   if p_expected_version is distinct from v_organization.branding_version then
     raise exception 'brand_version_conflict'
       using errcode = '40001';
+  end if;
+
+  select draft.*
+  into v_draft
+  from public.organization_brand_drafts as draft
+  where draft.organization_id = p_organization_id
+  for update;
+
+  v_has_draft := found;
+  if v_has_draft then
+    if p_expected_draft_revision is distinct from v_draft.draft_revision then
+      raise exception 'brand_draft_conflict'
+        using errcode = '40001';
+    end if;
+    if v_draft.draft_revision >= 2147483647 then
+      raise exception 'brand_draft_revision_overflow'
+        using errcode = '22003';
+    end if;
+    v_next_draft_revision := v_draft.draft_revision + 1;
+  else
+    if p_expected_draft_revision is distinct from 0 then
+      raise exception 'brand_draft_conflict'
+        using errcode = '40001';
+    end if;
+    v_next_draft_revision := 1;
   end if;
 
   if jsonb_typeof(p_content) is distinct from 'object' then
@@ -125,31 +158,38 @@ begin
     'primaryColor', v_primary_color
   );
 
-  insert into public.organization_brand_drafts as saved_draft (
-    organization_id,
-    base_version,
-    content,
-    updated_by,
-    updated_at
-  ) values (
-    p_organization_id,
-    v_organization.branding_version,
-    v_canonical_content,
-    v_actor_user_id,
-    v_updated_at
-  )
-  on conflict on constraint organization_brand_drafts_pkey do update
-  set
-    base_version = excluded.base_version,
-    content = excluded.content,
-    updated_by = excluded.updated_by,
-    updated_at = excluded.updated_at
-  returning saved_draft.updated_at into v_updated_at;
+  if v_has_draft then
+    update public.organization_brand_drafts
+    set
+      base_version = v_organization.branding_version,
+      draft_revision = v_next_draft_revision,
+      content = v_canonical_content,
+      updated_by = v_actor_user_id,
+      updated_at = v_updated_at
+    where organization_id = p_organization_id;
+  else
+    insert into public.organization_brand_drafts (
+      organization_id,
+      base_version,
+      draft_revision,
+      content,
+      updated_by,
+      updated_at
+    ) values (
+      p_organization_id,
+      v_organization.branding_version,
+      v_next_draft_revision,
+      v_canonical_content,
+      v_actor_user_id,
+      v_updated_at
+    );
+  end if;
 
   return query
   select
     p_organization_id,
     v_organization.branding_version,
+    v_next_draft_revision,
     v_canonical_content,
     v_updated_at;
 end;
@@ -159,8 +199,8 @@ revoke insert, update, delete
 on table public.organization_brand_drafts
 from authenticated;
 
-revoke all on function public.save_organization_brand_draft(uuid, integer, jsonb)
+revoke all on function public.save_organization_brand_draft(uuid, integer, integer, jsonb)
 from public, anon, authenticated, service_role;
 
-grant execute on function public.save_organization_brand_draft(uuid, integer, jsonb)
+grant execute on function public.save_organization_brand_draft(uuid, integer, integer, jsonb)
 to authenticated;

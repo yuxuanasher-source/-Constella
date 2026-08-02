@@ -8,6 +8,7 @@ alter table public.organizations
 create table public.organization_brand_drafts (
   organization_id uuid primary key references public.organizations(id) on delete cascade,
   base_version integer not null check (base_version >= 0),
+  draft_revision integer not null default 0 check (draft_revision >= 0),
   content jsonb not null,
   updated_by uuid not null references public.profiles(id),
   created_at timestamptz not null default now(),
@@ -236,26 +237,6 @@ using (
   )
 );
 
-create policy organization_contact_cards_owner_insert
-on public.organization_contact_cards
-for insert
-to authenticated
-with check (
-  public.current_user_role(organization_id) = 'owner'
-  and created_by = auth.uid()
-  and updated_by = auth.uid()
-);
-
-create policy organization_contact_cards_owner_update
-on public.organization_contact_cards
-for update
-to authenticated
-using (public.current_user_role(organization_id) = 'owner')
-with check (
-  public.current_user_role(organization_id) = 'owner'
-  and updated_by = auth.uid()
-);
-
 revoke all on table public.organization_brand_drafts from public, anon;
 revoke all on table public.organization_brand_versions from public, anon;
 revoke all on table public.organization_contact_cards from public, anon, authenticated;
@@ -267,13 +248,415 @@ to authenticated;
 grant select on table public.organization_brand_versions to authenticated;
 revoke insert, update, delete on table public.organization_brand_versions from anon, authenticated, service_role;
 
-grant select, insert, update
-on table public.organization_contact_cards
-to authenticated;
+grant select on table public.organization_contact_cards to authenticated;
+
+create policy brand_logos_owner_insert_restriction
+on storage.objects
+as restrictive
+for insert
+to authenticated
+with check (
+  bucket_id <> 'jy-private'
+  or (storage.foldername(name))[2] is distinct from 'brand-logos'
+  or (
+    bucket_id = 'jy-private'
+    and (storage.foldername(name))[2] = 'brand-logos'
+    and public.current_user_role(
+      ((storage.foldername(name))[1])::uuid
+    ) = 'owner'
+  )
+);
+
+create or replace function public.create_organization_contact_card(
+  p_organization_id uuid,
+  p_content jsonb
+)
+returns table (
+  id uuid,
+  organization_id uuid,
+  display_name text,
+  title text,
+  phone text,
+  email text,
+  wechat text,
+  status text,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor_user_id uuid := auth.uid();
+  v_actor_name text;
+  v_display_name text;
+  v_title text;
+  v_phone text;
+  v_email text;
+  v_wechat text;
+  v_card public.organization_contact_cards%rowtype;
+begin
+  if v_actor_user_id is null
+     or public.current_user_role(p_organization_id)
+       is distinct from 'owner'::public.app_role then
+    raise exception 'insufficient_privilege'
+      using errcode = '42501';
+  end if;
+
+  if jsonb_typeof(p_content) is distinct from 'object'
+     or not (
+       p_content ? 'displayName'
+       and p_content ? 'title'
+       and p_content ? 'phone'
+       and p_content ? 'email'
+       and p_content ? 'wechat'
+     )
+     or exists (
+       select 1
+       from jsonb_object_keys(p_content) as contact_field(key)
+       where not (
+         contact_field.key = any (
+           array['displayName', 'title', 'phone', 'email', 'wechat']::text[]
+         )
+       )
+     ) then
+    raise exception 'contact_card_invalid'
+      using errcode = '22023';
+  end if;
+
+  if jsonb_typeof(p_content -> 'displayName') is distinct from 'string'
+     or jsonb_typeof(p_content -> 'title') is distinct from 'string'
+     or jsonb_typeof(p_content -> 'phone') not in ('string', 'null')
+     or jsonb_typeof(p_content -> 'email') not in ('string', 'null')
+     or jsonb_typeof(p_content -> 'wechat') not in ('string', 'null') then
+    raise exception 'contact_card_invalid'
+      using errcode = '22023';
+  end if;
+
+  v_display_name := btrim(p_content ->> 'displayName');
+  v_title := btrim(p_content ->> 'title');
+  v_phone := nullif(btrim(p_content ->> 'phone'), '');
+  v_email := nullif(btrim(p_content ->> 'email'), '');
+  v_wechat := nullif(btrim(p_content ->> 'wechat'), '');
+
+  if char_length(v_display_name) not between 1 and 40
+     or char_length(v_title) > 40
+     or char_length(v_phone) > 30
+     or char_length(v_email) > 120
+     or char_length(v_wechat) > 60
+     or (v_email is not null and v_email !~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$')
+     or (v_phone is null and v_email is null and v_wechat is null) then
+    raise exception 'contact_card_invalid'
+      using errcode = '22023';
+  end if;
+
+  insert into public.organization_contact_cards (
+    organization_id,
+    display_name,
+    title,
+    phone,
+    email,
+    wechat,
+    status,
+    created_by,
+    updated_by
+  ) values (
+    p_organization_id,
+    v_display_name,
+    v_title,
+    v_phone,
+    v_email,
+    v_wechat,
+    'active',
+    v_actor_user_id,
+    v_actor_user_id
+  )
+  returning * into v_card;
+
+  select profile.full_name
+  into v_actor_name
+  from public.profiles as profile
+  where profile.id = v_actor_user_id;
+
+  insert into public.audit_logs (
+    organization_id,
+    actor_user_id,
+    actor_name,
+    actor_role,
+    action,
+    module,
+    object_type,
+    object_id,
+    object_name,
+    before_json,
+    after_json,
+    changed_fields
+  ) values (
+    p_organization_id,
+    v_actor_user_id,
+    v_actor_name,
+    'owner'::public.app_role,
+    'create'::public.audit_action,
+    'organization_brand',
+    'organization_contact_card',
+    v_card.id,
+    v_card.display_name,
+    '{}'::jsonb,
+    jsonb_build_object(
+      'id', v_card.id,
+      'displayName', v_card.display_name,
+      'title', v_card.title,
+      'phone', v_card.phone,
+      'email', v_card.email,
+      'wechat', v_card.wechat,
+      'status', v_card.status,
+      'createdAt', v_card.created_at,
+      'updatedAt', v_card.updated_at
+    ),
+    array[
+      'displayName', 'title', 'phone', 'email', 'wechat', 'status'
+    ]::text[]
+  );
+
+  return query
+  select
+    v_card.id,
+    v_card.organization_id,
+    v_card.display_name,
+    v_card.title,
+    v_card.phone,
+    v_card.email,
+    v_card.wechat,
+    v_card.status,
+    v_card.created_by,
+    v_card.updated_by,
+    v_card.created_at,
+    v_card.updated_at;
+end;
+$$;
+
+create or replace function public.update_organization_contact_card(
+  p_organization_id uuid,
+  p_contact_card_id uuid,
+  p_changes jsonb
+)
+returns table (
+  id uuid,
+  organization_id uuid,
+  display_name text,
+  title text,
+  phone text,
+  email text,
+  wechat text,
+  status text,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor_user_id uuid := auth.uid();
+  v_actor_name text;
+  v_card public.organization_contact_cards%rowtype;
+  v_updated public.organization_contact_cards%rowtype;
+  v_display_name text;
+  v_title text;
+  v_phone text;
+  v_email text;
+  v_wechat text;
+  v_status text;
+  v_changed_fields text[];
+begin
+  if v_actor_user_id is null
+     or public.current_user_role(p_organization_id)
+       is distinct from 'owner'::public.app_role then
+    raise exception 'insufficient_privilege'
+      using errcode = '42501';
+  end if;
+
+  if jsonb_typeof(p_changes) is distinct from 'object'
+     or p_changes = '{}'::jsonb
+     or exists (
+       select 1
+       from jsonb_object_keys(p_changes) as contact_field(key)
+       where not (
+         contact_field.key = any (
+           array[
+             'displayName', 'title', 'phone', 'email', 'wechat', 'status'
+           ]::text[]
+         )
+       )
+     ) then
+    raise exception 'contact_card_invalid'
+      using errcode = '22023';
+  end if;
+
+  if (p_changes ? 'displayName' and jsonb_typeof(p_changes -> 'displayName') is distinct from 'string')
+     or (p_changes ? 'title' and jsonb_typeof(p_changes -> 'title') is distinct from 'string')
+     or (p_changes ? 'phone' and jsonb_typeof(p_changes -> 'phone') not in ('string', 'null'))
+     or (p_changes ? 'email' and jsonb_typeof(p_changes -> 'email') not in ('string', 'null'))
+     or (p_changes ? 'wechat' and jsonb_typeof(p_changes -> 'wechat') not in ('string', 'null'))
+     or (p_changes ? 'status' and jsonb_typeof(p_changes -> 'status') is distinct from 'string') then
+    raise exception 'contact_card_invalid'
+      using errcode = '22023';
+  end if;
+
+  select card.*
+  into v_card
+  from public.organization_contact_cards as card
+  where card.id = p_contact_card_id
+    and card.organization_id = p_organization_id
+  for update;
+
+  if not found then
+    raise exception 'contact_card_not_found'
+      using errcode = 'P0002';
+  end if;
+
+  v_display_name := case
+    when p_changes ? 'displayName' then btrim(p_changes ->> 'displayName')
+    else v_card.display_name
+  end;
+  v_title := case
+    when p_changes ? 'title' then btrim(p_changes ->> 'title')
+    else v_card.title
+  end;
+  v_phone := case
+    when p_changes ? 'phone' then nullif(btrim(p_changes ->> 'phone'), '')
+    else v_card.phone
+  end;
+  v_email := case
+    when p_changes ? 'email' then nullif(btrim(p_changes ->> 'email'), '')
+    else v_card.email
+  end;
+  v_wechat := case
+    when p_changes ? 'wechat' then nullif(btrim(p_changes ->> 'wechat'), '')
+    else v_card.wechat
+  end;
+  v_status := case
+    when p_changes ? 'status' then btrim(p_changes ->> 'status')
+    else v_card.status
+  end;
+
+  if char_length(v_display_name) not between 1 and 40
+     or char_length(v_title) > 40
+     or char_length(v_phone) > 30
+     or char_length(v_email) > 120
+     or char_length(v_wechat) > 60
+     or (v_email is not null and v_email !~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$')
+     or v_status not in ('active', 'disabled')
+     or (v_phone is null and v_email is null and v_wechat is null) then
+    raise exception 'contact_card_invalid'
+      using errcode = '22023';
+  end if;
+
+  v_changed_fields := array_remove(array[
+    case when v_display_name is distinct from v_card.display_name then 'displayName' end,
+    case when v_title is distinct from v_card.title then 'title' end,
+    case when v_phone is distinct from v_card.phone then 'phone' end,
+    case when v_email is distinct from v_card.email then 'email' end,
+    case when v_wechat is distinct from v_card.wechat then 'wechat' end,
+    case when v_status is distinct from v_card.status then 'status' end
+  ]::text[], null);
+
+  if cardinality(v_changed_fields) = 0 then
+    v_updated := v_card;
+  else
+    update public.organization_contact_cards
+    set
+      display_name = v_display_name,
+      title = v_title,
+      phone = v_phone,
+      email = v_email,
+      wechat = v_wechat,
+      status = v_status,
+      updated_by = v_actor_user_id
+    where organization_contact_cards.id = p_contact_card_id
+      and organization_contact_cards.organization_id = p_organization_id
+    returning * into v_updated;
+
+    select profile.full_name
+    into v_actor_name
+    from public.profiles as profile
+    where profile.id = v_actor_user_id;
+
+    insert into public.audit_logs (
+      organization_id,
+      actor_user_id,
+      actor_name,
+      actor_role,
+      action,
+      module,
+      object_type,
+      object_id,
+      object_name,
+      before_json,
+      after_json,
+      changed_fields
+    ) values (
+      p_organization_id,
+      v_actor_user_id,
+      v_actor_name,
+      'owner'::public.app_role,
+      'update'::public.audit_action,
+      'organization_brand',
+      'organization_contact_card',
+      v_updated.id,
+      v_updated.display_name,
+      jsonb_build_object(
+        'id', v_card.id,
+        'displayName', v_card.display_name,
+        'title', v_card.title,
+        'phone', v_card.phone,
+        'email', v_card.email,
+        'wechat', v_card.wechat,
+        'status', v_card.status,
+        'createdAt', v_card.created_at,
+        'updatedAt', v_card.updated_at
+      ),
+      jsonb_build_object(
+        'id', v_updated.id,
+        'displayName', v_updated.display_name,
+        'title', v_updated.title,
+        'phone', v_updated.phone,
+        'email', v_updated.email,
+        'wechat', v_updated.wechat,
+        'status', v_updated.status,
+        'createdAt', v_updated.created_at,
+        'updatedAt', v_updated.updated_at
+      ),
+      v_changed_fields
+    );
+  end if;
+
+  return query
+  select
+    v_updated.id,
+    v_updated.organization_id,
+    v_updated.display_name,
+    v_updated.title,
+    v_updated.phone,
+    v_updated.email,
+    v_updated.wechat,
+    v_updated.status,
+    v_updated.created_by,
+    v_updated.updated_by,
+    v_updated.created_at,
+    v_updated.updated_at;
+end;
+$$;
 
 create or replace function public.publish_organization_brand(
   p_organization_id uuid,
-  p_expected_version integer
+  p_expected_version integer,
+  p_expected_draft_revision integer
 )
 returns table (
   organization_id uuid,
@@ -353,6 +736,17 @@ begin
 
   if v_draft.base_version is distinct from v_organization.branding_version then
     raise exception 'brand_version_conflict'
+      using errcode = '40001';
+  end if;
+
+  if p_expected_draft_revision is null
+     or p_expected_draft_revision < 0 then
+    raise exception 'brand_draft_invalid_expected_revision'
+      using errcode = '22023';
+  end if;
+
+  if p_expected_draft_revision is distinct from v_draft.draft_revision then
+    raise exception 'brand_draft_conflict'
       using errcode = '40001';
   end if;
 
@@ -671,10 +1065,14 @@ begin
 end;
 $$;
 
-revoke all on function public.publish_organization_brand(uuid, integer) from public, anon, authenticated, service_role;
+revoke all on function public.publish_organization_brand(uuid, integer, integer) from public, anon, authenticated, service_role;
+revoke all on function public.create_organization_contact_card(uuid, jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.update_organization_contact_card(uuid, uuid, jsonb) from public, anon, authenticated, service_role;
 revoke all on function public.emergency_remove_contact_card_from_shares(uuid, uuid, text) from public, anon, authenticated, service_role;
 revoke all on function public.guard_organization_contact_card_identity() from public, anon, authenticated, service_role;
 revoke all on function public.guard_recording_share_contact_card() from public, anon, authenticated, service_role;
 
-grant execute on function public.publish_organization_brand(uuid, integer) to authenticated;
+grant execute on function public.publish_organization_brand(uuid, integer, integer) to authenticated;
+grant execute on function public.create_organization_contact_card(uuid, jsonb) to authenticated;
+grant execute on function public.update_organization_contact_card(uuid, uuid, jsonb) to authenticated;
 grant execute on function public.emergency_remove_contact_card_from_shares(uuid, uuid, text) to authenticated;

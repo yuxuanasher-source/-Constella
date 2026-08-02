@@ -72,20 +72,17 @@ function expectEmergencyShareFilter(source: string): void {
 
 function expectContactCardWritePermissions(source: string): void {
   const compacted = compact(source);
-  expect(compacted).not.toContain(
-    "create policy organization_contact_cards_owner_delete",
-  );
   expect(compacted).not.toMatch(
-    /create policy [^;]+ on public\.organization_contact_cards for (?:all|delete) to (?:public|anon|authenticated)/u,
+    /create policy [^;]+ on public\.organization_contact_cards for (?:all|insert|update|delete) to (?:public|anon|authenticated)/u,
   );
   expect(compacted).toContain(
     "revoke all on table public.organization_contact_cards from public, anon, authenticated;",
   );
   expect(compacted).toContain(
-    "grant select, insert, update on table public.organization_contact_cards to authenticated;",
+    "grant select on table public.organization_contact_cards to authenticated;",
   );
   expect(compacted).not.toMatch(
-    /grant (?:all(?: privileges)?|[^;]*\bdelete\b)[^;]* on table public\.organization_contact_cards to (?:public|anon|authenticated);/u,
+    /grant (?:all(?: privileges)?|[^;]*\b(?:insert|update|delete)\b)[^;]* on table public\.organization_contact_cards to (?:public|anon|authenticated);/u,
   );
 }
 
@@ -108,7 +105,7 @@ describe("organization brand studio schema", () => {
       /organization_branding_version_nonnegative[\s\S]*check \(branding_version >= 0\)/,
     );
     expect(sql).toMatch(
-      /create table public\.organization_brand_drafts \([\s\S]*organization_id uuid primary key references public\.organizations\(id\) on delete cascade[\s\S]*base_version integer not null[\s\S]*check \(base_version >= 0\)[\s\S]*content jsonb not null[\s\S]*updated_by uuid not null references public\.profiles\(id\)[\s\S]*created_at timestamptz not null default now\(\)[\s\S]*updated_at timestamptz not null default now\(\)/,
+      /create table public\.organization_brand_drafts \([\s\S]*organization_id uuid primary key references public\.organizations\(id\) on delete cascade[\s\S]*base_version integer not null[\s\S]*check \(base_version >= 0\)[\s\S]*draft_revision integer not null default 0[\s\S]*check \(draft_revision >= 0\)[\s\S]*content jsonb not null[\s\S]*updated_by uuid not null references public\.profiles\(id\)[\s\S]*created_at timestamptz not null default now\(\)[\s\S]*updated_at timestamptz not null default now\(\)/,
     );
     expect(sql).toMatch(
       /constraint organization_brand_drafts_updated_by_member_fkey[\s\S]*foreign key \(organization_id, updated_by\)[\s\S]*references public\.organization_members\(organization_id, user_id\)/,
@@ -243,33 +240,77 @@ describe("organization brand studio schema", () => {
     );
   });
 
-  it("lets owners read all cards and exact-organization members read only active cards without physical authenticated deletion", () => {
+  it("lets owners read all cards and members read active cards without any authenticated direct mutation", () => {
     expect(
       compact(policySqlFrom(sql, "organization_contact_cards_member_select")),
     ).toBe(
       "create policy organization_contact_cards_member_select on public.organization_contact_cards for select to authenticated using ( public.current_user_role(organization_id) = 'owner' or ( status = 'active' and public.is_org_member(organization_id) ) );",
     );
-    expect(
-      compact(policySqlFrom(sql, "organization_contact_cards_owner_insert")),
-    ).toBe(
-      "create policy organization_contact_cards_owner_insert on public.organization_contact_cards for insert to authenticated with check ( public.current_user_role(organization_id) = 'owner' and created_by = auth.uid() and updated_by = auth.uid() );",
-    );
-    expect(
-      compact(policySqlFrom(sql, "organization_contact_cards_owner_update")),
-    ).toBe(
-      "create policy organization_contact_cards_owner_update on public.organization_contact_cards for update to authenticated using (public.current_user_role(organization_id) = 'owner') with check ( public.current_user_role(organization_id) = 'owner' and updated_by = auth.uid() );",
-    );
     expectContactCardWritePermissions(sql);
   });
 
-  it("rejects restoring an authenticated contact-card delete policy", () => {
-    const weakened = `${sql}\ncreate policy organization_contact_cards_owner_delete on public.organization_contact_cards for delete to authenticated using (public.current_user_role(organization_id) = 'owner');`;
+  it("rejects restoring any authenticated contact-card mutation policy", () => {
+    const weakened = `${sql}\ncreate policy organization_contact_cards_owner_update on public.organization_contact_cards for update to authenticated using (public.current_user_role(organization_id) = 'owner');`;
     expect(() => expectContactCardWritePermissions(weakened)).toThrow();
   });
 
-  it("rejects restoring authenticated delete table privileges", () => {
-    const weakened = `${sql}\ngrant delete on table public.organization_contact_cards to authenticated;`;
+  it("rejects restoring authenticated contact-card table write privileges", () => {
+    const weakened = `${sql}\ngrant update on table public.organization_contact_cards to authenticated;`;
     expect(() => expectContactCardWritePermissions(weakened)).toThrow();
+  });
+
+  it.each([
+    ["create_organization_contact_card", "'create'::public.audit_action"],
+    ["update_organization_contact_card", "'update'::public.audit_action"],
+  ])(
+    "writes and audits contact cards atomically through %s",
+    (name, action) => {
+      const fn = functionSql(name);
+      expect(fn).not.toBe("");
+      expect(fn).toContain("security definer");
+      expect(fn).toContain("set search_path = ''");
+      expect(fn).toContain("v_actor_user_id uuid := auth.uid()");
+      expect(fn).toMatch(
+        /v_actor_user_id is null[\s\S]*public\.current_user_role\(p_organization_id\)[\s\S]*'owner'/,
+      );
+      expect(fn).toContain("public.organization_contact_cards");
+      expect(fn).toContain("insert into public.audit_logs");
+      expect(fn).toContain(action);
+      expect(fn).toMatch(
+        /jsonb_object_keys\(p_(?:content|changes)\)[\s\S]*displayname[\s\S]*title[\s\S]*phone[\s\S]*email[\s\S]*wechat/,
+      );
+    },
+  );
+
+  it("locks the exact card and validates the merged state before an atomic update", () => {
+    const update = functionSql("update_organization_contact_card");
+    const lock = update.indexOf(
+      "from public.organization_contact_cards as card",
+    );
+    const write = update.indexOf("update public.organization_contact_cards");
+    const audit = update.indexOf("insert into public.audit_logs");
+    expect(lock).toBeGreaterThan(-1);
+    expect(update.slice(lock, write)).toContain("for update");
+    expect(update.slice(lock, write)).toContain(
+      "card.organization_id = p_organization_id",
+    );
+    expect(write).toBeGreaterThan(lock);
+    expect(audit).toBeGreaterThan(write);
+    expect(update).toContain("contact_card_not_found");
+    expect(update).toContain("changed_fields");
+  });
+
+  it("keeps contact-card creation in one transaction so audit failure rolls back the insert", () => {
+    const create = functionSql("create_organization_contact_card");
+    const cardInsert = create.indexOf(
+      "insert into public.organization_contact_cards",
+    );
+    const auditInsert = create.indexOf("insert into public.audit_logs");
+    const result = create.indexOf("return query");
+    expect(cardInsert).toBeGreaterThan(-1);
+    expect(auditInsert).toBeGreaterThan(cardInsert);
+    expect(result).toBeGreaterThan(auditInsert);
+    expect(create).not.toMatch(/exception[\s\S]*when[\s\S]*return query/);
   });
 
   it("freezes contact-card identity while permitting same-organization actor attribution", () => {
@@ -332,6 +373,10 @@ describe("organization brand studio schema", () => {
     expect(publish).toMatch(
       /from public\.organization_brand_drafts as draft[\s\S]*draft\.organization_id = p_organization_id[\s\S]*for update/,
     );
+    expect(publish).toMatch(/p_expected_draft_revision integer/);
+    expect(publish).toMatch(
+      /returns table \([\s\S]*organization_id uuid[\s\S]*version integer[\s\S]*content jsonb[\s\S]*published_at timestamptz/,
+    );
   });
 
   it("enforces optimistic concurrency and safe integer publication", () => {
@@ -348,14 +393,19 @@ describe("organization brand studio schema", () => {
     const draftBaseCheck = publish.indexOf(
       "v_draft.base_version is distinct from v_organization.branding_version",
     );
+    const draftRevisionCheck = publish.indexOf(
+      "p_expected_draft_revision is distinct from v_draft.draft_revision",
+    );
     expect(organizationLock).toBeGreaterThan(-1);
     expect(expectedVersionCheck).toBeGreaterThan(organizationLock);
     expect(draftLock).toBeGreaterThan(expectedVersionCheck);
     expect(draftBaseCheck).toBeGreaterThan(draftLock);
+    expect(draftRevisionCheck).toBeGreaterThan(draftBaseCheck);
     expect(publish.slice(expectedVersionCheck, draftLock)).toContain(
       "brand_version_conflict",
     );
     expect(publish.slice(draftBaseCheck)).toContain("brand_version_conflict");
+    expect(publish.slice(draftRevisionCheck)).toContain("brand_draft_conflict");
     expect(publish).toMatch(
       /v_organization\.branding_version >= 2147483647[\s\S]*brand_version_overflow/,
     );
@@ -494,7 +544,7 @@ describe("organization brand studio schema", () => {
 
   it("revokes default RPC execution before granting only authenticated callers", () => {
     expect(sql).toMatch(
-      /revoke all on function public\.publish_organization_brand\(uuid, integer\) from public, anon, authenticated, service_role[\s\S]*grant execute on function public\.publish_organization_brand\(uuid, integer\) to authenticated/,
+      /revoke all on function public\.publish_organization_brand\(uuid, integer, integer\) from public, anon, authenticated, service_role[\s\S]*grant execute on function public\.publish_organization_brand\(uuid, integer, integer\) to authenticated/,
     );
     expect(sql).toMatch(
       /revoke all on function public\.emergency_remove_contact_card_from_shares\(uuid, uuid, text\) from public, anon, authenticated, service_role[\s\S]*grant execute on function public\.emergency_remove_contact_card_from_shares\(uuid, uuid, text\) to authenticated/,
@@ -508,6 +558,33 @@ describe("organization brand studio schema", () => {
         `revoke all on function public.${triggerFunction}() from public, anon, authenticated, service_role`,
       );
     }
+    for (const rpc of [
+      "create_organization_contact_card(uuid, jsonb)",
+      "update_organization_contact_card(uuid, uuid, jsonb)",
+    ]) {
+      expect(compact(sql)).toContain(
+        `revoke all on function public.${rpc} from public, anon, authenticated, service_role;`,
+      );
+      expect(compact(sql)).toContain(
+        `grant execute on function public.${rpc} to authenticated;`,
+      );
+    }
+  });
+
+  it("restricts brand-logo inserts to exact-organization owners without changing private reads", () => {
+    const policy = compact(
+      policySqlFrom(sql, "brand_logos_owner_insert_restriction"),
+    );
+    expect(policy).toContain("as restrictive for insert to authenticated");
+    expect(policy).toContain(
+      "bucket_id <> 'jy-private' or (storage.foldername(name))[2] is distinct from 'brand-logos'",
+    );
+    expect(policy).toContain("bucket_id = 'jy-private'");
+    expect(policy).toContain("(storage.foldername(name))[2] = 'brand-logos'");
+    expect(policy).toMatch(
+      /public\.current_user_role\( \(\(storage\.foldername\(name\)\)\[1\]\)::uuid \) = 'owner'/,
+    );
+    expect(sql).not.toContain("create policy brand_logos_owner_select");
   });
 });
 

@@ -20,6 +20,7 @@ type OrganizationRow = {
 type DraftRow = {
   organization_id: string;
   base_version: number;
+  draft_revision: number;
   content: unknown;
   updated_by?: string;
   updated_at: string;
@@ -49,7 +50,7 @@ type ContactCardRow = {
 };
 
 const draftSelect =
-  "organization_id, base_version, content, updated_by, updated_at";
+  "organization_id, base_version, draft_revision, content, updated_by, updated_at";
 const versionSelect =
   "organization_id, version, content, published_by, published_at";
 const contactCardSelect =
@@ -107,12 +108,14 @@ export class SupabaseOrganizationBrandRepository implements OrganizationBrandRep
   async saveDraft(input: {
     organizationId: string;
     expectedVersion: number;
+    expectedDraftRevision: number;
     content: OrganizationBrandSource;
   }): Promise<OrganizationBrandDraftRecord> {
     const { data, error } = await this.client
       .rpc("save_organization_brand_draft", {
         p_organization_id: input.organizationId,
         p_expected_version: input.expectedVersion,
+        p_expected_draft_revision: input.expectedDraftRevision,
         p_content: input.content,
       })
       .single<DraftRow>();
@@ -123,11 +126,13 @@ export class SupabaseOrganizationBrandRepository implements OrganizationBrandRep
   async publishBrand(input: {
     organizationId: string;
     expectedVersion: number;
+    expectedDraftRevision: number;
   }): Promise<OrganizationBrandVersionRecord> {
     const { data, error } = await this.client
       .rpc("publish_organization_brand", {
         p_organization_id: input.organizationId,
         p_expected_version: input.expectedVersion,
+        p_expected_draft_revision: input.expectedDraftRevision,
       })
       .single<VersionRow>();
     throwIfError(error);
@@ -163,7 +168,6 @@ export class SupabaseOrganizationBrandRepository implements OrganizationBrandRep
 
   async createContactCard(input: {
     organizationId: string;
-    actorUserId: string;
     displayName: string;
     title: string;
     phone: string | null;
@@ -172,19 +176,16 @@ export class SupabaseOrganizationBrandRepository implements OrganizationBrandRep
     status: "active";
   }): Promise<OrganizationContactCardRecord> {
     const { data, error } = await this.client
-      .from("organization_contact_cards")
-      .insert({
-        organization_id: input.organizationId,
-        display_name: input.displayName,
-        title: input.title,
-        phone: input.phone,
-        email: input.email,
-        wechat: input.wechat,
-        status: input.status,
-        created_by: input.actorUserId,
-        updated_by: input.actorUserId,
+      .rpc("create_organization_contact_card", {
+        p_organization_id: input.organizationId,
+        p_content: {
+          displayName: input.displayName,
+          title: input.title,
+          phone: input.phone,
+          email: input.email,
+          wechat: input.wechat,
+        },
       })
-      .select(contactCardSelect)
       .single<ContactCardRow>();
     throwIfError(error);
     return toContactCardRecord(data);
@@ -193,7 +194,6 @@ export class SupabaseOrganizationBrandRepository implements OrganizationBrandRep
   async updateContactCard(input: {
     organizationId: string;
     cardId: string;
-    actorUserId: string;
     changes: Partial<{
       displayName: string;
       title: string;
@@ -203,34 +203,13 @@ export class SupabaseOrganizationBrandRepository implements OrganizationBrandRep
       status: OrganizationContactCardStatus;
     }>;
   }): Promise<OrganizationContactCardRecord | null> {
-    const update = {
-      ...(input.changes.displayName !== undefined
-        ? { display_name: input.changes.displayName }
-        : {}),
-      ...(input.changes.title !== undefined
-        ? { title: input.changes.title }
-        : {}),
-      ...(input.changes.phone !== undefined
-        ? { phone: input.changes.phone }
-        : {}),
-      ...(input.changes.email !== undefined
-        ? { email: input.changes.email }
-        : {}),
-      ...(input.changes.wechat !== undefined
-        ? { wechat: input.changes.wechat }
-        : {}),
-      ...(input.changes.status !== undefined
-        ? { status: input.changes.status }
-        : {}),
-      updated_by: input.actorUserId,
-    };
     const { data, error } = await this.client
-      .from("organization_contact_cards")
-      .update(update)
-      .eq("organization_id", input.organizationId)
-      .eq("id", input.cardId)
-      .select(contactCardSelect)
-      .maybeSingle<ContactCardRow>();
+      .rpc("update_organization_contact_card", {
+        p_organization_id: input.organizationId,
+        p_contact_card_id: input.cardId,
+        p_changes: input.changes,
+      })
+      .single<ContactCardRow>();
     throwIfError(error);
     return data ? toContactCardRecord(data) : null;
   }
@@ -260,6 +239,7 @@ function toDraftRecord(row: DraftRow): OrganizationBrandDraftRecord {
   return {
     organizationId: row.organization_id,
     baseVersion: row.base_version,
+    draftRevision: row.draft_revision,
     content: row.content,
     updatedAt: row.updated_at,
     ...(row.updated_by ? { updatedBy: row.updated_by } : {}),

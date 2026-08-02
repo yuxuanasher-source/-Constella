@@ -10,6 +10,7 @@ import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import {
   currentUserFromAuth,
   loadConsoleDashboardHome,
+  organizationSettingsForClient,
   organizationSettingsFromAuth,
   requireConsoleStaffAuth,
 } from "../console-auth";
@@ -60,6 +61,7 @@ vi.mock("@/lib/rbac/roles", () => ({
 vi.mock("../console-auth", () => ({
   currentUserFromAuth: vi.fn(),
   loadConsoleDashboardHome: vi.fn(),
+  organizationSettingsForClient: vi.fn(),
   organizationSettingsFromAuth: vi.fn(),
   requireConsoleStaffAuth: vi.fn(),
 }));
@@ -115,6 +117,12 @@ describe("account library console route", () => {
     vi.mocked(organizationSettingsFromAuth).mockReturnValue({
       name: "Demo Org",
     } as never);
+    vi.mocked(organizationSettingsForClient).mockResolvedValue({
+      name: "Demo Org",
+      brand: { logoStoragePath: null },
+      logoStoragePath: null,
+      logoUrl: "https://signed.example/logo.webp",
+    } as never);
   });
 
   it("preloads the account library into the shared ops app shell", async () => {
@@ -132,12 +140,22 @@ describe("account library console route", () => {
           id: "user-ops",
           role: "ops_manager",
         }),
-        organizationSettings: { name: "Demo Org" },
+        organizationSettings: expect.objectContaining({
+          name: "Demo Org",
+          logoStoragePath: null,
+          logoUrl: "https://signed.example/logo.webp",
+          brand: expect.objectContaining({ logoStoragePath: null }),
+        }),
         dashboardHome: expect.objectContaining({
           profile: expect.objectContaining({ title: "运营看板" }),
         }),
       }),
       undefined,
     );
+    expect(organizationSettingsForClient).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "test-supabase" }),
+      expect.objectContaining({ organizationId: "org-1" }),
+    );
+    expect(organizationSettingsFromAuth).not.toHaveBeenCalled();
   });
 });

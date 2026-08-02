@@ -48,6 +48,7 @@ const ownerStudio: OrganizationBrandCenterProps["initialStudio"] = {
   published,
   draft: {
     baseVersion: 3,
+    draftRevision: 7,
     persisted: true,
     updatedAt: "2026-08-01T09:00:00.000Z",
     content: {
@@ -484,6 +485,7 @@ describe("OrganizationBrandCenter", () => {
         jsonResponse({
           draft: {
             ...ownerStudio.draft,
+            draftRevision: 8,
             content: {
               ...ownerStudio.draft!.content,
               brandName: "已保存草稿",
@@ -511,6 +513,7 @@ describe("OrganizationBrandCenter", () => {
     expect(await screen.findByText("草稿已保存，尚未发布。")).toBeVisible();
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       expectedVersion: 3,
+      expectedDraftRevision: 7,
       logoText: "星耀",
       logoStoragePath: published.logoStoragePath,
       brandName: "已保存草稿",
@@ -529,6 +532,7 @@ describe("OrganizationBrandCenter", () => {
     expect(fetchMock.mock.calls[1][0]).toBe("/api/organization/brand/publish");
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
       expectedVersion: 3,
+      expectedDraftRevision: 8,
     });
     expect(screen.getByText("当前线上版本 v4")).toBeVisible();
     expect(screen.getByText(/发布者 你/)).toBeVisible();
@@ -884,6 +888,7 @@ describe("OrganizationBrandCenter", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toMatchObject({
       expectedVersion: 4,
+      expectedDraftRevision: 7,
       brandName: "我的本地草稿",
     });
     const history = screen.getByText("发布历史").closest("details")!;
@@ -892,6 +897,68 @@ describe("OrganizationBrandCenter", () => {
     expect(
       within(history).getAllByText(/其他组织负责人/).length,
     ).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps local edits after a draft revision conflict and retries from the refreshed revision", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            code: "BRAND_DRAFT_CONFLICT",
+            latestVersion: 3,
+            latestDraftRevision: 8,
+          },
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          studio: {
+            ...ownerStudio,
+            draft: {
+              ...ownerStudio.draft,
+              draftRevision: 8,
+              content: {
+                ...ownerStudio.draft!.content,
+                brandName: "他人草稿",
+              },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          draft: {
+            ...ownerStudio.draft,
+            draftRevision: 9,
+            content: {
+              ...ownerStudio.draft!.content,
+              brandName: "我的本地草稿",
+            },
+          },
+        }),
+      );
+    renderOwner();
+
+    fireEvent.change(screen.getByLabelText("品牌名称"), {
+      target: { value: "我的本地草稿" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+
+    const adopt = await screen.findByRole("button", {
+      name: "采用线上版本号并重新确认",
+    });
+    expect(screen.getByLabelText("品牌名称")).toHaveValue("我的本地草稿");
+    fireEvent.click(adopt);
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toMatchObject({
+      expectedVersion: 3,
+      expectedDraftRevision: 8,
+      brandName: "我的本地草稿",
+    });
   });
 
   it("requires a conflicted publish to be re-saved against the adopted online version", async () => {

@@ -86,6 +86,7 @@ function makeRepo(): OrganizationBrandRepository {
     saveDraft: vi.fn().mockResolvedValue({
       organizationId: ORGANIZATION_ID,
       baseVersion: 3,
+      draftRevision: 8,
       content: {
         logoText: "DO",
         logoStoragePath: null,
@@ -112,6 +113,7 @@ function makeRepo(): OrganizationBrandRepository {
 
 const validDraft = {
   expectedVersion: 3,
+  expectedDraftRevision: 7,
   logoText: " DO ",
   logoStoragePath: null,
   brandName: " Demo Brand ",
@@ -171,6 +173,7 @@ describe("OrganizationBrandService", () => {
 
     expect(studio.draft).toEqual({
       baseVersion: 3,
+      draftRevision: 0,
       content: {
         logoText: "DO",
         logoStoragePath: `${ORGANIZATION_ID}/brand-logos/${LOGO_ID}.webp`,
@@ -189,6 +192,7 @@ describe("OrganizationBrandService", () => {
     vi.mocked(repo.getDraft).mockResolvedValue({
       organizationId: ORGANIZATION_ID,
       baseVersion: 3,
+      draftRevision: 7,
       content: {
         logoText: "DB",
         logoStoragePath: null,
@@ -215,6 +219,7 @@ describe("OrganizationBrandService", () => {
 
     expect(studio.draft).toEqual({
       baseVersion: 3,
+      draftRevision: 7,
       content: {
         logoText: "DB",
         logoStoragePath: null,
@@ -269,6 +274,7 @@ describe("OrganizationBrandService", () => {
     vi.mocked(repo.getDraft).mockResolvedValue({
       organizationId: ORGANIZATION_ID,
       baseVersion: 3,
+      draftRevision: 7,
       content: {
         logoText: "DB",
         logoStoragePath: null,
@@ -378,6 +384,7 @@ describe("OrganizationBrandService", () => {
     expect(repo.saveDraft).toHaveBeenCalledWith({
       organizationId: ORGANIZATION_ID,
       expectedVersion: 3,
+      expectedDraftRevision: 7,
       content: {
         logoText: "DO",
         logoStoragePath: null,
@@ -394,6 +401,7 @@ describe("OrganizationBrandService", () => {
 
     await expect(service.saveBrandDraft(owner, validDraft)).resolves.toEqual({
       baseVersion: 3,
+      draftRevision: 8,
       content: {
         logoText: "DO",
         logoStoragePath: null,
@@ -406,11 +414,73 @@ describe("OrganizationBrandService", () => {
     });
   });
 
+  it("maps a stale draft revision to a recoverable 409 without overwriting local input", async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.saveDraft).mockRejectedValue({
+      code: "40001",
+      message: "brand_draft_conflict",
+    });
+    vi.mocked(repo.getDraft).mockResolvedValue({
+      organizationId: ORGANIZATION_ID,
+      baseVersion: 3,
+      draftRevision: 8,
+      content: validDraft,
+      updatedAt: "2026-08-02T01:00:00.000Z",
+    });
+    const service = new OrganizationBrandService(repo, audit);
+
+    await expect(
+      service.saveBrandDraft(owner, validDraft),
+    ).rejects.toMatchObject({
+      code: "BRAND_DRAFT_CONFLICT",
+      status: 409,
+      latestDraftRevision: 8,
+    });
+    expect(repo.saveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedDraftRevision: 7 }),
+    );
+  });
+
+  it("rejects publishing with a stale draft revision after another owner saves", async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.publishBrand).mockRejectedValue({
+      code: "40001",
+      message: "brand_draft_conflict",
+    });
+    vi.mocked(repo.getDraft).mockResolvedValue({
+      organizationId: ORGANIZATION_ID,
+      baseVersion: 3,
+      draftRevision: 8,
+      content: validDraft,
+      updatedAt: "2026-08-02T01:00:00.000Z",
+    });
+    const service = new OrganizationBrandService(repo, audit);
+
+    await expect(
+      service.publishBrand(owner, {
+        expectedVersion: 3,
+        expectedDraftRevision: 7,
+      }),
+    ).rejects.toMatchObject({
+      code: "BRAND_DRAFT_CONFLICT",
+      status: 409,
+      latestDraftRevision: 8,
+    });
+    expect(repo.publishBrand).toHaveBeenCalledWith({
+      organizationId: ORGANIZATION_ID,
+      expectedVersion: 3,
+      expectedDraftRevision: 7,
+    });
+  });
+
   it("normalizes a successful publication into the canonical public DTO", async () => {
     const repo = makeRepo();
     const service = new OrganizationBrandService(repo, audit);
 
-    const result = await service.publishBrand(owner, { expectedVersion: 3 });
+    const result = await service.publishBrand(owner, {
+      expectedVersion: 3,
+      expectedDraftRevision: 7,
+    });
 
     expect(result.version).toBe(4);
     expect(result.published).toMatchObject({
@@ -439,7 +509,10 @@ describe("OrganizationBrandService", () => {
       const service = new OrganizationBrandService(repo, audit);
 
       const failure = await service
-        .publishBrand(owner, { expectedVersion: 3 })
+        .publishBrand(owner, {
+          expectedVersion: 3,
+          expectedDraftRevision: 7,
+        })
         .catch((error: unknown) => error);
 
       expect(failure).toBeInstanceOf(OrganizationBrandServiceError);
@@ -449,7 +522,7 @@ describe("OrganizationBrandService", () => {
     },
   );
 
-  it("normalizes contact creation and audits only safe before/after data", async () => {
+  it("normalizes contact creation through the atomic repository RPC without a second audit write", async () => {
     const repo = makeRepo();
     const service = new OrganizationBrandService(repo, audit);
 
@@ -463,7 +536,6 @@ describe("OrganizationBrandService", () => {
 
     expect(repo.createContactCard).toHaveBeenCalledWith({
       organizationId: ORGANIZATION_ID,
-      actorUserId: USER_ID,
       displayName: "Public Contact",
       title: "Operations",
       phone: "123456",
@@ -472,27 +544,7 @@ describe("OrganizationBrandService", () => {
       status: "active",
     });
     expect(result).not.toHaveProperty("createdBy");
-    expect(audit).toHaveBeenCalledWith({
-      organizationId: ORGANIZATION_ID,
-      actorUserId: USER_ID,
-      actorName: "Owner",
-      actorRole: "owner",
-      action: "create",
-      module: "organization_brand",
-      objectType: "organization_contact_card",
-      objectId: CARD_ID,
-      objectName: "Public Contact",
-      before: {},
-      after: result,
-      changedFields: [
-        "displayName",
-        "title",
-        "phone",
-        "email",
-        "wechat",
-        "status",
-      ],
-    });
+    expect(audit).not.toHaveBeenCalled();
   });
 
   it("rejects a cross-organization or missing contact card as not found", async () => {
@@ -506,7 +558,7 @@ describe("OrganizationBrandService", () => {
     expect(repo.updateContactCard).not.toHaveBeenCalled();
   });
 
-  it("disables a card without emergency share mutation and audits the status", async () => {
+  it("disables a card through the atomic repository RPC without emergency share mutation", async () => {
     const repo = makeRepo();
     vi.mocked(repo.updateContactCard).mockResolvedValue({
       ...activeCard,
@@ -521,16 +573,10 @@ describe("OrganizationBrandService", () => {
 
     expect(result.status).toBe("disabled");
     expect(repo.emergencyRemoveContactCard).not.toHaveBeenCalled();
-    expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        before: expect.objectContaining({ status: "active" }),
-        after: expect.objectContaining({ status: "disabled" }),
-        changedFields: ["status"],
-      }),
-    );
+    expect(audit).not.toHaveBeenCalled();
   });
 
-  it("audits the exact changed fields for a normal contact-card update", async () => {
+  it("sends the exact changed fields to the atomic contact-card update RPC", async () => {
     const repo = makeRepo();
     vi.mocked(repo.updateContactCard).mockResolvedValue({
       ...activeCard,
@@ -545,19 +591,15 @@ describe("OrganizationBrandService", () => {
       title: " Partnerships ",
     });
 
-    expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        before: expect.objectContaining({
-          displayName: "Public Contact",
-          title: "Operations",
-        }),
-        after: expect.objectContaining({
-          displayName: "Updated Contact",
-          title: "Partnerships",
-        }),
-        changedFields: ["displayName", "title"],
-      }),
-    );
+    expect(repo.updateContactCard).toHaveBeenCalledWith({
+      organizationId: ORGANIZATION_ID,
+      cardId: CARD_ID,
+      changes: {
+        displayName: "Updated Contact",
+        title: "Partnerships",
+      },
+    });
+    expect(audit).not.toHaveBeenCalled();
   });
 
   it("keeps disabled cards owner-only when listing cards", async () => {
@@ -618,7 +660,7 @@ describe("OrganizationBrandService", () => {
     });
   });
 
-  it("surfaces an explicit safe non-atomic audit failure after card DML", async () => {
+  it("does not perform a fallible post-DML audit write", async () => {
     const repo = makeRepo();
     audit.mockRejectedValueOnce(new Error("audit database password leaked"));
     const service = new OrganizationBrandService(repo, audit);
@@ -631,12 +673,8 @@ describe("OrganizationBrandService", () => {
         email: null,
         wechat: null,
       }),
-    ).rejects.toMatchObject({
-      code: "CONTACT_CARD_AUDIT_FAILED",
-      status: 503,
-      message:
-        "Contact card changed, but its audit record could not be written",
-    });
+    ).resolves.toMatchObject({ id: CARD_ID });
+    expect(audit).not.toHaveBeenCalled();
   });
 });
 
@@ -646,6 +684,7 @@ describe("SupabaseOrganizationBrandRepository", () => {
       data: {
         organization_id: ORGANIZATION_ID,
         base_version: 3,
+        draft_revision: 8,
         content: {
           logoText: "DO",
           logoStoragePath: null,
@@ -670,6 +709,7 @@ describe("SupabaseOrganizationBrandRepository", () => {
       repo.saveDraft({
         organizationId: ORGANIZATION_ID,
         expectedVersion: 3,
+        expectedDraftRevision: 7,
         content: {
           logoText: "DO",
           logoStoragePath: null,
@@ -681,12 +721,14 @@ describe("SupabaseOrganizationBrandRepository", () => {
     ).resolves.toEqual({
       organizationId: ORGANIZATION_ID,
       baseVersion: 3,
+      draftRevision: 8,
       content: expect.any(Object),
       updatedAt: "2026-08-02T00:00:00.000Z",
     });
     expect(rpc).toHaveBeenCalledWith("save_organization_brand_draft", {
       p_organization_id: ORGANIZATION_ID,
       p_expected_version: 3,
+      p_expected_draft_revision: 7,
       p_content: expect.any(Object),
     });
     expect(from).not.toHaveBeenCalled();
@@ -723,6 +765,86 @@ describe("SupabaseOrganizationBrandRepository", () => {
     expect(secondEq).toHaveBeenCalledWith("id", CARD_ID);
   });
 
+  it("creates and updates contact cards only through atomic audited RPCs", async () => {
+    const createSingle = vi.fn().mockResolvedValue({
+      data: {
+        id: CARD_ID,
+        organization_id: ORGANIZATION_ID,
+        display_name: "Public Contact",
+        title: "Operations",
+        phone: "123456",
+        email: null,
+        wechat: null,
+        status: "active",
+        created_by: USER_ID,
+        updated_by: USER_ID,
+        created_at: "2026-08-01T00:00:00.000Z",
+        updated_at: "2026-08-01T00:00:00.000Z",
+      },
+      error: null,
+    });
+    const updateSingle = vi.fn().mockResolvedValue({
+      data: {
+        id: CARD_ID,
+        organization_id: ORGANIZATION_ID,
+        display_name: "Updated Contact",
+        title: "Operations",
+        phone: "123456",
+        email: null,
+        wechat: null,
+        status: "active",
+        created_by: USER_ID,
+        updated_by: USER_ID,
+        created_at: "2026-08-01T00:00:00.000Z",
+        updated_at: "2026-08-02T00:00:00.000Z",
+      },
+      error: null,
+    });
+    const rpc = vi
+      .fn()
+      .mockReturnValueOnce({ single: createSingle })
+      .mockReturnValueOnce({ single: updateSingle });
+    const from = vi.fn(() => {
+      throw new Error("direct contact-card DML must never be used");
+    });
+    const repo = new SupabaseOrganizationBrandRepository({
+      rpc,
+      from,
+    } as never);
+
+    await repo.createContactCard({
+      organizationId: ORGANIZATION_ID,
+      displayName: "Public Contact",
+      title: "Operations",
+      phone: "123456",
+      email: null,
+      wechat: null,
+      status: "active",
+    });
+    await repo.updateContactCard({
+      organizationId: ORGANIZATION_ID,
+      cardId: CARD_ID,
+      changes: { displayName: "Updated Contact" },
+    });
+
+    expect(rpc).toHaveBeenNthCalledWith(1, "create_organization_contact_card", {
+      p_organization_id: ORGANIZATION_ID,
+      p_content: {
+        displayName: "Public Contact",
+        title: "Operations",
+        phone: "123456",
+        email: null,
+        wechat: null,
+      },
+    });
+    expect(rpc).toHaveBeenNthCalledWith(2, "update_organization_contact_card", {
+      p_organization_id: ORGANIZATION_ID,
+      p_contact_card_id: CARD_ID,
+      p_changes: { displayName: "Updated Contact" },
+    });
+    expect(from).not.toHaveBeenCalled();
+  });
+
   it("publishes and emergency-removes only through their database RPCs", async () => {
     const rpc = vi
       .fn()
@@ -744,6 +866,7 @@ describe("SupabaseOrganizationBrandRepository", () => {
       repo.publishBrand({
         organizationId: ORGANIZATION_ID,
         expectedVersion: 3,
+        expectedDraftRevision: 7,
       }),
     ).resolves.toMatchObject({ version: 4 });
     await expect(
@@ -756,6 +879,7 @@ describe("SupabaseOrganizationBrandRepository", () => {
     expect(rpc).toHaveBeenNthCalledWith(1, "publish_organization_brand", {
       p_organization_id: ORGANIZATION_ID,
       p_expected_version: 3,
+      p_expected_draft_revision: 7,
     });
     expect(rpc).toHaveBeenNthCalledWith(
       2,

@@ -7,7 +7,6 @@ import {
   OrganizationBrandServiceError,
   emergencyRemoveContactCardRequestSchema,
 } from "@/features/organizations/organization-brand-service";
-import { writeAuditLog } from "@/lib/audit/audit";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { ValidationError, parseJsonBody } from "@/lib/http/parse-json-body";
@@ -41,7 +40,6 @@ export async function POST(
     );
     const service = new OrganizationBrandService(
       new SupabaseOrganizationBrandRepository(supabase),
-      (auditInput) => writeAuditLog(supabase, auditInput),
     );
     return NextResponse.json(
       await service.emergencyRemoveContactCard(auth, idResult.data, input),

@@ -51,6 +51,7 @@ const auth = {
 
 const validDraft = {
   expectedVersion: 3,
+  expectedDraftRevision: 7,
   logoText: "DO",
   logoStoragePath: null,
   brandName: "Demo Brand",

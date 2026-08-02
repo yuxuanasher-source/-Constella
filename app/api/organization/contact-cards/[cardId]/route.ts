@@ -7,7 +7,6 @@ import {
   OrganizationBrandServiceError,
   updateOrganizationContactCardRequestSchema,
 } from "@/features/organizations/organization-brand-service";
-import { writeAuditLog } from "@/lib/audit/audit";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { ValidationError, parseJsonBody } from "@/lib/http/parse-json-body";
@@ -41,7 +40,6 @@ export async function PATCH(
     );
     const service = new OrganizationBrandService(
       new SupabaseOrganizationBrandRepository(supabase),
-      (auditInput) => writeAuditLog(supabase, auditInput),
     );
     const contactCard = await service.updateContactCard(
       auth,

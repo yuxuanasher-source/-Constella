@@ -6,7 +6,6 @@ import {
   OrganizationBrandServiceError,
   createOrganizationContactCardRequestSchema,
 } from "@/features/organizations/organization-brand-service";
-import { writeAuditLog } from "@/lib/audit/audit";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { ValidationError, parseJsonBody } from "@/lib/http/parse-json-body";
@@ -57,7 +56,6 @@ async function routeContext() {
     auth,
     service: new OrganizationBrandService(
       new SupabaseOrganizationBrandRepository(supabase),
-      (input) => writeAuditLog(supabase, input),
     ),
   };
 }

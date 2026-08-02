@@ -34,6 +34,7 @@ type ContactForm = {
 };
 type ConflictState = {
   latestVersion: number;
+  latestDraftRevision: number;
   online: PublishedOrganizationBrand;
 };
 type BrandMutationKind = "save" | "publish";
@@ -180,6 +181,7 @@ export function OrganizationBrandCenter({
 }: OrganizationBrandCenterProps) {
   const initialDraft = initialStudio.draft ?? {
     baseVersion: initialStudio.published.version,
+    draftRevision: 0,
     content: sourceFromPublished(initialStudio.published),
     persisted: false,
     updatedAt: null,
@@ -540,11 +542,13 @@ export function OrganizationBrandCenter({
   const loadConflict = async (response: Response) => {
     const errorPayload = (await safeJson(response)) as {
       latestVersion?: unknown;
+      latestDraftRevision?: unknown;
     };
     const refresh = await fetch("/api/organization/brand", { method: "GET" });
     const refreshPayload = (await safeJson(refresh)) as {
       studio?: {
         published?: PublishedOrganizationBrand;
+        draft?: OrganizationBrandStudioDto["draft"];
         versions?: OrganizationBrandStudioDto["versions"];
       };
     };
@@ -555,6 +559,11 @@ export function OrganizationBrandCenter({
       Number.isInteger(errorPayload.latestVersion)
         ? errorPayload.latestVersion
         : online.version;
+    const latestDraftRevision =
+      typeof errorPayload.latestDraftRevision === "number" &&
+      Number.isInteger(errorPayload.latestDraftRevision)
+        ? errorPayload.latestDraftRevision
+        : (refreshPayload.studio?.draft?.draftRevision ?? 0);
     const previousPublishedLogoUrl = publishedLogoUrlRef.current;
     if (online.logoStoragePath !== published.logoStoragePath) {
       publishedLogoUrlRef.current = null;
@@ -569,7 +578,7 @@ export function OrganizationBrandCenter({
         (version) => version.version === online.version,
       )?.publishedByLabel ?? "其他组织负责人",
     );
-    setConflict({ latestVersion, online });
+    setConflict({ latestVersion, latestDraftRevision, online });
     setSaveState("conflict");
     setPublishState("conflict");
     setPublishConfirmation(false);
@@ -596,6 +605,7 @@ export function OrganizationBrandCenter({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           expectedVersion: draft.baseVersion,
+          expectedDraftRevision: draft.draftRevision,
           logoText: draft.content.logoText.trim(),
           logoStoragePath: draft.content.logoStoragePath,
           brandName: draft.content.brandName.trim(),
@@ -620,6 +630,7 @@ export function OrganizationBrandCenter({
         setDraft((current) => ({
           ...current,
           baseVersion: payload.draft!.baseVersion,
+          draftRevision: payload.draft!.draftRevision,
           persisted: false,
           updatedAt: payload.draft!.updatedAt,
         }));
@@ -656,7 +667,10 @@ export function OrganizationBrandCenter({
       const response = await fetch("/api/organization/brand/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ expectedVersion: draft.baseVersion }),
+        body: JSON.stringify({
+          expectedVersion: draft.baseVersion,
+          expectedDraftRevision: draft.draftRevision,
+        }),
       });
       if (!isCurrentBrandMutation("publish", token)) return;
       if (response.status === 409) {
@@ -710,6 +724,7 @@ export function OrganizationBrandCenter({
         }
         setDraft({
           baseVersion: payload.version,
+          draftRevision: 0,
           content: nextSource,
           persisted: false,
           updatedAt: null,
@@ -719,6 +734,7 @@ export function OrganizationBrandCenter({
         setDraft((current) => ({
           ...current,
           baseVersion: payload.version!,
+          draftRevision: 0,
           persisted: false,
           updatedAt: null,
         }));
@@ -762,6 +778,7 @@ export function OrganizationBrandCenter({
     setDraft((current) => ({
       ...current,
       baseVersion: conflict.latestVersion,
+      draftRevision: conflict.latestDraftRevision,
     }));
     // The persisted server draft still targets the previous publication.
     // Require an atomic save against the adopted version before retrying.

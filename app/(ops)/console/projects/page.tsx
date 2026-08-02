@@ -29,7 +29,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   currentUserFromAuth,
   loadConsoleDashboardHome,
-  organizationSettingsFromAuth,
+  organizationSettingsForClient,
   requireConsoleStaffAuth,
 } from "../console-auth";
 
@@ -59,6 +59,7 @@ export default async function ProjectsPage() {
     liveTasks,
     settlementData,
     dashboardHome,
+    organizationSettings,
   ] = await Promise.all([
     projectsPromise,
     applicationQueuePromise,
@@ -71,6 +72,7 @@ export default async function ProjectsPage() {
       tasks: liveTasksPromise,
       batches: batchesPromise,
     }),
+    organizationSettingsForClient(supabase, auth),
   ]);
 
   return (
@@ -78,7 +80,7 @@ export default async function ProjectsPage() {
       initialRoute="projects"
       dashboardHome={dashboardHome}
       currentUser={currentUserFromAuth(auth)}
-      organizationSettings={organizationSettingsFromAuth(auth)}
+      organizationSettings={organizationSettings}
       projectCards={toProjectCardDtos(projects)}
       applicationQueue={applicationQueue}
       collaborationProjectCards={[
