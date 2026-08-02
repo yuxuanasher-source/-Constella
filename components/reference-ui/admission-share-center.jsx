@@ -170,7 +170,7 @@ function trapDialogKeyDown(event, dialog, onEscape) {
   if (event.key === "Escape") {
     event.preventDefault();
     event.stopPropagation();
-    onEscape();
+    onEscape?.();
     return;
   }
   if (event.key !== "Tab") return;
@@ -331,6 +331,20 @@ function formatDate(value) {
   }).format(date);
 }
 
+function safeAdmissionShareUiError(error, fallback) {
+  if (
+    error?.code === "SHARE_SELECTION_CHANGED" ||
+    error?.code === "SELECTION_STALE"
+  ) {
+    return "部分录屏状态已变化";
+  }
+  if (error?.code === "SHARE_FORMAL_ROUND_CONFLICT") {
+    return "当前已有正式复核轮次，请刷新任务后重试";
+  }
+  if (Number(error?.status) >= 500) return fallback;
+  return error?.message || fallback;
+}
+
 function contactCardOptionLabel(card) {
   return [card?.displayName, card?.title].filter(Boolean).join(" · ");
 }
@@ -422,6 +436,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [wizardOpen, setWizardOpen] = React.useState(false);
   const [wizardStep, setWizardStep] = React.useState(0);
   const [wizardError, setWizardError] = React.useState("");
+  const [wizardProject, setWizardProject] = React.useState(null);
   const [preflight, setPreflight] = React.useState(null);
   const [draft, setDraft] = React.useState({
     mode: "formal_review",
@@ -449,10 +464,16 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const currentProjectIdRef = React.useRef(project.id);
   const currentProjectNameRef = React.useRef(project.name);
   currentProjectNameRef.current = project.name;
+  const candidateGenerationRef = React.useRef(0);
   const taskListGenerationRef = React.useRef(0);
   const shareBrandGenerationRef = React.useRef(0);
   const contactCardGenerationRef = React.useRef(0);
   const taskPreviewGenerationRef = React.useRef(0);
+  const preflightGenerationRef = React.useRef(0);
+  const createGenerationRef = React.useRef(0);
+  const createPendingRef = React.useRef(false);
+  const deliveryRef = React.useRef(null);
+  deliveryRef.current = delivery;
   const issueListGenerationRef = React.useRef(0);
   const issueResolveGenerationRef = React.useRef(new Map());
   const nextIssueResolveGenerationRef = React.useRef(0);
@@ -474,10 +495,14 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     firstTabRef.current?.focus();
     return () => {
       mountedRef.current = false;
+      candidateGenerationRef.current += 1;
       taskListGenerationRef.current += 1;
       shareBrandGenerationRef.current += 1;
       contactCardGenerationRef.current += 1;
       taskPreviewGenerationRef.current += 1;
+      preflightGenerationRef.current += 1;
+      createGenerationRef.current += 1;
+      createPendingRef.current = false;
       issueListGenerationRef.current += 1;
       issueResolveGenerations.clear();
       resolvingIssueIds.clear();
@@ -486,13 +511,21 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   }, []);
 
   React.useLayoutEffect(() => {
+    const preservePendingCreate = createPendingRef.current;
     currentProjectIdRef.current = project.id;
+    candidateGenerationRef.current += 1;
     taskListGenerationRef.current += 1;
     shareBrandGenerationRef.current += 1;
     contactCardGenerationRef.current += 1;
     taskPreviewGenerationRef.current += 1;
+    preflightGenerationRef.current += 1;
+    if (!preservePendingCreate) createGenerationRef.current += 1;
+    issueListGenerationRef.current += 1;
     issueResolveGenerationRef.current.clear();
     resolvingIssueIdsRef.current.clear();
+    setCandidates([]);
+    setCandidatesLoading(true);
+    setCandidateError("");
     setIssueResolveErrors({});
     setResolvingIssueIds(new Set());
     setTasks([]);
@@ -500,7 +533,20 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     setTaskError("");
     setTasksLoading(true);
     setTasksLoadingMore(false);
-    setSelected(new Map());
+    setPendingTasks(new Set());
+    setTaskExpiresAt({});
+    setReopenReasons({});
+    setSubmissions({});
+    setMessage("");
+    if (!preservePendingCreate) {
+      setSelected(new Map());
+      setPreflight(null);
+      setWizardOpen(false);
+      setWizardStep(0);
+      setWizardError("");
+      setWizardProject(null);
+      setBusy("");
+    }
     setShareBrand(fallbackShareBrand);
     setShareBrandLoading(true);
     setShareBrandError("");
@@ -508,12 +554,14 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     setContactCardsLoading(true);
     setContactCardsError("");
     setTaskPreview(null);
-    setDraft((current) => ({
-      ...current,
-      title: `${currentProjectNameRef.current || "项目"} 录屏复核`,
-      contactCardId: null,
-      accessCode: "",
-    }));
+    if (!preservePendingCreate) {
+      setDraft((current) => ({
+        ...current,
+        title: `${currentProjectNameRef.current || "项目"} 录屏复核`,
+        contactCardId: null,
+        accessCode: "",
+      }));
+    }
   }, [project.id]);
 
   const loadTasks = React.useCallback(async () => {
@@ -591,21 +639,31 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   }, [delivery]);
 
   const loadCandidates = React.useCallback(async () => {
+    const requestProjectId = project.id;
+    const requestGeneration = candidateGenerationRef.current + 1;
+    candidateGenerationRef.current = requestGeneration;
+    const isCurrentRequest = () =>
+      mountedRef.current &&
+      currentProjectIdRef.current === requestProjectId &&
+      candidateGenerationRef.current === requestGeneration;
     setCandidatesLoading(true);
     setCandidateError("");
     try {
       if (!actions.listAdmissionShareCandidates) {
         throw new Error("录屏候选接口暂未接入");
       }
-      const result = await actions.listAdmissionShareCandidates(project.id);
+      const result =
+        await actions.listAdmissionShareCandidates(requestProjectId);
       const next = Array.isArray(result) ? result : [];
+      if (!isCurrentRequest()) return [];
       setCandidates(next);
       return next;
     } catch (error) {
+      if (!isCurrentRequest()) return [];
       setCandidateError(error?.message || "录屏库加载失败");
       throw error;
     } finally {
-      setCandidatesLoading(false);
+      if (isCurrentRequest()) setCandidatesLoading(false);
     }
   }, [actions, project.id]);
 
@@ -732,6 +790,8 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   React.useEffect(() => {
     let current = true;
     const requestProjectId = project.id;
+    const candidateRequestGeneration = candidateGenerationRef.current + 1;
+    candidateGenerationRef.current = candidateRequestGeneration;
     const taskRequestGeneration = taskListGenerationRef.current + 1;
     taskListGenerationRef.current = taskRequestGeneration;
     const isCurrentTaskRequest = () =>
@@ -739,6 +799,11 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       mountedRef.current &&
       currentProjectIdRef.current === requestProjectId &&
       taskListGenerationRef.current === taskRequestGeneration;
+    const isCurrentCandidateRequest = () =>
+      current &&
+      mountedRef.current &&
+      currentProjectIdRef.current === requestProjectId &&
+      candidateGenerationRef.current === candidateRequestGeneration;
     void Promise.allSettled([
       Promise.resolve().then(() => {
         if (!actions.listAdmissionShareCandidates) {
@@ -753,13 +818,17 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
         return actions.listAdmissionShareBoards(project.id);
       }),
     ]).then(([candidateResult, taskResult]) => {
-      if (!current) return;
-      if (candidateResult.status === "fulfilled") {
-        setCandidates(
-          Array.isArray(candidateResult.value) ? candidateResult.value : [],
-        );
-      } else {
-        setCandidateError(candidateResult.reason?.message || "录屏库加载失败");
+      if (isCurrentCandidateRequest()) {
+        if (candidateResult.status === "fulfilled") {
+          setCandidates(
+            Array.isArray(candidateResult.value) ? candidateResult.value : [],
+          );
+        } else {
+          setCandidateError(
+            candidateResult.reason?.message || "录屏库加载失败",
+          );
+        }
+        setCandidatesLoading(false);
       }
       if (isCurrentTaskRequest()) {
         if (taskResult.status === "fulfilled") {
@@ -771,7 +840,6 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
         }
         setTasksLoading(false);
       }
-      setCandidatesLoading(false);
     });
     return () => {
       current = false;
@@ -872,26 +940,42 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       setMessage("分享预检接口暂未接入");
       return;
     }
+    const requestProject = {
+      id: project.id,
+      name: project.name,
+      code: project.code,
+    };
+    const requestGeneration = preflightGenerationRef.current + 1;
+    preflightGenerationRef.current = requestGeneration;
+    const isCurrentRequest = () =>
+      mountedRef.current &&
+      currentProjectIdRef.current === requestProject.id &&
+      preflightGenerationRef.current === requestGeneration;
+    const items = selectedCandidates.map(shareItem);
     setBusy("preflight");
     setMessage("");
     setWizardError("");
     setWizardOpen(true);
+    setWizardProject(requestProject);
     setWizardStep(0);
     setPreflight(null);
     try {
-      const items = selectedCandidates.map(shareItem);
       const result = await actions.preflightAdmissionShareBoard(
-        project.id,
+        requestProject.id,
         items,
       );
+      if (!isCurrentRequest()) return;
       setPreflight(result);
       if ((result?.summary?.blocked || 0) === 0) {
         setWizardStep(1);
       }
     } catch (error) {
-      setWizardError(error?.message || "分享预检失败");
+      if (!isCurrentRequest()) return;
+      setWizardError(
+        safeAdmissionShareUiError(error, "分享预检失败，请稍后重试"),
+      );
     } finally {
-      setBusy("");
+      if (isCurrentRequest()) setBusy("");
     }
   };
 
@@ -923,27 +1007,46 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       setMessage("创建分享接口暂未接入");
       return;
     }
+    const requestProject = wizardProject || {
+      id: project.id,
+      name: project.name,
+      code: project.code,
+    };
+    const requestGeneration = createGenerationRef.current + 1;
+    createGenerationRef.current = requestGeneration;
+    createPendingRef.current = true;
+    const isCurrentRequest = () =>
+      mountedRef.current && createGenerationRef.current === requestGeneration;
     setBusy("create");
     setMessage("");
     setWizardError("");
     try {
       const expiresAt = dateInputToIso(draft.expiresAt);
-      const result = await actions.createAdmissionShareBoard(project.id, {
-        mode: draft.mode,
-        title: draft.title.trim(),
-        purpose: draft.purpose.trim() || undefined,
-        expiresAt: expiresAt || undefined,
-        requireAccessCode: draft.requireAccessCode,
-        accessCode:
-          draft.requireAccessCode && draft.accessCode.trim()
-            ? draft.accessCode.trim()
-            : undefined,
-        allowExternalFallback: draft.allowExternalFallback,
-        contactCardId: draft.contactCardId,
-        items: selectedCandidates.map(shareItem),
-      });
+      const result = await actions.createAdmissionShareBoard(
+        requestProject.id,
+        {
+          mode: draft.mode,
+          title: draft.title.trim(),
+          purpose: draft.purpose.trim() || undefined,
+          expiresAt: expiresAt || undefined,
+          requireAccessCode: draft.requireAccessCode,
+          accessCode:
+            draft.requireAccessCode && draft.accessCode.trim()
+              ? draft.accessCode.trim()
+              : undefined,
+          allowExternalFallback: draft.allowExternalFallback,
+          contactCardId: draft.contactCardId,
+          items: selectedCandidates.map(shareItem),
+        },
+      );
+      if (!isCurrentRequest()) return;
+      createPendingRef.current = false;
+      setBusy("");
       const persistedPresentation = result?.shareBoard?.presentation || null;
       setDelivery({
+        kind: "created",
+        projectId: requestProject.id,
+        projectName: requestProject.name || requestProject.id,
         shareUrl: result?.shareUrl || "",
         accessCode: result?.accessCode || "",
         title: persistedPresentation?.title || draft.title.trim(),
@@ -953,19 +1056,39 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       setPreflight(null);
       setWizardOpen(false);
       setWizardStep(0);
+      setWizardProject(null);
       setDraft((current) => ({
         ...current,
         accessCode: "",
         contactCardId: null,
       }));
-      setMessage("分享任务已创建；链接和访问码仅在本次弹窗展示");
-      await loadTasks().catch(() => {});
+      if (currentProjectIdRef.current === requestProject.id) {
+        setMessage("分享任务已创建；链接和访问码仅在本次弹窗展示");
+        await loadTasks().catch(() => {});
+      }
     } catch (error) {
-      const errorMessage = error?.message || "分享任务创建失败";
-      setWizardError(errorMessage);
+      if (!isCurrentRequest()) return;
+      const isSourceProjectCurrent =
+        currentProjectIdRef.current === requestProject.id;
+      const errorMessage = safeAdmissionShareUiError(
+        error,
+        "分享任务创建失败，请稍后重试",
+      );
+      if (isSourceProjectCurrent) setWizardError(errorMessage);
+      else {
+        setWizardOpen(false);
+        setWizardStep(0);
+        setWizardProject(null);
+        setSelected(new Map());
+        setPreflight(null);
+        setMessage(
+          `${requestProject.name || "上一项目"}的分享任务创建失败，请返回后重试`,
+        );
+      }
       if (
-        error?.code === "SHARE_SELECTION_CHANGED" ||
-        error?.code === "SELECTION_STALE"
+        isSourceProjectCurrent &&
+        (error?.code === "SHARE_SELECTION_CHANGED" ||
+          error?.code === "SELECTION_STALE")
       ) {
         const staleById = new Map(
           (Array.isArray(error.items) ? error.items : []).map((item) => [
@@ -999,7 +1122,61 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
         setWizardStep(0);
       }
     } finally {
-      setBusy("");
+      if (isCurrentRequest()) {
+        createPendingRef.current = false;
+        setBusy("");
+      }
+    }
+  };
+
+  const loadTaskPreview = async (task, requestProjectId = project.id) => {
+    if (currentProjectIdRef.current !== requestProjectId) return null;
+    const requestGeneration = taskPreviewGenerationRef.current + 1;
+    taskPreviewGenerationRef.current = requestGeneration;
+    const isCurrentRequest = () =>
+      mountedRef.current &&
+      currentProjectIdRef.current === requestProjectId &&
+      taskPreviewGenerationRef.current === requestGeneration;
+    setTaskPreview({
+      projectId: requestProjectId,
+      taskId: task.id,
+      status: "loading",
+      presentation: null,
+      error: "",
+    });
+    try {
+      if (!actions.getAdmissionShareBoardDetail) {
+        throw new Error("分享详情接口暂未接入");
+      }
+      const detail = await actions.getAdmissionShareBoardDetail(
+        requestProjectId,
+        task.id,
+      );
+      if (!isCurrentRequest()) return null;
+      if (!detail?.presentation) {
+        throw new Error("分享详情未返回已保存预览");
+      }
+      setTaskPreview({
+        projectId: requestProjectId,
+        taskId: task.id,
+        status: "ready",
+        presentation: detail.presentation,
+        error: "",
+      });
+      return detail;
+    } catch (error) {
+      if (!isCurrentRequest()) return null;
+      setTaskPreview({
+        projectId: requestProjectId,
+        taskId: task.id,
+        status: "error",
+        presentation: null,
+        error: safeAdmissionShareUiError(
+          error,
+          "分享预览暂时无法加载，请稍后重试",
+        ),
+      });
+      return null;
     }
   };
 
@@ -1007,36 +1184,63 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     taskId,
     action,
     successMessage,
-    { refresh = true } = {},
+    { refresh = true, previewTask = null } = {},
   ) => {
+    const requestProjectId = project.id;
+    const shouldReloadPreview = previewTask && taskPreview?.taskId === taskId;
+    if (shouldReloadPreview) {
+      taskPreviewGenerationRef.current += 1;
+      setTaskPreview(null);
+    }
     setPendingTasks((current) => new Set(current).add(taskId));
     setMessage("");
     try {
       const result = await action();
-      if (successMessage) setMessage(successMessage);
-      if (refresh) await loadTasks();
+      if (currentProjectIdRef.current === requestProjectId) {
+        if (successMessage) setMessage(successMessage);
+        if (refresh) await loadTasks();
+        if (
+          shouldReloadPreview &&
+          currentProjectIdRef.current === requestProjectId
+        ) {
+          await loadTaskPreview(previewTask, requestProjectId);
+        }
+      }
       return result;
     } catch (error) {
-      setMessage(error?.message || "分享任务操作失败");
+      if (currentProjectIdRef.current === requestProjectId) {
+        setMessage(
+          safeAdmissionShareUiError(error, "分享任务操作失败，请稍后重试"),
+        );
+      }
     } finally {
-      setPendingTasks((current) => {
-        const next = new Set(current);
-        next.delete(taskId);
-        return next;
-      });
+      if (currentProjectIdRef.current === requestProjectId) {
+        setPendingTasks((current) => {
+          const next = new Set(current);
+          next.delete(taskId);
+          return next;
+        });
+      }
     }
   };
 
   const rotateTaskToken = async (task) => {
     if (!actions.rotateAdmissionShareBoardToken) return;
+    const requestProject = {
+      id: project.id,
+      name: project.name,
+    };
     const result = await runTaskAction(
       task.id,
-      () => actions.rotateAdmissionShareBoardToken(project.id, task.id),
+      () => actions.rotateAdmissionShareBoardToken(requestProject.id, task.id),
       "",
-      { refresh: false },
+      { refresh: false, previewTask: task },
     );
     if (result) {
       setDelivery({
+        kind: "reset",
+        projectId: requestProject.id,
+        projectName: requestProject.name || requestProject.id,
         title: `${task.title}（已重置）`,
         shareUrl: result?.shareUrl || "",
         accessCode: result?.accessCode || "",
@@ -1070,49 +1274,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       return;
     }
 
-    const requestProjectId = project.id;
-    const requestGeneration = taskPreviewGenerationRef.current + 1;
-    taskPreviewGenerationRef.current = requestGeneration;
-    const isCurrentRequest = () =>
-      mountedRef.current &&
-      currentProjectIdRef.current === requestProjectId &&
-      taskPreviewGenerationRef.current === requestGeneration;
-    setTaskPreview({
-      projectId: requestProjectId,
-      taskId: task.id,
-      status: "loading",
-      presentation: null,
-      error: "",
-    });
-    try {
-      if (!actions.getAdmissionShareBoardDetail) {
-        throw new Error("分享详情接口暂未接入");
-      }
-      const detail = await actions.getAdmissionShareBoardDetail(
-        requestProjectId,
-        task.id,
-      );
-      if (!isCurrentRequest()) return;
-      if (!detail?.presentation) {
-        throw new Error("分享详情未返回已保存预览");
-      }
-      setTaskPreview({
-        projectId: requestProjectId,
-        taskId: task.id,
-        status: "ready",
-        presentation: detail.presentation,
-        error: "",
-      });
-    } catch (error) {
-      if (!isCurrentRequest()) return;
-      setTaskPreview({
-        projectId: requestProjectId,
-        taskId: task.id,
-        status: "error",
-        presentation: null,
-        error: error?.message || "分享预览加载失败",
-      });
-    }
+    await loadTaskPreview(task);
   };
 
   const changeTab = (nextTab) => {
@@ -1200,10 +1362,13 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   };
 
   const closeWizard = () => {
+    if (createPendingRef.current) return;
+    preflightGenerationRef.current += 1;
     setWizardOpen(false);
     setPreflight(null);
     setWizardStep(0);
     setWizardError("");
+    setWizardProject(null);
     setDraft((current) => ({ ...current, accessCode: "" }));
   };
 
@@ -1215,9 +1380,13 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   };
 
   const closeCenter = () => {
+    if (createPendingRef.current || deliveryRef.current) return;
+    candidateGenerationRef.current += 1;
     shareBrandGenerationRef.current += 1;
     contactCardGenerationRef.current += 1;
     taskPreviewGenerationRef.current += 1;
+    preflightGenerationRef.current += 1;
+    createGenerationRef.current += 1;
     setDelivery(null);
     setWizardOpen(false);
     setTaskPreview(null);
@@ -1294,7 +1463,11 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
                 {project.name} · 由你明确选择本轮分享的录屏和版本
               </div>
             </div>
-            <ActionButton aria-label="关闭录屏分享中心" onClick={closeCenter}>
+            <ActionButton
+              aria-label="关闭录屏分享中心"
+              disabled={busy === "create" || Boolean(delivery)}
+              onClick={closeCenter}
+            >
               关闭
             </ActionButton>
           </header>
@@ -1479,6 +1652,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
                         expiresAt,
                       ),
                     "分享任务已延期",
+                    { previewTask: task },
                   );
                 }}
                 onReopen={(task) => {
@@ -1496,6 +1670,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
                         reason,
                       ),
                     "复核任务已重开",
+                    { previewTask: task },
                   );
                 }}
                 onRevoke={(task) =>
@@ -1504,6 +1679,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
                     () =>
                       actions.revokeAdmissionShareBoard?.(project.id, task.id),
                     "分享任务已撤销",
+                    { previewTask: task },
                   )
                 }
                 onViewSubmissions={viewSubmissions}
@@ -1549,7 +1725,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
           preflight={preflight}
           selected={selectedCandidates}
           candidateByRecordingId={candidateByRecordingId}
-          project={project}
+          project={wizardProject || project}
           shareBrand={shareBrand}
           shareBrandLoading={shareBrandLoading}
           shareBrandError={shareBrandError}
@@ -1557,6 +1733,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
           contactCardsLoading={contactCardsLoading}
           contactCardsError={contactCardsError}
           busy={busy}
+          locked={busy === "create"}
           error={wizardError}
           onDraftChange={(patch) =>
             setDraft((current) => ({ ...current, ...patch }))
@@ -1972,6 +2149,7 @@ function ShareWizard({
   contactCardsLoading,
   contactCardsError,
   busy,
+  locked,
   error,
   onDraftChange,
   onRemoveBlocked,
@@ -1989,12 +2167,17 @@ function ShareWizard({
       role="dialog"
       aria-modal="true"
       aria-label="创建录屏分享"
+      aria-busy={locked ? "true" : undefined}
       style={overlayStyle}
       onKeyDown={(event) => {
-        trapDialogKeyDown(event, dialogRef.current, onClose);
+        trapDialogKeyDown(
+          event,
+          dialogRef.current,
+          locked ? undefined : onClose,
+        );
       }}
       onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (!locked && event.target === event.currentTarget) onClose();
       }}
     >
       <div className="admission-share-dialog-shell" style={dialogStyle}>
@@ -2021,7 +2204,11 @@ function ShareWizard({
               )}
             </div>
           </div>
-          <ActionButton aria-label="关闭创建向导" onClick={onClose}>
+          <ActionButton
+            aria-label="关闭创建向导"
+            disabled={locked}
+            onClick={onClose}
+          >
             关闭
           </ActionButton>
         </header>
@@ -2081,27 +2268,37 @@ function ShareWizard({
           style={dialogFooterStyle}
         >
           {step > 0 ? (
-            <ActionButton onClick={onBack}>上一步</ActionButton>
+            <ActionButton disabled={locked} onClick={onBack}>
+              上一步
+            </ActionButton>
           ) : (
             <span />
           )}
           <div style={{ display: "flex", gap: 8 }}>
             {step === 0 && (preflight?.summary?.blocked || 0) > 0 ? (
-              <ActionButton kind="primary" onClick={onRemoveBlocked}>
+              <ActionButton
+                kind="primary"
+                disabled={locked}
+                onClick={onRemoveBlocked}
+              >
                 移除异常并继续
               </ActionButton>
             ) : null}
             {step === 0 &&
             preflight &&
             (preflight?.summary?.blocked || 0) === 0 ? (
-              <ActionButton kind="primary" onClick={onContinue}>
+              <ActionButton
+                kind="primary"
+                disabled={locked}
+                onClick={onContinue}
+              >
                 下一步
               </ActionButton>
             ) : null}
             {step === 1 ? (
               <ActionButton
                 kind="primary"
-                disabled={!draft.title.trim()}
+                disabled={locked || !draft.title.trim()}
                 onClick={onContinue}
               >
                 下一步
@@ -2490,7 +2687,9 @@ function SharePresentationPreview({
   const brand = presentation.brand || fallbackShareBrand;
   const project = presentation.project || {};
   const progress = presentation.progress || {};
-  const items = Array.isArray(presentation.items) ? presentation.items : [];
+  const items = (
+    Array.isArray(presentation.items) ? presentation.items : []
+  ).filter((item) => item && typeof item === "object" && !Array.isArray(item));
   const contactCard = presentation.contactCard || null;
   const logoText =
     brand.logoText ||
@@ -3499,6 +3698,7 @@ function DeliveryDialog({ delivery, restoreFocusRef, onClose }) {
   const [copying, setCopying] = React.useState(false);
   const [copyStatus, setCopyStatus] = React.useState("");
   const deliveryText = [
+    delivery.projectName ? `来源项目：${delivery.projectName}` : "",
     delivery.title ? `任务：${delivery.title}` : "",
     `分享链接：${delivery.shareUrl}`,
     delivery.accessCode ? `访问码：${delivery.accessCode}` : "",
@@ -3534,6 +3734,11 @@ function DeliveryDialog({ delivery, restoreFocusRef, onClose }) {
           </div>
         </header>
         <div style={{ padding: 20, display: "grid", gap: 12 }}>
+          {delivery.projectName ? (
+            <div style={{ color: "var(--ink-500)", fontSize: 12 }}>
+              来源项目：{delivery.projectName}
+            </div>
+          ) : null}
           <label style={fieldLabelStyle}>
             分享链接
             <div
@@ -3568,7 +3773,7 @@ function DeliveryDialog({ delivery, restoreFocusRef, onClose }) {
               ariaLabel="已保存的外部分享预览"
               notice="以下字段来自创建接口返回的已保存快照，可与外部页面逐项核对。"
             />
-          ) : delivery.title?.includes("（已重置）") ? null : (
+          ) : delivery.kind === "reset" ? null : (
             <div
               role="alert"
               style={{ color: "var(--warn-700, #8a5b00)", fontSize: 12 }}

@@ -11,7 +11,141 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import OpsReferenceApp, { buildOcrManualConfirmation } from "./ops-reference";
+import OpsReferenceApp, {
+  buildOcrManualConfirmation,
+  normalizeAdmissionSharePresentation,
+} from "./ops-reference";
+
+describe("normalizeAdmissionSharePresentation", () => {
+  it("recursively whitelists bounded presentation fields and rejects unknown schemas", () => {
+    const normalized = normalizeAdmissionSharePresentation({
+      schemaVersion: 1,
+      id: "share-1",
+      brandVersion: 3,
+      contactCardId: null,
+      title: ["organizations/private/title"],
+      purpose: "A".repeat(900),
+      mode: "not-a-mode",
+      status: "not-a-status",
+      reviewState: "not-a-review-state",
+      roundNumber: -4,
+      expiresAt: { raw: "must-not-survive" },
+      tokenHash: "top-secret-token",
+      accessCodeHash: "top-secret-code",
+      logoStoragePath: "organizations/private/logo.webp",
+      sourceDiagnostics: [{ storagePath: "organizations/private/debug" }],
+      project: {
+        id: "project-1",
+        name: "Fixture Project",
+        code: "FP-001",
+        privateMetadata: "secret-project-data",
+      },
+      progress: { completed: -1, total: 3, diagnostics: "secret-progress" },
+      latestSubmission: {
+        revision: 2,
+        submittedAt: "2026-08-01T00:00:00.000Z",
+        summary: {
+          selected: 1,
+          backup: 0,
+          rejected: 0,
+          needsChanges: 0,
+          storagePath: "organizations/private/submission",
+        },
+        tokenHash: "secret-submission-token",
+      },
+      brand: {
+        logoText: "北辰",
+        brandName: "北辰直播运营",
+        brandTagline: "专业协作，可信交付",
+        primaryColor: "not-a-color",
+        logoStoragePath: "organizations/private/brand.webp",
+      },
+      contactCard: {
+        displayName: "林商务",
+        title: "品牌合作负责人",
+        phone: "13800000000",
+        email: "lin@example.com",
+        wechat: "beichen-lin",
+        internalNote: "secret-note",
+      },
+      items: [
+        null,
+        {
+          applicationId: "app-1",
+          recordingSubmissionId: "recording-1",
+          recordingVersion: 3,
+          sourceHealth: "original_ready",
+          storagePath: "organizations/private/recording.mp4",
+          streamer: {
+            id: "streamer-1",
+            displayName: "主播甲",
+            accountLabel: "dy-1",
+            tokenHash: "secret-streamer-token",
+            privateMetadata: { path: "organizations/private/profile" },
+          },
+          finalReview: {
+            decision: "selected",
+            remark: "通过",
+            reasonCodes: ["quality_ok", 7],
+            submittedAt: "2026-08-01T00:00:00.000Z",
+            diagnostics: "secret-review",
+          },
+        },
+        "malformed-item",
+      ],
+    });
+
+    expect(normalized).toMatchObject({
+      schemaVersion: 1,
+      id: "share-1",
+      title: "",
+      mode: "preview",
+      status: "active",
+      reviewState: "not_started",
+      roundNumber: 1,
+      expiresAt: "",
+      project: { id: "project-1", name: "Fixture Project", code: "FP-001" },
+      progress: { completed: 0, total: 3 },
+      brand: {
+        logoText: "北辰",
+        brandName: "北辰直播运营",
+        brandTagline: "专业协作，可信交付",
+      },
+    });
+    expect(normalized.purpose).toHaveLength(500);
+    expect(normalized.brand.primaryColor).toBe("#165DFF");
+    expect(normalized.items).toEqual([
+      {
+        applicationId: "app-1",
+        recordingSubmissionId: "recording-1",
+        recordingVersion: 3,
+        sourceHealth: "original_ready",
+        streamer: {
+          id: "streamer-1",
+          displayName: "主播甲",
+          accountLabel: "dy-1",
+        },
+        finalReview: {
+          decision: "selected",
+          remark: "通过",
+          reasonCodes: ["quality_ok"],
+          submittedAt: "2026-08-01T00:00:00.000Z",
+        },
+      },
+    ]);
+    expect(JSON.stringify(normalized)).not.toMatch(
+      /tokenHash|accessCodeHash|storagePath|privateMetadata|sourceDiagnostics|internalNote|diagnostics|organizations\/private/,
+    );
+    expect(
+      normalizeAdmissionSharePresentation({
+        schemaVersion: 999,
+        title: "future payload",
+        items: [],
+      }),
+    ).toBeNull();
+    expect(normalizeAdmissionSharePresentation(null)).toBeNull();
+  });
+});
 
 const publishedOrganizationBrand = {
   schemaVersion: 1,
@@ -7957,7 +8091,55 @@ describe("OpsReferenceApp admission smoke", () => {
         return {
           ok: true,
           json: async () => ({
-            shareBoard: { id: "share-1", mode: "formal_review" },
+            shareBoard: {
+              id: "share-1",
+              mode: "formal_review",
+              presentation: {
+                schemaVersion: 1,
+                id: "share-1",
+                title: "创建接口持久化预览",
+                purpose: "同源创建响应",
+                mode: "formal_review",
+                status: "active",
+                reviewState: "not_started",
+                roundNumber: 1,
+                expiresAt: "2099-08-01T00:00:00.000Z",
+                project: {
+                  id: "project-1",
+                  name: "Alpha Project",
+                  code: "P-001",
+                },
+                progress: { completed: 0, total: 1 },
+                brand: {
+                  logoText: "北辰",
+                  brandName: "北辰直播运营",
+                  brandTagline: "专业协作，可信交付",
+                  primaryColor: "#7A3E00",
+                  logoStoragePath: "organizations/private/brand.webp",
+                },
+                contactCard: null,
+                items: [
+                  {
+                    applicationId: "app-ui-1",
+                    recordingSubmissionId: "recording-ui-1",
+                    recordingVersion: 1,
+                    sourceHealth: "original_ready",
+                    storagePath: "organizations/private/recording.mp4",
+                    streamer: {
+                      id: "streamer-1",
+                      displayName: "Streamer One",
+                      accountLabel: "Douyin / one-live",
+                      tokenHash: "must-never-render-create-token",
+                    },
+                    finalReview: null,
+                  },
+                ],
+                tokenHash: "must-never-render-create",
+                sourceDiagnostics: [
+                  { storagePath: "organizations/private/debug" },
+                ],
+              },
+            },
             shareUrl: "https://share.example/admission/explicit-token",
             accessCode: "24681024",
           }),
@@ -8131,6 +8313,9 @@ describe("OpsReferenceApp admission smoke", () => {
       }),
     );
     expect(await screen.findByText("24681024")).toBeInTheDocument();
+    expect(screen.getByText("创建接口持久化预览")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("must-never-render-create");
+    expect(document.body).not.toHaveTextContent("organizations/private");
   });
 
   it("shows recording AI details and carries AI guidance into review notes", async () => {
@@ -9727,6 +9912,7 @@ describe("OpsReferenceApp admission smoke", () => {
       },
       contactCard: null,
       items: [
+        null,
         {
           applicationId: "app-1",
           recordingSubmissionId: "recording-1",
@@ -9736,9 +9922,12 @@ describe("OpsReferenceApp admission smoke", () => {
             id: "streamer-1",
             displayName: "主播甲",
             accountLabel: "dy-1",
+            tokenHash: "must-never-render-nested",
           },
+          storagePath: "organizations/private/recording.mp4",
           finalReview: null,
         },
+        "malformed-item",
       ],
       sourceDiagnostics: [],
     };

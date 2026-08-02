@@ -552,6 +552,64 @@ describe("AdmissionShareCenter", () => {
     expect(screen.queryByText("Stale project task")).not.toBeInTheDocument();
   });
 
+  it("atomically clears project-bound candidates and a pending preflight on project switch", async () => {
+    let finishOldCandidates;
+    let finishOldPreflight;
+    const oldCandidates = new Promise((resolve) => {
+      finishOldCandidates = resolve;
+    });
+    const oldPreflight = new Promise((resolve) => {
+      finishOldPreflight = resolve;
+    });
+    actions.listAdmissionShareCandidates.mockImplementation((projectId) =>
+      projectId === "project-1"
+        ? oldCandidates
+        : Promise.resolve([warningCandidate]),
+    );
+    actions.preflightAdmissionShareBoard.mockReturnValueOnce(oldPreflight);
+    const view = renderShareCenter(actions);
+
+    finishOldCandidates([latestCandidate]);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    expect(
+      await screen.findByRole("dialog", { name: "创建录屏分享" }),
+    ).toBeInTheDocument();
+
+    view.rerender(
+      <AdmissionShareCenter
+        project={{
+          ...project,
+          id: "project-2",
+          name: "Beta Project",
+          code: "BETA-02",
+        }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "创建录屏分享" }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByText("主播丙")).toBeInTheDocument();
+    expect(screen.queryByText("主播甲")).not.toBeInTheDocument();
+
+    finishOldPreflight(
+      readyResult([
+        {
+          applicationId: latestCandidate.applicationId,
+          recordingSubmissionId: latestCandidate.recordingSubmissionId,
+          recordingVersion: latestCandidate.recordingVersion,
+          sortOrder: 0,
+        },
+      ]),
+    );
+    await Promise.resolve();
+    expect(
+      screen.queryByRole("dialog", { name: "创建录屏分享" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("selects an approved historical version and removes only blocked items", async () => {
     actions.preflightAdmissionShareBoard.mockResolvedValueOnce({
       summary: { ready: 1, warning: 0, blocked: 1 },
@@ -788,6 +846,135 @@ describe("AdmissionShareCenter", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("locks every internal close path while create is pending and preserves one-time delivery", async () => {
+    let finishCreate;
+    const onClose = vi.fn();
+    actions.createAdmissionShareBoard.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishCreate = resolve;
+        }),
+    );
+    renderShareCenter(actions, onClose);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+
+    const wizard = screen.getByRole("dialog", { name: "创建录屏分享" });
+    expect(wizard).toHaveAttribute("aria-busy", "true");
+    expect(
+      within(wizard).getByRole("button", { name: "关闭创建向导" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", {
+        name: "关闭录屏分享中心",
+        hidden: true,
+      }),
+    ).toBeDisabled();
+    fireEvent.keyDown(wizard, { key: "Escape" });
+    fireEvent.click(wizard);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("dialog", { name: "创建录屏分享" }),
+    ).toBeInTheDocument();
+
+    finishCreate({
+      shareBoard: { id: "share-1", presentation: persistedPresentation() },
+      shareUrl: "https://app.example/share/admission/plain-token",
+      accessCode: "24681024",
+    });
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    expect(delivery).toHaveTextContent("24681024");
+    expect(delivery).toHaveTextContent("来源项目：Alpha Project");
+  });
+
+  it("keeps the wizard recoverable and hides raw infrastructure errors after create fails", async () => {
+    let failCreate;
+    const failure = new Error(
+      "postgres storagePath organizations/private/recording.mp4",
+    );
+    failure.status = 503;
+    actions.createAdmissionShareBoard.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          failCreate = () => reject(failure);
+        }),
+    );
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+    expect(screen.getByRole("button", { name: "关闭创建向导" })).toBeDisabled();
+
+    failCreate();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("分享任务创建失败，请稍后重试");
+    expect(alert).not.toHaveTextContent("postgres");
+    expect(alert).not.toHaveTextContent("organizations/private");
+    expect(screen.getByRole("button", { name: "关闭创建向导" })).toBeEnabled();
+  });
+
+  it("delivers a pending create from its source project without refreshing the next project", async () => {
+    let finishCreate;
+    actions.createAdmissionShareBoard.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishCreate = resolve;
+        }),
+    );
+    actions.listAdmissionShareBoards.mockImplementation((projectId) =>
+      Promise.resolve({
+        shareBoards:
+          projectId === "project-2"
+            ? [shareTask("share-beta", "Beta project task")]
+            : [],
+        nextCursor: null,
+      }),
+    );
+    const view = renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+
+    view.rerender(
+      <AdmissionShareCenter
+        project={{
+          ...project,
+          id: "project-2",
+          name: "Beta Project",
+          code: "BETA-02",
+        }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+    finishCreate({
+      shareBoard: { id: "share-1", presentation: persistedPresentation() },
+      shareUrl: "https://app.example/share/admission/plain-token",
+      accessCode: "24681024",
+    });
+
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    expect(delivery).toHaveTextContent("来源项目：Alpha Project");
+    expect(delivery).toHaveTextContent("24681024");
+    expect(
+      actions.listAdmissionShareBoards.mock.calls.filter(
+        ([projectId]) => projectId === "project-1",
+      ),
+    ).toHaveLength(1);
+    fireEvent.click(
+      within(delivery).getByRole("button", { name: "关闭交付信息" }),
+    );
+    expect(await screen.findByText("Beta project task")).toBeInTheDocument();
+  });
+
   it("loads an existing persisted preview on demand and keeps a disabled card snapshot visible", async () => {
     const detail = persistedPresentation({
       id: "00000000-0000-4000-8000-000000000001",
@@ -925,6 +1112,132 @@ describe("AdmissionShareCenter", () => {
       }),
     );
     expect(await screen.findByText("历史快照品牌")).toBeInTheDocument();
+    expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("hides raw server detail errors behind a safe preview message", async () => {
+    const task = shareTask("share-safe-error", "安全错误任务");
+    const failure = new Error(
+      "postgres tokenHash organizations/private/recording.mp4",
+    );
+    failure.status = 503;
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.getAdmissionShareBoardDetail.mockRejectedValue(failure);
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "查看 安全错误任务 分享预览",
+      }),
+    );
+
+    const alert = await screen.findByRole("alert", {
+      name: "安全错误任务 分享预览加载失败",
+    });
+    expect(alert).toHaveTextContent("分享预览暂时无法加载，请稍后重试");
+    expect(alert).not.toHaveTextContent("postgres");
+    expect(alert).not.toHaveTextContent("organizations/private");
+  });
+
+  it("invalidates a pending preview during mutation and refetches persisted detail on success", async () => {
+    const task = shareTask("share-mutating", "待更新预览");
+    let finishOldDetail;
+    let finishExtend;
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.getAdmissionShareBoardDetail
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOldDetail = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        id: task.id,
+        presentation: persistedPresentation({
+          id: task.id,
+          title: "更新后的持久化预览",
+        }),
+      });
+    actions.extendAdmissionShareBoard.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishExtend = resolve;
+        }),
+    );
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "查看 待更新预览 分享预览" }),
+    );
+    fireEvent.change(screen.getByLabelText("待更新预览 延期至"), {
+      target: { value: "2099-08-20" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "延期 待更新预览" }));
+
+    finishOldDetail({
+      id: task.id,
+      presentation: persistedPresentation({ id: task.id, title: "过期的预览" }),
+    });
+    await Promise.resolve();
+    expect(screen.queryByText("过期的预览")).not.toBeInTheDocument();
+    finishExtend({ ok: true });
+    expect(await screen.findByText("更新后的持久化预览")).toBeInTheDocument();
+    expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears a ready preview during token rotation and labels reset delivery explicitly", async () => {
+    const task = shareTask("share-rotating", "链接轮换任务");
+    let finishRotate;
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.getAdmissionShareBoardDetail
+      .mockResolvedValueOnce({
+        id: task.id,
+        presentation: persistedPresentation({ id: task.id, title: "旧预览" }),
+      })
+      .mockResolvedValueOnce({
+        id: task.id,
+        presentation: persistedPresentation({
+          id: task.id,
+          title: "轮换后预览",
+        }),
+      });
+    actions.rotateAdmissionShareBoardToken.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishRotate = resolve;
+        }),
+    );
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "查看 链接轮换任务 分享预览" }),
+    );
+    expect(await screen.findByText("旧预览")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重置分享链接" }));
+    expect(screen.queryByText("旧预览")).not.toBeInTheDocument();
+
+    finishRotate({
+      shareUrl: "https://app.example/share/admission/rotated-token",
+      accessCode: "86420000",
+    });
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    expect(delivery).toHaveTextContent("来源项目：Alpha Project");
+    expect(delivery).not.toHaveTextContent("创建接口未返回已保存预览");
+    fireEvent.click(
+      within(delivery).getByRole("button", { name: "关闭交付信息" }),
+    );
+    expect(await screen.findByText("轮换后预览")).toBeInTheDocument();
     expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledTimes(2);
   });
 

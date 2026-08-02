@@ -77,6 +77,160 @@ import {
   yuanInputToCents,
 } from "./external-cost-view";
 
+const ADMISSION_SHARE_MODES = new Set(["preview", "formal_review"]);
+const ADMISSION_SHARE_STATUSES = new Set(["active", "expired", "revoked"]);
+const ADMISSION_SHARE_REVIEW_STATES = new Set([
+  "not_started",
+  "viewed",
+  "in_progress",
+  "submitted_locked",
+]);
+const ADMISSION_SHARE_SOURCE_HEALTH = new Set([
+  "original_ready",
+  "original_with_external_fallback",
+  "external_only",
+  "blocked",
+]);
+const ADMISSION_SHARE_DECISIONS = new Set([
+  "selected",
+  "backup",
+  "rejected",
+  "needs_changes",
+]);
+
+function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function boundedText(value, limit, fallback = "") {
+  return typeof value === "string" ? value.slice(0, limit) : fallback;
+}
+
+function nonNegativeInteger(value, fallback = 0) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function positiveInteger(value, fallback = 1) {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function normalizeAdmissionShareFinalReview(value) {
+  if (!isPlainRecord(value) || !ADMISSION_SHARE_DECISIONS.has(value.decision)) {
+    return null;
+  }
+  return {
+    decision: value.decision,
+    remark: boundedText(value.remark, 500),
+    reasonCodes: (Array.isArray(value.reasonCodes) ? value.reasonCodes : [])
+      .filter((reasonCode) => typeof reasonCode === "string")
+      .slice(0, 50)
+      .map((reasonCode) => reasonCode.slice(0, 80)),
+    submittedAt: boundedText(value.submittedAt, 64),
+  };
+}
+
+function normalizeAdmissionShareItem(value) {
+  if (!isPlainRecord(value)) return null;
+  const streamer = isPlainRecord(value.streamer) ? value.streamer : {};
+  return {
+    applicationId: boundedText(value.applicationId, 128),
+    recordingSubmissionId: boundedText(value.recordingSubmissionId, 128),
+    recordingVersion: positiveInteger(value.recordingVersion),
+    sourceHealth: ADMISSION_SHARE_SOURCE_HEALTH.has(value.sourceHealth)
+      ? value.sourceHealth
+      : "blocked",
+    streamer: {
+      id: boundedText(streamer.id, 128),
+      displayName: boundedText(streamer.displayName, 120),
+      accountLabel: boundedText(streamer.accountLabel, 120),
+    },
+    finalReview: normalizeAdmissionShareFinalReview(value.finalReview),
+  };
+}
+
+export function normalizeAdmissionSharePresentation(value) {
+  if (!isPlainRecord(value)) return null;
+  if (value.schemaVersion !== undefined && value.schemaVersion !== 1) {
+    return null;
+  }
+  const project = isPlainRecord(value.project) ? value.project : {};
+  const progress = isPlainRecord(value.progress) ? value.progress : {};
+  const brand = isPlainRecord(value.brand) ? value.brand : {};
+  const contactCard = isPlainRecord(value.contactCard)
+    ? {
+        displayName: boundedText(value.contactCard.displayName, 120),
+        title: boundedText(value.contactCard.title, 120),
+        phone: boundedText(value.contactCard.phone, 80),
+        email: boundedText(value.contactCard.email, 254),
+        wechat: boundedText(value.contactCard.wechat, 120),
+      }
+    : null;
+  const latestSubmission = isPlainRecord(value.latestSubmission)
+    ? {
+        revision: positiveInteger(value.latestSubmission.revision),
+        submittedAt: boundedText(value.latestSubmission.submittedAt, 64),
+        summary: {
+          selected: nonNegativeInteger(
+            value.latestSubmission.summary?.selected,
+          ),
+          backup: nonNegativeInteger(value.latestSubmission.summary?.backup),
+          rejected: nonNegativeInteger(
+            value.latestSubmission.summary?.rejected,
+          ),
+          needsChanges: nonNegativeInteger(
+            value.latestSubmission.summary?.needsChanges,
+          ),
+        },
+      }
+    : null;
+
+  return {
+    schemaVersion: 1,
+    id: boundedText(value.id, 128),
+    brandVersion: nonNegativeInteger(value.brandVersion),
+    contactCardId:
+      value.contactCardId === null
+        ? null
+        : boundedText(value.contactCardId, 128) || null,
+    title: boundedText(value.title, 120),
+    purpose: boundedText(value.purpose, 500),
+    mode: ADMISSION_SHARE_MODES.has(value.mode) ? value.mode : "preview",
+    status: ADMISSION_SHARE_STATUSES.has(value.status)
+      ? value.status
+      : "active",
+    reviewState: ADMISSION_SHARE_REVIEW_STATES.has(value.reviewState)
+      ? value.reviewState
+      : "not_started",
+    roundNumber: positiveInteger(value.roundNumber),
+    expiresAt: boundedText(value.expiresAt, 64),
+    project: {
+      id: boundedText(project.id, 128),
+      name: boundedText(project.name, 160),
+      code: boundedText(project.code, 80),
+    },
+    progress: {
+      completed: nonNegativeInteger(progress.completed),
+      total: nonNegativeInteger(progress.total),
+    },
+    latestSubmission,
+    brand: {
+      logoText: boundedText(brand.logoText, 8),
+      brandName: boundedText(brand.brandName, 40),
+      brandTagline: boundedText(brand.brandTagline, 80),
+      primaryColor:
+        typeof brand.primaryColor === "string" &&
+        /^#[0-9A-F]{6}$/i.test(brand.primaryColor)
+          ? brand.primaryColor.toUpperCase()
+          : "#165DFF",
+    },
+    contactCard,
+    items: (Array.isArray(value.items) ? value.items : [])
+      .slice(0, 5000)
+      .map(normalizeAdmissionShareItem)
+      .filter(Boolean),
+  };
+}
+
 const ScreenKnowledge = lazy(() => import("./scenes/knowledge-base-scene"));
 const ScreenAdmission = lazy(async () => {
   const scene = await import("./scenes/admission-scene");
@@ -27622,9 +27776,13 @@ function OpsReferenceInner({
     const readJson = async (response, fallbackMessage) => {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const error = new Error(body.error || fallbackMessage);
-        error.code = body.code;
-        error.items = body.items;
+        const error = new Error(
+          response.status >= 500
+            ? fallbackMessage
+            : body?.error || fallbackMessage,
+        );
+        error.code = body?.code;
+        error.items = body?.items;
         error.status = response.status;
         throw error;
       }
@@ -28144,12 +28302,14 @@ function OpsReferenceInner({
           typeof body?.shareBoard?.id === "string"
             ? body.shareBoard.id
             : shareBoardId,
-        presentation: body?.shareBoard?.presentation || null,
+        presentation: normalizeAdmissionSharePresentation(
+          body?.shareBoard?.presentation,
+        ),
       };
     };
 
     const createAdmissionShareBoard = async (projectId, input) => {
-      return fetchJson(
+      const body = await fetchJson(
         `/api/projects/${encodeURIComponent(projectId)}/admission-share-boards`,
         "create admission share board failed",
         {
@@ -28158,6 +28318,19 @@ function OpsReferenceInner({
           body: JSON.stringify(input),
         },
       );
+      return {
+        shareBoard: {
+          id: boundedText(body?.shareBoard?.id, 128),
+          mode: ADMISSION_SHARE_MODES.has(body?.shareBoard?.mode)
+            ? body.shareBoard.mode
+            : "preview",
+          presentation: normalizeAdmissionSharePresentation(
+            body?.shareBoard?.presentation,
+          ),
+        },
+        shareUrl: boundedText(body?.shareUrl, 2048),
+        accessCode: boundedText(body?.accessCode, 128),
+      };
     };
 
     const extendAdmissionShareBoard = async (
