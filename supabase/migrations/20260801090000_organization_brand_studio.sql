@@ -11,7 +11,10 @@ create table public.organization_brand_drafts (
   content jsonb not null,
   updated_by uuid not null references public.profiles(id),
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint organization_brand_drafts_updated_by_member_fkey
+    foreign key (organization_id, updated_by)
+    references public.organization_members(organization_id, user_id)
 );
 
 create table public.organization_brand_versions (
@@ -31,9 +34,19 @@ create table public.organization_contact_cards (
     char_length(btrim(display_name)) between 1 and 40
   ),
   title text not null default '' check (char_length(title) <= 40),
-  phone text,
-  email text,
-  wechat text,
+  phone text check (
+    phone is null or char_length(btrim(phone)) <= 30
+  ),
+  email text check (
+    email is null
+    or (
+      char_length(btrim(email)) <= 120
+      and btrim(email) ~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'
+    )
+  ),
+  wechat text check (
+    wechat is null or char_length(btrim(wechat)) <= 60
+  ),
   status text not null default 'active' check (
     status in ('active', 'disabled')
   ),
@@ -41,6 +54,13 @@ create table public.organization_contact_cards (
   updated_by uuid not null references public.profiles(id),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  unique (organization_id, id),
+  constraint organization_contact_cards_created_by_member_fkey
+    foreign key (organization_id, created_by)
+    references public.organization_members(organization_id, user_id),
+  constraint organization_contact_cards_updated_by_member_fkey
+    foreign key (organization_id, updated_by)
+    references public.organization_members(organization_id, user_id),
   check (
     nullif(btrim(coalesce(phone, '')), '') is not null
     or nullif(btrim(coalesce(email, '')), '') is not null
@@ -55,9 +75,102 @@ create index organization_contact_cards_org_status_idx
 on public.organization_contact_cards (organization_id, status, updated_at desc);
 
 alter table public.project_recording_share_boards
-  add column if not exists contact_card_id uuid
-    references public.organization_contact_cards(id) on delete set null,
-  add column if not exists contact_card_snapshot jsonb;
+  add column if not exists contact_card_id uuid,
+  add column if not exists contact_card_snapshot jsonb,
+  add constraint project_recording_share_boards_contact_snapshot_consistency
+    check (
+      (
+        contact_card_id is null
+        and contact_card_snapshot is null
+      )
+      or (
+        contact_card_id is not null
+        and contact_card_snapshot is not null
+      )
+    ),
+  add constraint project_recording_share_boards_contact_card_org_fkey
+    foreign key (organization_id, contact_card_id)
+    references public.organization_contact_cards(organization_id, id)
+    on delete set null (contact_card_id);
+
+create index project_recording_share_boards_contact_card_idx
+on public.project_recording_share_boards (contact_card_id, organization_id)
+where contact_card_id is not null;
+
+create or replace function public.guard_organization_contact_card_identity()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if new.organization_id is distinct from old.organization_id
+     or new.created_by is distinct from old.created_by then
+    raise exception 'organization_contact_card_identity_is_immutable'
+      using errcode = '42501';
+  end if;
+
+  return new;
+end;
+$$;
+
+create or replace function public.guard_recording_share_contact_card()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_card public.organization_contact_cards%rowtype;
+begin
+  if tg_op = 'INSERT' then
+    if new.contact_card_id is null then
+      new.contact_card_snapshot := null;
+      return new;
+    end if;
+
+    select card.*
+    into v_card
+    from public.organization_contact_cards as card
+    where card.id = new.contact_card_id
+      and card.organization_id = new.organization_id
+      and card.status = 'active';
+
+    if not found then
+      raise exception 'organization_contact_card_not_active'
+        using errcode = '23503';
+    end if;
+
+    new.contact_card_snapshot := jsonb_strip_nulls(jsonb_build_object(
+      'displayName', btrim(v_card.display_name),
+      'title', btrim(v_card.title),
+      'phone', nullif(btrim(v_card.phone), ''),
+      'email', nullif(btrim(v_card.email), ''),
+      'wechat', nullif(btrim(v_card.wechat), '')
+    ));
+    return new;
+  end if;
+
+  if new.contact_card_id is not distinct from old.contact_card_id
+     and new.contact_card_snapshot is not distinct from old.contact_card_snapshot then
+    return new;
+  end if;
+
+  if pg_trigger_depth() > 1
+     and old.contact_card_id is not null
+     and new.contact_card_id is null then
+    new.contact_card_snapshot := null;
+    return new;
+  end if;
+
+  if current_user = 'postgres'
+     and new.contact_card_id is null
+     and new.contact_card_snapshot is null then
+    return new;
+  end if;
+
+  raise exception 'recording_share_contact_card_is_immutable'
+    using errcode = '42501';
+end;
+$$;
 
 create trigger organization_brand_drafts_touch_updated_at
 before update on public.organization_brand_drafts
@@ -66,6 +179,14 @@ for each row execute function public.touch_updated_at();
 create trigger organization_contact_cards_touch_updated_at
 before update on public.organization_contact_cards
 for each row execute function public.touch_updated_at();
+
+create trigger organization_contact_cards_guard_identity
+before update on public.organization_contact_cards
+for each row execute function public.guard_organization_contact_card_identity();
+
+create trigger project_recording_share_boards_guard_contact_card
+before insert or update on public.project_recording_share_boards
+for each row execute function public.guard_recording_share_contact_card();
 
 alter table public.organization_brand_drafts enable row level security;
 alter table public.organization_brand_versions enable row level security;
@@ -81,14 +202,20 @@ create policy organization_brand_drafts_owner_insert
 on public.organization_brand_drafts
 for insert
 to authenticated
-with check (public.current_user_role(organization_id) = 'owner');
+with check (
+  public.current_user_role(organization_id) = 'owner'
+  and updated_by = auth.uid()
+);
 
 create policy organization_brand_drafts_owner_update
 on public.organization_brand_drafts
 for update
 to authenticated
 using (public.current_user_role(organization_id) = 'owner')
-with check (public.current_user_role(organization_id) = 'owner');
+with check (
+  public.current_user_role(organization_id) = 'owner'
+  and updated_by = auth.uid()
+);
 
 create policy organization_brand_drafts_owner_delete
 on public.organization_brand_drafts
@@ -118,14 +245,21 @@ create policy organization_contact_cards_owner_insert
 on public.organization_contact_cards
 for insert
 to authenticated
-with check (public.current_user_role(organization_id) = 'owner');
+with check (
+  public.current_user_role(organization_id) = 'owner'
+  and created_by = auth.uid()
+  and updated_by = auth.uid()
+);
 
 create policy organization_contact_cards_owner_update
 on public.organization_contact_cards
 for update
 to authenticated
 using (public.current_user_role(organization_id) = 'owner')
-with check (public.current_user_role(organization_id) = 'owner');
+with check (
+  public.current_user_role(organization_id) = 'owner'
+  and updated_by = auth.uid()
+);
 
 create policy organization_contact_cards_owner_delete
 on public.organization_contact_cards
@@ -212,6 +346,11 @@ begin
       using errcode = '42501';
   end if;
 
+  if p_expected_version is distinct from v_organization.branding_version then
+    raise exception 'brand_version_conflict'
+      using errcode = '40001';
+  end if;
+
   select draft.*
   into v_draft
   from public.organization_brand_drafts as draft
@@ -223,8 +362,7 @@ begin
       using errcode = 'P0002';
   end if;
 
-  if p_expected_version is distinct from v_organization.branding_version
-     or v_draft.base_version is distinct from v_organization.branding_version then
+  if v_draft.base_version is distinct from v_organization.branding_version then
     raise exception 'brand_version_conflict'
       using errcode = '40001';
   end if;
@@ -546,6 +684,8 @@ $$;
 
 revoke all on function public.publish_organization_brand(uuid, integer) from public, anon, authenticated, service_role;
 revoke all on function public.emergency_remove_contact_card_from_shares(uuid, uuid, text) from public, anon, authenticated, service_role;
+revoke all on function public.guard_organization_contact_card_identity() from public, anon, authenticated, service_role;
+revoke all on function public.guard_recording_share_contact_card() from public, anon, authenticated, service_role;
 
 grant execute on function public.publish_organization_brand(uuid, integer) to authenticated;
 grant execute on function public.emergency_remove_contact_card_from_shares(uuid, uuid, text) to authenticated;
