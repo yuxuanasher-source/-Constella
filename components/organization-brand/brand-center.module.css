@@ -738,6 +738,15 @@
   justify-content: center;
 }
 
+.previewTask .previewAction,
+.publicPreview footer .previewAction {
+  color: #fff;
+}
+
+.previewTask .previewAction {
+  grid-column: auto;
+}
+
 .previewTable {
   margin-top: 10px;
   display: grid;

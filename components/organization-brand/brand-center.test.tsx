@@ -5,6 +5,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -13,6 +14,11 @@ import {
   type OrganizationBrandCenterProps,
 } from "./brand-center";
 import { OrganizationBrandMark } from "./organization-brand-mark";
+
+const brandCenterCss = readFileSync(
+  "components/organization-brand/brand-center.module.css",
+  "utf8",
+);
 
 const published = {
   schemaVersion: 1 as const,
@@ -147,6 +153,15 @@ describe("OrganizationBrandCenter", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("keeps simulated preview actions white and inside their own grid cell", () => {
+    expect(brandCenterCss).toMatch(
+      /\.previewTask\s+\.previewAction\s*,\s*\.publicPreview\s+footer\s+\.previewAction\s*\{[^}]*color:\s*#fff;/u,
+    );
+    expect(brandCenterCss).toMatch(
+      /\.previewTask\s+\.previewAction\s*\{[^}]*grid-column:\s*auto;/u,
+    );
   });
 
   it("shows owner governance controls, current publication and a clearly unpublished preview", () => {
