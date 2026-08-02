@@ -10,6 +10,13 @@ const migrationPath = resolve(
 const sql = existsSync(migrationPath)
   ? readFileSync(migrationPath, "utf8").toLowerCase()
   : "";
+const shareSnapshotMigrationPath = resolve(
+  process.cwd(),
+  "supabase/migrations/20260801100000_admission_share_brand_snapshot_rpc.sql",
+);
+const shareSnapshotSql = existsSync(shareSnapshotMigrationPath)
+  ? readFileSync(shareSnapshotMigrationPath, "utf8").toLowerCase()
+  : "";
 
 function functionSqlFrom(source: string, name: string): string {
   const start = source.indexOf(`create or replace function public.${name}(`);
@@ -501,5 +508,141 @@ describe("organization brand studio schema", () => {
         `revoke all on function public.${triggerFunction}() from public, anon, authenticated, service_role`,
       );
     }
+  });
+});
+
+describe("admission share brand snapshot schema", () => {
+  it("backfills normalized immutable brand snapshots before making them required", () => {
+    expect(shareSnapshotSql).not.toBe("");
+    expect(shareSnapshotSql).toMatch(
+      /alter table public\.project_recording_share_boards[\s\S]*add column if not exists brand_snapshot jsonb[\s\S]*add column if not exists brand_version integer[\s\S]*add column if not exists contact_card_id uuid[\s\S]*add column if not exists contact_card_snapshot jsonb/,
+    );
+    expect(shareSnapshotSql).toMatch(
+      /update public\.project_recording_share_boards as board[\s\S]*jsonb_build_object\([\s\S]*'schemaversion', 1[\s\S]*'version', organization\.branding_version[\s\S]*'logotext'[\s\S]*'logostoragepath'[\s\S]*'brandname'[\s\S]*'brandtagline'[\s\S]*'primarycolor'[\s\S]*'publishedat'[\s\S]*from public\.organizations as organization[\s\S]*organization\.id = board\.organization_id[\s\S]*board\.brand_snapshot is null/,
+    );
+    expect(shareSnapshotSql).toMatch(
+      /brand_snapshot = coalesce\(board\.brand_snapshot,[\s\S]*brand_version = coalesce\(board\.brand_version, organization\.branding_version\)[\s\S]*board\.brand_snapshot is null[\s\S]*or board\.brand_version is null/,
+    );
+    expect(shareSnapshotSql).toContain("'#165dff'");
+    expect(shareSnapshotSql).toMatch(
+      /alter table public\.project_recording_share_boards[\s\S]*alter column brand_snapshot set not null[\s\S]*alter column brand_version set not null/,
+    );
+  });
+
+  it("rebuilds creation so only a contact-card id crosses the RPC boundary", () => {
+    const createShare = functionSqlFrom(
+      shareSnapshotSql,
+      "create_admission_share_board",
+    );
+    expect(createShare).not.toBe("");
+    expect(createShare).toMatch(/p_contact_card_id uuid/);
+    expect(createShare).not.toContain("p_brand_snapshot");
+    expect(createShare).not.toContain("p_contact_card_snapshot");
+    expect(shareSnapshotSql).toMatch(
+      /drop function if exists public\.create_admission_share_board\([\s\S]*jsonb[\s\S]*\);/,
+    );
+  });
+
+  it("locks the organization and active same-organization card before the atomic insert", () => {
+    const createShare = functionSqlFrom(
+      shareSnapshotSql,
+      "create_admission_share_board",
+    );
+    expect(createShare).toMatch(
+      /from public\.lock_admission_share_organization_brand\(p_organization_id\)/,
+    );
+    expect(createShare).toMatch(
+      /from public\.lock_admission_share_contact_card\([\s\S]*p_organization_id[\s\S]*p_contact_card_id[\s\S]*\)/,
+    );
+    expect(createShare).toMatch(
+      /if not found then[\s\S]*raise exception 'invalid_organization_contact_card'/,
+    );
+    expect(createShare).toMatch(
+      /insert into public\.project_recording_share_boards \([\s\S]*brand_snapshot[\s\S]*brand_version[\s\S]*contact_card_id[\s\S]*contact_card_snapshot[\s\S]*v_brand_snapshot[\s\S]*v_brand_version[\s\S]*v_contact_card_id[\s\S]*v_contact_card_snapshot/,
+    );
+  });
+
+  it("uses a narrowly-authorized definer helper for the active-card share lock", () => {
+    const contactCardLock = functionSqlFrom(
+      shareSnapshotSql,
+      "lock_admission_share_contact_card",
+    );
+    expect(contactCardLock).not.toBe("");
+    expect(contactCardLock).toContain("security definer");
+    expect(contactCardLock).toContain("set search_path = ''");
+    expect(contactCardLock).toMatch(
+      /auth\.uid\(\) is null[\s\S]*not public\.is_mcn_staff\(p_organization_id\)[\s\S]*insufficient_privilege/,
+    );
+    expect(contactCardLock).toMatch(
+      /from public\.organization_contact_cards as card[\s\S]*card\.id = p_contact_card_id[\s\S]*card\.organization_id = p_organization_id[\s\S]*card\.status = 'active'[\s\S]*for share/,
+    );
+    expect(contactCardLock).toContain(
+      "raise exception 'invalid_organization_contact_card'",
+    );
+    expect(compact(shareSnapshotSql)).toContain(
+      "revoke all on function public.lock_admission_share_contact_card(uuid, uuid) from public, anon, authenticated, service_role;",
+    );
+    expect(compact(shareSnapshotSql)).toContain(
+      "alter function public.lock_admission_share_contact_card(uuid, uuid) owner to postgres;",
+    );
+    expect(compact(shareSnapshotSql)).toContain(
+      "grant execute on function public.lock_admission_share_contact_card(uuid, uuid) to authenticated;",
+    );
+  });
+
+  it("routes the insert guard through the same member-safe lock without weakening snapshot immutability", () => {
+    const guard = functionSqlFrom(
+      shareSnapshotSql,
+      "guard_recording_share_contact_card",
+    );
+    expect(guard).not.toBe("");
+    expect(guard).not.toContain("security definer");
+    expect(guard).toMatch(
+      /if tg_op = 'insert'[\s\S]*from public\.lock_admission_share_contact_card\([\s\S]*new\.organization_id[\s\S]*new\.contact_card_id[\s\S]*\)/,
+    );
+    expect(guard).toContain("recording_share_contact_card_is_immutable");
+    expect(compact(guard)).toContain(
+      "if current_user = 'postgres' and new.contact_card_id is null and new.contact_card_snapshot is null then return new;",
+    );
+    expect(compact(shareSnapshotSql)).toContain(
+      "revoke all on function public.guard_recording_share_contact_card() from public, anon, authenticated, service_role;",
+    );
+  });
+
+  it("uses a narrowly-authorized definer helper for the row lock that members cannot take directly", () => {
+    const organizationLock = functionSqlFrom(
+      shareSnapshotSql,
+      "lock_admission_share_organization_brand",
+    );
+    expect(organizationLock).not.toBe("");
+    expect(organizationLock).toContain("security definer");
+    expect(organizationLock).toContain("set search_path = ''");
+    expect(organizationLock).toMatch(
+      /auth\.uid\(\) is null[\s\S]*not public\.is_mcn_staff\(p_organization_id\)[\s\S]*insufficient_privilege/,
+    );
+    expect(organizationLock).toMatch(
+      /from public\.organizations as organization[\s\S]*organization\.id = p_organization_id[\s\S]*for update/,
+    );
+    expect(compact(shareSnapshotSql)).toContain(
+      "revoke all on function public.lock_admission_share_organization_brand(uuid) from public, anon, authenticated, service_role;",
+    );
+    expect(compact(shareSnapshotSql)).toContain(
+      "alter function public.lock_admission_share_organization_brand(uuid) owner to postgres;",
+    );
+    expect(compact(shareSnapshotSql)).toContain(
+      "grant execute on function public.lock_admission_share_organization_brand(uuid) to authenticated;",
+    );
+  });
+
+  it("records the trusted brand version and contact-card choice in the atomic created event", () => {
+    const createdEvent = functionSqlFrom(
+      shareSnapshotSql,
+      "record_admission_share_board_created_event",
+    );
+    expect(createdEvent).toContain("'brandversion', new.brand_version");
+    expect(createdEvent).toContain("'contactcardid', new.contact_card_id");
+    expect(createdEvent).not.toContain("logo_storage_path");
+    expect(createdEvent).not.toContain("brand_snapshot");
+    expect(createdEvent).not.toContain("contact_card_snapshot");
   });
 });

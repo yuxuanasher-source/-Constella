@@ -10,6 +10,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AuditLogInput } from "@/lib/audit/audit";
 import { normalizeAbsoluteHttpUrl } from "@/lib/http/safe-public-url";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
+import { normalizePublishedBrand } from "@/features/organizations/organization-brand";
 
 import type {
   ApplicationStatus,
@@ -51,6 +52,10 @@ export type AdmissionShareBoardRecord = {
   allowExternalFallback: boolean;
   reviewState: "not_started" | "viewed" | "in_progress" | "submitted_locked";
   roundNumber: number;
+  brandSnapshot?: unknown;
+  brandVersion?: number;
+  contactCardId?: string | null;
+  contactCardSnapshot?: unknown | null;
   createdBy: string;
   createdAt?: string;
 };
@@ -84,6 +89,7 @@ export type CreateAdmissionShareBoardPersistenceInput = {
   accessCodeHash: string | null;
   expiresAt: string;
   allowExternalFallback: boolean;
+  contactCardId?: string | null;
   createdBy: string;
   items: AdmissionShareSelectionInput[];
 };
@@ -184,6 +190,7 @@ export type CreateAdmissionShareBoardInput = {
   requireAccessCode?: boolean;
   accessCode?: string;
   allowExternalFallback?: boolean;
+  contactCardId?: string | null;
   items: AdmissionShareSelectionInput[];
 };
 
@@ -200,6 +207,16 @@ export class AdmissionShareFormalRoundConflictError extends Error {
 
   constructor() {
     super("Admission share formal round already open");
+  }
+}
+
+export class AdmissionShareContactCardError extends Error {
+  readonly name = "AdmissionShareContactCardError";
+  readonly code = "INVALID_ORGANIZATION_CONTACT_CARD";
+  readonly statusCode = 400;
+
+  constructor() {
+    super("Selected organization contact card is unavailable");
   }
 }
 
@@ -309,6 +326,22 @@ export type PublicAdmissionShareBoardSnapshot = AdmissionShareBoardRecord & {
   items: PublicAdmissionShareItemSnapshot[];
 };
 
+export type PublicAdmissionShareBrand = {
+  logoText: string;
+  logoUrl: string | null;
+  brandName: string;
+  brandTagline: string;
+  primaryColor: string;
+};
+
+export type PublicAdmissionShareContactCard = {
+  displayName: string;
+  title: string;
+  phone?: string;
+  email?: string;
+  wechat?: string;
+};
+
 export type AdmissionShareSourceHealth =
   | "original_ready"
   | "original_with_external_fallback"
@@ -379,6 +412,52 @@ export type PublicAdmissionShareBoard = {
     hasPrivateStorage: boolean;
     streamer: PublicAdmissionShareItemSnapshot["streamer"];
     finalReview: PublicAdmissionShareFinalReview | null;
+  }>;
+};
+
+export type BrandedPublicAdmissionShareBoard = PublicAdmissionShareBoard & {
+  brand: PublicAdmissionShareBrand;
+  contactCard: PublicAdmissionShareContactCard | null;
+};
+
+export type AdmissionSharePresentation = Pick<
+  PublicAdmissionShareBoard,
+  | "title"
+  | "purpose"
+  | "mode"
+  | "status"
+  | "reviewState"
+  | "roundNumber"
+  | "expiresAt"
+  | "project"
+  | "progress"
+  | "latestSubmission"
+> & {
+  brand: Omit<PublicAdmissionShareBrand, "logoUrl">;
+  contactCard: PublicAdmissionShareContactCard | null;
+  items: Array<
+    Pick<
+      PublicAdmissionShareBoard["items"][number],
+      | "applicationId"
+      | "recordingSubmissionId"
+      | "recordingVersion"
+      | "sourceHealth"
+      | "streamer"
+      | "finalReview"
+    >
+  >;
+};
+
+export type InternalAdmissionSharePresentation = AdmissionSharePresentation & {
+  id: string;
+  brandVersion: number;
+  contactCardId: string | null;
+  sourceDiagnostics: Array<{
+    recordingSubmissionId: string;
+    applicationStatus: ApplicationStatus;
+    recordingStatus: RecordingReviewStatus;
+    hasPrivateStorage: boolean;
+    externalUrl: string | null;
   }>;
 };
 
@@ -529,6 +608,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
           recording_version: item.recordingVersion,
           sort_order: item.sortOrder,
         })),
+        p_contact_card_id: input.contactCardId ?? null,
       })
       .single<AdmissionShareBoardRow>();
 
@@ -544,6 +624,9 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       }
       if (isAdmissionShareSelectionChangedRpcError(error)) {
         throw new AdmissionShareSelectionChangedPersistenceError(error);
+      }
+      if (isAdmissionShareContactCardRpcError(error)) {
+        throw new AdmissionShareContactCardError();
       }
       throw error;
     }
@@ -748,7 +831,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     const { data: boardData, error: boardError } = await this.client
       .from("project_recording_share_boards")
       .select(
-        "id, organization_id, project_id, title, purpose, mode, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, allow_external_fallback, review_state, round_number, created_by, created_at, projects(id, code, name, vendor_name, product_name)",
+        "id, organization_id, project_id, title, purpose, mode, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, allow_external_fallback, review_state, round_number, brand_snapshot, brand_version, contact_card_id, contact_card_snapshot, created_by, created_at, projects(id, code, name, vendor_name, product_name)",
       )
       .eq("token_hash", tokenHash)
       .maybeSingle<AdmissionShareBoardWithProjectRow>();
@@ -1146,6 +1229,10 @@ type AdmissionShareBoardRow = {
   allow_external_fallback: boolean;
   review_state: "not_started" | "viewed" | "in_progress" | "submitted_locked";
   round_number: number;
+  brand_snapshot: unknown;
+  brand_version: number;
+  contact_card_id: string | null;
+  contact_card_snapshot: unknown | null;
   created_by: string;
   created_at?: string;
 };
@@ -1350,6 +1437,9 @@ export async function createAdmissionShareBoard({
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new Error("Share board requires at least one recording");
   }
+  const contactCardId = normalizeAdmissionShareContactCardId(
+    input.contactCardId,
+  );
 
   const requireAccessCode =
     input.requireAccessCode ?? input.mode === "formal_review";
@@ -1402,6 +1492,7 @@ export async function createAdmissionShareBoard({
         : null,
       expiresAt,
       allowExternalFallback: input.allowExternalFallback ?? true,
+      contactCardId,
       createdBy: actor.userId,
       items: preflight.items.map((item) => ({
         applicationId: item.applicationId,
@@ -1452,8 +1543,16 @@ export async function createAdmissionShareBoard({
           mode: shareBoard.mode,
           expiresAt: shareBoard.expiresAt,
           allowExternalFallback: shareBoard.allowExternalFallback,
+          brandVersion: shareBoard.brandVersion,
+          contactCardId: shareBoard.contactCardId,
         },
-        changedFields: ["share_board", "share_items", "share_event"],
+        changedFields: [
+          "share_board",
+          "share_items",
+          "brand_snapshot",
+          "contact_card_snapshot",
+          "share_event",
+        ],
       });
     } catch {
       // The atomic created event is the primary evidence. Losing the only
@@ -1693,7 +1792,7 @@ export async function getPublicAdmissionShareBoardContext({
   onViewAuditError = observeViewAuditError,
 }: GetPublicAdmissionShareBoardInput): Promise<{
   organizationId: string;
-  board: PublicAdmissionShareBoard;
+  board: BrandedPublicAdmissionShareBoard;
 }> {
   const snapshot = await requirePublicSnapshot({
     repo,
@@ -1715,7 +1814,7 @@ export async function getPublicAdmissionShareBoardContext({
 
 export async function getPublicAdmissionShareBoard(
   input: GetPublicAdmissionShareBoardInput,
-): Promise<PublicAdmissionShareBoard> {
+): Promise<BrandedPublicAdmissionShareBoard> {
   return (await getPublicAdmissionShareBoardContext(input)).board;
 }
 
@@ -1734,6 +1833,10 @@ export async function getPublicAdmissionShareBoardContextWithSession({
 }): Promise<{
   organizationId: string;
   allowVendorSubmit: boolean;
+  // Task 9 promotes the brand fields into the public route contract and its
+  // existing typed fixtures. The runtime object is already the branded
+  // subtype here, while this boundary remains backwards-compatible until
+  // that route rollout is enabled.
   board: PublicAdmissionShareBoard;
   session: PreparedPublicAdmissionShareSession;
 }> {
@@ -2544,6 +2647,22 @@ function daysFrom(now: string, days: number) {
   return new Date(Date.parse(now) + days * 24 * 60 * 60 * 1000).toISOString();
 }
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizeAdmissionShareContactCardId(
+  value: string | null | undefined,
+): string | null {
+  if (value == null) {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!UUID_PATTERN.test(normalized)) {
+    throw new AdmissionShareContactCardError();
+  }
+  return normalized;
+}
+
 function isAdmissionShareSelectionChangedRpcError(error: unknown) {
   if (!error || typeof error !== "object") {
     return false;
@@ -2552,6 +2671,17 @@ function isAdmissionShareSelectionChangedRpcError(error: unknown) {
   return (
     candidate.code === "P0001" &&
     candidate.message === "admission_share_selection_changed"
+  );
+}
+
+function isAdmissionShareContactCardRpcError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown; message?: unknown };
+  return (
+    candidate.code === "P0001" &&
+    candidate.message === "invalid_organization_contact_card"
   );
 }
 
@@ -2920,6 +3050,120 @@ function earlierIsoDate(left: string, right: string) {
   return Date.parse(left) <= Date.parse(right) ? left : right;
 }
 
+function recordFromUnknown(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function safeSnapshotText(
+  value: unknown,
+  fallback: string,
+  maxLength: number,
+): string {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  return Array.from(candidate || fallback.trim())
+    .slice(0, maxLength)
+    .join("");
+}
+
+function optionalSnapshotText(
+  value: unknown,
+  maxLength: number,
+): string | undefined {
+  const candidate = safeSnapshotText(value, "", maxLength);
+  return candidate || undefined;
+}
+
+function pickPublicContactCard(
+  value: unknown,
+): PublicAdmissionShareContactCard | null {
+  const source = recordFromUnknown(value);
+  const displayName = safeSnapshotText(source.displayName, "", 40);
+  if (!displayName) {
+    return null;
+  }
+
+  const phone = optionalSnapshotText(source.phone, 30);
+  const email = optionalSnapshotText(source.email, 120);
+  const wechat = optionalSnapshotText(source.wechat, 60);
+  return {
+    displayName,
+    title: safeSnapshotText(source.title, "", 40),
+    ...(phone ? { phone } : {}),
+    ...(email ? { email } : {}),
+    ...(wechat ? { wechat } : {}),
+  };
+}
+
+export function toAdmissionShareIdentityPresentation(
+  snapshot: Pick<
+    AdmissionShareBoardRecord,
+    "organizationId" | "brandSnapshot" | "contactCardSnapshot"
+  >,
+): Pick<AdmissionSharePresentation, "brand" | "contactCard"> {
+  const rawBrand = recordFromUnknown(snapshot.brandSnapshot);
+  const organizationName = safeSnapshotText(rawBrand.brandName, "组织", 40);
+  const brand = normalizePublishedBrand(snapshot.brandSnapshot, {
+    organizationId: snapshot.organizationId,
+    organizationName,
+  });
+
+  return {
+    brand: {
+      logoText: brand.logoText,
+      brandName: brand.brandName,
+      brandTagline: brand.brandTagline,
+      primaryColor: brand.primaryColor,
+    },
+    contactCard: pickPublicContactCard(snapshot.contactCardSnapshot),
+  };
+}
+
+export function toAdmissionSharePresentation(
+  snapshot: PublicAdmissionShareBoardSnapshot,
+): AdmissionSharePresentation {
+  return {
+    title: snapshot.title,
+    purpose: snapshot.purpose,
+    mode: snapshot.mode,
+    status: snapshot.status,
+    reviewState: snapshot.reviewState,
+    roundNumber: snapshot.roundNumber,
+    expiresAt: snapshot.expiresAt,
+    project: snapshot.project,
+    progress: snapshot.progress,
+    latestSubmission: snapshot.latestSubmission,
+    ...toAdmissionShareIdentityPresentation(snapshot),
+    items: snapshot.items.map((item) => ({
+      applicationId: item.applicationId,
+      recordingSubmissionId: item.recordingSubmissionId,
+      recordingVersion: item.recordingVersion,
+      sourceHealth: item.sourceHealth,
+      streamer: item.streamer,
+      finalReview: item.finalReview,
+    })),
+  };
+}
+
+export function toInternalAdmissionSharePresentation(
+  snapshot: PublicAdmissionShareBoardSnapshot,
+): InternalAdmissionSharePresentation {
+  return {
+    id: snapshot.id,
+    ...toAdmissionSharePresentation(snapshot),
+    brandVersion: snapshot.brandVersion ?? 0,
+    contactCardId: snapshot.contactCardId ?? null,
+    sourceDiagnostics: snapshot.items.map((item) => ({
+      recordingSubmissionId: item.recordingSubmissionId,
+      applicationStatus: item.applicationStatus,
+      recordingStatus: item.recordingStatus,
+      hasPrivateStorage: Boolean(item.storagePath),
+      externalUrl: normalizeAbsoluteHttpUrl(item.recordingUrl),
+    })),
+  };
+}
+
 function publicAdmissionShareContext(
   snapshot: PublicAdmissionShareBoardSnapshot,
   token: string,
@@ -2933,28 +3177,25 @@ function publicAdmissionShareContext(
 function toPublicShareDto(
   snapshot: PublicAdmissionShareBoardSnapshot,
   input: { token: string },
-): PublicAdmissionShareBoard {
+): BrandedPublicAdmissionShareBoard {
+  const presentation = toAdmissionSharePresentation(snapshot);
   return {
     id: snapshot.id,
-    title: snapshot.title,
-    purpose: snapshot.purpose,
-    mode: snapshot.mode,
-    status: snapshot.status,
-    reviewState: snapshot.reviewState,
-    roundNumber: snapshot.roundNumber,
-    expiresAt: snapshot.expiresAt,
+    ...presentation,
+    brand: {
+      ...presentation.brand,
+      // The token-gated logo route is introduced in Task 9. Until then the
+      // storage path remains server-only and callers use the deterministic
+      // wordmark fallback.
+      logoUrl: null,
+    },
     canSubmit:
       snapshot.mode === "formal_review" &&
       snapshot.status === "active" &&
       snapshot.reviewState !== "submitted_locked",
     allowExternalFallback: snapshot.allowExternalFallback,
-    project: snapshot.project,
-    progress: snapshot.progress,
-    latestSubmission: snapshot.latestSubmission,
-    items: snapshot.items.map((item) => ({
-      applicationId: item.applicationId,
-      recordingSubmissionId: item.recordingSubmissionId,
-      recordingVersion: item.recordingVersion,
+    items: snapshot.items.map((item, index) => ({
+      ...presentation.items[index],
       playbackUrl: publicAdmissionRecordingPlaybackUrl({
         token: input.token,
         recordingSubmissionId: item.recordingSubmissionId,
@@ -2962,10 +3203,7 @@ function toPublicShareDto(
       externalUrl: snapshot.allowExternalFallback
         ? normalizeAbsoluteHttpUrl(item.recordingUrl)
         : null,
-      sourceHealth: item.sourceHealth,
       hasPrivateStorage: Boolean(item.storagePath),
-      streamer: item.streamer,
-      finalReview: item.finalReview,
     })),
   };
 }
@@ -3102,6 +3340,10 @@ function toShareBoardRecord(
     allowExternalFallback: row.allow_external_fallback,
     reviewState: row.review_state,
     roundNumber: row.round_number,
+    brandSnapshot: row.brand_snapshot,
+    brandVersion: row.brand_version,
+    contactCardId: row.contact_card_id,
+    contactCardSnapshot: row.contact_card_snapshot,
     createdBy: row.created_by,
     createdAt: row.created_at,
   };

@@ -6,6 +6,7 @@ import {
   createAdmissionShareBoard,
   listAdmissionShareBoards,
   SupabaseAdmissionShareBoardRepository,
+  toAdmissionShareIdentityPresentation,
   type AdmissionShareBoardRecord,
   type AdmissionShareBoardTaskRecord,
 } from "@/features/applications/admission-share-board";
@@ -93,6 +94,7 @@ export async function POST(
           typeof body.allowExternalFallback === "boolean"
             ? body.allowExternalFallback
             : undefined,
+        contactCardId: admissionShareContactCardId(body.contactCardId),
         items: admissionShareSelectionItems(body.items),
       },
     });
@@ -159,6 +161,9 @@ function toSafeShareBoard(shareBoard: AdmissionShareBoardRecord) {
     allowExternalFallback: shareBoard.allowExternalFallback,
     reviewState: shareBoard.reviewState,
     roundNumber: shareBoard.roundNumber,
+    brandVersion: shareBoard.brandVersion,
+    contactCardId: shareBoard.contactCardId,
+    ...toAdmissionShareIdentityPresentation(shareBoard),
     createdBy: shareBoard.createdBy,
     createdAt: shareBoard.createdAt,
   };
@@ -187,6 +192,24 @@ function toSafeShareBoardTask(shareBoard: AdmissionShareBoardTaskRecord) {
 
 function optionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function admissionShareContactCardId(
+  value: unknown,
+): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string" || !UUID_PATTERN.test(value.trim())) {
+    throw new RouteError("contactCardId must be a UUID or null", 400);
+  }
+  return value.trim();
 }
 
 function admissionShareMode(value: unknown): AdmissionShareMode {

@@ -30,6 +30,15 @@ vi.mock("@/features/applications/admission-share-board", () => ({
     }),
   createAdmissionShareBoard: vi.fn(),
   listAdmissionShareBoards: vi.fn(),
+  toAdmissionShareIdentityPresentation: vi.fn().mockReturnValue({
+    brand: {
+      logoText: "星河",
+      brandName: "星河直播",
+      brandTagline: "专业直播运营",
+      primaryColor: "#165DFF",
+    },
+    contactCard: null,
+  }),
   AdmissionShareSelectionError: class AdmissionShareSelectionError extends Error {
     readonly name = "AdmissionShareSelectionError";
 
@@ -161,6 +170,19 @@ describe("project admission share-board route", () => {
         allowExternalFallback: true,
         reviewState: "not_started",
         roundNumber: 1,
+        brandSnapshot: {
+          schemaVersion: 1,
+          version: 4,
+          logoText: "星河",
+          logoStoragePath: "org-1/brand-logos/private.webp",
+          brandName: "星河直播",
+          brandTagline: "专业直播运营",
+          primaryColor: "#165DFF",
+          publishedAt: "2026-07-29T00:00:00.000Z",
+        },
+        brandVersion: 4,
+        contactCardId: null,
+        contactCardSnapshot: null,
         createdBy: "user-ops",
         createdAt: "2026-07-30T00:00:00.000Z",
       },
@@ -216,6 +238,11 @@ describe("project admission share-board route", () => {
             expiresAt: "2026-08-06T00:00:00.000Z",
             requireAccessCode: false,
             allowExternalFallback: true,
+            contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+            brandSnapshot: {
+              logoStoragePath: "other-org/brand-logos/forged.webp",
+            },
+            contactCardSnapshot: { displayName: "伪造联系人" },
             items: [
               {
                 applicationId: "app-1",
@@ -234,7 +261,21 @@ describe("project admission share-board route", () => {
     const body = await response.json();
     expect(body.shareUrl).toBe("http://localhost/share/admission/plain-token");
     expect(body.accessCode).toBe("24681024");
+    expect(body.shareBoard).toMatchObject({
+      brandVersion: 4,
+      contactCardId: null,
+      brand: {
+        logoText: "星河",
+        brandName: "星河直播",
+        brandTagline: "专业直播运营",
+        primaryColor: "#165DFF",
+      },
+      contactCard: null,
+    });
     expect(JSON.stringify(body)).not.toContain("hash");
+    expect(JSON.stringify(body)).not.toContain("private.webp");
+    expect(JSON.stringify(body)).not.toContain("brandSnapshot");
+    expect(JSON.stringify(body)).not.toContain("contactCardSnapshot");
     expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
       context.supabase,
     );
@@ -262,6 +303,7 @@ describe("project admission share-board route", () => {
           requireAccessCode: false,
           accessCode: undefined,
           allowExternalFallback: true,
+          contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
           items: [
             {
               applicationId: "app-1",
@@ -273,6 +315,75 @@ describe("project admission share-board route", () => {
         },
       }),
     );
+    const serviceInput = vi.mocked(createAdmissionShareBoard).mock.calls[0]?.[0]
+      ?.input;
+    expect(serviceInput).not.toHaveProperty("brandSnapshot");
+    expect(serviceInput).not.toHaveProperty("contactCardSnapshot");
+    expect(JSON.stringify(serviceInput)).not.toContain(
+      "other-org/brand-logos/forged.webp",
+    );
+  });
+
+  it("accepts an explicit null contact-card selection", async () => {
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "preview",
+            contactCardId: null,
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    expect(createAdmissionShareBoard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({ contactCardId: null }),
+      }),
+    );
+  });
+
+  it("rejects a non-UUID contact-card id before share persistence", async () => {
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "preview",
+            contactCardId: "not-a-uuid",
+            brandSnapshot: { logoStoragePath: "private/forged.webp" },
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "contactCardId must be a UUID or null",
+    });
+    expect(createAdmissionShareBoard).not.toHaveBeenCalled();
   });
 
   it("uses the reverse-proxy public origin instead of an internal configured port", async () => {
