@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  AuthRetryableFetchError,
+  AuthSessionMissingError,
+} from "@supabase/supabase-js";
 
-import { getAuthContext } from "./context";
+import { AuthContextUnavailableError, getAuthContext } from "./context";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -10,7 +14,124 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function clientWithQueryResults(input: {
+  profile: { data: unknown; error: unknown };
+  membership: { data: unknown; error: unknown };
+}) {
+  const profileQuery = {
+    eq: vi.fn(() => profileQuery),
+    maybeSingle: vi.fn(async () => input.profile),
+  };
+  const membershipQuery = {
+    eq: vi.fn(() => membershipQuery),
+    order: vi.fn(() => membershipQuery),
+    returns: vi.fn(async () => input.membership),
+  };
+  return {
+    auth: {
+      getUser: vi.fn(async () => ({
+        data: { user: { id: "user-errors", email: "user@example.cn" } },
+        error: null,
+      })),
+    },
+    from: vi.fn((table: string) =>
+      table === "profiles"
+        ? { select: vi.fn(() => profileQuery) }
+        : { select: vi.fn(() => membershipQuery) },
+    ),
+  };
+}
+
 describe("getAuthContext", () => {
+  it("returns null for the documented missing-session auth error", async () => {
+    const client = {
+      auth: {
+        getUser: vi.fn(async () => ({
+          data: { user: null },
+          error: new AuthSessionMissingError(),
+        })),
+      },
+      from: vi.fn(),
+    };
+
+    await expect(getAuthContext(client as never)).resolves.toBeNull();
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it("throws a stable safe error for a resolved auth infrastructure failure", async () => {
+    const client = {
+      auth: {
+        getUser: vi.fn(async () => ({
+          data: { user: null },
+          error: new AuthRetryableFetchError(
+            "raw auth backend database password",
+            503,
+          ),
+        })),
+      },
+      from: vi.fn(),
+    };
+
+    const failure = await getAuthContext(client as never).catch(
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(AuthContextUnavailableError);
+    expect(failure).toMatchObject({
+      name: "AuthContextUnavailableError",
+      message: "Authentication context is unavailable",
+    });
+    expect(JSON.stringify(failure)).not.toContain("password");
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it("throws a stable safe error when the profile query returns an error", async () => {
+    const client = clientWithQueryResults({
+      profile: {
+        data: null,
+        error: {
+          code: "XX000",
+          message: "raw profile database password",
+          details: "private",
+          hint: null,
+        },
+      },
+      membership: { data: [], error: null },
+    });
+
+    await expect(getAuthContext(client as never)).rejects.toEqual(
+      expect.objectContaining({
+        name: "AuthContextUnavailableError",
+        message: "Authentication context is unavailable",
+      }),
+    );
+  });
+
+  it("throws a stable safe error when the membership query returns an error", async () => {
+    const client = clientWithQueryResults({
+      profile: {
+        data: { full_name: "User", requires_onboarding: false },
+        error: null,
+      },
+      membership: {
+        data: null,
+        error: {
+          code: "XX000",
+          message: "raw membership database password",
+          details: "private",
+          hint: null,
+        },
+      },
+    });
+
+    const failure = await getAuthContext(client as never).catch(
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(AuthContextUnavailableError);
+    expect(JSON.stringify(failure)).not.toContain("password");
+  });
+
   it("loads profile and active membership in parallel after resolving the session user", async () => {
     const profileResult = deferred<{
       data: { full_name: string; requires_onboarding: boolean };

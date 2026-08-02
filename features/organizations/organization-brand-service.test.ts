@@ -571,6 +571,24 @@ describe("OrganizationBrandService", () => {
     expect(audit).not.toHaveBeenCalled();
   });
 
+  it("maps a malformed emergency RPC result to a safe unavailable error", async () => {
+    const repo = makeRepo();
+    vi.mocked(repo.emergencyRemoveContactCard).mockRejectedValue(
+      new Error("Malformed emergency contact-card result: raw SQL password"),
+    );
+    const service = new OrganizationBrandService(repo, audit);
+
+    await expect(
+      service.emergencyRemoveContactCard(owner, CARD_ID, {
+        reason: "compromised account",
+      }),
+    ).rejects.toMatchObject({
+      code: "ORGANIZATION_BRAND_UNAVAILABLE",
+      status: 503,
+      message: "Organization brand service is unavailable",
+    });
+  });
+
   it("surfaces an explicit safe non-atomic audit failure after card DML", async () => {
     const repo = makeRepo();
     audit.mockRejectedValueOnce(new Error("audit database password leaked"));
@@ -720,4 +738,20 @@ describe("SupabaseOrganizationBrandRepository", () => {
       },
     );
   });
+
+  it.each([null, -1, 1.5, "2", {}, Number.NaN])(
+    "rejects a malformed emergency RPC count: %p",
+    async (data) => {
+      const rpc = vi.fn().mockResolvedValue({ data, error: null });
+      const repo = new SupabaseOrganizationBrandRepository({ rpc } as never);
+
+      await expect(
+        repo.emergencyRemoveContactCard({
+          organizationId: ORGANIZATION_ID,
+          cardId: CARD_ID,
+          reason: "compromised",
+        }),
+      ).rejects.toThrow("Malformed emergency contact-card result");
+    },
+  );
 });

@@ -249,7 +249,10 @@ export class SupabaseOrganizationBrandRepository implements OrganizationBrandRep
       },
     );
     throwIfError(error);
-    return typeof data === "number" ? data : 0;
+    if (typeof data !== "number" || !Number.isInteger(data) || data < 0) {
+      throw new Error("Malformed emergency contact-card result");
+    }
+    return data;
   }
 }
 

@@ -1,4 +1,8 @@
-import type { SupabaseClient, User } from "@supabase/supabase-js";
+import {
+  isAuthSessionMissingError,
+  type SupabaseClient,
+  type User,
+} from "@supabase/supabase-js";
 import { cache } from "react";
 
 import {
@@ -21,6 +25,13 @@ export type AuthContext = {
   role: AppRole;
   requiresOnboarding?: boolean;
 };
+
+export class AuthContextUnavailableError extends Error {
+  constructor() {
+    super("Authentication context is unavailable");
+    this.name = "AuthContextUnavailableError";
+  }
+}
 
 type OrganizationRow = {
   name: string;
@@ -75,11 +86,21 @@ function pickPrimaryMembership(
 export const getAuthenticatedUser = cache(async function getAuthenticatedUser(
   supabase: SupabaseClient,
 ): Promise<User | null> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let result: Awaited<ReturnType<typeof supabase.auth.getUser>>;
+  try {
+    result = await supabase.auth.getUser();
+  } catch {
+    throw new AuthContextUnavailableError();
+  }
 
-  return user ?? null;
+  if (result.error) {
+    if (isAuthSessionMissingError(result.error)) {
+      return null;
+    }
+    throw new AuthContextUnavailableError();
+  }
+
+  return result.data.user ?? null;
 });
 
 // React.cache: 同一次 SSR 请求内以 client 实例为键去重。配合请求级缓存的
@@ -117,7 +138,13 @@ export const getAuthContext = cache(async function getAuthContext(
       .order("created_at", { ascending: true })
       .order("organization_id", { ascending: true })
       .returns<MembershipRow[]>(),
-  ]);
+  ]).catch(() => {
+    throw new AuthContextUnavailableError();
+  });
+
+  if (profileResult.error || membershipResult.error) {
+    throw new AuthContextUnavailableError();
+  }
 
   const profile = profileResult.data;
   const membership = pickPrimaryMembership(membershipResult.data ?? []);
