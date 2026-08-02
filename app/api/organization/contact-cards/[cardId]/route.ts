@@ -18,16 +18,18 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ cardId: string }> },
 ) {
-  const supabase = await createSupabaseServerClient();
-  const auth = supabase ? await getAuthContext(supabase) : null;
-  if (!supabase || !auth) {
-    return NextResponse.json(
-      { error: "Unauthorized", code: "UNAUTHORIZED" },
-      { status: 401 },
-    );
-  }
-
   try {
+    const supabase = await createSupabaseServerClient();
+    if (!supabase) {
+      throw new Error("Organization brand server client is unavailable");
+    }
+    const auth = await getAuthContext(supabase);
+    if (!auth) {
+      return NextResponse.json(
+        { error: "Unauthorized", code: "UNAUTHORIZED" },
+        { status: 401 },
+      );
+    }
     const { cardId } = await params;
     const idResult = cardIdSchema.safeParse(cardId);
     if (!idResult.success) {

@@ -54,6 +54,35 @@ describe("POST /api/organization/brand/publish", () => {
     expect((await POST(request({ expectedVersion: 3 }))).status).toBe(401);
   });
 
+  it("returns a safe 503 when the server client is unavailable", async () => {
+    vi.mocked(createSupabaseServerClient).mockResolvedValue(null);
+
+    const response = await POST(request({ expectedVersion: 3 }));
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Organization brand service is unavailable",
+      code: "ORGANIZATION_BRAND_UNAVAILABLE",
+    });
+    expect(getAuthContext).not.toHaveBeenCalled();
+  });
+
+  it("returns a safe 503 when auth bootstrap rejects", async () => {
+    vi.mocked(getAuthContext).mockRejectedValue(
+      new Error("raw membership database password"),
+    );
+
+    const response = await POST(request({ expectedVersion: 3 }));
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toEqual({
+      error: "Organization brand service is unavailable",
+      code: "ORGANIZATION_BRAND_UNAVAILABLE",
+    });
+    expect(JSON.stringify(body)).not.toContain("password");
+  });
+
   it("returns 403 for nonowners", async () => {
     vi.mocked(getAuthContext).mockResolvedValue({
       ...auth,

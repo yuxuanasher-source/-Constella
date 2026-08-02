@@ -66,6 +66,43 @@ describe("/api/organization/contact-cards", () => {
     },
   );
 
+  it.each(["GET", "POST"])(
+    "returns a safe 503 when the server client is unavailable for %s",
+    async (method) => {
+      vi.mocked(createSupabaseServerClient).mockResolvedValue(null);
+
+      const response =
+        method === "GET" ? await GET() : await POST(request(valid));
+
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toEqual({
+        error: "Organization brand service is unavailable",
+        code: "ORGANIZATION_BRAND_UNAVAILABLE",
+      });
+      expect(getAuthContext).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["GET", "POST"])(
+    "returns a safe 503 when auth bootstrap rejects for %s",
+    async (method) => {
+      vi.mocked(getAuthContext).mockRejectedValue(
+        new Error("raw membership database password"),
+      );
+
+      const response =
+        method === "GET" ? await GET() : await POST(request(valid));
+
+      expect(response.status).toBe(503);
+      const body = await response.json();
+      expect(body).toEqual({
+        error: "Organization brand service is unavailable",
+        code: "ORGANIZATION_BRAND_UNAVAILABLE",
+      });
+      expect(JSON.stringify(body)).not.toContain("password");
+    },
+  );
+
   it("allows a nonowner to list only the service-filtered safe cards", async () => {
     const member = { ...auth, role: "finance" as const };
     vi.mocked(getAuthContext).mockResolvedValue(member);

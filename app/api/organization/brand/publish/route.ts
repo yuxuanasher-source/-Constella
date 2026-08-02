@@ -12,16 +12,18 @@ import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { ValidationError, parseJsonBody } from "@/lib/http/parse-json-body";
 
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient();
-  const auth = supabase ? await getAuthContext(supabase) : null;
-  if (!supabase || !auth) {
-    return NextResponse.json(
-      { error: "Unauthorized", code: "UNAUTHORIZED" },
-      { status: 401 },
-    );
-  }
-
   try {
+    const supabase = await createSupabaseServerClient();
+    if (!supabase) {
+      throw new Error("Organization brand server client is unavailable");
+    }
+    const auth = await getAuthContext(supabase);
+    if (!auth) {
+      return NextResponse.json(
+        { error: "Unauthorized", code: "UNAUTHORIZED" },
+        { status: 401 },
+      );
+    }
     const input = await parseJsonBody(
       request,
       organizationBrandPublishRequestSchema,

@@ -12,11 +12,11 @@ import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { ValidationError, parseJsonBody } from "@/lib/http/parse-json-body";
 
 export async function GET() {
-  const context = await routeContext();
-  if (!context) {
-    return unauthorized();
-  }
   try {
+    const context = await routeContext();
+    if (!context) {
+      return unauthorized();
+    }
     const contactCards = await context.service.listContactCards(context.auth);
     return NextResponse.json({ contactCards });
   } catch (error) {
@@ -25,11 +25,11 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const context = await routeContext();
-  if (!context) {
-    return unauthorized();
-  }
   try {
+    const context = await routeContext();
+    if (!context) {
+      return unauthorized();
+    }
     const input = await parseJsonBody(
       request,
       createOrganizationContactCardRequestSchema,
@@ -46,8 +46,11 @@ export async function POST(request: Request) {
 
 async function routeContext() {
   const supabase = await createSupabaseServerClient();
-  const auth = supabase ? await getAuthContext(supabase) : null;
-  if (!supabase || !auth) {
+  if (!supabase) {
+    throw new Error("Organization brand server client is unavailable");
+  }
+  const auth = await getAuthContext(supabase);
+  if (!auth) {
     return null;
   }
   return {
