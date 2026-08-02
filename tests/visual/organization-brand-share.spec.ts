@@ -610,7 +610,15 @@ function defineBrowserTests() {
       'iframe[aria-label="External Embed 外部录屏播放器"]',
     );
     await expect(embed).toBeVisible();
-    await embed.dispatchEvent("load");
+    await expect(embed).toHaveAttribute(
+      "src",
+      "https://www.youtube.com/embed/task11",
+    );
+    await expect(embed).toHaveAttribute("tabindex", "0");
+    await expect(embed).not.toHaveAttribute("aria-hidden", "true");
+    await expect(
+      embed.contentFrame().locator('[data-task11-controlled-embed="ready"]'),
+    ).toHaveText("Task11 controlled embed ready");
     await assertLightStageAndScreenshot(
       page,
       testInfo.outputPath("media-external-embed.png"),
@@ -1008,7 +1016,14 @@ async function installPublicRoutes(
     route.fulfill({
       status: 200,
       contentType: "text/html",
-      body: "<!doctype html><title>Controlled embed</title><p>embed fixture</p>",
+      body: [
+        "<!doctype html>",
+        '<html lang="en">',
+        '<head><meta charset="utf-8"><title>Task11 controlled embed</title></head>',
+        '<body><main data-task11-controlled-embed="ready">',
+        "Task11 controlled embed ready",
+        "</main></body></html>",
+      ].join(""),
     }),
   );
 }
