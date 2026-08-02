@@ -74,26 +74,124 @@ vi.mock("@/features/billing/route-guard", () => ({
 
 const supabase = { client: "supabase" };
 
+type AdmissionShareRouteContract = {
+  route: string;
+  methods: readonly ("GET" | "POST" | "PUT")[];
+  auth: "organization-session" | "public-token";
+  public: boolean;
+  session:
+    | "supabase-user"
+    | "admission-share-access"
+    | "establishes-admission-share-access";
+  lifecycle: "organization-membership" | "share-lifecycle-per-request";
+};
+
+function organizationRoute(
+  route: string,
+  methods: AdmissionShareRouteContract["methods"],
+): AdmissionShareRouteContract {
+  return {
+    route,
+    methods,
+    auth: "organization-session",
+    public: false,
+    session: "supabase-user",
+    lifecycle: "organization-membership",
+  };
+}
+
+function publicTokenRoute(
+  route: string,
+  methods: AdmissionShareRouteContract["methods"],
+  session: Extract<
+    AdmissionShareRouteContract["session"],
+    "admission-share-access" | "establishes-admission-share-access"
+  > = "admission-share-access",
+): AdmissionShareRouteContract {
+  return {
+    route,
+    methods,
+    auth: "public-token",
+    public: true,
+    session,
+    lifecycle: "share-lifecycle-per-request",
+  };
+}
+
 const admissionShareRouteManifest = [
-  "app/api/projects/[projectId]/admission-share-candidates/route.ts",
-  "app/api/projects/[projectId]/admission-share-candidates/[recordingSubmissionId]/playback/route.ts",
-  "app/api/projects/[projectId]/admission-share-boards/preflight/route.ts",
-  "app/api/projects/[projectId]/admission-share-boards/route.ts",
-  "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/extend/route.ts",
-  "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/reopen/route.ts",
-  "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/rotate-token/route.ts",
-  "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/submissions/route.ts",
-  "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/revoke/route.ts",
-  "app/api/projects/[projectId]/admission-share-playback-issues/route.ts",
-  "app/api/projects/[projectId]/admission-share-playback-issues/[issueId]/resolve/route.ts",
-  "app/api/public/admission-share/[token]/route.ts",
-  "app/api/public/admission-share/[token]/access/route.ts",
-  "app/api/public/admission-share/[token]/drafts/route.ts",
-  "app/api/public/admission-share/[token]/drafts/[recordingSubmissionId]/route.ts",
-  "app/api/public/admission-share/[token]/reviews/route.ts",
-  "app/api/public/admission-share/[token]/recordings/[recordingSubmissionId]/route.ts",
-  "app/api/public/admission-share/[token]/recordings/[recordingSubmissionId]/issues/route.ts",
-] as const;
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-candidates/route.ts",
+    ["GET"],
+  ),
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-candidates/[recordingSubmissionId]/playback/route.ts",
+    ["GET"],
+  ),
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-boards/preflight/route.ts",
+    ["POST"],
+  ),
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-boards/route.ts",
+    ["GET", "POST"],
+  ),
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/extend/route.ts",
+    ["POST"],
+  ),
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/reopen/route.ts",
+    ["POST"],
+  ),
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/rotate-token/route.ts",
+    ["POST"],
+  ),
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/submissions/route.ts",
+    ["GET"],
+  ),
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-boards/[shareBoardId]/revoke/route.ts",
+    ["POST"],
+  ),
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-playback-issues/route.ts",
+    ["GET"],
+  ),
+  organizationRoute(
+    "app/api/projects/[projectId]/admission-share-playback-issues/[issueId]/resolve/route.ts",
+    ["POST"],
+  ),
+  publicTokenRoute("app/api/public/admission-share/[token]/route.ts", ["GET"]),
+  publicTokenRoute(
+    "app/api/public/admission-share/[token]/access/route.ts",
+    ["POST"],
+    "establishes-admission-share-access",
+  ),
+  publicTokenRoute(
+    "app/api/public/admission-share/[token]/brand-logo/route.ts",
+    ["GET"],
+  ),
+  publicTokenRoute("app/api/public/admission-share/[token]/drafts/route.ts", [
+    "GET",
+  ]),
+  publicTokenRoute(
+    "app/api/public/admission-share/[token]/drafts/[recordingSubmissionId]/route.ts",
+    ["PUT"],
+  ),
+  publicTokenRoute("app/api/public/admission-share/[token]/reviews/route.ts", [
+    "POST",
+  ]),
+  publicTokenRoute(
+    "app/api/public/admission-share/[token]/recordings/[recordingSubmissionId]/route.ts",
+    ["GET"],
+  ),
+  publicTokenRoute(
+    "app/api/public/admission-share/[token]/recordings/[recordingSubmissionId]/issues/route.ts",
+    ["POST"],
+  ),
+] as const satisfies readonly AdmissionShareRouteContract[];
 
 function listRouteFiles(relativeDirectory: string): string[] {
   const visit = (absoluteDirectory: string, relativePrefix: string): string[] =>
@@ -173,7 +271,9 @@ describe("api route contracts", () => {
   });
 
   it("matches the complete operations and public admission-share route set", () => {
-    const expectedRoutes = new Set(admissionShareRouteManifest);
+    const expectedRoutes = new Set(
+      admissionShareRouteManifest.map(({ route }) => route),
+    );
     const discoveredRoutes = new Set([
       ...listRouteFiles("app/api/projects/[projectId]").filter((route) =>
         route.includes("/admission-share"),
@@ -181,9 +281,26 @@ describe("api route contracts", () => {
       ...listRouteFiles("app/api/public/admission-share"),
     ]);
 
-    expect(admissionShareRouteManifest).toHaveLength(18);
+    expect(admissionShareRouteManifest).toHaveLength(19);
     expect(expectedRoutes.size).toBe(admissionShareRouteManifest.length);
     expect([...discoveredRoutes].sort()).toEqual([...expectedRoutes].sort());
+  });
+
+  it("classifies the public brand logo as token, lifecycle, and access-session guarded", () => {
+    const brandLogoContract = admissionShareRouteManifest.find(
+      ({ route }) =>
+        route === "app/api/public/admission-share/[token]/brand-logo/route.ts",
+    );
+
+    expect(brandLogoContract).toEqual({
+      route: "app/api/public/admission-share/[token]/brand-logo/route.ts",
+      methods: ["GET"],
+      auth: "public-token",
+      public: true,
+      session: "admission-share-access",
+      lifecycle: "share-lifecycle-per-request",
+    });
+    expect(brandLogoContract?.auth).not.toBe("anonymous");
   });
 
   it("returns 403 when the live-task start service rejects a role permission", async () => {
@@ -492,7 +609,10 @@ describe("api route contracts", () => {
 
   it("returns 400 when the confirm payload is missing a reason", async () => {
     const response = await confirmSettlementBatchPost(
-      jsonRequest("http://localhost/api/settlement-batches/batch-1/confirm", {}),
+      jsonRequest(
+        "http://localhost/api/settlement-batches/batch-1/confirm",
+        {},
+      ),
       { params: Promise.resolve({ batchId: "batch-1" }) },
     );
 
