@@ -2518,7 +2518,7 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.queryByText(/已启用 \d+ 项功能/)).not.toBeInTheDocument();
   });
 
-  it("opens organization feature settings from the account menu and syncs brand display", async () => {
+  it("keeps brand fields read-only in organization settings and saves name only", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({ organization: { id: "org-1" } }),
@@ -2533,6 +2533,21 @@ describe("OpsReferenceApp project smoke", () => {
     expect(
       screen.getByRole("dialog", { name: "组织功能设置" }),
     ).toBeInTheDocument();
+
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+    expect(within(dialog).getByText("当前品牌")).toBeInTheDocument();
+    expect(within(dialog).getByText("经营舱")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("MCN OPERATIONS · v1.2"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByLabelText("LOGO 字标"),
+    ).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("品牌名称")).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("品牌副标")).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("link", { name: "前往品牌中心" }),
+    ).toHaveAttribute("href", "/console/brand");
 
     fireEvent.change(screen.getByLabelText("组织名称"), {
       target: { value: "未来经营组" },
@@ -2549,7 +2564,7 @@ describe("OpsReferenceApp project smoke", () => {
     expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
     expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
 
-    // 品牌设置持久化到组织设置接口。
+    // 旧入口只持久化组织名称，不再携带任何品牌字段。
     let settingsCall;
     await waitFor(() => {
       settingsCall = fetchMock.mock.calls.find(
@@ -2566,7 +2581,7 @@ describe("OpsReferenceApp project smoke", () => {
       screen.queryByRole("dialog", { name: "组织功能设置" }),
     ).not.toBeInTheDocument();
     expect(settingsCall[1].method).toBe("PATCH");
-    expect(JSON.parse(settingsCall[1].body).name).toBe("未来经营组");
+    expect(JSON.parse(settingsCall[1].body)).toEqual({ name: "未来经营组" });
   }, 15000);
 
   it("uses organization logo settings in the sidebar brand mark", () => {
@@ -2590,55 +2605,6 @@ describe("OpsReferenceApp project smoke", () => {
       "src",
       "/brand/ops-mascot-logo.png",
     );
-  });
-
-  it("updates the sidebar brand logo from organization settings", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ organization: { id: "org-1" } }),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<OpsReferenceApp initialRoute="warroom" />);
-
-    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
-    fireEvent.change(screen.getByLabelText("LOGO 字标"), {
-      target: { value: "未" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
-
-    await waitFor(() =>
-      expect(screen.getByLabelText("组织 LOGO")).toHaveTextContent("未"),
-    );
-  });
-
-  it("customizes the sidebar brand name and tagline from organization settings", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ organization: { id: "org-1" } }),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<OpsReferenceApp initialRoute="warroom" />);
-
-    // 默认品牌文案来自内置兜底。
-    expect(screen.getByText("经营舱")).toBeInTheDocument();
-    expect(screen.getByText("MCN OPERATIONS · v1.2")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
-    fireEvent.change(screen.getByLabelText("品牌名称"), {
-      target: { value: "星耀经营舱" },
-    });
-    fireEvent.change(screen.getByLabelText("品牌副标"), {
-      target: { value: "XINGYAO OPS · v2.0" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
-
-    expect(await screen.findByText("星耀经营舱")).toBeInTheDocument();
-    expect(screen.getByText("XINGYAO OPS · v2.0")).toBeInTheDocument();
-    expect(screen.queryByText("MCN OPERATIONS · v1.2")).not.toBeInTheDocument();
   });
 
   it("renders custom brand fields passed from server-side organization settings", () => {

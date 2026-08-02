@@ -24035,11 +24035,6 @@ function formatOrganizationMemberError(error) {
 function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
   const normalized = normalizeOrganizationSettings(settings);
   const [name, setName] = React.useState(normalized.name);
-  const [logoText, setLogoText] = React.useState(normalized.logoText);
-  const [brandName, setBrandName] = React.useState(normalized.brandName);
-  const [brandTagline, setBrandTagline] = React.useState(
-    normalized.brandTagline,
-  );
   const [memberLimit, setMemberLimit] = React.useState(
     normalized.memberLimit == null ? "" : String(normalized.memberLimit),
   );
@@ -24076,11 +24071,6 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
     try {
       await onSubmit?.({
         name: nextName,
-        logoText: sliceByCodePoints(logoText.trim(), 4) || normalized.logoText,
-        brandName:
-          sliceByCodePoints(brandName.trim(), 12) || normalized.brandName,
-        brandTagline:
-          sliceByCodePoints(brandTagline.trim(), 32) || normalized.brandTagline,
         memberLimit: nextMemberLimit,
         features,
       });
@@ -24163,38 +24153,98 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
           />
         </OrgMemberField>
 
-        <OrgMemberField label="LOGO 字标">
-          <input
-            aria-label="LOGO 字标"
-            value={logoText}
-            maxLength={4}
-            onChange={(event) => setLogoText(event.target.value)}
-            placeholder="JY"
-            style={orgMemberInputStyle}
-          />
-        </OrgMemberField>
-
-        <OrgMemberField label="品牌名称">
-          <input
-            aria-label="品牌名称"
-            value={brandName}
-            maxLength={12}
-            onChange={(event) => setBrandName(event.target.value)}
-            placeholder="经营舱"
-            style={orgMemberInputStyle}
-          />
-        </OrgMemberField>
-
-        <OrgMemberField label="品牌副标">
-          <input
-            aria-label="品牌副标"
-            value={brandTagline}
-            maxLength={32}
-            onChange={(event) => setBrandTagline(event.target.value)}
-            placeholder="MCN OPERATIONS · v1.2"
-            style={orgMemberInputStyle}
-          />
-        </OrgMemberField>
+        <section
+          aria-labelledby="organization-brand-summary"
+          style={{
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            padding: 12,
+            background: "var(--bg-soft)",
+          }}
+        >
+          <div
+            id="organization-brand-summary"
+            style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-700)" }}
+          >
+            当前品牌
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              marginTop: 10,
+              minWidth: 0,
+            }}
+          >
+            <span
+              aria-label={`${normalized.brandName}品牌标识`}
+              style={{
+                width: 36,
+                height: 36,
+                flex: "0 0 36px",
+                borderRadius: 6,
+                background: "var(--blue-600)",
+                color: "#fff",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                overflow: "hidden",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              {normalized.logoImage ? (
+                <img
+                  src={normalized.logoImage}
+                  alt=""
+                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                />
+              ) : (
+                normalized.logoText
+              )}
+            </span>
+            <span style={{ minWidth: 0, flex: 1 }}>
+              <span
+                style={{
+                  display: "block",
+                  color: "var(--ink-900)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                }}
+              >
+                {normalized.brandName}
+              </span>
+              <span
+                style={{
+                  display: "block",
+                  color: "var(--ink-500)",
+                  fontSize: 12,
+                  marginTop: 2,
+                  overflowWrap: "anywhere",
+                }}
+              >
+                {normalized.brandTagline || "未设置品牌副标"}
+              </span>
+            </span>
+          </div>
+          <a
+            href="/console/brand"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              minHeight: 32,
+              marginTop: 10,
+              color: "var(--blue-700)",
+              fontSize: 12,
+              fontWeight: 600,
+              textDecoration: "underline",
+              textUnderlineOffset: 3,
+            }}
+          >
+            前往品牌中心
+          </a>
+        </section>
 
         <OrgMemberField label="成员规模">
           <input
@@ -29100,7 +29150,7 @@ function OpsReferenceInner({
   );
 
   const saveOrganizationSettings = async (input) => {
-    // 品牌四项持久化到 organizations（name 列 + branding jsonb）；
+    // 旧入口只持久化组织名称；品牌资料由品牌中心的草稿/发布流程治理。
     // memberLimit / features 目前仍是会话内展示态，保持本地合并。
     const mergeOrganizationSettings = (current, patch) =>
       normalizeOrganizationSettings({
@@ -29112,19 +29162,19 @@ function OpsReferenceInner({
         },
       });
 
+    const nonBrandPatch = {
+      name: input?.name,
+      memberLimit: input?.memberLimit,
+      features: input?.features,
+    };
     setOrganizationSettingsState((current) =>
-      mergeOrganizationSettings(current, input),
+      mergeOrganizationSettings(current, nonBrandPatch),
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
     const response = await fetch("/api/organization/settings", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: input?.name,
-        logoText: input?.logoText,
-        brandName: input?.brandName,
-        brandTagline: input?.brandTagline,
-      }),
+      body: JSON.stringify({ name: input?.name }),
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -29134,10 +29184,6 @@ function OpsReferenceInner({
           : body.error || "保存组织设置失败，请稍后重试。",
       );
     }
-    const savedBranding =
-      body.organization && typeof body.organization.branding === "object"
-        ? body.organization.branding
-        : {};
     const savedName =
       typeof body.organization?.name === "string" &&
       body.organization.name.trim()
@@ -29145,9 +29191,8 @@ function OpsReferenceInner({
         : {};
     setOrganizationSettingsState((current) =>
       mergeOrganizationSettings(current, {
-        ...input,
+        ...nonBrandPatch,
         ...savedName,
-        ...savedBranding,
       }),
     );
     setOrganizationSettingsOpen(false);
