@@ -28,6 +28,16 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
+  reporter: [
+    ["list"],
+    [
+      "html",
+      {
+        open: "never",
+        outputFolder: "./.qa-screenshots/playwright-html-report",
+      },
+    ],
+  ],
   use: {
     baseURL,
     trace: "on-first-retry",
