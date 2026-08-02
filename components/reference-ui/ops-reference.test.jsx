@@ -7158,6 +7158,82 @@ describe("OpsReferenceApp streamer smoke", () => {
   });
 });
 
+function pagedShareAdmissionApplications() {
+  return [
+    {
+      id: "app-paged-share",
+      status: "recording_approved",
+      source: "signup",
+      submittedAt: "2026-07-30T00:00:00.000Z",
+      project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+      streamer: { id: "streamer-1", displayName: "Streamer One" },
+      latestRecording: { id: "recording-1", version: 1, status: "approved" },
+      vendorReview: null,
+    },
+  ];
+}
+
+function admissionBoardResponse() {
+  return {
+    ok: true,
+    json: async () => ({
+      projects: [
+        {
+          project: {
+            id: "project-1",
+            code: "P-001",
+            name: "Alpha Project",
+            vendor: "Vendor A",
+            product: "Game A",
+          },
+          counts: {
+            totalApplications: 1,
+            recordingCount: 1,
+            mcnPendingReview: 0,
+            mcnApproved: 1,
+            mcnRejected: 0,
+            needsChanges: 0,
+            vendorPending: 1,
+            vendorSelected: 0,
+            vendorBackup: 0,
+            vendorRejected: 0,
+            vendorNeedsChanges: 0,
+            pendingFinalConfirm: 0,
+          },
+          share: {
+            id: null,
+            status: "unshared",
+            expiresAt: null,
+            lastSubmittedAt: null,
+          },
+          lastActivityAt: "2026-07-30T00:00:00.000Z",
+        },
+      ],
+    }),
+  };
+}
+
+function admissionShareTask(id, title) {
+  return {
+    id,
+    title,
+    purpose: "Review",
+    mode: "preview",
+    status: "active",
+    reviewState: "not_started",
+    roundNumber: 0,
+    expiresAt: "2026-08-06T00:00:00.000Z",
+    itemCount: 1,
+    draftCompletedCount: 0,
+    lastViewedAt: null,
+    lastDraftAt: null,
+    lastSubmittedAt: null,
+    lockedAt: null,
+    createdBy: "user-ops",
+    createdAt: "2026-07-30T00:00:00.000Z",
+  };
+}
+
 describe("OpsReferenceApp admission smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -9546,6 +9622,128 @@ describe("OpsReferenceApp admission smoke", () => {
       expect(screen.queryByText("Workspace Priv")).not.toBeInTheDocument(),
     );
     expect(await screen.findByText("预审结果不可用")).toBeInTheDocument();
+  });
+
+  it("loads every paged admission share task once when the project has more than twenty", async () => {
+    const applications = pagedShareAdmissionApplications();
+    const firstPage = Array.from({ length: 20 }, (_, index) =>
+      admissionShareTask(`task-${index + 1}`, `Paged task ${index + 1}`),
+    );
+    const secondPage = [
+      firstPage[19],
+      admissionShareTask("task-21", "Second page task"),
+    ];
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target === "/api/applications/admission-board") {
+        return admissionBoardResponse();
+      }
+      if (target === "/api/projects/project-1/admission-share-candidates") {
+        return { ok: true, json: async () => ({ candidates: [] }) };
+      }
+      if (
+        target === "/api/projects/project-1/admission-share-boards" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareBoards: firstPage,
+            nextCursor: "page-2/cursor",
+          }),
+        };
+      }
+      if (
+        target ===
+          "/api/projects/project-1/admission-share-boards?cursor=page-2%2Fcursor" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({ shareBoards: secondPage, nextCursor: null }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={applications}
+      />,
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/admission-board",
+        expect.objectContaining({ method: "GET" }),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "录屏分享中心" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+
+    expect(await screen.findByText("Paged task 1")).toBeInTheDocument();
+    expect(await screen.findByText("Second page task")).toBeInTheDocument();
+    expect(screen.getAllByText("Paged task 20")).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, requestInit]) =>
+          String(url).includes("/admission-share-boards") &&
+          requestInit?.method === "GET",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("stops a repeated admission share cursor and exposes a safe task-load error", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target === "/api/applications/admission-board") {
+        return admissionBoardResponse();
+      }
+      if (target === "/api/projects/project-1/admission-share-candidates") {
+        return { ok: true, json: async () => ({ candidates: [] }) };
+      }
+      if (
+        target.startsWith("/api/projects/project-1/admission-share-boards") &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareBoards: [admissionShareTask("task-cycle", "Cycle task")],
+            nextCursor: "same-cursor",
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={pagedShareAdmissionApplications()}
+      />,
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/admission-board",
+        expect.objectContaining({ method: "GET" }),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "录屏分享中心" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /分享任务加载失败/,
+    );
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, requestInit]) =>
+          String(url).includes("/admission-share-boards") &&
+          requestInit?.method === "GET",
+      ),
+    ).toHaveLength(2);
   });
 });
 

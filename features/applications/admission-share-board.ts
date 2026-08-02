@@ -652,6 +652,8 @@ export type AdmissionReviewSubmissionDto = {
 
 const INTERNAL_SHARE_DEFAULT_PAGE_SIZE = 20;
 const INTERNAL_SHARE_MAX_PAGE_SIZE = 50;
+const PUBLIC_SHARE_COLLECTION_PAGE_SIZE = 1000;
+const ADMISSION_SHARE_MAX_ITEMS = 5000;
 
 export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoardRepository {
   constructor(private readonly client: SupabaseClient) {}
@@ -956,22 +958,10 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       return null;
     }
 
-    const { data: itemData, error: itemError } = await this.client
-      .from("project_recording_share_items")
-      .select(
-        "application_id, recording_submission_id, recording_version, source_health, project_applications(status, streamer_id, streamers(id, display_name, streamer_accounts(platform, account_handle, is_primary))), recording_submissions(status, external_url, storage_path)",
-      )
-      .eq("share_board_id", boardData.id)
-      .order("sort_order", { ascending: true });
-
-    if (itemError) {
-      throw itemError;
-    }
-
-    const itemRows = (itemData ?? []) as PublicShareItemRow[];
+    const itemRows = await this.listPublicShareItemRows(boardData.id);
     const workflow =
       boardData.mode === "formal_review"
-        ? await this.getPublicReviewWorkflow(boardData.id, boardData.project_id)
+        ? await this.getPublicReviewWorkflow(boardData.id)
         : {
             completedDraftCount: 0,
             latestSubmission: null,
@@ -1002,19 +992,8 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
   async listReviewDrafts(
     shareBoardId: string,
   ): Promise<AdmissionReviewDraftDto[]> {
-    const { data, error } = await this.client
-      .from("project_recording_vendor_review_drafts")
-      .select(
-        "recording_submission_id, recording_version, decision, remark, reason_codes, revision, updated_at",
-      )
-      .eq("share_board_id", shareBoardId)
-      .order("updated_at", { ascending: true });
-
-    if (error) {
-      throw error;
-    }
-
-    return ((data ?? []) as AdmissionReviewDraftRow[]).map(toReviewDraftDto);
+    const rows = await this.listPublicReviewDraftRows(shareBoardId);
+    return rows.map(toReviewDraftDto);
   }
 
   async saveReviewDraft(
@@ -1250,16 +1229,64 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     }
   }
 
-  private async getPublicReviewWorkflow(
+  private async listPublicShareItemRows(
     shareBoardId: string,
-    projectId: string,
-  ): Promise<{
+  ): Promise<PublicShareItemRow[]> {
+    return collectBoundedPublicRows(async (from, to) => {
+      const { data, error } = await this.client
+        .from("project_recording_share_items")
+        .select(
+          "id, sort_order, application_id, recording_submission_id, recording_version, source_health, project_applications(status, streamer_id, streamers(id, display_name, streamer_accounts(id, platform, account_handle, is_primary, created_at))), recording_submissions(status, external_url, storage_path)",
+        )
+        .eq("share_board_id", shareBoardId)
+        .order("sort_order", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
+      if (error) throw error;
+      return (data ?? []) as PublicShareItemRow[];
+    });
+  }
+
+  private async listPublicReviewDraftRows(
+    shareBoardId: string,
+  ): Promise<AdmissionReviewDraftRow[]> {
+    return collectBoundedPublicRows(async (from, to) => {
+      const { data, error } = await this.client
+        .from("project_recording_vendor_review_drafts")
+        .select(
+          "recording_submission_id, recording_version, decision, remark, reason_codes, revision, updated_at",
+        )
+        .eq("share_board_id", shareBoardId)
+        .order("recording_submission_id", { ascending: true })
+        .range(from, to);
+      if (error) throw error;
+      return (data ?? []) as AdmissionReviewDraftRow[];
+    });
+  }
+
+  private async listPublicSubmissionReceiptRows(
+    submissionId: string,
+  ): Promise<PublicSubmissionReceiptItemRow[]> {
+    return collectBoundedPublicRows(async (from, to) => {
+      const { data, error } = await this.client
+        .from("project_recording_vendor_review_submission_items")
+        .select("id, recording_submission_id, decision, remark, reason_codes")
+        .eq("submission_id", submissionId)
+        .order("recording_submission_id", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
+      if (error) throw error;
+      return (data ?? []) as PublicSubmissionReceiptItemRow[];
+    });
+  }
+
+  private async getPublicReviewWorkflow(shareBoardId: string): Promise<{
     completedDraftCount: number;
     latestSubmission: PublicAdmissionShareSubmissionSummary | null;
     finalReviewByRecording: Map<string, PublicAdmissionShareFinalReview>;
   }> {
-    const [progressByBoard, submissionResult] = await Promise.all([
-      listAdmissionShareBoardProgress(this.client, [projectId]),
+    const [draftRows, submissionResult] = await Promise.all([
+      this.listPublicReviewDraftRows(shareBoardId),
       this.client
         .from("project_recording_vendor_review_submissions")
         .select(
@@ -1267,6 +1294,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
         )
         .eq("share_board_id", shareBoardId)
         .order("revision", { ascending: false })
+        .order("id", { ascending: false })
         .limit(1),
     ]);
 
@@ -1274,8 +1302,9 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       throw submissionResult.error;
     }
 
-    const completedDraftCount =
-      progressByBoard.get(shareBoardId)?.draftCompletedCount ?? 0;
+    const completedDraftCount = draftRows.filter(
+      isAdmissionReviewDraftComplete,
+    ).length;
     const latestRow = (
       (submissionResult.data ?? []) as AdmissionReviewSubmissionRow[]
     )[0];
@@ -1287,20 +1316,13 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       };
     }
 
-    const { data: itemData, error: itemError } = await this.client
-      .from("project_recording_vendor_review_submission_items")
-      .select("recording_submission_id, decision, remark, reason_codes")
-      .eq("submission_id", latestRow.id);
-
-    if (itemError) {
-      throw itemError;
-    }
+    const itemRows = await this.listPublicSubmissionReceiptRows(latestRow.id);
 
     const finalReviewByRecording = new Map<
       string,
       PublicAdmissionShareFinalReview
     >(
-      ((itemData ?? []) as PublicSubmissionReceiptItemRow[]).map((item) => [
+      itemRows.map((item) => [
         item.recording_submission_id,
         {
           decision: item.decision,
@@ -1421,6 +1443,8 @@ type AdmissionShareBoardWithProjectRow = AdmissionShareBoardRow & {
 };
 
 type PublicShareItemRow = {
+  id: string;
+  sort_order: number;
   application_id: string;
   recording_submission_id: string;
   recording_version: number;
@@ -1434,18 +1458,22 @@ type PublicShareItemRow = {
               id: string;
               display_name: string | null;
               streamer_accounts: Array<{
+                id: string;
                 platform: string | null;
                 account_handle: string | null;
                 is_primary: boolean | null;
+                created_at: string;
               }> | null;
             }
           | Array<{
               id: string;
               display_name: string | null;
               streamer_accounts: Array<{
+                id: string;
                 platform: string | null;
                 account_handle: string | null;
                 is_primary: boolean | null;
+                created_at: string;
               }> | null;
             }>
           | null;
@@ -1458,18 +1486,22 @@ type PublicShareItemRow = {
               id: string;
               display_name: string | null;
               streamer_accounts: Array<{
+                id: string;
                 platform: string | null;
                 account_handle: string | null;
                 is_primary: boolean | null;
+                created_at: string;
               }> | null;
             }
           | Array<{
               id: string;
               display_name: string | null;
               streamer_accounts: Array<{
+                id: string;
                 platform: string | null;
                 account_handle: string | null;
                 is_primary: boolean | null;
+                created_at: string;
               }> | null;
             }>
           | null;
@@ -1490,6 +1522,7 @@ type PublicShareItemRow = {
 };
 
 type PublicSubmissionReceiptItemRow = {
+  id: string;
   recording_submission_id: string;
   decision: Exclude<VendorAdmissionDecision, "pending">;
   remark: string | null;
@@ -3756,17 +3789,61 @@ function toAdmissionSharePlaybackIssueDto(
   };
 }
 
+async function collectBoundedPublicRows<T>(
+  loadPage: (from: number, to: number) => Promise<T[]>,
+): Promise<T[]> {
+  const rows: T[] = [];
+
+  for (let from = 0; ; from += PUBLIC_SHARE_COLLECTION_PAGE_SIZE) {
+    const to = Math.min(
+      from + PUBLIC_SHARE_COLLECTION_PAGE_SIZE - 1,
+      ADMISSION_SHARE_MAX_ITEMS,
+    );
+    const page = await loadPage(from, to);
+
+    if (from === ADMISSION_SHARE_MAX_ITEMS) {
+      if (page.length > 0) throw new AdmissionShareItemLimitError();
+      return rows;
+    }
+
+    rows.push(...page);
+    if (page.length < PUBLIC_SHARE_COLLECTION_PAGE_SIZE) return rows;
+  }
+}
+
+function isAdmissionReviewDraftComplete(row: AdmissionReviewDraftRow) {
+  if (row.decision === "selected" || row.decision === "backup") return true;
+  if (row.decision !== "rejected" && row.decision !== "needs_changes") {
+    return false;
+  }
+
+  // PostgreSQL btrim(text) removes U+0020 spaces by default, not every JS
+  // whitespace character. Keep public progress identical to the SQL aggregate.
+  return /[^ ]/u.test(row.remark ?? "");
+}
+
 function accountLabel(
   accounts:
     | Array<{
+        id: string;
         platform: string | null;
         account_handle: string | null;
         is_primary: boolean | null;
+        created_at: string;
       }>
     | null
     | undefined,
 ) {
-  const account = accounts?.find((item) => item.is_primary) ?? accounts?.[0];
+  const account = [...(accounts ?? [])].sort((left, right) => {
+    if (left.is_primary !== right.is_primary) {
+      return left.is_primary ? -1 : 1;
+    }
+    if (left.created_at !== right.created_at) {
+      return left.created_at < right.created_at ? -1 : 1;
+    }
+    if (left.id === right.id) return 0;
+    return left.id < right.id ? -1 : 1;
+  })[0];
   return [account?.platform?.trim(), account?.account_handle?.trim()]
     .filter(Boolean)
     .join(" / ");

@@ -2937,20 +2937,36 @@ describe("admission share board service", () => {
       submitted_at: "2026-07-30T10:00:00.000Z",
     };
     const queriedTables: string[] = [];
-    const itemSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue({
-        order: vi.fn().mockResolvedValue({ data: itemRows, error: null }),
-      }),
-    });
-    const rpc = vi.fn().mockResolvedValue({
-      data: [
-        {
-          share_board_id: "share-1",
-          item_count: 2,
-          draft_completed_count: 2,
-        },
-      ],
-      error: null,
+    const itemPage = pagedSelect(itemRows);
+    const draftPage = pagedSelect(
+      itemRows.map((item) => ({
+        recording_submission_id: item.recording_submission_id,
+        recording_version: item.recording_version,
+        decision: "selected",
+        remark: "",
+        reason_codes: [],
+        revision: 1,
+        updated_at: "2026-07-30T09:00:00.000Z",
+      })),
+    );
+    const receiptPage = pagedSelect([
+      {
+        id: "receipt-1",
+        recording_submission_id: "rec-1",
+        decision: "selected",
+        remark: "优先选择",
+        reason_codes: ["script_fit"],
+      },
+      {
+        id: "receipt-2",
+        recording_submission_id: "rec-2",
+        decision: "backup",
+        remark: "",
+        reason_codes: [],
+      },
+    ]);
+    const rpc = vi.fn(() => {
+      throw new Error("public hydration must not use project progress RPC");
     });
     const from = vi.fn().mockImplementation((table: string) => {
       queriedTables.push(table);
@@ -2966,43 +2982,27 @@ describe("admission share board service", () => {
         };
       }
       if (table === "project_recording_share_items") {
-        return { select: itemSelect };
+        return itemPage.source;
+      }
+      if (table === "project_recording_vendor_review_drafts") {
+        return draftPage.source;
       }
       if (table === "project_recording_vendor_review_submissions") {
+        const query = {
+          eq: vi.fn(),
+          order: vi.fn(),
+          limit: vi
+            .fn()
+            .mockResolvedValue({ data: [submissionRow], error: null }),
+        };
+        query.eq.mockReturnValue(query);
+        query.order.mockReturnValue(query);
         return {
-          select: vi.fn().mockReturnValue({
-            eq: vi.fn().mockReturnValue({
-              order: vi.fn().mockReturnValue({
-                limit: vi
-                  .fn()
-                  .mockResolvedValue({ data: [submissionRow], error: null }),
-              }),
-            }),
-          }),
+          select: vi.fn().mockReturnValue(query),
         };
       }
       if (table === "project_recording_vendor_review_submission_items") {
-        return {
-          select: vi.fn().mockReturnValue({
-            eq: vi.fn().mockResolvedValue({
-              data: [
-                {
-                  recording_submission_id: "rec-1",
-                  decision: "selected",
-                  remark: "优先选择",
-                  reason_codes: ["script_fit"],
-                },
-                {
-                  recording_submission_id: "rec-2",
-                  decision: "backup",
-                  remark: "",
-                  reason_codes: [],
-                },
-              ],
-              error: null,
-            }),
-          }),
-        };
+        return receiptPage.source;
       }
       throw new Error(`unexpected public snapshot table: ${table}`);
     });
@@ -3015,16 +3015,12 @@ describe("admission share board service", () => {
       hashShareSecret("plain-token"),
     );
 
-    expect(itemSelect).toHaveBeenCalledWith(
+    expect(itemPage.source.select).toHaveBeenCalledWith(
       expect.stringContaining("source_health"),
     );
     expect(queriedTables).not.toContain("project_recording_vendor_reviews");
-    expect(queriedTables).not.toContain(
-      "project_recording_vendor_review_drafts",
-    );
-    expect(rpc).toHaveBeenCalledWith("list_admission_share_board_progress", {
-      p_project_ids: ["project-1"],
-    });
+    expect(queriedTables).toContain("project_recording_vendor_review_drafts");
+    expect(rpc).not.toHaveBeenCalled();
     expect(snapshot).toMatchObject({
       brandVersion: 4,
       brandSnapshot: expect.objectContaining({ brandName: "星河直播" }),
@@ -3066,6 +3062,222 @@ describe("admission share board service", () => {
     });
   });
 
+  it("paginates 1001 public items, drafts, and final receipt rows without losing shared presentation fields", async () => {
+    const boardRow = publicBoardRow({ review_state: "in_progress" });
+    const itemRows = Array.from({ length: 1001 }, (_, index) =>
+      publicItemRow(index, {
+        ...(index === 0
+          ? {
+              project_applications: {
+                status: "recording_reviewing",
+                streamer_id: "streamer-0",
+                streamers: {
+                  id: "streamer-0",
+                  display_name: "Streamer 0",
+                  streamer_accounts: [
+                    {
+                      id: "account-non-primary",
+                      platform: "WeChat",
+                      account_handle: "old-non-primary",
+                      is_primary: false,
+                      created_at: "2025-01-01T00:00:00.000Z",
+                    },
+                    {
+                      id: "account-z",
+                      platform: "Kuaishou",
+                      account_handle: "early-primary-z",
+                      is_primary: true,
+                      created_at: "2026-07-01T00:00:00.000Z",
+                    },
+                    {
+                      id: "account-a",
+                      platform: "Douyin",
+                      account_handle: "early-primary",
+                      is_primary: true,
+                      created_at: "2026-07-01T00:00:00.000Z",
+                    },
+                    {
+                      id: "account-0",
+                      platform: "Xiaohongshu",
+                      account_handle: "late-primary",
+                      is_primary: true,
+                      created_at: "2026-07-02T00:00:00.000Z",
+                    },
+                  ],
+                },
+              },
+            }
+          : index === 1
+            ? {
+                project_applications: {
+                  status: "recording_reviewing",
+                  streamer_id: "streamer-1",
+                  streamers: {
+                    id: "streamer-1",
+                    display_name: "Streamer 1",
+                    streamer_accounts: [
+                      {
+                        id: "account-late",
+                        platform: "Kuaishou",
+                        account_handle: "late-account",
+                        is_primary: false,
+                        created_at: "2026-07-02T00:00:00.000Z",
+                      },
+                      {
+                        id: "account-early",
+                        platform: "Bilibili",
+                        account_handle: "early-account",
+                        is_primary: false,
+                        created_at: "2026-07-01T00:00:00.000Z",
+                      },
+                    ],
+                  },
+                },
+              }
+            : {}),
+      }),
+    );
+    const draftRows = itemRows.map((item, index) => ({
+      recording_submission_id: item.recording_submission_id,
+      decision:
+        index === 1
+          ? "backup"
+          : index === 2
+            ? "rejected"
+            : index === 3
+              ? "needs_changes"
+              : "selected",
+      remark: index === 2 ? "   " : index === 3 ? "\t" : "",
+    }));
+    const receiptRows = itemRows.map((item, index) => ({
+      id: `receipt-${index.toString().padStart(4, "0")}`,
+      recording_submission_id: item.recording_submission_id,
+      decision: "selected",
+      remark: "",
+      reason_codes: [],
+    }));
+    const itemPage = pagedSelect(itemRows);
+    const draftPage = pagedSelect(draftRows);
+    const receiptPage = pagedSelect(receiptRows);
+    const submission = {
+      id: "submission-latest",
+      revision: 2,
+      project_remark: "",
+      selected_count: 1001,
+      backup_count: 0,
+      rejected_count: 0,
+      needs_changes_count: 0,
+      submitted_at: "2026-07-30T10:00:00.000Z",
+    };
+    const from = vi.fn((table: string) => {
+      if (table === "project_recording_share_boards") {
+        return boardSelect(boardRow);
+      }
+      if (table === "project_recording_share_items") {
+        return itemPage.source;
+      }
+      if (table === "project_recording_vendor_review_drafts") {
+        return draftPage.source;
+      }
+      if (table === "project_recording_vendor_review_submissions") {
+        const query = {
+          eq: vi.fn(),
+          order: vi.fn(),
+          limit: vi.fn().mockResolvedValue({ data: [submission], error: null }),
+        };
+        query.eq.mockReturnValue(query);
+        query.order.mockReturnValue(query);
+        return { select: vi.fn().mockReturnValue(query) };
+      }
+      if (table === "project_recording_vendor_review_submission_items") {
+        return receiptPage.source;
+      }
+      throw new Error(`unexpected public paging table: ${table}`);
+    });
+    const rpc = vi.fn(() => {
+      throw new Error("public hydration must not use project progress RPC");
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      from,
+      rpc,
+    } as never);
+
+    const snapshot = await repo.getPublicShareBoardSnapshot("token-hash");
+
+    expect(snapshot?.items).toHaveLength(1001);
+    expect(snapshot?.progress).toEqual({ completed: 1000, total: 1001 });
+    expect(snapshot?.items.every((item) => item.finalReview !== null)).toBe(
+      true,
+    );
+    expect(snapshot?.items[0]?.streamer.accountLabel).toBe(
+      "Douyin / early-primary",
+    );
+    expect(snapshot?.items[1]?.streamer.accountLabel).toBe(
+      "Bilibili / early-account",
+    );
+    expect(itemPage.range.mock.calls).toEqual([
+      [0, 999],
+      [1000, 1999],
+    ]);
+    expect(draftPage.range.mock.calls).toEqual([
+      [0, 999],
+      [1000, 1999],
+    ]);
+    expect(receiptPage.range.mock.calls).toEqual([
+      [0, 999],
+      [1000, 1999],
+    ]);
+    expect(rpc).not.toHaveBeenCalled();
+
+    const safeInternalSnapshot = {
+      ...snapshot!,
+      tokenHash: undefined,
+      accessCodeHash: undefined,
+      items: snapshot!.items.map(({ storagePath, ...item }) => ({
+        ...item,
+        hasPrivateStorage: Boolean(storagePath),
+      })),
+    };
+    expect(toAdmissionSharePresentation(safeInternalSnapshot)).toEqual(
+      toAdmissionSharePresentation(snapshot!),
+    );
+  });
+
+  it.each([
+    [5000, false],
+    [5001, true],
+  ])(
+    "enforces the public item boundary at %i rows without truncation",
+    async (count, shouldReject) => {
+      const itemRows = Array.from({ length: count }, (_, index) =>
+        publicItemRow(index),
+      );
+      const itemPage = pagedSelect(itemRows);
+      const from = vi.fn((table: string) => {
+        if (table === "project_recording_share_boards") {
+          return boardSelect(publicBoardRow({ mode: "preview" }));
+        }
+        if (table === "project_recording_share_items") {
+          return itemPage.source;
+        }
+        throw new Error(`unexpected public boundary table: ${table}`);
+      });
+      const repo = new SupabaseAdmissionShareBoardRepository({ from } as never);
+      const operation = repo.getPublicShareBoardSnapshot("token-hash");
+
+      if (shouldReject) {
+        await expect(operation).rejects.toMatchObject({
+          code: "SHARE_BOARD_TOO_LARGE",
+          statusCode: 400,
+        });
+      } else {
+        const snapshot = await operation;
+        expect(snapshot?.progress).toEqual({ completed: 0, total: 5000 });
+        expect(snapshot?.items).toHaveLength(5000);
+      }
+    },
+  );
+
   it("persists and reads draft DTOs through the constrained repository methods", async () => {
     const draftRow = {
       recording_submission_id: "rec-1",
@@ -3078,10 +3290,8 @@ describe("admission share board service", () => {
     };
     const single = vi.fn().mockResolvedValue({ data: draftRow, error: null });
     const rpc = vi.fn().mockReturnValue({ single });
-    const order = vi.fn().mockResolvedValue({ data: [draftRow], error: null });
-    const eq = vi.fn().mockReturnValue({ order });
-    const select = vi.fn().mockReturnValue({ eq });
-    const from = vi.fn().mockReturnValue({ select });
+    const draftPage = pagedSelect([draftRow]);
+    const from = vi.fn().mockReturnValue(draftPage.source);
     const repo = new SupabaseAdmissionShareBoardRepository({
       rpc,
       from,
@@ -3108,7 +3318,7 @@ describe("admission share board service", () => {
       p_saved_at: "2026-07-30T08:30:00.000Z",
     });
     expect(from).toHaveBeenCalledWith("project_recording_vendor_review_drafts");
-    expect(eq).toHaveBeenCalledWith("share_board_id", "share-1");
+    expect(draftPage.eq).toHaveBeenCalledWith("share_board_id", "share-1");
     expect(saved).toEqual({
       recordingSubmissionId: "rec-1",
       recordingVersion: 2,
@@ -3762,6 +3972,103 @@ describe("admission share board service", () => {
     expect(from).not.toHaveBeenCalled();
   });
 });
+
+function pagedSelect(rows: unknown[]) {
+  const range = vi.fn((from: number, to: number) =>
+    Promise.resolve({ data: rows.slice(from, to + 1), error: null }),
+  );
+  const query = {
+    eq: vi.fn(),
+    order: vi.fn(),
+    range,
+  };
+  query.eq.mockReturnValue(query);
+  query.order.mockReturnValue(query);
+  return {
+    eq: query.eq,
+    range,
+    source: { select: vi.fn().mockReturnValue(query) },
+  };
+}
+
+function boardSelect(boardRow: Record<string, unknown>) {
+  return {
+    select: vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue({
+        maybeSingle: vi.fn().mockResolvedValue({ data: boardRow, error: null }),
+      }),
+    }),
+  };
+}
+
+function publicBoardRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "share-public",
+    organization_id: "org-1",
+    project_id: "project-1",
+    title: "Public review",
+    purpose: "Review recordings",
+    mode: "formal_review",
+    token_hash: "token-hash",
+    access_code_hash: null,
+    status: "active",
+    expires_at: "2026-08-06T00:00:00.000Z",
+    allow_vendor_submit: true,
+    allow_external_fallback: true,
+    review_state: "in_progress",
+    round_number: 1,
+    created_by: "user-ops",
+    created_at: "2026-07-30T07:00:00.000Z",
+    brand_snapshot: {
+      schemaVersion: 1,
+      version: 1,
+      logoText: "ORG",
+      logoStoragePath: null,
+      brandName: "Organization",
+      brandTagline: "Professional",
+      primaryColor: "#165DFF",
+      publishedAt: null,
+    },
+    brand_version: 1,
+    contact_card_id: null,
+    contact_card_snapshot: null,
+    projects: {
+      id: "project-1",
+      code: "P-001",
+      name: "Project",
+      vendor_name: "Vendor",
+      product_name: "Product",
+    },
+    ...overrides,
+  };
+}
+
+function publicItemRow(index: number, overrides: Record<string, unknown> = {}) {
+  const suffix = index.toString().padStart(4, "0");
+  return {
+    id: `item-${suffix}`,
+    sort_order: index,
+    application_id: `app-${suffix}`,
+    recording_submission_id: `recording-${suffix}`,
+    recording_version: 1,
+    source_health: "original_ready",
+    project_applications: {
+      status: "recording_reviewing",
+      streamer_id: `streamer-${suffix}`,
+      streamers: {
+        id: `streamer-${suffix}`,
+        display_name: `Streamer ${suffix}`,
+        streamer_accounts: [],
+      },
+    },
+    recording_submissions: {
+      status: "submitted",
+      external_url: null,
+      storage_path: `private/${suffix}.mp4`,
+    },
+    ...overrides,
+  };
+}
 
 function publicSnapshot(overrides: Record<string, unknown> = {}) {
   return {
