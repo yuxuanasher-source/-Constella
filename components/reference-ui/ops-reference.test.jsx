@@ -9624,7 +9624,7 @@ describe("OpsReferenceApp admission smoke", () => {
     expect(await screen.findByText("预审结果不可用")).toBeInTheDocument();
   });
 
-  it("loads every paged admission share task once when the project has more than twenty", async () => {
+  it("loads the next admission share page only after explicit user intent", async () => {
     const applications = pagedShareAdmissionApplications();
     const firstPage = Array.from({ length: 20 }, (_, index) =>
       admissionShareTask(`task-${index + 1}`, `Paged task ${index + 1}`),
@@ -9683,6 +9683,15 @@ describe("OpsReferenceApp admission smoke", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
 
     expect(await screen.findByText("Paged task 1")).toBeInTheDocument();
+    expect(screen.queryByText("Second page task")).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, requestInit]) =>
+          String(url).includes("/admission-share-boards") &&
+          requestInit?.method === "GET",
+      ),
+    ).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
     expect(await screen.findByText("Second page task")).toBeInTheDocument();
     expect(screen.getAllByText("Paged task 20")).toHaveLength(1);
     expect(
@@ -9734,8 +9743,10 @@ describe("OpsReferenceApp admission smoke", () => {
     fireEvent.click(screen.getByRole("button", { name: "录屏分享中心" }));
     fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
 
+    expect(await screen.findByText("Cycle task")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      /分享任务加载失败/,
+      /分享任务加载更多失败/,
     );
     expect(
       fetchMock.mock.calls.filter(

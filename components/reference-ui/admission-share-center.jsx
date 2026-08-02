@@ -275,6 +275,30 @@ function shareItem(candidate, sortOrder) {
   };
 }
 
+function normalizeTaskPage(result) {
+  if (Array.isArray(result)) {
+    return { shareBoards: result, nextCursor: null };
+  }
+  return {
+    shareBoards: Array.isArray(result?.shareBoards) ? result.shareBoards : [],
+    nextCursor:
+      typeof result?.nextCursor === "string" && result.nextCursor.trim()
+        ? result.nextCursor.trim()
+        : null,
+  };
+}
+
+function appendUniqueTasks(current, incoming) {
+  const next = [...current];
+  const seen = new Set(current.map((task) => task?.id).filter(Boolean));
+  for (const task of incoming) {
+    if (!task?.id || seen.has(task.id)) continue;
+    seen.add(task.id);
+    next.push(task);
+  }
+  return next;
+}
+
 function candidateLabel(candidate) {
   return `${candidate.streamer?.displayName || "主播名称未提供"} V${candidate.recordingVersion}`;
 }
@@ -319,6 +343,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [tab, setTab] = React.useState("library");
   const [candidates, setCandidates] = React.useState([]);
   const [tasks, setTasks] = React.useState([]);
+  const [taskNextCursor, setTaskNextCursor] = React.useState(null);
   const [issueListState, setIssueListState] = React.useState(() => ({
     projectId: project.id,
     issues: [],
@@ -332,6 +357,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const [shareableOnly, setShareableOnly] = React.useState(false);
   const [candidatesLoading, setCandidatesLoading] = React.useState(true);
   const [tasksLoading, setTasksLoading] = React.useState(true);
+  const [tasksLoadingMore, setTasksLoadingMore] = React.useState(false);
   const [candidateError, setCandidateError] = React.useState("");
   const [taskError, setTaskError] = React.useState("");
   const [issueResolveErrors, setIssueResolveErrors] = React.useState({});
@@ -359,6 +385,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
   const resolvingIssueIdsRef = React.useRef(new Set());
   const mountedRef = React.useRef(false);
   const currentProjectIdRef = React.useRef(project.id);
+  const taskListGenerationRef = React.useRef(0);
   const issueListGenerationRef = React.useRef(0);
   const issueResolveGenerationRef = React.useRef(new Map());
   const nextIssueResolveGenerationRef = React.useRef(0);
@@ -380,6 +407,7 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
     firstTabRef.current?.focus();
     return () => {
       mountedRef.current = false;
+      taskListGenerationRef.current += 1;
       issueListGenerationRef.current += 1;
       issueResolveGenerations.clear();
       resolvingIssueIds.clear();
@@ -389,13 +417,26 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
 
   React.useLayoutEffect(() => {
     currentProjectIdRef.current = project.id;
+    taskListGenerationRef.current += 1;
     issueResolveGenerationRef.current.clear();
     resolvingIssueIdsRef.current.clear();
     setIssueResolveErrors({});
     setResolvingIssueIds(new Set());
+    setTasks([]);
+    setTaskNextCursor(null);
+    setTaskError("");
+    setTasksLoading(true);
+    setTasksLoadingMore(false);
   }, [project.id]);
 
   const loadTasks = React.useCallback(async () => {
+    const requestProjectId = project.id;
+    const requestGeneration = taskListGenerationRef.current + 1;
+    taskListGenerationRef.current = requestGeneration;
+    const isCurrentRequest = () =>
+      mountedRef.current &&
+      currentProjectIdRef.current === requestProjectId &&
+      taskListGenerationRef.current === requestGeneration;
     setTasksLoading(true);
     setTaskError("");
     try {
@@ -403,16 +444,56 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
         throw new Error("分享任务接口暂未接入");
       }
       const result = await actions.listAdmissionShareBoards(project.id);
-      const next = Array.isArray(result) ? result : [];
-      setTasks(next);
-      return next;
+      const page = normalizeTaskPage(result);
+      if (!isCurrentRequest()) return [];
+      setTasks(appendUniqueTasks([], page.shareBoards));
+      setTaskNextCursor(page.nextCursor);
+      return page.shareBoards;
     } catch (error) {
+      if (!isCurrentRequest()) return [];
       setTaskError(error?.message || "分享任务加载失败");
       throw error;
     } finally {
-      setTasksLoading(false);
+      if (isCurrentRequest()) setTasksLoading(false);
     }
   }, [actions, project.id]);
+
+  const loadMoreTasks = React.useCallback(async () => {
+    const cursor = taskNextCursor;
+    if (!cursor || tasksLoadingMore) return [];
+    const requestProjectId = project.id;
+    const requestGeneration = taskListGenerationRef.current + 1;
+    taskListGenerationRef.current = requestGeneration;
+    const isCurrentRequest = () =>
+      mountedRef.current &&
+      currentProjectIdRef.current === requestProjectId &&
+      taskListGenerationRef.current === requestGeneration;
+    setTasksLoadingMore(true);
+    setTaskError("");
+    try {
+      if (!actions.listAdmissionShareBoards) {
+        throw new Error("分享任务接口暂未接入");
+      }
+      const result = await actions.listAdmissionShareBoards(
+        requestProjectId,
+        cursor,
+      );
+      const page = normalizeTaskPage(result);
+      if (page.nextCursor === cursor) {
+        throw new Error("分享任务分页游标重复");
+      }
+      if (!isCurrentRequest()) return [];
+      setTasks((current) => appendUniqueTasks(current, page.shareBoards));
+      setTaskNextCursor(page.nextCursor);
+      return page.shareBoards;
+    } catch (error) {
+      if (!isCurrentRequest()) return [];
+      setTaskError(error?.message || "分享任务加载更多失败");
+      throw error;
+    } finally {
+      if (isCurrentRequest()) setTasksLoadingMore(false);
+    }
+  }, [actions, project.id, taskNextCursor, tasksLoadingMore]);
 
   React.useLayoutEffect(() => {
     if (!delivery && restoreTaskFocusAfterDeliveryRef.current) {
@@ -489,6 +570,14 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
 
   React.useEffect(() => {
     let current = true;
+    const requestProjectId = project.id;
+    const taskRequestGeneration = taskListGenerationRef.current + 1;
+    taskListGenerationRef.current = taskRequestGeneration;
+    const isCurrentTaskRequest = () =>
+      current &&
+      mountedRef.current &&
+      currentProjectIdRef.current === requestProjectId &&
+      taskListGenerationRef.current === taskRequestGeneration;
     void Promise.allSettled([
       Promise.resolve().then(() => {
         if (!actions.listAdmissionShareCandidates) {
@@ -511,13 +600,17 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
       } else {
         setCandidateError(candidateResult.reason?.message || "录屏库加载失败");
       }
-      if (taskResult.status === "fulfilled") {
-        setTasks(Array.isArray(taskResult.value) ? taskResult.value : []);
-      } else {
-        setTaskError(taskResult.reason?.message || "分享任务加载失败");
+      if (isCurrentTaskRequest()) {
+        if (taskResult.status === "fulfilled") {
+          const page = normalizeTaskPage(taskResult.value);
+          setTasks(appendUniqueTasks([], page.shareBoards));
+          setTaskNextCursor(page.nextCursor);
+        } else {
+          setTaskError(taskResult.reason?.message || "分享任务加载失败");
+        }
+        setTasksLoading(false);
       }
       setCandidatesLoading(false);
-      setTasksLoading(false);
     });
     return () => {
       current = false;
@@ -1120,8 +1213,12 @@ export function AdmissionShareCenter({ project, actions, onClose }) {
               <ShareTasks
                 tasks={tasks}
                 loading={tasksLoading}
+                loadingMore={tasksLoadingMore}
+                hasMore={Boolean(taskNextCursor)}
                 error={taskError}
                 onRetry={loadTasks}
+                onLoadMore={loadMoreTasks}
+                onRetryMore={loadMoreTasks}
                 pendingTasks={pendingTasks}
                 taskExpiresAt={taskExpiresAt}
                 reopenReasons={reopenReasons}
@@ -2058,8 +2155,12 @@ function VendorPreview({ draft, selected, preflight }) {
 function ShareTasks({
   tasks,
   loading,
+  loadingMore,
+  hasMore,
   error,
   onRetry,
+  onLoadMore,
+  onRetryMore,
   pendingTasks,
   taskExpiresAt,
   reopenReasons,
@@ -2095,7 +2196,14 @@ function ShareTasks({
     <div style={{ display: "grid", gap: 12 }}>
       {error ? (
         <div role="alert" style={{ ...emptyStyle, padding: 14 }}>
-          分享任务刷新失败：{error}
+          <div>分享任务加载更多失败：{error}</div>
+          <ActionButton
+            style={{ marginTop: 12 }}
+            aria-label="重试加载更多分享任务"
+            onClick={() => void onRetryMore().catch(() => {})}
+          >
+            重试
+          </ActionButton>
         </div>
       ) : null}
       {tasks.map((task) => {
@@ -2315,6 +2423,16 @@ function ShareTasks({
           </article>
         );
       })}
+      {hasMore && !error ? (
+        <ActionButton
+          aria-label="加载更多分享任务"
+          disabled={loadingMore}
+          onClick={() => void onLoadMore().catch(() => {})}
+          style={{ justifySelf: "center" }}
+        >
+          {loadingMore ? "加载中…" : "加载更多"}
+        </ActionButton>
+      ) : null}
     </div>
   );
 }

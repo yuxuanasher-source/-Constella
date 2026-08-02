@@ -4,10 +4,12 @@ import {
   AdmissionShareFormalRoundConflictError,
   AdmissionShareSelectionError,
   createAdmissionShareBoard,
-  listInternalAdmissionShareBoards,
+  getInternalAdmissionShareBoardDetail,
+  listInternalAdmissionShareBoardTasks,
   SupabaseAdmissionShareBoardRepository,
   toAdmissionShareIdentityPresentation,
   type AdmissionShareBoardRecord,
+  type AdmissionShareBoardTaskRecord,
   type AdmissionShareBoardTaskWithPresentation,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareCandidateRepository } from "@/features/applications/admission-share-candidates";
@@ -41,9 +43,28 @@ export async function GET(
 
     const repo = new SupabaseAdmissionShareBoardRepository(context.supabase);
     const url = new URL(request.url);
+    const boardIdValue = url.searchParams.get("boardId");
+    if (boardIdValue !== null) {
+      if (url.searchParams.has("cursor") || url.searchParams.has("limit")) {
+        throw new RouteError(
+          "boardId cannot be combined with list pagination",
+          400,
+        );
+      }
+      const shareBoardId = admissionShareBoardId(boardIdValue);
+      const shareBoard = await getInternalAdmissionShareBoardDetail({
+        repo,
+        actor: actorFromContext(context),
+        projectId,
+        shareBoardId,
+      });
+      return NextResponse.json({
+        shareBoard: toSafeShareBoardDetail(shareBoard),
+      });
+    }
     const cursor = url.searchParams.get("cursor") ?? undefined;
     const limit = admissionSharePageLimit(url.searchParams.get("limit"));
-    const page = await listInternalAdmissionShareBoards({
+    const page = await listInternalAdmissionShareBoardTasks({
       repo,
       actor: actorFromContext(context),
       projectId,
@@ -192,9 +213,7 @@ function toSafeShareBoard(shareBoard: AdmissionShareBoardRecord) {
   };
 }
 
-function toSafeShareBoardTask(
-  shareBoard: AdmissionShareBoardTaskWithPresentation,
-) {
+function toSafeShareBoardTask(shareBoard: AdmissionShareBoardTaskRecord) {
   return {
     id: shareBoard.id,
     title: shareBoard.title,
@@ -212,6 +231,14 @@ function toSafeShareBoardTask(
     lockedAt: shareBoard.lockedAt,
     createdBy: shareBoard.createdBy,
     createdAt: shareBoard.createdAt,
+  };
+}
+
+function toSafeShareBoardDetail(
+  shareBoard: AdmissionShareBoardTaskWithPresentation,
+) {
+  return {
+    ...toSafeShareBoardTask(shareBoard),
     presentation: shareBoard.presentation,
   };
 }
@@ -222,6 +249,14 @@ function optionalString(value: unknown) {
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function admissionShareBoardId(value: string) {
+  const normalized = value.trim();
+  if (!UUID_PATTERN.test(normalized)) {
+    throw new RouteError("boardId must be a UUID", 400);
+  }
+  return normalized;
+}
 
 function admissionShareContactCardId(
   value: unknown,

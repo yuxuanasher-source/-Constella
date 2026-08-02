@@ -685,24 +685,42 @@ describe("admission share brand snapshot schema", () => {
     );
   });
 
-  it("hydrates one bounded keyset page in a single stable SQL statement", () => {
-    const listHydrations = functionSqlFrom(
+  it("separates bounded task listing from one authorized full-board hydration", () => {
+    const listTasks = functionSqlFrom(
       shareSnapshotSql,
-      "list_internal_admission_share_board_hydrations",
+      "list_internal_admission_share_board_tasks",
     );
-    expect(listHydrations).toContain("language sql");
-    expect(listHydrations).toContain("stable");
-    expect(listHydrations).toContain("security definer");
-    expect(listHydrations).toContain("p_before_created_at");
-    expect(listHydrations).toContain("p_before_id");
-    expect(listHydrations).toMatch(
+    expect(listTasks).toContain("stable");
+    expect(listTasks).toContain("security definer");
+    expect(listTasks).toContain("p_before_created_at");
+    expect(listTasks).toContain("p_before_id");
+    expect(listTasks).toContain("admission_share_cursor_invalid");
+    expect(listTasks).toContain("admission_share_page_limit_invalid");
+    expect(listTasks).toMatch(
       /board\.created_at < p_before_created_at[\s\S]*board\.created_at = p_before_created_at[\s\S]*board\.id < p_before_id/,
     );
-    expect(listHydrations).toMatch(
-      /order by board\.created_at desc, board\.id desc[\s\S]*limit least/,
+    expect(listTasks).toMatch(
+      /order by board\.created_at desc, board\.id desc[\s\S]*limit p_limit \+ 1/,
     );
-    expect(listHydrations).toContain(
-      "build_admission_share_board_hydration(board.id)",
+    expect(listTasks).not.toContain("build_admission_share_board_hydration");
+    expect(listTasks).not.toContain("'items'");
+    expect(listTasks).not.toContain("'presentation'");
+    expect(compact(shareSnapshotSql)).not.toContain(
+      "grant execute on function public.list_internal_admission_share_board_hydrations",
+    );
+
+    const detailHydration = functionSqlFrom(
+      shareSnapshotSql,
+      "get_internal_admission_share_board_hydration",
+    );
+    expect(detailHydration).toContain("security definer");
+    expect(detailHydration).toContain(
+      "public.can_access_project(p_project_id)",
+    );
+    expect(detailHydration).toContain("public.is_mcn_staff");
+    expect(detailHydration).toContain("board.project_id = p_project_id");
+    expect(detailHydration).toContain(
+      "public.build_admission_share_board_hydration(p_share_board_id)",
     );
     const buildHydration = functionSqlFrom(
       shareSnapshotSql,

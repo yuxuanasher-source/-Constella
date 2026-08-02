@@ -28062,46 +28062,23 @@ function OpsReferenceInner({
       );
     };
 
-    const listAdmissionShareBoards = async (projectId) => {
+    const listAdmissionShareBoards = async (projectId, cursor) => {
       const baseUrl = `/api/projects/${encodeURIComponent(
         projectId,
       )}/admission-share-boards`;
-      const shareBoards = [];
-      const seenBoardIds = new Set();
-      const seenCursors = new Set();
-      let cursor = null;
-
-      for (let page = 0; page < 250; page += 1) {
-        const url = cursor
-          ? `${baseUrl}?cursor=${encodeURIComponent(cursor)}`
-          : baseUrl;
-        const body = await fetchJson(
-          url,
-          "list admission share boards failed",
-          { method: "GET" },
-        );
-
-        for (const shareBoard of Array.isArray(body.shareBoards)
-          ? body.shareBoards
-          : []) {
-          const id =
-            typeof shareBoard?.id === "string" ? shareBoard.id.trim() : "";
-          if (!id || seenBoardIds.has(id)) continue;
-          seenBoardIds.add(id);
-          shareBoards.push(shareBoard);
-        }
-
-        const nextCursor =
-          typeof body.nextCursor === "string" ? body.nextCursor.trim() : "";
-        if (!nextCursor) return shareBoards;
-        if (seenCursors.has(nextCursor)) {
-          throw new Error("分享任务分页游标重复");
-        }
-        seenCursors.add(nextCursor);
-        cursor = nextCursor;
-      }
-
-      throw new Error("分享任务分页超过安全上限");
+      const url = cursor
+        ? `${baseUrl}?cursor=${encodeURIComponent(cursor)}`
+        : baseUrl;
+      const body = await fetchJson(url, "list admission share boards failed", {
+        method: "GET",
+      });
+      return {
+        shareBoards: Array.isArray(body.shareBoards) ? body.shareBoards : [],
+        nextCursor:
+          typeof body.nextCursor === "string" && body.nextCursor.trim()
+            ? body.nextCursor.trim()
+            : null,
+      };
     };
 
     const createAdmissionShareBoard = async (projectId, input) => {

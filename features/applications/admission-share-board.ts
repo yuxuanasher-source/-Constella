@@ -90,7 +90,7 @@ export type AdmissionShareBoardInternalHydration = {
 };
 
 export type AdmissionShareBoardInternalPage = {
-  hydrations: AdmissionShareBoardInternalHydration[];
+  tasks: AdmissionShareBoardTaskRecord[];
   nextCursor: string | null;
 };
 
@@ -202,13 +202,17 @@ export type AdmissionShareBoardRepository = {
   markShareBoardViewed(shareBoardId: string, viewedAt: string): Promise<void>;
 };
 
-export type AdmissionShareBoardSnapshotBatchReader = {
-  listInternalShareBoardHydrations(input: {
+export type AdmissionShareBoardInternalReader = {
+  listInternalShareBoardTasks(input: {
     projectId: string;
     beforeCreatedAt?: string;
     beforeId?: string;
     limit: number;
   }): Promise<AdmissionShareBoardInternalPage>;
+  getInternalShareBoardHydration(input: {
+    projectId: string;
+    shareBoardId: string;
+  }): Promise<AdmissionShareBoardInternalHydration>;
 };
 
 export type CreateAdmissionShareBoardInput = {
@@ -743,7 +747,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     });
   }
 
-  async listInternalShareBoardHydrations(input: {
+  async listInternalShareBoardTasks(input: {
     projectId: string;
     beforeCreatedAt?: string;
     beforeId?: string;
@@ -751,7 +755,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
   }): Promise<AdmissionShareBoardInternalPage> {
     const limit = normalizeInternalSharePageSize(input.limit);
     const { data, error } = await this.client.rpc(
-      "list_internal_admission_share_board_hydrations",
+      "list_internal_admission_share_board_tasks",
       {
         p_project_id: input.projectId,
         p_before_created_at: input.beforeCreatedAt ?? null,
@@ -760,25 +764,54 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       },
     );
     if (error) {
-      if (isAdmissionShareItemLimitRpcError(error)) {
-        throw new AdmissionShareItemLimitError();
-      }
+      if (isAdmissionShareCursorRpcError(error))
+        throw new AdmissionShareCursorError();
       throw error;
     }
 
-    const rows = (data ?? []) as Array<{ hydration: unknown }>;
+    const rows = (data ?? []) as Array<{ task: unknown }>;
     const hasNextPage = rows.length > limit;
-    const hydrations = rows
+    const tasks = rows
       .slice(0, limit)
-      .map((row) => row.hydration as AdmissionShareBoardInternalHydration);
-    const last = hydrations.at(-1)?.task;
+      .map((row) => row.task as AdmissionShareBoardTaskRecord);
+    const last = tasks.at(-1);
     return {
-      hydrations,
+      tasks,
       nextCursor:
         hasNextPage && last
           ? encodeAdmissionShareCursor(last.createdAt, last.id)
           : null,
     };
+  }
+
+  async getInternalShareBoardHydration(input: {
+    projectId: string;
+    shareBoardId: string;
+  }): Promise<AdmissionShareBoardInternalHydration> {
+    const { data, error } = await this.client.rpc(
+      "get_internal_admission_share_board_hydration",
+      {
+        p_project_id: input.projectId,
+        p_share_board_id: input.shareBoardId,
+      },
+    );
+    if (error) {
+      if (isAdmissionShareItemLimitRpcError(error)) {
+        throw new AdmissionShareItemLimitError();
+      }
+      throw mapAdmissionShareLifecycleRpcError(error);
+    }
+
+    const hydration = ((data ?? []) as Array<{ hydration?: unknown }>)[0]
+      ?.hydration;
+    if (!hydration) {
+      throw new AdmissionShareLifecycleError(
+        "SHARE_NOT_FOUND",
+        "Share board was not found in this project",
+        404,
+      );
+    }
+    return hydration as AdmissionShareBoardInternalHydration;
   }
 
   async extendShareBoard(input: {
@@ -1725,34 +1758,51 @@ export async function listAdmissionShareBoards({
   return repo.listShareBoards(projectId);
 }
 
-export async function listInternalAdmissionShareBoards({
+export async function listInternalAdmissionShareBoardTasks({
   repo,
   projectId,
   cursor,
   limit = INTERNAL_SHARE_DEFAULT_PAGE_SIZE,
 }: {
-  repo: AdmissionShareBoardRepository & AdmissionShareBoardSnapshotBatchReader;
+  repo: AdmissionShareBoardRepository & AdmissionShareBoardInternalReader;
   actor: AdmissionShareBoardActor;
   projectId: string;
   cursor?: string;
   limit?: number;
 }): Promise<{
-  shareBoards: AdmissionShareBoardTaskWithPresentation[];
+  shareBoards: AdmissionShareBoardTaskRecord[];
   nextCursor: string | null;
 }> {
   const decoded = cursor ? decodeAdmissionShareCursor(cursor) : null;
-  const page = await repo.listInternalShareBoardHydrations({
+  const page = await repo.listInternalShareBoardTasks({
     projectId,
     beforeCreatedAt: decoded?.createdAt,
     beforeId: decoded?.id,
     limit: normalizeInternalSharePageSize(limit),
   });
   return {
-    shareBoards: page.hydrations.map(({ task, snapshot }) => ({
-      ...task,
-      presentation: toInternalAdmissionSharePresentation(snapshot),
-    })),
+    shareBoards: page.tasks,
     nextCursor: page.nextCursor,
+  };
+}
+
+export async function getInternalAdmissionShareBoardDetail({
+  repo,
+  projectId,
+  shareBoardId,
+}: {
+  repo: AdmissionShareBoardRepository & AdmissionShareBoardInternalReader;
+  actor: AdmissionShareBoardActor;
+  projectId: string;
+  shareBoardId: string;
+}): Promise<AdmissionShareBoardTaskWithPresentation> {
+  const { task, snapshot } = await repo.getInternalShareBoardHydration({
+    projectId,
+    shareBoardId,
+  });
+  return {
+    ...task,
+    presentation: toInternalAdmissionSharePresentation(snapshot),
   };
 }
 
@@ -2874,6 +2924,15 @@ function isAdmissionShareItemLimitRpcError(error: unknown) {
   );
 }
 
+function isAdmissionShareCursorRpcError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { message?: unknown };
+  return (
+    candidate.message === "admission_share_cursor_invalid" ||
+    candidate.message === "admission_share_page_limit_invalid"
+  );
+}
+
 function isAdmissionShareProjectStatusRpcError(error: unknown) {
   if (!error || typeof error !== "object") {
     return false;
@@ -3264,9 +3323,11 @@ function normalizeInternalSharePageSize(value: number) {
 }
 
 function encodeAdmissionShareCursor(createdAt: string, id: string) {
-  return Buffer.from(JSON.stringify({ createdAt, id }), "utf8").toString(
-    "base64url",
-  );
+  const canonicalCreatedAt = new Date(createdAt).toISOString();
+  return Buffer.from(
+    JSON.stringify({ createdAt: canonicalCreatedAt, id }),
+    "utf8",
+  ).toString("base64url");
 }
 
 function decodeAdmissionShareCursor(value: string): {
@@ -3277,9 +3338,15 @@ function decodeAdmissionShareCursor(value: string): {
     const decoded = JSON.parse(
       Buffer.from(value, "base64url").toString("utf8"),
     ) as Record<string, unknown>;
+    const parsedCreatedAt =
+      typeof decoded.createdAt === "string"
+        ? new Date(decoded.createdAt)
+        : null;
     if (
       typeof decoded.createdAt !== "string" ||
-      !Number.isFinite(Date.parse(decoded.createdAt)) ||
+      !parsedCreatedAt ||
+      !Number.isFinite(parsedCreatedAt.getTime()) ||
+      parsedCreatedAt.toISOString() !== decoded.createdAt ||
       typeof decoded.id !== "string" ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
         decoded.id,

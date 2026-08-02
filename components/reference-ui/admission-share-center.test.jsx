@@ -115,7 +115,10 @@ function createActions() {
       .mockImplementation((_projectId, items) =>
         Promise.resolve(readyResult(items)),
       ),
-    listAdmissionShareBoards: vi.fn().mockResolvedValue([]),
+    listAdmissionShareBoards: vi.fn().mockResolvedValue({
+      shareBoards: [],
+      nextCursor: null,
+    }),
     createAdmissionShareBoard: vi.fn().mockResolvedValue({
       shareBoard: { id: "share-1", mode: "formal_review" },
       shareUrl: "https://app.example/share/admission/plain-token",
@@ -130,6 +133,27 @@ function createActions() {
     listAdmissionShareSubmissions: vi.fn().mockResolvedValue([]),
     listAdmissionSharePlaybackIssues: vi.fn().mockResolvedValue([]),
     resolveAdmissionSharePlaybackIssue: vi.fn().mockResolvedValue({ ok: true }),
+  };
+}
+
+function shareTask(id, title) {
+  return {
+    id,
+    title,
+    purpose: "Review",
+    mode: "preview",
+    status: "active",
+    reviewState: "not_started",
+    roundNumber: 1,
+    expiresAt: "2099-08-01T00:00:00.000Z",
+    itemCount: 5000,
+    draftCompletedCount: 0,
+    lastViewedAt: null,
+    lastDraftAt: null,
+    lastSubmittedAt: null,
+    lockedAt: null,
+    createdBy: "user-ops",
+    createdAt: "2026-07-30T00:00:00.000Z",
   };
 }
 
@@ -283,6 +307,98 @@ describe("AdmissionShareCenter", () => {
     fireEvent.click(screen.getByRole("button", { name: "重试加载录屏库" }));
     expect(await screen.findByText("主播甲")).toBeInTheDocument();
     expect(actions.listAdmissionShareCandidates).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads task pages explicitly, appends by id, and never requests every page automatically", async () => {
+    const firstPage = Array.from({ length: 20 }, (_, index) =>
+      shareTask(`share-${index + 1}`, `Task ${index + 1}`),
+    );
+    actions.listAdmissionShareBoards
+      .mockResolvedValueOnce({
+        shareBoards: firstPage,
+        nextCursor: "page-2/cursor",
+      })
+      .mockResolvedValueOnce({
+        shareBoards: [firstPage[19], shareTask("share-21", "Task 21")],
+        nextCursor: null,
+      });
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    expect(await screen.findByText("Task 1")).toBeInTheDocument();
+    expect(actions.listAdmissionShareBoards).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
+    expect(await screen.findByText("Task 21")).toBeInTheDocument();
+    expect(screen.getAllByText("Task 20")).toHaveLength(1);
+    expect(actions.listAdmissionShareBoards).toHaveBeenNthCalledWith(
+      2,
+      "project-1",
+      "page-2/cursor",
+    );
+    expect(
+      screen.queryByRole("button", { name: "加载更多分享任务" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps loaded tasks visible while a failed next page is retried", async () => {
+    actions.listAdmissionShareBoards
+      .mockResolvedValueOnce({
+        shareBoards: [shareTask("share-1", "First task")],
+        nextCursor: "next-page",
+      })
+      .mockRejectedValueOnce(new Error("next page unavailable"))
+      .mockResolvedValueOnce({
+        shareBoards: [shareTask("share-2", "Recovered task")],
+        nextCursor: null,
+      });
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    expect(await screen.findByText("First task")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "next page unavailable",
+    );
+    expect(screen.getByText("First task")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "重试加载更多分享任务" }),
+    );
+    expect(await screen.findByText("Recovered task")).toBeInTheDocument();
+    expect(actions.listAdmissionShareBoards).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores stale task pages after a project switch", async () => {
+    let resolveFirstProject;
+    const firstProjectPage = new Promise((resolve) => {
+      resolveFirstProject = resolve;
+    });
+    actions.listAdmissionShareBoards.mockImplementation((projectId) =>
+      projectId === "project-1"
+        ? firstProjectPage
+        : Promise.resolve({
+            shareBoards: [shareTask("share-new", "New project task")],
+            nextCursor: null,
+          }),
+    );
+    const view = renderShareCenter(actions);
+    view.rerender(
+      <AdmissionShareCenter
+        project={{ ...project, id: "project-2", name: "Beta Project" }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    expect(await screen.findByText("New project task")).toBeInTheDocument();
+    resolveFirstProject({
+      shareBoards: [shareTask("share-old", "Stale project task")],
+      nextCursor: null,
+    });
+    await Promise.resolve();
+    expect(screen.queryByText("Stale project task")).not.toBeInTheDocument();
   });
 
   it("selects an approved historical version and removes only blocked items", async () => {

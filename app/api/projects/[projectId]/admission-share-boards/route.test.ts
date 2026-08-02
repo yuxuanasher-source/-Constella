@@ -6,7 +6,8 @@ import {
   AdmissionShareFormalRoundConflictError,
   AdmissionShareSelectionError,
   createAdmissionShareBoard,
-  listInternalAdmissionShareBoards,
+  getInternalAdmissionShareBoardDetail,
+  listInternalAdmissionShareBoardTasks,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareCandidateRepository } from "@/features/applications/admission-share-candidates";
@@ -29,7 +30,8 @@ vi.mock("@/features/applications/admission-share-board", () => ({
       };
     }),
   createAdmissionShareBoard: vi.fn(),
-  listInternalAdmissionShareBoards: vi.fn(),
+  getInternalAdmissionShareBoardDetail: vi.fn(),
+  listInternalAdmissionShareBoardTasks: vi.fn(),
   toAdmissionShareIdentityPresentation: vi.fn().mockReturnValue({
     brand: {
       logoText: "星河",
@@ -216,7 +218,7 @@ describe("project admission share-board route", () => {
     vi.mocked(createSupabaseAdminClient).mockReturnValue({
       client: "admin",
     } as never);
-    vi.mocked(listInternalAdmissionShareBoards).mockResolvedValue({
+    vi.mocked(listInternalAdmissionShareBoardTasks).mockResolvedValue({
       shareBoards: [
         {
           id: "share-1",
@@ -235,10 +237,28 @@ describe("project admission share-board route", () => {
           lockedAt: null,
           createdBy: "user-ops",
           createdAt: "2026-07-30T00:00:00.000Z",
-          presentation: internalPresentation,
         },
       ],
       nextCursor: null,
+    });
+    vi.mocked(getInternalAdmissionShareBoardDetail).mockResolvedValue({
+      id: "share-1",
+      title: "Vendor review",
+      purpose: "",
+      mode: "formal_review",
+      status: "active",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+      reviewState: "not_started",
+      roundNumber: 1,
+      itemCount: 10,
+      draftCompletedCount: 4,
+      lastViewedAt: "2026-07-30T08:00:00.000Z",
+      lastDraftAt: "2026-07-30T08:20:00.000Z",
+      lastSubmittedAt: null,
+      lockedAt: null,
+      createdBy: "user-ops",
+      createdAt: "2026-07-30T00:00:00.000Z",
+      presentation: internalPresentation,
     });
     vi.mocked(createAdmissionShareBoard).mockResolvedValue({
       token: "plain-token",
@@ -278,7 +298,7 @@ describe("project admission share-board route", () => {
     });
   });
 
-  it("lists whitelisted share-board task progress without secrets or reviewer data", async () => {
+  it("lists whitelisted task summaries without presentations, items, or secrets", async () => {
     const response = await GET(new Request("http://localhost/api"), {
       params,
     });
@@ -304,14 +324,10 @@ describe("project admission share-board route", () => {
         lockedAt: null,
         createdBy: "user-ops",
         createdAt: "2026-07-30T00:00:00.000Z",
-        presentation: internalPresentation,
       },
     ]);
-    expect(
-      body.shareBoards[0].presentation.items.map(
-        (item: { recordingSubmissionId: string }) => item.recordingSubmissionId,
-      ),
-    ).toEqual(["recording-v2", "recording-v3"]);
+    expect(JSON.stringify(body)).not.toContain("presentation");
+    expect(JSON.stringify(body)).not.toContain('"items"');
     expect(JSON.stringify(body)).not.toContain("hash");
     expect(JSON.stringify(body)).not.toContain("organizationId");
     expect(JSON.stringify(body)).not.toContain("projectId");
@@ -324,6 +340,51 @@ describe("project admission share-board route", () => {
     expect(JSON.stringify(body)).not.toContain("reviewer");
   });
 
+  it("loads one explicitly requested board detail without private DTO fields", async () => {
+    const boardId = "00000000-0000-4000-8000-000000000001";
+    const response = await GET(
+      new Request(`http://localhost/api?boardId=${boardId}`),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.shareBoard.presentation).toEqual(internalPresentation);
+    expect(getInternalAdmissionShareBoardDetail).toHaveBeenCalledWith({
+      repo: { repo: "share-repo" },
+      actor: auth,
+      projectId: "project-1",
+      shareBoardId: boardId,
+    });
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toMatch(
+      /tokenHash|accessCodeHash|storagePath|logoStoragePath/u,
+    );
+    expect(listInternalAdmissionShareBoardTasks).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["cross-project or missing", 404],
+    ["unauthorized", 403],
+  ])(
+    "returns %s detail errors without falling back to the list",
+    async (_case, status) => {
+      vi.mocked(getInternalAdmissionShareBoardDetail).mockRejectedValueOnce(
+        Object.assign(new Error("detail unavailable"), { statusCode: status }),
+      );
+
+      const response = await GET(
+        new Request(
+          "http://localhost/api?boardId=00000000-0000-4000-8000-000000000001",
+        ),
+        { params },
+      );
+
+      expect(response.status).toBe(status);
+      expect(listInternalAdmissionShareBoardTasks).not.toHaveBeenCalled();
+    },
+  );
+
   it("passes a bounded keyset cursor to the internal first-screen listing", async () => {
     const cursor = Buffer.from(
       JSON.stringify({
@@ -331,7 +392,7 @@ describe("project admission share-board route", () => {
         id: "00000000-0000-4000-8000-000000000001",
       }),
     ).toString("base64url");
-    vi.mocked(listInternalAdmissionShareBoards).mockResolvedValue({
+    vi.mocked(listInternalAdmissionShareBoardTasks).mockResolvedValue({
       shareBoards: [],
       nextCursor: "next-page",
     });
@@ -346,7 +407,7 @@ describe("project admission share-board route", () => {
       shareBoards: [],
       nextCursor: "next-page",
     });
-    expect(listInternalAdmissionShareBoards).toHaveBeenCalledWith({
+    expect(listInternalAdmissionShareBoardTasks).toHaveBeenCalledWith({
       repo: { repo: "share-repo" },
       actor: auth,
       projectId: "project-1",
@@ -361,7 +422,7 @@ describe("project admission share-board route", () => {
     });
 
     expect(response.status).toBe(400);
-    expect(listInternalAdmissionShareBoards).not.toHaveBeenCalled();
+    expect(listInternalAdmissionShareBoardTasks).not.toHaveBeenCalled();
   });
 
   it("creates a share board and returns one-time share url", async () => {

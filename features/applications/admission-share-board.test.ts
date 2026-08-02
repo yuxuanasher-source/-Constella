@@ -9,9 +9,10 @@ import {
   getPublicAdmissionShareBoard,
   getPublicAdmissionShareBoardContextWithSession,
   getPublicAdmissionRecordingPlaybackSource,
+  getInternalAdmissionShareBoardDetail,
   hashAdmissionShareAccessCode,
   hashShareSecret,
-  listInternalAdmissionShareBoards,
+  listInternalAdmissionShareBoardTasks,
   listAdmissionSharePlaybackIssues,
   mapVendorDecisionToSyncPatch,
   listPublicAdmissionReviewDrafts,
@@ -438,34 +439,42 @@ describe("admission share board service", () => {
     expect(legacyHydration).not.toHaveBeenCalled();
   });
 
-  it("lists complete internal presentations through one batch repository read", async () => {
-    const snapshots = [
-      publicSnapshot({ id: "share-1", roundNumber: 1 }),
-      publicSnapshot({ id: "share-2", roundNumber: 2 }),
-    ];
+  it("lists only bounded task summaries and loads one presentation by board id", async () => {
+    const snapshot = publicSnapshot({ id: "share-1", roundNumber: 1 });
     const getPublicShareBoardSnapshot = vi.fn();
     const listShareBoards = vi.fn();
-    const listInternalShareBoardHydrations = vi.fn().mockResolvedValue({
-      hydrations: snapshots.map((snapshot, index) => ({
-        task: admissionShareTask(snapshot.id, index + 1),
-        snapshot,
-      })),
+    const listInternalShareBoardTasks = vi.fn().mockResolvedValue({
+      tasks: [
+        admissionShareTask("share-1", 1),
+        admissionShareTask("share-2", 2),
+      ],
       nextCursor: "next-page",
+    });
+    const getInternalShareBoardHydration = vi.fn().mockResolvedValue({
+      task: admissionShareTask("share-1", 1),
+      snapshot,
     });
     const repo = createRepo({
       listShareBoards,
       getPublicShareBoardSnapshot,
-      listInternalShareBoardHydrations,
+      listInternalShareBoardTasks,
+      getInternalShareBoardHydration,
     } as never);
 
-    const result = await listInternalAdmissionShareBoards({
+    const result = await listInternalAdmissionShareBoardTasks({
       repo: repo as never,
       actor,
       projectId: "project-1",
     });
+    const detail = await getInternalAdmissionShareBoardDetail({
+      repo: repo as never,
+      actor,
+      projectId: "project-1",
+      shareBoardId: "share-1",
+    });
 
-    expect(listInternalShareBoardHydrations).toHaveBeenCalledTimes(1);
-    expect(listInternalShareBoardHydrations).toHaveBeenCalledWith({
+    expect(listInternalShareBoardTasks).toHaveBeenCalledTimes(1);
+    expect(listInternalShareBoardTasks).toHaveBeenCalledWith({
       projectId: "project-1",
       limit: 20,
       beforeCreatedAt: undefined,
@@ -478,10 +487,19 @@ describe("admission share board service", () => {
       "share-1",
       "share-2",
     ]);
-    expect(result.shareBoards.map((board) => board.presentation)).toEqual(
-      snapshots.map(toInternalAdmissionSharePresentation),
+    expect(
+      result.shareBoards.every((board) => !("presentation" in board)),
+    ).toBe(true);
+    expect(getInternalShareBoardHydration).toHaveBeenCalledWith({
+      projectId: "project-1",
+      shareBoardId: "share-1",
+    });
+    expect(detail.presentation).toEqual(
+      toInternalAdmissionSharePresentation(snapshot),
     );
     const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("presentation");
+    expect(serialized).not.toContain('"items"');
     expect(serialized).not.toContain("tokenHash");
     expect(serialized).not.toContain("accessCodeHash");
     expect(serialized).not.toContain("storagePath");
@@ -489,11 +507,11 @@ describe("admission share board service", () => {
   });
 
   it("rejects a malformed internal share cursor before any repository call", async () => {
-    const listInternalShareBoardHydrations = vi.fn();
-    const repo = createRepo({ listInternalShareBoardHydrations } as never);
+    const listInternalShareBoardTasks = vi.fn();
+    const repo = createRepo({ listInternalShareBoardTasks } as never);
 
     await expect(
-      listInternalAdmissionShareBoards({
+      listInternalAdmissionShareBoardTasks({
         repo: repo as never,
         actor,
         projectId: "project-1",
@@ -504,7 +522,28 @@ describe("admission share board service", () => {
       code: "SHARE_CURSOR_INVALID",
       statusCode: 400,
     });
-    expect(listInternalShareBoardHydrations).not.toHaveBeenCalled();
+    expect(listInternalShareBoardTasks).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-canonical cursor timestamp before the task RPC", async () => {
+    const listInternalShareBoardTasks = vi.fn();
+    const repo = createRepo({ listInternalShareBoardTasks } as never);
+    const cursor = Buffer.from(
+      JSON.stringify({
+        createdAt: "2026-07-30T00:00:00Z",
+        id: "00000000-0000-4000-8000-000000000001",
+      }),
+    ).toString("base64url");
+
+    await expect(
+      listInternalAdmissionShareBoardTasks({
+        repo: repo as never,
+        actor,
+        projectId: "project-1",
+        cursor,
+      }),
+    ).rejects.toMatchObject({ code: "SHARE_CURSOR_INVALID" });
+    expect(listInternalShareBoardTasks).not.toHaveBeenCalled();
   });
 
   it("sends no client-authored snapshot parameters to the atomic creation RPC", async () => {
@@ -3457,89 +3496,86 @@ describe("admission share board service", () => {
     expect(selectedColumns).not.toContain("access_code_hash");
   });
 
-  it("hydrates one bounded internal page through one RPC without table reads", async () => {
-    const snapshots = [
-      publicSnapshot({ id: "share-1" }),
-      publicSnapshot({ id: "share-2" }),
-      publicSnapshot({ id: "share-3" }),
-    ].map((raw) => {
-      const snapshot = { ...raw };
-      delete (snapshot as { tokenHash?: unknown }).tokenHash;
-      delete (snapshot as { accessCodeHash?: unknown }).accessCodeHash;
-      return {
-        ...snapshot,
-        brandSnapshot: {
-          ...snapshot.brandSnapshot,
-          logoStoragePath: undefined,
-        },
-        items: snapshot.items.map(({ storagePath, ...item }) => ({
-          ...item,
-          hasPrivateStorage: Boolean(storagePath),
-        })),
-      };
-    });
+  it("lists twenty 5000-item boards as bounded summaries without hydrating items", async () => {
+    const tasks = Array.from({ length: 21 }, (_, index) => ({
+      ...admissionShareTask(
+        `00000000-0000-4000-8000-${(index + 1).toString().padStart(12, "0")}`,
+        index + 1,
+      ),
+      itemCount: 5000,
+      draftCompletedCount: 4999,
+      createdAt: `2026-07-${(30 - index).toString().padStart(2, "0")}T00:00:00.000Z`,
+    }));
     const rpc = vi.fn().mockResolvedValue({
-      data: snapshots.map((snapshot, index) => ({
-        hydration: {
-          task: {
-            ...admissionShareTask(
-              "00000000-0000-4000-8000-00000000000" + (index + 1),
-              index + 1,
-            ),
-            createdAt: `2026-07-${30 - index}T00:00:00.000Z`,
-          },
-          snapshot,
-        },
-      })),
+      data: tasks.map((task) => ({ task })),
       error: null,
     });
     const from = vi.fn(() => {
-      throw new Error("internal hydration must not read tables separately");
+      throw new Error("internal task listing must use one bounded RPC");
     });
     const repo = new SupabaseAdmissionShareBoardRepository({
       rpc,
       from,
     } as never);
 
-    const page = await repo.listInternalShareBoardHydrations({
+    const page = await repo.listInternalShareBoardTasks({
       projectId: "project-1",
       beforeCreatedAt: "2026-08-01T00:00:00.000Z",
       beforeId: "00000000-0000-4000-8000-000000000099",
-      limit: 2,
+      limit: 20,
     });
 
     expect(rpc).toHaveBeenCalledTimes(1);
     expect(rpc).toHaveBeenCalledWith(
-      "list_internal_admission_share_board_hydrations",
+      "list_internal_admission_share_board_tasks",
       {
         p_project_id: "project-1",
         p_before_created_at: "2026-08-01T00:00:00.000Z",
         p_before_id: "00000000-0000-4000-8000-000000000099",
-        p_limit: 2,
+        p_limit: 20,
       },
     );
     expect(from).not.toHaveBeenCalled();
-    expect(page.hydrations).toHaveLength(2);
+    expect(page.tasks).toHaveLength(20);
     expect(page.nextCursor).toEqual(expect.any(String));
-    expect(JSON.stringify(page)).not.toMatch(
-      /tokenHash|accessCodeHash|storagePath|logoStoragePath/u,
-    );
+    expect(JSON.stringify(page)).not.toMatch(/presentation|snapshot|items/u);
   });
 
-  it("fails explicitly instead of returning a truncated oversized hydration", async () => {
+  it("loads exactly one authorized board detail and maps oversized hydration", async () => {
+    const snapshot = publicSnapshot({ id: "share-1" });
+    const task = admissionShareTask("share-1", 1);
     const rpc = vi.fn().mockResolvedValue({
+      data: [{ hydration: { task, snapshot } }],
+      error: null,
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({ rpc } as never);
+
+    await expect(
+      repo.getInternalShareBoardHydration({
+        projectId: "project-1",
+        shareBoardId: "share-1",
+      }),
+    ).resolves.toEqual({ task, snapshot });
+    expect(rpc).toHaveBeenCalledWith(
+      "get_internal_admission_share_board_hydration",
+      {
+        p_project_id: "project-1",
+        p_share_board_id: "share-1",
+      },
+    );
+
+    rpc.mockResolvedValueOnce({
       data: null,
       error: {
         code: "P0001",
         message: "admission_share_hydration_item_limit_exceeded",
       },
     });
-    const repo = new SupabaseAdmissionShareBoardRepository({ rpc } as never);
 
     await expect(
-      repo.listInternalShareBoardHydrations({
+      repo.getInternalShareBoardHydration({
         projectId: "project-1",
-        limit: 20,
+        shareBoardId: "share-too-large",
       }),
     ).rejects.toMatchObject({
       code: "SHARE_BOARD_TOO_LARGE",

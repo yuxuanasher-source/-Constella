@@ -552,54 +552,154 @@ owner to postgres;
 revoke all on function public.build_admission_share_board_hydration(uuid)
 from public, anon, authenticated, service_role;
 
-create or replace function public.list_internal_admission_share_board_hydrations(
+drop function if exists public.list_internal_admission_share_board_hydrations(
+  uuid, timestamptz, uuid, integer
+);
+
+create or replace function public.list_internal_admission_share_board_tasks(
   p_project_id uuid,
   p_before_created_at timestamptz default null,
   p_before_id uuid default null,
   p_limit integer default 20
 )
-returns table (hydration jsonb)
-language sql
+returns table (task jsonb)
+language plpgsql
 stable
 security definer
 set search_path = ''
 as $$
-  with authorized as (
-    select 1
-    where auth.uid() is not null
-      and public.can_access_project(p_project_id)
-      and exists (
-        select 1
-        from public.projects as project
-        where project.id = p_project_id
-          and public.is_mcn_staff(project.organization_id)
+begin
+  if auth.uid() is null
+     or not public.can_access_project(p_project_id)
+     or not exists (
+       select 1
+       from public.projects as project
+       where project.id = p_project_id
+         and public.is_mcn_staff(project.organization_id)
+     ) then
+    raise exception 'insufficient_privilege' using errcode = '42501';
+  end if;
+
+  if p_limit is null or p_limit < 1 or p_limit > 50 then
+    raise exception 'admission_share_page_limit_invalid' using errcode = '22023';
+  end if;
+
+  if (p_before_created_at is null) <> (p_before_id is null) then
+    raise exception 'admission_share_cursor_invalid' using errcode = '22023';
+  end if;
+
+  return query
+  with board_page as (
+    select board.*
+    from public.project_recording_share_boards as board
+    where board.project_id = p_project_id
+      and (
+        p_before_created_at is null
+        or board.created_at < p_before_created_at
+        or (
+          board.created_at = p_before_created_at
+          and board.id < p_before_id
+        )
       )
+    order by board.created_at desc, board.id desc
+    limit p_limit + 1
   )
-  select public.build_admission_share_board_hydration(board.id) as hydration
-  from public.project_recording_share_boards as board
-  cross join authorized
-  where board.project_id = p_project_id
-    and (
-      p_before_created_at is null
-      or board.created_at < p_before_created_at
-      or (
-        board.created_at = p_before_created_at
-        and board.id < p_before_id
+  select jsonb_build_object(
+    'id', board.id,
+    'title', board.title,
+    'purpose', board.purpose,
+    'mode', board.mode,
+    'status', board.status,
+    'reviewState', board.review_state,
+    'roundNumber', board.round_number,
+    'expiresAt', board.expires_at,
+    'itemCount', item_progress.item_count,
+    'draftCompletedCount', least(
+      draft_progress.completed_count,
+      item_progress.item_count
+    ),
+    'lastViewedAt', board.last_viewed_at,
+    'lastDraftAt', board.last_draft_at,
+    'lastSubmittedAt', board.last_submitted_at,
+    'lockedAt', board.locked_at,
+    'createdBy', board.created_by,
+    'createdAt', board.created_at
+  ) as task
+  from board_page as board
+  cross join lateral (
+    select count(*)::integer as item_count
+    from public.project_recording_share_items as item
+    where item.share_board_id = board.id
+  ) as item_progress
+  cross join lateral (
+    select count(*)::integer as completed_count
+    from public.project_recording_vendor_review_drafts as draft
+    where draft.share_board_id = board.id
+      and (
+        draft.decision in ('selected', 'backup')
+        or (
+          draft.decision in ('rejected', 'needs_changes')
+          and nullif(btrim(draft.remark), '') is not null
+        )
       )
-    )
-  order by board.created_at desc, board.id desc
-  limit least(greatest(coalesce(p_limit, 20), 1), 50) + 1;
+  ) as draft_progress
+  order by board.created_at desc, board.id desc;
+end;
 $$;
 
-alter function public.list_internal_admission_share_board_hydrations(
+alter function public.list_internal_admission_share_board_tasks(
   uuid, timestamptz, uuid, integer
 ) owner to postgres;
-revoke all on function public.list_internal_admission_share_board_hydrations(
+revoke all on function public.list_internal_admission_share_board_tasks(
   uuid, timestamptz, uuid, integer
 ) from public, anon, authenticated, service_role;
-grant execute on function public.list_internal_admission_share_board_hydrations(
+grant execute on function public.list_internal_admission_share_board_tasks(
   uuid, timestamptz, uuid, integer
 ) to authenticated;
+
+create or replace function public.get_internal_admission_share_board_hydration(
+  p_project_id uuid,
+  p_share_board_id uuid
+)
+returns table (hydration jsonb)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if auth.uid() is null
+     or not public.can_access_project(p_project_id)
+     or not exists (
+       select 1
+       from public.projects as project
+       where project.id = p_project_id
+         and public.is_mcn_staff(project.organization_id)
+     ) then
+    raise exception 'insufficient_privilege' using errcode = '42501';
+  end if;
+
+  if not exists (
+    select 1
+    from public.project_recording_share_boards as board
+    where board.id = p_share_board_id
+      and board.project_id = p_project_id
+  ) then
+    raise exception 'admission_share_detail_not_found' using errcode = 'P0002';
+  end if;
+
+  return query
+  select public.build_admission_share_board_hydration(p_share_board_id)
+    as hydration;
+end;
+$$;
+
+alter function public.get_internal_admission_share_board_hydration(uuid, uuid)
+owner to postgres;
+revoke all on function public.get_internal_admission_share_board_hydration(uuid, uuid)
+from public, anon, authenticated, service_role;
+grant execute on function public.get_internal_admission_share_board_hydration(uuid, uuid)
+to authenticated;
 
 drop function if exists public.create_admission_share_board(
   uuid, uuid, text, text, text, text, text, timestamptz, boolean, uuid, jsonb
