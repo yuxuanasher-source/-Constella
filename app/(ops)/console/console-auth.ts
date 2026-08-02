@@ -6,6 +6,7 @@ import {
   loadRoleHomeDashboard,
   type RoleHomePreloadedSource,
 } from "@/features/dashboards/role-home-loader";
+import { normalizePublishedBrand } from "@/features/organizations/organization-brand";
 import { getAuthContext, type AuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 import { isMcnStaff } from "@/lib/rbac/roles";
@@ -49,7 +50,12 @@ export function currentUserFromAuth(auth: AuthContext) {
 }
 
 export function organizationSettingsFromAuth(auth: AuthContext) {
-  return { name: auth.organizationName, ...(auth.organizationBranding ?? {}) };
+  const brand = normalizePublishedBrand(auth.organizationBranding, {
+    organizationId: auth.organizationId,
+    organizationName: auth.organizationName,
+  });
+
+  return { name: auth.organizationName, brand, ...brand };
 }
 
 // 加载当前角色的经营闭环看板 DTO，供作战台（ScreenRoleHome）渲染。

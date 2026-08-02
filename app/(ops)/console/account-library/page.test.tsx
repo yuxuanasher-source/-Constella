@@ -114,7 +114,7 @@ describe("account library console route", () => {
     } as never);
     vi.mocked(organizationSettingsFromAuth).mockReturnValue({
       name: "Demo Org",
-    });
+    } as never);
   });
 
   it("preloads the account library into the shared ops app shell", async () => {
@@ -127,9 +127,7 @@ describe("account library console route", () => {
     expect(OpsReferenceApp).toHaveBeenCalledWith(
       expect.objectContaining({
         initialRoute: "account-library",
-        accountLibraryAccounts: [
-          expect.objectContaining({ id: "account-1" }),
-        ],
+        accountLibraryAccounts: [expect.objectContaining({ id: "account-1" })],
         currentUser: expect.objectContaining({
           id: "user-ops",
           role: "ops_manager",

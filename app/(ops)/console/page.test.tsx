@@ -6,6 +6,7 @@ import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
 import { getAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
+import { organizationSettingsFromAuth } from "./console-auth";
 import ConsolePage from "./page";
 
 vi.mock("next/navigation", () => ({
@@ -28,9 +29,7 @@ vi.mock("@/components/reference-ui/ops-reference", () => ({
         <span>
           {props.dashboardHome?.profile?.title ?? "missing-dashboard"}
         </span>
-        <span>
-          dashboardHomeError: {props.dashboardHomeError ?? "null"}
-        </span>
+        <span>dashboardHomeError: {props.dashboardHomeError ?? "null"}</span>
       </div>
     ),
   ),
@@ -79,6 +78,24 @@ describe("console route", () => {
       name: "Alice Ops",
       organizationId: "org-1",
       organizationName: "Demo Org",
+      organizationBranding: {
+        schemaVersion: 1,
+        version: 3,
+        logoText: "DEMO",
+        logoStoragePath: null,
+        brandName: "Demo Console",
+        brandTagline: "Make work visible",
+        primaryColor: "#123456",
+        actionColor: "#123456",
+        softColor: "#E3E7EB",
+        publishedAt: "2026-08-01T00:00:00.000Z",
+        semantic: {
+          success: "#00B42A",
+          warning: "#FF7D00",
+          danger: "#F53F3F",
+          info: "#165DFF",
+        },
+      },
       role: "ops_manager",
     });
 
@@ -118,6 +135,18 @@ describe("console route", () => {
         }),
         organizationSettings: expect.objectContaining({
           name: "Demo Org",
+          brand: expect.objectContaining({
+            schemaVersion: 1,
+            version: 3,
+            primaryColor: "#123456",
+          }),
+          logoText: "DEMO",
+          brandName: "Demo Console",
+          brandTagline: "Make work visible",
+          primaryColor: "#123456",
+          actionColor: "#123456",
+          softColor: "#E3E7EB",
+          logoStoragePath: null,
         }),
       }),
       undefined,
@@ -207,5 +236,38 @@ describe("console route", () => {
       "NEXT_REDIRECT:/login",
     );
     expect(loadRoleHomeDashboard).not.toHaveBeenCalled();
+  });
+});
+
+describe("organizationSettingsFromAuth", () => {
+  it("returns a canonical brand while keeping legacy flat fields", () => {
+    const settings = organizationSettingsFromAuth({
+      userId: "user-legacy",
+      email: "legacy@example.test",
+      name: "Legacy Owner",
+      organizationId: "11111111-1111-4111-8111-111111111111",
+      organizationName: "北辰机构",
+      organizationBranding: {
+        logoText: " 北辰 ",
+        brandName: " 北辰经营舱 ",
+        brandTagline: " 稳健增长 ",
+        primaryColor: "invalid",
+      },
+      role: "owner",
+    } as never);
+
+    expect(settings.brand).toMatchObject({
+      schemaVersion: 1,
+      logoText: "北辰",
+      brandName: "北辰经营舱",
+      brandTagline: "稳健增长",
+      primaryColor: "#165DFF",
+    });
+    expect(settings).toMatchObject({
+      logoText: "北辰",
+      brandName: "北辰经营舱",
+      brandTagline: "稳健增长",
+      primaryColor: "#165DFF",
+    });
   });
 });

@@ -143,4 +143,72 @@ describe("getAuthContext", () => {
       role: "owner",
     });
   });
+
+  it("normalizes legacy organization branding after resolving its identity", async () => {
+    const organizationId = "11111111-1111-4111-8111-111111111111";
+    const membershipQuery = {
+      eq: vi.fn(() => membershipQuery),
+      order: vi.fn(() => membershipQuery),
+      returns: vi.fn(async () => ({
+        data: [
+          {
+            organization_id: organizationId,
+            role: "owner",
+            organizations: {
+              name: "北辰机构",
+              branding: {
+                logoText: " 北辰 ",
+                brandName: " 北辰经营舱 ",
+                brandTagline: " 稳健增长 ",
+                primaryColor: "#fff000",
+                logoStoragePath:
+                  "22222222-2222-4222-8222-222222222222/brand-logos/33333333-3333-4333-8333-333333333333.webp",
+              },
+            },
+          },
+        ],
+        error: null,
+      })),
+    };
+    const profileQuery = {
+      eq: vi.fn(() => profileQuery),
+      maybeSingle: vi.fn(async () => ({
+        data: { full_name: "Owner", requires_onboarding: false },
+        error: null,
+      })),
+    };
+    const client = {
+      auth: {
+        getUser: vi.fn(async () => ({
+          data: { user: { id: "user-brand", email: "owner@example.cn" } },
+        })),
+      },
+      from: vi.fn((table: string) =>
+        table === "profiles"
+          ? { select: vi.fn(() => profileQuery) }
+          : { select: vi.fn(() => membershipQuery) },
+      ),
+    };
+
+    await expect(getAuthContext(client as never)).resolves.toMatchObject({
+      organizationId,
+      organizationName: "北辰机构",
+      organizationBranding: {
+        schemaVersion: 1,
+        version: 0,
+        logoText: "北辰",
+        logoStoragePath: null,
+        brandName: "北辰经营舱",
+        brandTagline: "稳健增长",
+        primaryColor: "#FFF000",
+        publishedAt: null,
+        semantic: {
+          success: "#00B42A",
+          warning: "#FF7D00",
+          danger: "#F53F3F",
+          info: "#165DFF",
+        },
+      },
+    });
+  });
 });
