@@ -216,27 +216,30 @@ describe("project admission share-board route", () => {
     vi.mocked(createSupabaseAdminClient).mockReturnValue({
       client: "admin",
     } as never);
-    vi.mocked(listInternalAdmissionShareBoards).mockResolvedValue([
-      {
-        id: "share-1",
-        title: "Vendor review",
-        purpose: "",
-        mode: "formal_review",
-        status: "active",
-        expiresAt: "2026-06-14T00:00:00.000Z",
-        reviewState: "not_started",
-        roundNumber: 1,
-        itemCount: 10,
-        draftCompletedCount: 4,
-        lastViewedAt: "2026-07-30T08:00:00.000Z",
-        lastDraftAt: "2026-07-30T08:20:00.000Z",
-        lastSubmittedAt: null,
-        lockedAt: null,
-        createdBy: "user-ops",
-        createdAt: "2026-07-30T00:00:00.000Z",
-        presentation: internalPresentation,
-      },
-    ]);
+    vi.mocked(listInternalAdmissionShareBoards).mockResolvedValue({
+      shareBoards: [
+        {
+          id: "share-1",
+          title: "Vendor review",
+          purpose: "",
+          mode: "formal_review",
+          status: "active",
+          expiresAt: "2026-06-14T00:00:00.000Z",
+          reviewState: "not_started",
+          roundNumber: 1,
+          itemCount: 10,
+          draftCompletedCount: 4,
+          lastViewedAt: "2026-07-30T08:00:00.000Z",
+          lastDraftAt: "2026-07-30T08:20:00.000Z",
+          lastSubmittedAt: null,
+          lockedAt: null,
+          createdBy: "user-ops",
+          createdAt: "2026-07-30T00:00:00.000Z",
+          presentation: internalPresentation,
+        },
+      ],
+      nextCursor: null,
+    });
     vi.mocked(createAdmissionShareBoard).mockResolvedValue({
       token: "plain-token",
       accessCode: "24681024",
@@ -282,6 +285,7 @@ describe("project admission share-board route", () => {
 
     expect(response.status).toBe(200);
     const body = await response.json();
+    expect(body.nextCursor).toBeNull();
     expect(body.shareBoards).toEqual([
       {
         id: "share-1",
@@ -318,6 +322,46 @@ describe("project admission share-board route", () => {
     expect(JSON.stringify(body)).not.toContain("logoStoragePath");
     expect(JSON.stringify(body)).not.toContain("tokenHash");
     expect(JSON.stringify(body)).not.toContain("reviewer");
+  });
+
+  it("passes a bounded keyset cursor to the internal first-screen listing", async () => {
+    const cursor = Buffer.from(
+      JSON.stringify({
+        createdAt: "2026-07-30T00:00:00.000Z",
+        id: "00000000-0000-4000-8000-000000000001",
+      }),
+    ).toString("base64url");
+    vi.mocked(listInternalAdmissionShareBoards).mockResolvedValue({
+      shareBoards: [],
+      nextCursor: "next-page",
+    });
+
+    const response = await GET(
+      new Request(`http://localhost/api?limit=2&cursor=${cursor}`),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      shareBoards: [],
+      nextCursor: "next-page",
+    });
+    expect(listInternalAdmissionShareBoards).toHaveBeenCalledWith({
+      repo: { repo: "share-repo" },
+      actor: auth,
+      projectId: "project-1",
+      cursor,
+      limit: 2,
+    });
+  });
+
+  it("rejects an out-of-range internal share page size", async () => {
+    const response = await GET(new Request("http://localhost/api?limit=51"), {
+      params,
+    });
+
+    expect(response.status).toBe(400);
+    expect(listInternalAdmissionShareBoards).not.toHaveBeenCalled();
   });
 
   it("creates a share board and returns one-time share url", async () => {

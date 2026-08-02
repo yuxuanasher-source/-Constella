@@ -187,7 +187,7 @@ function createWorkflowHarness(candidates: BusinessCandidate[]) {
             };
           }),
         };
-        return shareBoard;
+        return { shareBoard, snapshot };
       },
     ),
     listShareBoards: vi.fn().mockResolvedValue([]),

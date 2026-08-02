@@ -31,7 +31,7 @@ import { getPublicRequestOrigin } from "@/lib/http/public-request-origin";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   try {
@@ -40,18 +40,38 @@ export async function GET(
     assertMcnStaff(context.auth.role);
 
     const repo = new SupabaseAdmissionShareBoardRepository(context.supabase);
-    const shareBoards = await listInternalAdmissionShareBoards({
+    const url = new URL(request.url);
+    const cursor = url.searchParams.get("cursor") ?? undefined;
+    const limit = admissionSharePageLimit(url.searchParams.get("limit"));
+    const page = await listInternalAdmissionShareBoards({
       repo,
       actor: actorFromContext(context),
       projectId,
+      cursor,
+      limit,
     });
 
     return NextResponse.json({
-      shareBoards: shareBoards.map(toSafeShareBoardTask),
+      shareBoards: page.shareBoards.map(toSafeShareBoardTask),
+      nextCursor: page.nextCursor,
     });
   } catch (error) {
     return jsonError(error);
   }
+}
+
+function admissionSharePageLimit(value: string | null) {
+  if (value === null) {
+    return 20;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 50) {
+    throw new RouteError(
+      "Share board page limit must be between 1 and 50",
+      400,
+    );
+  }
+  return parsed;
 }
 
 export async function POST(

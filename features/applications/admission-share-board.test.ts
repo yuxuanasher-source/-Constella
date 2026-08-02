@@ -24,6 +24,7 @@ import {
   submitVendorAdmissionReviews,
   SupabaseAdmissionShareBoardRepository,
   toAdmissionSharePresentation,
+  toAdmissionShareIdentityPresentation,
   toInternalAdmissionSharePresentation,
   verifyAdmissionShareAccessCode,
   type AdmissionShareBoardRepository,
@@ -52,7 +53,7 @@ function createRepo(
     shareBoardInserts,
     createShareBoardWithItems: vi.fn().mockImplementation(async (input) => {
       shareBoardInserts.push(input);
-      return {
+      const shareBoard = {
         id: "share-1",
         ...input,
         status: "active",
@@ -74,6 +75,7 @@ function createRepo(
         contactCardSnapshot: null,
         createdAt: "2026-06-07T00:00:00.000Z",
       };
+      return { shareBoard, snapshot: publicSnapshot() };
     }),
     listShareBoards: vi.fn().mockResolvedValue([]),
     extendShareBoard: vi.fn(),
@@ -115,85 +117,6 @@ function admissionShareTask(id: string, roundNumber: number) {
     lockedAt: null,
     createdBy: "user-ops",
     createdAt: "2026-07-30T00:00:00.000Z",
-  };
-}
-
-function internalShareBoardRow(
-  id: string,
-  createdAt: string,
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    id,
-    organization_id: "org-1",
-    project_id: "project-1",
-    title: `Review ${id}`,
-    purpose: "Confirm recordings",
-    mode: "formal_review",
-    token_hash: `private-hash-${id}`,
-    access_code_hash: null,
-    status: "active",
-    expires_at: "2026-08-06T00:00:00.000Z",
-    allow_vendor_submit: true,
-    allow_external_fallback: true,
-    review_state: "in_progress",
-    round_number: id === "share-1" ? 1 : 2,
-    brand_snapshot: {
-      schemaVersion: 1,
-      version: 4,
-      logoText: "STAR",
-      logoStoragePath: "org-1/brand-logos/private.webp",
-      brandName: "Star Live",
-      brandTagline: "Professional live operations",
-      primaryColor: "#165DFF",
-      publishedAt: "2026-07-29T00:00:00.000Z",
-    },
-    brand_version: 4,
-    contact_card_id: null,
-    contact_card_snapshot: null,
-    last_viewed_at: null,
-    last_draft_at: null,
-    last_submitted_at: null,
-    locked_at: null,
-    created_by: "user-ops",
-    created_at: createdAt,
-    projects: {
-      id: "project-1",
-      code: "P-001",
-      name: "Launch project",
-      vendor_name: "Vendor",
-      product_name: "Product",
-    },
-    ...overrides,
-  };
-}
-
-function internalShareItemRow(
-  shareBoardId: string,
-  recordingSubmissionId: string,
-  sortOrder: number,
-) {
-  return {
-    share_board_id: shareBoardId,
-    application_id: `app-${recordingSubmissionId}`,
-    recording_submission_id: recordingSubmissionId,
-    recording_version: 1,
-    sort_order: sortOrder,
-    source_health: "original_ready",
-    project_applications: {
-      status: "recording_reviewing",
-      streamer_id: `streamer-${recordingSubmissionId}`,
-      streamers: {
-        id: `streamer-${recordingSubmissionId}`,
-        display_name: `Streamer ${recordingSubmissionId}`,
-        streamer_accounts: [],
-      },
-    },
-    recording_submissions: {
-      status: "submitted",
-      external_url: null,
-      storage_path: `private/${recordingSubmissionId}.mp4`,
-    },
   };
 }
 
@@ -417,7 +340,7 @@ describe("admission share board service", () => {
     expect(JSON.stringify(persisted)).not.toContain(forgedStoragePath);
   });
 
-  it("rehydrates the just-created board and returns one complete internal presentation", async () => {
+  it("returns the transactionally-created board with one complete internal presentation", async () => {
     const snapshot = publicSnapshot({
       brandVersion: 6,
       contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
@@ -428,7 +351,15 @@ describe("admission share board service", () => {
       },
     });
     const getPublicShareBoardSnapshot = vi.fn().mockResolvedValue(snapshot);
-    const repo = createRepo({ getPublicShareBoardSnapshot });
+    const baseRepo = createRepo();
+    const originalCreate = baseRepo.createShareBoardWithItems;
+    const repo = createRepo({
+      getPublicShareBoardSnapshot,
+      createShareBoardWithItems: vi.fn().mockImplementation(async (input) => {
+        const result = await originalCreate(input);
+        return { ...result, snapshot };
+      }),
+    });
 
     const result = await createAdmissionShareBoard({
       repo,
@@ -450,10 +381,7 @@ describe("admission share board service", () => {
       tokenFactory: () => "plain-token",
     });
 
-    expect(getPublicShareBoardSnapshot).toHaveBeenCalledTimes(1);
-    expect(getPublicShareBoardSnapshot).toHaveBeenCalledWith(
-      hashShareSecret("plain-token"),
-    );
+    expect(getPublicShareBoardSnapshot).not.toHaveBeenCalled();
     expect(result.presentation).toEqual(
       toInternalAdmissionSharePresentation(snapshot),
     );
@@ -470,6 +398,46 @@ describe("admission share board service", () => {
     expect(JSON.stringify(result.presentation)).not.toContain("tokenHash");
   });
 
+  it("returns the one-time credentials with the creation RPC snapshot even if legacy hydration is unavailable", async () => {
+    const snapshot = publicSnapshot({ brandVersion: 9 });
+    const legacyHydration = vi
+      .fn()
+      .mockRejectedValue(new Error("post-commit read failed"));
+    const baseRepo = createRepo();
+    const originalCreate = baseRepo.createShareBoardWithItems;
+    const repo = createRepo({
+      createShareBoardWithItems: vi.fn().mockImplementation(async (input) => {
+        const result = await originalCreate(input);
+        return { ...result, snapshot };
+      }),
+      getPublicShareBoardSnapshot: legacyHydration,
+    } as never);
+
+    const result = await createAdmissionShareBoard({
+      repo,
+      candidateRepo: createCandidateRepo(),
+      actor,
+      projectId: "project-1",
+      input: {
+        mode: "preview",
+        items: [
+          {
+            applicationId: "app-2",
+            recordingSubmissionId: "recording-2-v1",
+            recordingVersion: 1,
+            sortOrder: 0,
+          },
+        ],
+      },
+      now: "2026-07-30T00:00:00.000Z",
+      tokenFactory: () => "one-time-token",
+    });
+
+    expect(result.token).toBe("one-time-token");
+    expect(result.presentation.brandVersion).toBe(9);
+    expect(legacyHydration).not.toHaveBeenCalled();
+  });
+
   it("lists complete internal presentations through one batch repository read", async () => {
     const snapshots = [
       publicSnapshot({ id: "share-1", roundNumber: 1 }),
@@ -477,12 +445,13 @@ describe("admission share board service", () => {
     ];
     const getPublicShareBoardSnapshot = vi.fn();
     const listShareBoards = vi.fn();
-    const listInternalShareBoardHydrations = vi.fn().mockResolvedValue(
-      snapshots.map((snapshot, index) => ({
+    const listInternalShareBoardHydrations = vi.fn().mockResolvedValue({
+      hydrations: snapshots.map((snapshot, index) => ({
         task: admissionShareTask(snapshot.id, index + 1),
         snapshot,
       })),
-    );
+      nextCursor: "next-page",
+    });
     const repo = createRepo({
       listShareBoards,
       getPublicShareBoardSnapshot,
@@ -496,11 +465,20 @@ describe("admission share board service", () => {
     });
 
     expect(listInternalShareBoardHydrations).toHaveBeenCalledTimes(1);
-    expect(listInternalShareBoardHydrations).toHaveBeenCalledWith("project-1");
+    expect(listInternalShareBoardHydrations).toHaveBeenCalledWith({
+      projectId: "project-1",
+      limit: 20,
+      beforeCreatedAt: undefined,
+      beforeId: undefined,
+    });
     expect(listShareBoards).not.toHaveBeenCalled();
     expect(getPublicShareBoardSnapshot).not.toHaveBeenCalled();
-    expect(result.map((board) => board.id)).toEqual(["share-1", "share-2"]);
-    expect(result.map((board) => board.presentation)).toEqual(
+    expect(result.nextCursor).toBe("next-page");
+    expect(result.shareBoards.map((board) => board.id)).toEqual([
+      "share-1",
+      "share-2",
+    ]);
+    expect(result.shareBoards.map((board) => board.presentation)).toEqual(
       snapshots.map(toInternalAdmissionSharePresentation),
     );
     const serialized = JSON.stringify(result);
@@ -508,6 +486,25 @@ describe("admission share board service", () => {
     expect(serialized).not.toContain("accessCodeHash");
     expect(serialized).not.toContain("storagePath");
     expect(serialized).not.toContain("logoStoragePath");
+  });
+
+  it("rejects a malformed internal share cursor before any repository call", async () => {
+    const listInternalShareBoardHydrations = vi.fn();
+    const repo = createRepo({ listInternalShareBoardHydrations } as never);
+
+    await expect(
+      listInternalAdmissionShareBoards({
+        repo: repo as never,
+        actor,
+        projectId: "project-1",
+        cursor: "not-a-valid-keyset-cursor",
+        limit: 20,
+      }),
+    ).rejects.toMatchObject({
+      code: "SHARE_CURSOR_INVALID",
+      statusCode: 400,
+    });
+    expect(listInternalShareBoardHydrations).not.toHaveBeenCalled();
   });
 
   it("sends no client-authored snapshot parameters to the atomic creation RPC", async () => {
@@ -542,7 +539,32 @@ describe("admission share board service", () => {
       contact_card_id: null,
       contact_card_snapshot: null,
     };
-    const single = vi.fn().mockResolvedValue({ data: row, error: null });
+    const single = vi.fn().mockResolvedValue({
+      data: {
+        board: {
+          id: row.id,
+          organizationId: row.organization_id,
+          projectId: row.project_id,
+          title: row.title,
+          purpose: row.purpose,
+          mode: row.mode,
+          status: row.status,
+          expiresAt: row.expires_at,
+          allowVendorSubmit: row.allow_vendor_submit,
+          allowExternalFallback: row.allow_external_fallback,
+          reviewState: row.review_state,
+          roundNumber: row.round_number,
+          brandSnapshot: row.brand_snapshot,
+          brandVersion: row.brand_version,
+          contactCardId: row.contact_card_id,
+          contactCardSnapshot: row.contact_card_snapshot,
+          createdBy: row.created_by,
+          createdAt: row.created_at,
+        },
+        snapshot: publicSnapshot(),
+      },
+      error: null,
+    });
     const rpc = vi.fn().mockReturnValue({ single });
     const repo = new SupabaseAdmissionShareBoardRepository({ rpc } as never);
 
@@ -639,24 +661,59 @@ describe("admission share board service", () => {
     });
   });
 
+  it("maps the database item cap to one explicit 400 domain failure", async () => {
+    const single = vi.fn().mockResolvedValue({
+      data: null,
+      error: {
+        code: "P0001",
+        message: "admission_share_item_limit_exceeded",
+      },
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      rpc: vi.fn().mockReturnValue({ single }),
+    } as never);
+
+    await expect(
+      repo.createShareBoardWithItems({
+        organizationId: "org-1",
+        projectId: "project-1",
+        title: "Oversized",
+        purpose: "",
+        mode: "preview",
+        tokenHash: "hashed-token",
+        accessCodeHash: null,
+        expiresAt: "2026-08-06T00:00:00.000Z",
+        allowExternalFallback: true,
+        createdBy: "user-ops",
+        items: [],
+      }),
+    ).rejects.toMatchObject({
+      code: "SHARE_BOARD_TOO_LARGE",
+      statusCode: 400,
+    });
+  });
+
   it("creates only the explicitly selected recording versions", async () => {
     const repo = createRepo({
       createShareBoardWithItems: vi.fn().mockResolvedValue({
-        id: "share-1",
-        organizationId: "org-1",
-        projectId: "project-1",
-        title: "第一轮正式复核",
-        purpose: "品牌方首轮选人",
-        mode: "formal_review",
-        tokenHash: hashShareSecret("plain-token"),
-        accessCodeHash: hashAdmissionShareAccessCode("24681024"),
-        status: "active",
-        expiresAt: "2026-08-06T00:00:00.000Z",
-        allowVendorSubmit: true,
-        allowExternalFallback: true,
-        reviewState: "not_started",
-        roundNumber: 1,
-        createdBy: "user-ops",
+        shareBoard: {
+          id: "share-1",
+          organizationId: "org-1",
+          projectId: "project-1",
+          title: "第一轮正式复核",
+          purpose: "品牌方首轮选人",
+          mode: "formal_review",
+          tokenHash: hashShareSecret("plain-token"),
+          accessCodeHash: hashAdmissionShareAccessCode("24681024"),
+          status: "active",
+          expiresAt: "2026-08-06T00:00:00.000Z",
+          allowVendorSubmit: true,
+          allowExternalFallback: true,
+          reviewState: "not_started",
+          roundNumber: 1,
+          createdBy: "user-ops",
+        },
+        snapshot: publicSnapshot(),
       }),
     } as never);
     const candidateRepo = createCandidateRepo();
@@ -985,11 +1042,15 @@ describe("admission share board service", () => {
   it("generates one eight-digit access code by default for formal review", async () => {
     const repo = createRepo({
       createShareBoardWithItems: vi.fn().mockImplementation(async (input) => ({
-        id: "share-1",
-        ...input,
-        status: "active",
-        reviewState: "not_started",
-        roundNumber: 1,
+        shareBoard: {
+          id: "share-1",
+          ...input,
+          status: "active",
+          allowVendorSubmit: true,
+          reviewState: "not_started",
+          roundNumber: 1,
+        },
+        snapshot: publicSnapshot(),
       })),
     } as never);
 
@@ -1558,6 +1619,31 @@ describe("admission share board service", () => {
     expect(serialized).not.toContain(privateLogoPath);
     expect(serialized).not.toContain("internalNote");
     expect(serialized).not.toContain("internalUserId");
+  });
+
+  it("ignores every untrusted identity field from an unknown brand schema", () => {
+    const identity = toAdmissionShareIdentityPresentation({
+      organizationId: "org-1",
+      brandSnapshot: {
+        schemaVersion: 999,
+        version: 999,
+        logoText: "EVIL",
+        logoStoragePath: "other-org/private.webp",
+        brandName: "Forged Professional Brand",
+        brandTagline: "Trust this attacker",
+        primaryColor: "#000000",
+      },
+      contactCardSnapshot: null,
+    });
+
+    expect(identity.brand).toEqual({
+      logoText: "组织",
+      brandName: "组织",
+      brandTagline: "",
+      primaryColor: "#165DFF",
+    });
+    expect(JSON.stringify(identity)).not.toContain("Forged");
+    expect(JSON.stringify(identity)).not.toContain("EVIL");
   });
 
   it.each([
@@ -3149,473 +3235,96 @@ describe("admission share board service", () => {
     expect(selectedColumns).not.toContain("access_code_hash");
   });
 
-  it("hydrates all internal share presentations with a fixed batch query plan", async () => {
-    const boardRows = [
-      internalShareBoardRow("share-2", "2026-07-31T00:00:00.000Z"),
-      internalShareBoardRow("share-1", "2026-07-30T00:00:00.000Z", {
-        review_state: "submitted_locked",
-      }),
-    ];
-    const itemRows = [
-      internalShareItemRow("share-1", "rec-1", 0),
-      internalShareItemRow("share-2", "rec-3", 0),
-      internalShareItemRow("share-1", "rec-2", 1),
-    ];
-    const submissionRows = [
-      {
-        id: "submission-2",
-        share_board_id: "share-1",
-        revision: 2,
-        project_remark: "Confirmed",
-        selected_count: 1,
-        backup_count: 0,
-        rejected_count: 0,
-        needs_changes_count: 1,
-        submitted_at: "2026-07-31T09:00:00.000Z",
-      },
-      {
-        id: "submission-1",
-        share_board_id: "share-1",
-        revision: 1,
-        project_remark: "First pass",
-        selected_count: 0,
-        backup_count: 1,
-        rejected_count: 0,
-        needs_changes_count: 1,
-        submitted_at: "2026-07-30T09:00:00.000Z",
-      },
-    ];
-    const receiptRows = [
-      {
-        submission_id: "submission-2",
-        recording_submission_id: "rec-2",
-        decision: "needs_changes",
-        remark: "Adjust opening",
-        reason_codes: ["opening"],
-      },
-    ];
-
-    const boardRange = vi
-      .fn()
-      .mockResolvedValue({ data: boardRows, error: null });
-    const boardQuery = { order: vi.fn(), range: boardRange };
-    boardQuery.order.mockReturnValue(boardQuery);
-    const boardEq = vi.fn().mockReturnValue(boardQuery);
-    const boardSelect = vi.fn().mockReturnValue({ eq: boardEq });
-    const itemRange = vi
-      .fn()
-      .mockResolvedValue({ data: itemRows, error: null });
-    const itemQuery = { order: vi.fn(), range: itemRange };
-    itemQuery.order.mockReturnValue(itemQuery);
-    const itemEq = vi.fn().mockReturnValue(itemQuery);
-    const itemSelect = vi.fn().mockReturnValue({ eq: itemEq });
-    const draftRange = vi.fn().mockResolvedValue({ data: [], error: null });
-    const draftQuery = { order: vi.fn(), range: draftRange };
-    draftQuery.order.mockReturnValue(draftQuery);
-    const draftEq = vi.fn().mockReturnValue(draftQuery);
-    const draftSelect = vi.fn().mockReturnValue({ eq: draftEq });
-    const submissionRange = vi
-      .fn()
-      .mockResolvedValue({ data: submissionRows, error: null });
-    const submissionQuery = { order: vi.fn(), range: submissionRange };
-    submissionQuery.order.mockReturnValue(submissionQuery);
-    const submissionEq = vi.fn().mockReturnValue(submissionQuery);
-    const submissionSelect = vi.fn().mockReturnValue({ eq: submissionEq });
-    const receiptRange = vi
-      .fn()
-      .mockResolvedValue({ data: receiptRows, error: null });
-    const receiptQuery = { order: vi.fn(), range: receiptRange };
-    receiptQuery.order.mockReturnValue(receiptQuery);
-    const receiptIn = vi.fn().mockReturnValue(receiptQuery);
-    const receiptEq = vi.fn().mockReturnValue({ in: receiptIn });
-    const receiptSelect = vi.fn().mockReturnValue({ eq: receiptEq });
-    const from = vi.fn().mockImplementation((table: string) => {
-      if (table === "project_recording_share_boards") {
-        return { select: boardSelect };
-      }
-      if (table === "project_recording_share_items") {
-        return { select: itemSelect };
-      }
-      if (table === "project_recording_vendor_review_drafts") {
-        return { select: draftSelect };
-      }
-      if (table === "project_recording_vendor_review_submissions") {
-        return { select: submissionSelect };
-      }
-      if (table === "project_recording_vendor_review_submission_items") {
-        return { select: receiptSelect };
-      }
-      throw new Error(`unexpected batch table: ${table}`);
-    });
-    const rpc = vi.fn().mockResolvedValue({
-      data: [
-        {
-          share_board_id: "share-1",
-          item_count: 2,
-          draft_completed_count: 1,
-        },
-        {
-          share_board_id: "share-2",
-          item_count: 1,
-          draft_completed_count: 0,
-        },
-      ],
-      error: null,
-    });
-    const repo = new SupabaseAdmissionShareBoardRepository({
-      from,
-      rpc,
-    } as never);
-
-    const hydrations = await repo.listInternalShareBoardHydrations("project-1");
-    const snapshots = hydrations.map(({ snapshot }) => snapshot);
-
-    expect(from.mock.calls.map(([table]) => table)).toEqual([
-      "project_recording_share_boards",
-      "project_recording_share_items",
-      "project_recording_vendor_review_drafts",
-      "project_recording_vendor_review_submissions",
-      "project_recording_vendor_review_submission_items",
-    ]);
-    expect(rpc).not.toHaveBeenCalled();
-    expect(boardEq).toHaveBeenCalledWith("project_id", "project-1");
-    expect(itemEq).toHaveBeenCalledWith("project_id", "project-1");
-    expect(draftEq).toHaveBeenCalledWith("project_id", "project-1");
-    expect(submissionEq).toHaveBeenCalledWith("project_id", "project-1");
-    expect(receiptEq).toHaveBeenCalledWith("project_id", "project-1");
-    expect(itemQuery.order.mock.calls).toEqual([
-      ["share_board_id", { ascending: true }],
-      ["sort_order", { ascending: true }],
-    ]);
-    expect(itemRange).toHaveBeenCalledWith(0, 999);
-    expect(boardRange).toHaveBeenCalledWith(0, 999);
-    expect(submissionRange).toHaveBeenCalledWith(0, 999);
-    expect(receiptIn).toHaveBeenCalledWith("submission_id", ["submission-2"]);
-    expect(receiptRange).toHaveBeenCalledWith(0, 999);
-    expect(snapshots.map((snapshot) => snapshot.id)).toEqual([
-      "share-2",
-      "share-1",
-    ]);
-    expect(hydrations.map(({ task }) => task.id)).toEqual([
-      "share-2",
-      "share-1",
-    ]);
-    expect(
-      snapshots[1]?.items.map((item) => item.recordingSubmissionId),
-    ).toEqual(["rec-1", "rec-2"]);
-    expect(snapshots[1]?.progress).toEqual({ completed: 2, total: 2 });
-    expect(snapshots[1]?.latestSubmission?.revision).toBe(2);
-    expect(snapshots[1]?.items[1]?.finalReview).toMatchObject({
-      decision: "needs_changes",
-      submittedAt: "2026-07-31T09:00:00.000Z",
-    });
-    const presentations = snapshots.map(toInternalAdmissionSharePresentation);
-    expect(JSON.stringify(presentations)).not.toContain("tokenHash");
-    expect(JSON.stringify(presentations)).not.toContain("storagePath");
-    expect(JSON.stringify(presentations)).not.toContain("logoStoragePath");
-  });
-
-  it("paginates batch items without truncating presentations above the PostgREST row cap", async () => {
-    const boardRange = vi.fn().mockResolvedValue({
-      data: [
-        internalShareBoardRow("share-1", "2026-07-30T00:00:00.000Z", {
-          review_state: "submitted_locked",
-        }),
-      ],
-      error: null,
-    });
-    const boardQuery = { order: vi.fn(), range: boardRange };
-    boardQuery.order.mockReturnValue(boardQuery);
-    const boardSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue(boardQuery),
-    });
-    const firstPage = Array.from({ length: 1000 }, (_, index) =>
-      internalShareItemRow("share-1", `rec-${index}`, index),
-    );
-    const itemRange = vi
-      .fn()
-      .mockResolvedValueOnce({ data: firstPage, error: null })
-      .mockResolvedValueOnce({
-        data: [internalShareItemRow("share-1", "rec-1000", 1000)],
-        error: null,
-      });
-    const itemQuery = {
-      order: vi.fn(),
-      range: itemRange,
-    };
-    itemQuery.order.mockReturnValue(itemQuery);
-    const itemSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue(itemQuery),
-    });
-    const draftRange = vi.fn().mockResolvedValue({ data: [], error: null });
-    const draftQuery = { order: vi.fn(), range: draftRange };
-    draftQuery.order.mockReturnValue(draftQuery);
-    const draftSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue(draftQuery),
-    });
-    const submissionRange = vi.fn().mockResolvedValue({
-      data: [
-        {
-          id: "submission-1",
-          share_board_id: "share-1",
-          revision: 1,
-          project_remark: "Confirmed",
-          selected_count: 1001,
-          backup_count: 0,
-          rejected_count: 0,
-          needs_changes_count: 0,
-          submitted_at: "2026-07-31T09:00:00.000Z",
-        },
-      ],
-      error: null,
-    });
-    const submissionQuery = { order: vi.fn(), range: submissionRange };
-    submissionQuery.order.mockReturnValue(submissionQuery);
-    const submissionSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue(submissionQuery),
-    });
-    const firstReceiptPage = Array.from({ length: 1000 }, (_, index) => ({
-      submission_id: "submission-1",
-      recording_submission_id: `rec-${index}`,
-      decision: "selected",
-      remark: "",
-      reason_codes: [],
-    }));
-    const receiptRange = vi
-      .fn()
-      .mockResolvedValueOnce({ data: firstReceiptPage, error: null })
-      .mockResolvedValueOnce({
-        data: [
-          {
-            submission_id: "submission-1",
-            recording_submission_id: "rec-1000",
-            decision: "selected",
-            remark: "",
-            reason_codes: [],
-          },
-        ],
-        error: null,
-      });
-    const receiptQuery = { order: vi.fn(), range: receiptRange };
-    receiptQuery.order.mockReturnValue(receiptQuery);
-    const receiptSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue({
-        in: vi.fn().mockReturnValue(receiptQuery),
-      }),
-    });
-    const from = vi.fn().mockImplementation((table: string) => {
-      if (table === "project_recording_share_boards") {
-        return { select: boardSelect };
-      }
-      if (table === "project_recording_share_items") {
-        return { select: itemSelect };
-      }
-      if (table === "project_recording_vendor_review_drafts") {
-        return { select: draftSelect };
-      }
-      if (table === "project_recording_vendor_review_submissions") {
-        return { select: submissionSelect };
-      }
-      if (table === "project_recording_vendor_review_submission_items") {
-        return { select: receiptSelect };
-      }
-      throw new Error(`unexpected pagination table: ${table}`);
-    });
-    const repo = new SupabaseAdmissionShareBoardRepository({
-      from,
-      rpc: vi.fn().mockResolvedValue({
-        data: [
-          {
-            share_board_id: "share-1",
-            item_count: 1001,
-            draft_completed_count: 0,
-          },
-        ],
-        error: null,
-      }),
-    } as never);
-
-    const hydrations = await repo.listInternalShareBoardHydrations("project-1");
-
-    expect(itemRange.mock.calls).toEqual([
-      [0, 999],
-      [1000, 1999],
-    ]);
-    expect(receiptRange.mock.calls).toEqual([
-      [0, 999],
-      [1000, 1999],
-    ]);
-    expect(hydrations[0]?.snapshot.items).toHaveLength(1001);
-    expect(hydrations[0]?.snapshot.items[1000]?.recordingSubmissionId).toBe(
-      "rec-1000",
-    );
-    expect(hydrations[0]?.snapshot.items[1000]?.finalReview?.decision).toBe(
-      "selected",
-    );
-  });
-
-  it("paginates boards and submissions and chunks receipt ids without per-board queries", async () => {
-    const boardRows = Array.from({ length: 1001 }, (_, index) =>
-      internalShareBoardRow(
-        `share-${index}`,
-        new Date(Date.UTC(2026, 6, 30) + index * 1000).toISOString(),
-      ),
-    );
-    const boardRange = vi
-      .fn()
-      .mockResolvedValueOnce({ data: boardRows.slice(0, 1000), error: null })
-      .mockResolvedValueOnce({ data: boardRows.slice(1000), error: null });
-    const boardQuery = { order: vi.fn(), range: boardRange };
-    boardQuery.order.mockReturnValue(boardQuery);
-    const boardSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue(boardQuery),
-    });
-
-    const itemRows = boardRows.map((board, index) =>
-      internalShareItemRow(board.id, `rec-${index}`, 0),
-    );
-    const itemRange = vi
-      .fn()
-      .mockResolvedValueOnce({ data: itemRows.slice(0, 1000), error: null })
-      .mockResolvedValueOnce({ data: itemRows.slice(1000), error: null });
-    const itemQuery = { order: vi.fn(), range: itemRange };
-    itemQuery.order.mockReturnValue(itemQuery);
-    const itemSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue(itemQuery),
-    });
-
-    const submissionRows = boardRows.map((board, index) => ({
-      id: `submission-${index}`,
-      share_board_id: board.id,
-      revision: 1,
-      project_remark: "Confirmed",
-      selected_count: 0,
-      backup_count: 0,
-      rejected_count: 0,
-      needs_changes_count: 0,
-      submitted_at: "2026-07-31T09:00:00.000Z",
-    }));
-    const submissionRange = vi
-      .fn()
-      .mockResolvedValueOnce({
-        data: submissionRows.slice(0, 1000),
-        error: null,
-      })
-      .mockResolvedValueOnce({
-        data: submissionRows.slice(1000),
-        error: null,
-      });
-    const submissionQuery = { order: vi.fn(), range: submissionRange };
-    submissionQuery.order.mockReturnValue(submissionQuery);
-    const submissionSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue(submissionQuery),
-    });
-
-    const draftProgressCases = [
-      { decision: "selected", remark: "   ", completed: 1 },
-      { decision: "backup", remark: "\t", completed: 1 },
-      { decision: "rejected", remark: "Reason", completed: 1 },
-      { decision: "needs_changes", remark: "Fix opening", completed: 1 },
-      { decision: "rejected", remark: " \t ", completed: 1 },
-      { decision: "needs_changes", remark: " \n ", completed: 1 },
-      { decision: "rejected", remark: " \u00a0 ", completed: 1 },
-      { decision: "rejected", remark: "", completed: 0 },
-      { decision: "needs_changes", remark: "   ", completed: 0 },
-      { decision: "pending", remark: "", completed: 0 },
-    ];
-    const draftRows = boardRows.map((board, index) => {
-      const progressCase =
-        draftProgressCases[index % draftProgressCases.length];
+  it("hydrates one bounded internal page through one RPC without table reads", async () => {
+    const snapshots = [
+      publicSnapshot({ id: "share-1" }),
+      publicSnapshot({ id: "share-2" }),
+      publicSnapshot({ id: "share-3" }),
+    ].map((raw) => {
+      const snapshot = { ...raw };
+      delete (snapshot as { tokenHash?: unknown }).tokenHash;
+      delete (snapshot as { accessCodeHash?: unknown }).accessCodeHash;
       return {
-        share_board_id: board.id,
-        recording_submission_id: `rec-${index}`,
-        decision: progressCase?.decision,
-        remark: progressCase?.remark,
+        ...snapshot,
+        brandSnapshot: {
+          ...snapshot.brandSnapshot,
+          logoStoragePath: undefined,
+        },
+        items: snapshot.items.map(({ storagePath, ...item }) => ({
+          ...item,
+          hasPrivateStorage: Boolean(storagePath),
+        })),
       };
     });
-    const draftRange = vi
-      .fn()
-      .mockResolvedValueOnce({ data: draftRows.slice(0, 1000), error: null })
-      .mockResolvedValueOnce({ data: draftRows.slice(1000), error: null });
-    const draftQuery = { order: vi.fn(), range: draftRange };
-    draftQuery.order.mockReturnValue(draftQuery);
-    const draftSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue(draftQuery),
+    const rpc = vi.fn().mockResolvedValue({
+      data: snapshots.map((snapshot, index) => ({
+        hydration: {
+          task: {
+            ...admissionShareTask(
+              "00000000-0000-4000-8000-00000000000" + (index + 1),
+              index + 1,
+            ),
+            createdAt: `2026-07-${30 - index}T00:00:00.000Z`,
+          },
+          snapshot,
+        },
+      })),
+      error: null,
     });
-
-    const receiptRange = vi.fn().mockResolvedValue({ data: [], error: null });
-    const receiptQuery = { order: vi.fn(), range: receiptRange };
-    receiptQuery.order.mockReturnValue(receiptQuery);
-    const receiptIn = vi.fn().mockReturnValue(receiptQuery);
-    const receiptSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue({ in: receiptIn }),
+    const from = vi.fn(() => {
+      throw new Error("internal hydration must not read tables separately");
     });
-    const from = vi.fn().mockImplementation((table: string) => {
-      if (table === "project_recording_share_boards") {
-        return { select: boardSelect };
-      }
-      if (table === "project_recording_share_items") {
-        return { select: itemSelect };
-      }
-      if (table === "project_recording_vendor_review_submissions") {
-        return { select: submissionSelect };
-      }
-      if (table === "project_recording_vendor_review_drafts") {
-        return { select: draftSelect };
-      }
-      if (table === "project_recording_vendor_review_submission_items") {
-        return { select: receiptSelect };
-      }
-      throw new Error(`unexpected collection table: ${table}`);
-    });
-    const rpc = vi.fn().mockResolvedValue({ data: [], error: null });
     const repo = new SupabaseAdmissionShareBoardRepository({
-      from,
       rpc,
+      from,
     } as never);
 
-    const hydrations = await repo.listInternalShareBoardHydrations("project-1");
+    const page = await repo.listInternalShareBoardHydrations({
+      projectId: "project-1",
+      beforeCreatedAt: "2026-08-01T00:00:00.000Z",
+      beforeId: "00000000-0000-4000-8000-000000000099",
+      limit: 2,
+    });
 
-    expect(boardRange.mock.calls).toEqual([
-      [0, 999],
-      [1000, 1999],
-    ]);
-    expect(submissionRange.mock.calls).toEqual([
-      [0, 999],
-      [1000, 1999],
-    ]);
-    expect(draftRange.mock.calls).toEqual([
-      [0, 999],
-      [1000, 1999],
-    ]);
-    expect(hydrations).toHaveLength(1001);
-    expect(
-      hydrations.slice(0, draftProgressCases.length).map((hydration) => ({
-        taskCompleted: hydration.task.draftCompletedCount,
-        presentationCompleted: hydration.snapshot.progress.completed,
-      })),
-    ).toEqual(
-      draftProgressCases.map(({ completed }) => ({
-        taskCompleted: completed,
-        presentationCompleted: completed,
-      })),
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith(
+      "list_internal_admission_share_board_hydrations",
+      {
+        p_project_id: "project-1",
+        p_before_created_at: "2026-08-01T00:00:00.000Z",
+        p_before_id: "00000000-0000-4000-8000-000000000099",
+        p_limit: 2,
+      },
     );
-    expect(hydrations[1000]?.task.itemCount).toBe(1);
-    expect(rpc).not.toHaveBeenCalled();
-    expect(receiptIn).toHaveBeenCalledTimes(11);
-    expect(
-      receiptIn.mock.calls.every(
-        ([field, ids]) =>
-          field === "submission_id" &&
-          Array.isArray(ids) &&
-          ids.length > 0 &&
-          ids.length <= 100,
-      ),
-    ).toBe(true);
+    expect(from).not.toHaveBeenCalled();
+    expect(page.hydrations).toHaveLength(2);
+    expect(page.nextCursor).toEqual(expect.any(String));
+    expect(JSON.stringify(page)).not.toMatch(
+      /tokenHash|accessCodeHash|storagePath|logoStoragePath/u,
+    );
   });
-});
 
-describe("admission share playback issue service", () => {
+  it("fails explicitly instead of returning a truncated oversized hydration", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: null,
+      error: {
+        code: "P0001",
+        message: "admission_share_hydration_item_limit_exceeded",
+      },
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({ rpc } as never);
+
+    await expect(
+      repo.listInternalShareBoardHydrations({
+        projectId: "project-1",
+        limit: 20,
+      }),
+    ).rejects.toMatchObject({
+      code: "SHARE_BOARD_TOO_LARGE",
+      statusCode: 400,
+    });
+  });
+
   const issue = {
     id: "issue-1",
     shareBoardId: "share-1",
