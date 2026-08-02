@@ -4,11 +4,11 @@ import {
   AdmissionShareFormalRoundConflictError,
   AdmissionShareSelectionError,
   createAdmissionShareBoard,
-  listAdmissionShareBoards,
+  listInternalAdmissionShareBoards,
   SupabaseAdmissionShareBoardRepository,
   toAdmissionShareIdentityPresentation,
   type AdmissionShareBoardRecord,
-  type AdmissionShareBoardTaskRecord,
+  type AdmissionShareBoardTaskWithPresentation,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareCandidateRepository } from "@/features/applications/admission-share-candidates";
 import {
@@ -40,7 +40,7 @@ export async function GET(
     assertMcnStaff(context.auth.role);
 
     const repo = new SupabaseAdmissionShareBoardRepository(context.supabase);
-    const shareBoards = await listAdmissionShareBoards({
+    const shareBoards = await listInternalAdmissionShareBoards({
       repo,
       actor: actorFromContext(context),
       projectId,
@@ -104,7 +104,10 @@ export async function POST(
       getPublicRequestOrigin(request),
     );
     return NextResponse.json({
-      shareBoard: toSafeShareBoard(result.shareBoard),
+      shareBoard: {
+        ...toSafeShareBoard(result.shareBoard),
+        presentation: result.presentation,
+      },
       shareUrl: shareUrl.toString(),
       accessCode: result.accessCode,
     });
@@ -169,7 +172,9 @@ function toSafeShareBoard(shareBoard: AdmissionShareBoardRecord) {
   };
 }
 
-function toSafeShareBoardTask(shareBoard: AdmissionShareBoardTaskRecord) {
+function toSafeShareBoardTask(
+  shareBoard: AdmissionShareBoardTaskWithPresentation,
+) {
   return {
     id: shareBoard.id,
     title: shareBoard.title,
@@ -187,6 +192,7 @@ function toSafeShareBoardTask(shareBoard: AdmissionShareBoardTaskRecord) {
     lockedAt: shareBoard.lockedAt,
     createdBy: shareBoard.createdBy,
     createdAt: shareBoard.createdAt,
+    presentation: shareBoard.presentation,
   };
 }
 

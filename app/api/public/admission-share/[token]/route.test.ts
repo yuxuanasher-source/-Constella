@@ -99,6 +99,14 @@ describe("public admission share route", () => {
         expiresAt: "2026-06-14T00:00:00.000Z",
         canSubmit: false,
         allowExternalFallback: true,
+        brand: {
+          logoText: "STAR",
+          logoUrl: null,
+          brandName: "Star Live",
+          brandTagline: "Professional live operations",
+          primaryColor: "#165DFF",
+        },
+        contactCard: null,
         project: {
           id: "project-1",
           code: "P-001",

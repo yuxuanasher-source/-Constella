@@ -79,6 +79,16 @@ export type AdmissionShareBoardTaskRecord = {
   createdAt: string;
 };
 
+export type AdmissionShareBoardTaskWithPresentation =
+  AdmissionShareBoardTaskRecord & {
+    presentation: InternalAdmissionSharePresentation;
+  };
+
+export type AdmissionShareBoardInternalHydration = {
+  task: AdmissionShareBoardTaskRecord;
+  snapshot: PublicAdmissionShareBoardSnapshot;
+};
+
 export type CreateAdmissionShareBoardPersistenceInput = {
   organizationId: string;
   projectId: string;
@@ -180,6 +190,12 @@ export type AdmissionShareBoardRepository = {
     submittedAt: string,
   ): Promise<void>;
   markShareBoardViewed(shareBoardId: string, viewedAt: string): Promise<void>;
+};
+
+export type AdmissionShareBoardSnapshotBatchReader = {
+  listInternalShareBoardHydrations(
+    projectId: string,
+  ): Promise<AdmissionShareBoardInternalHydration[]>;
 };
 
 export type CreateAdmissionShareBoardInput = {
@@ -584,6 +600,9 @@ export type AdmissionReviewSubmissionDto = {
   }>;
 };
 
+const INTERNAL_SHARE_BATCH_PAGE_SIZE = 1_000;
+const INTERNAL_SHARE_RECEIPT_ID_BATCH_SIZE = 100;
+
 export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoardRepository {
   constructor(private readonly client: SupabaseClient) {}
 
@@ -664,6 +683,238 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       };
       return toShareBoardTaskRecord(row, progress);
     });
+  }
+
+  async listInternalShareBoardHydrations(
+    projectId: string,
+  ): Promise<AdmissionShareBoardInternalHydration[]> {
+    const boards = await this.listInternalShareBoardRows(projectId);
+    if (boards.length === 0) {
+      return [];
+    }
+
+    const [itemRows, progressByBoard, submissionRows] = await Promise.all([
+      this.listInternalShareItemRows(projectId),
+      listAdmissionShareBoardProgress(this.client, [projectId]),
+      this.listInternalSubmissionRows(projectId),
+    ]);
+
+    const itemsByBoard = new Map<string, InternalShareItemRow[]>();
+    for (const item of itemRows) {
+      const boardItems = itemsByBoard.get(item.share_board_id) ?? [];
+      boardItems.push(item);
+      itemsByBoard.set(item.share_board_id, boardItems);
+    }
+
+    const latestSubmissionByBoard = new Map<
+      string,
+      InternalAdmissionReviewSubmissionRow
+    >();
+    for (const submission of submissionRows) {
+      const latest = latestSubmissionByBoard.get(submission.share_board_id);
+      if (!latest || submission.revision > latest.revision) {
+        latestSubmissionByBoard.set(submission.share_board_id, submission);
+      }
+    }
+
+    const latestSubmissionIds = Array.from(
+      latestSubmissionByBoard.values(),
+      (submission) => submission.id,
+    );
+    const receiptItems = await this.listInternalLatestReceiptItems(
+      projectId,
+      latestSubmissionIds,
+    );
+
+    const receiptItemsBySubmission = new Map<
+      string,
+      InternalPublicSubmissionReceiptItemRow[]
+    >();
+    for (const item of receiptItems) {
+      const submissionItems =
+        receiptItemsBySubmission.get(item.submission_id) ?? [];
+      submissionItems.push(item);
+      receiptItemsBySubmission.set(item.submission_id, submissionItems);
+    }
+
+    return boards.map((board) => {
+      const boardItems = itemsByBoard.get(board.id) ?? [];
+      const latestSubmission = latestSubmissionByBoard.get(board.id);
+      const finalReviewByRecording = new Map<
+        string,
+        PublicAdmissionShareFinalReview
+      >(
+        (latestSubmission
+          ? (receiptItemsBySubmission.get(latestSubmission.id) ?? [])
+          : []
+        ).map((item) => [
+          item.recording_submission_id,
+          {
+            decision: item.decision,
+            remark: item.remark?.trim() || "",
+            reasonCodes: item.reason_codes,
+            submittedAt: latestSubmission?.submitted_at ?? "",
+          },
+        ]),
+      );
+      const progress = progressByBoard.get(board.id) ?? {
+        itemCount: boardItems.length,
+        draftCompletedCount: 0,
+      };
+      const completed =
+        board.review_state === "submitted_locked" && latestSubmission
+          ? boardItems.length
+          : Math.min(progress.draftCompletedCount, boardItems.length);
+
+      const snapshot: PublicAdmissionShareBoardSnapshot = {
+        ...toShareBoardRecord(board),
+        project: toPublicProject(board),
+        progress: {
+          completed,
+          total: boardItems.length,
+        },
+        latestSubmission: latestSubmission
+          ? {
+              revision: latestSubmission.revision,
+              submittedAt: latestSubmission.submitted_at,
+              summary: {
+                selected: latestSubmission.selected_count,
+                backup: latestSubmission.backup_count,
+                rejected: latestSubmission.rejected_count,
+                needsChanges: latestSubmission.needs_changes_count,
+              },
+            }
+          : null,
+        items: boardItems.map((item) =>
+          toPublicShareItemSnapshot(item, finalReviewByRecording),
+        ),
+      };
+      return {
+        task: toShareBoardTaskRecord(board, {
+          itemCount: progress.itemCount,
+          draftCompletedCount: progress.draftCompletedCount,
+        }),
+        snapshot,
+      };
+    });
+  }
+
+  private async listInternalShareItemRows(
+    projectId: string,
+  ): Promise<InternalShareItemRow[]> {
+    const rows: InternalShareItemRow[] = [];
+    for (let from = 0; ; from += INTERNAL_SHARE_BATCH_PAGE_SIZE) {
+      const { data, error } = await this.client
+        .from("project_recording_share_items")
+        .select(
+          "share_board_id, application_id, recording_submission_id, recording_version, sort_order, source_health, project_applications(status, streamer_id, streamers(id, display_name, streamer_accounts(platform, account_handle, is_primary))), recording_submissions(status, external_url, storage_path)",
+        )
+        .eq("project_id", projectId)
+        .order("share_board_id", { ascending: true })
+        .order("sort_order", { ascending: true })
+        .range(from, from + INTERNAL_SHARE_BATCH_PAGE_SIZE - 1);
+      if (error) {
+        throw error;
+      }
+      const page = (data ?? []) as InternalShareItemRow[];
+      rows.push(...page);
+      if (page.length < INTERNAL_SHARE_BATCH_PAGE_SIZE) {
+        return rows;
+      }
+    }
+  }
+
+  private async listInternalShareBoardRows(
+    projectId: string,
+  ): Promise<AdmissionShareBoardInternalRow[]> {
+    const rows: AdmissionShareBoardInternalRow[] = [];
+    for (let from = 0; ; from += INTERNAL_SHARE_BATCH_PAGE_SIZE) {
+      const { data, error } = await this.client
+        .from("project_recording_share_boards")
+        .select(
+          "id, organization_id, project_id, title, purpose, mode, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, allow_external_fallback, review_state, round_number, brand_snapshot, brand_version, contact_card_id, contact_card_snapshot, last_viewed_at, last_draft_at, last_submitted_at, locked_at, created_by, created_at, projects(id, code, name, vendor_name, product_name)",
+        )
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: true })
+        .range(from, from + INTERNAL_SHARE_BATCH_PAGE_SIZE - 1);
+      if (error) {
+        throw error;
+      }
+      const page = (data ?? []) as AdmissionShareBoardInternalRow[];
+      rows.push(...page);
+      if (page.length < INTERNAL_SHARE_BATCH_PAGE_SIZE) {
+        return rows;
+      }
+    }
+  }
+
+  private async listInternalSubmissionRows(
+    projectId: string,
+  ): Promise<InternalAdmissionReviewSubmissionRow[]> {
+    const rows: InternalAdmissionReviewSubmissionRow[] = [];
+    for (let from = 0; ; from += INTERNAL_SHARE_BATCH_PAGE_SIZE) {
+      const { data, error } = await this.client
+        .from("project_recording_vendor_review_submissions")
+        .select(
+          "id, share_board_id, revision, project_remark, selected_count, backup_count, rejected_count, needs_changes_count, submitted_at",
+        )
+        .eq("project_id", projectId)
+        .order("share_board_id", { ascending: true })
+        .order("revision", { ascending: false })
+        .order("id", { ascending: true })
+        .range(from, from + INTERNAL_SHARE_BATCH_PAGE_SIZE - 1);
+      if (error) {
+        throw error;
+      }
+      const page = (data ?? []) as InternalAdmissionReviewSubmissionRow[];
+      rows.push(...page);
+      if (page.length < INTERNAL_SHARE_BATCH_PAGE_SIZE) {
+        return rows;
+      }
+    }
+  }
+
+  private async listInternalLatestReceiptItems(
+    projectId: string,
+    submissionIds: string[],
+  ): Promise<InternalPublicSubmissionReceiptItemRow[]> {
+    if (submissionIds.length === 0) {
+      return [];
+    }
+
+    const rows: InternalPublicSubmissionReceiptItemRow[] = [];
+    for (
+      let batchStart = 0;
+      batchStart < submissionIds.length;
+      batchStart += INTERNAL_SHARE_RECEIPT_ID_BATCH_SIZE
+    ) {
+      const submissionIdBatch = submissionIds.slice(
+        batchStart,
+        batchStart + INTERNAL_SHARE_RECEIPT_ID_BATCH_SIZE,
+      );
+      for (let from = 0; ; from += INTERNAL_SHARE_BATCH_PAGE_SIZE) {
+        const { data, error } = await this.client
+          .from("project_recording_vendor_review_submission_items")
+          .select(
+            "submission_id, recording_submission_id, decision, remark, reason_codes",
+          )
+          .eq("project_id", projectId)
+          .in("submission_id", submissionIdBatch)
+          .order("submission_id", { ascending: true })
+          .order("recording_submission_id", { ascending: true })
+          .range(from, from + INTERNAL_SHARE_BATCH_PAGE_SIZE - 1);
+        if (error) {
+          throw error;
+        }
+        const page = (data ?? []) as InternalPublicSubmissionReceiptItemRow[];
+        rows.push(...page);
+        if (page.length < INTERNAL_SHARE_BATCH_PAGE_SIZE) {
+          break;
+        }
+      }
+    }
+    return rows;
   }
 
   async extendShareBoard(input: {
@@ -1307,6 +1558,11 @@ type AdmissionShareBoardWithProjectRow = AdmissionShareBoardRow & {
     | null;
 };
 
+type AdmissionShareBoardInternalRow = AdmissionShareBoardWithProjectRow &
+  AdmissionShareBoardTaskRow & {
+    created_at: string;
+  };
+
 type PublicShareItemRow = {
   application_id: string;
   recording_submission_id: string;
@@ -1381,6 +1637,19 @@ type PublicSubmissionReceiptItemRow = {
   decision: Exclude<VendorAdmissionDecision, "pending">;
   remark: string | null;
   reason_codes: string[];
+};
+
+type InternalShareItemRow = PublicShareItemRow & {
+  share_board_id: string;
+  sort_order: number;
+};
+
+type InternalAdmissionReviewSubmissionRow = AdmissionReviewSubmissionRow & {
+  share_board_id: string;
+};
+
+type InternalPublicSubmissionReceiptItemRow = PublicSubmissionReceiptItemRow & {
+  submission_id: string;
 };
 
 type AdmissionSharePlaybackIssueRow = {
@@ -1478,6 +1747,7 @@ export async function createAdmissionShareBoard({
   }
 
   const token = tokenFactory();
+  const tokenHash = hashShareSecret(token);
   let shareBoard: AdmissionShareBoardRecord;
   try {
     shareBoard = await repo.createShareBoardWithItems({
@@ -1486,7 +1756,7 @@ export async function createAdmissionShareBoard({
       title: input.title?.trim() || "Admission recording review",
       purpose: input.purpose?.trim() || "",
       mode: input.mode,
-      tokenHash: hashShareSecret(token),
+      tokenHash,
       accessCodeHash: accessCode
         ? hashAdmissionShareAccessCode(accessCode)
         : null,
@@ -1522,6 +1792,12 @@ export async function createAdmissionShareBoard({
     }
     throw error.originalError;
   }
+
+  const persistedSnapshot = await repo.getPublicShareBoardSnapshot(tokenHash);
+  if (!persistedSnapshot) {
+    throw new Error("Created admission share snapshot could not be hydrated");
+  }
+  const presentation = toInternalAdmissionSharePresentation(persistedSnapshot);
 
   if (audit) {
     try {
@@ -1561,7 +1837,7 @@ export async function createAdmissionShareBoard({
     }
   }
 
-  return { shareBoard, token, accessCode };
+  return { shareBoard, presentation, token, accessCode };
 }
 
 export async function listAdmissionShareBoards({
@@ -1573,6 +1849,21 @@ export async function listAdmissionShareBoards({
   projectId: string;
 }) {
   return repo.listShareBoards(projectId);
+}
+
+export async function listInternalAdmissionShareBoards({
+  repo,
+  projectId,
+}: {
+  repo: AdmissionShareBoardRepository & AdmissionShareBoardSnapshotBatchReader;
+  actor: AdmissionShareBoardActor;
+  projectId: string;
+}): Promise<AdmissionShareBoardTaskWithPresentation[]> {
+  const hydrations = await repo.listInternalShareBoardHydrations(projectId);
+  return hydrations.map(({ task, snapshot }) => ({
+    ...task,
+    presentation: toInternalAdmissionSharePresentation(snapshot),
+  }));
 }
 
 export async function extendAdmissionShareBoard({
@@ -1833,11 +2124,7 @@ export async function getPublicAdmissionShareBoardContextWithSession({
 }): Promise<{
   organizationId: string;
   allowVendorSubmit: boolean;
-  // Task 9 promotes the brand fields into the public route contract and its
-  // existing typed fixtures. The runtime object is already the branded
-  // subtype here, while this boundary remains backwards-compatible until
-  // that route rollout is enabled.
-  board: PublicAdmissionShareBoard;
+  board: BrandedPublicAdmissionShareBoard;
   session: PreparedPublicAdmissionShareSession;
 }> {
   const snapshot = await requireAvailablePublicSnapshot({ repo, token, now });

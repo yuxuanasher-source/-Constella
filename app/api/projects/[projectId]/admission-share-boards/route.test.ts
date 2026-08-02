@@ -6,7 +6,7 @@ import {
   AdmissionShareFormalRoundConflictError,
   AdmissionShareSelectionError,
   createAdmissionShareBoard,
-  listAdmissionShareBoards,
+  listInternalAdmissionShareBoards,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareCandidateRepository } from "@/features/applications/admission-share-candidates";
@@ -29,7 +29,7 @@ vi.mock("@/features/applications/admission-share-board", () => ({
       };
     }),
   createAdmissionShareBoard: vi.fn(),
-  listAdmissionShareBoards: vi.fn(),
+  listInternalAdmissionShareBoards: vi.fn(),
   toAdmissionShareIdentityPresentation: vi.fn().mockReturnValue({
     brand: {
       logoText: "星河",
@@ -124,6 +124,90 @@ const context = {
 
 const params = Promise.resolve({ projectId: "project-1" });
 
+const internalPresentation = {
+  id: "share-1",
+  title: "Vendor review",
+  purpose: "",
+  mode: "formal_review" as const,
+  status: "active" as const,
+  reviewState: "not_started" as const,
+  roundNumber: 1,
+  expiresAt: "2026-06-14T00:00:00.000Z",
+  project: {
+    id: "project-1",
+    code: "P-001",
+    name: "Launch project",
+    vendor: "Vendor",
+    product: "Product",
+  },
+  brand: {
+    logoText: "STAR",
+    brandName: "Star Live",
+    brandTagline: "Professional live operations",
+    primaryColor: "#165DFF",
+  },
+  contactCard: {
+    displayName: "Lin",
+    title: "Account lead",
+    phone: "13800000000",
+  },
+  progress: { completed: 1, total: 2 },
+  latestSubmission: {
+    revision: 2,
+    submittedAt: "2026-07-30T09:00:00.000Z",
+    summary: { selected: 1, backup: 0, rejected: 0, needsChanges: 1 },
+  },
+  items: [
+    {
+      applicationId: "app-1",
+      recordingSubmissionId: "recording-v2",
+      recordingVersion: 2,
+      sourceHealth: "original_ready" as const,
+      streamer: {
+        id: "streamer-1",
+        displayName: "Streamer One",
+        accountLabel: "dy_1",
+      },
+      finalReview: null,
+    },
+    {
+      applicationId: "app-2",
+      recordingSubmissionId: "recording-v3",
+      recordingVersion: 3,
+      sourceHealth: "external_only" as const,
+      streamer: {
+        id: "streamer-2",
+        displayName: "Streamer Two",
+        accountLabel: "dy_2",
+      },
+      finalReview: {
+        decision: "needs_changes" as const,
+        remark: "Adjust the opening",
+        reasonCodes: ["opening"],
+        submittedAt: "2026-07-30T09:00:00.000Z",
+      },
+    },
+  ],
+  brandVersion: 4,
+  contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+  sourceDiagnostics: [
+    {
+      recordingSubmissionId: "recording-v2",
+      applicationStatus: "recording_reviewing" as const,
+      recordingStatus: "submitted" as const,
+      hasPrivateStorage: true,
+      externalUrl: null,
+    },
+    {
+      recordingSubmissionId: "recording-v3",
+      applicationStatus: "recording_reviewing" as const,
+      recordingStatus: "submitted" as const,
+      hasPrivateStorage: false,
+      externalUrl: "https://video.example/recording-v3",
+    },
+  ],
+};
+
 describe("project admission share-board route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -132,7 +216,7 @@ describe("project admission share-board route", () => {
     vi.mocked(createSupabaseAdminClient).mockReturnValue({
       client: "admin",
     } as never);
-    vi.mocked(listAdmissionShareBoards).mockResolvedValue([
+    vi.mocked(listInternalAdmissionShareBoards).mockResolvedValue([
       {
         id: "share-1",
         title: "Vendor review",
@@ -150,6 +234,7 @@ describe("project admission share-board route", () => {
         lockedAt: null,
         createdBy: "user-ops",
         createdAt: "2026-07-30T00:00:00.000Z",
+        presentation: internalPresentation,
       },
     ]);
     vi.mocked(createAdmissionShareBoard).mockResolvedValue({
@@ -186,6 +271,7 @@ describe("project admission share-board route", () => {
         createdBy: "user-ops",
         createdAt: "2026-07-30T00:00:00.000Z",
       },
+      presentation: internalPresentation,
     });
   });
 
@@ -214,14 +300,23 @@ describe("project admission share-board route", () => {
         lockedAt: null,
         createdBy: "user-ops",
         createdAt: "2026-07-30T00:00:00.000Z",
+        presentation: internalPresentation,
       },
     ]);
+    expect(
+      body.shareBoards[0].presentation.items.map(
+        (item: { recordingSubmissionId: string }) => item.recordingSubmissionId,
+      ),
+    ).toEqual(["recording-v2", "recording-v3"]);
     expect(JSON.stringify(body)).not.toContain("hash");
     expect(JSON.stringify(body)).not.toContain("organizationId");
     expect(JSON.stringify(body)).not.toContain("projectId");
     expect(JSON.stringify(body)).not.toContain("allowVendorSubmit");
     expect(JSON.stringify(body)).not.toContain("allowExternalFallback");
     expect(JSON.stringify(body)).not.toContain("storage");
+    expect(JSON.stringify(body)).not.toContain("storagePath");
+    expect(JSON.stringify(body)).not.toContain("logoStoragePath");
+    expect(JSON.stringify(body)).not.toContain("tokenHash");
     expect(JSON.stringify(body)).not.toContain("reviewer");
   });
 
@@ -271,6 +366,7 @@ describe("project admission share-board route", () => {
         primaryColor: "#165DFF",
       },
       contactCard: null,
+      presentation: internalPresentation,
     });
     expect(JSON.stringify(body)).not.toContain("hash");
     expect(JSON.stringify(body)).not.toContain("private.webp");
