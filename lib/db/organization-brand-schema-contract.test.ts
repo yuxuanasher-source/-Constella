@@ -17,6 +17,13 @@ const shareSnapshotMigrationPath = resolve(
 const shareSnapshotSql = existsSync(shareSnapshotMigrationPath)
   ? readFileSync(shareSnapshotMigrationPath, "utf8").toLowerCase()
   : "";
+const legacyShareCreateMigrationPath = resolve(
+  process.cwd(),
+  "supabase/migrations/20260730123000_admission_share_create_rpc.sql",
+);
+const legacyShareCreateSql = existsSync(legacyShareCreateMigrationPath)
+  ? readFileSync(legacyShareCreateMigrationPath, "utf8").toLowerCase()
+  : "";
 
 function functionSqlFrom(source: string, name: string): string {
   const start = source.indexOf(`create or replace function public.${name}(`);
@@ -609,17 +616,26 @@ describe("admission share brand snapshot schema", () => {
     );
   });
 
-  it("rebuilds creation so only a contact-card id crosses the RPC boundary", () => {
+  it("adds an unambiguous contact-card overload without removing the legacy create RPC", () => {
     const createShare = functionSqlFrom(
       shareSnapshotSql,
       "create_admission_share_board",
     );
+    const legacyCreateShare = functionSqlFrom(
+      legacyShareCreateSql,
+      "create_admission_share_board",
+    );
     expect(createShare).not.toBe("");
-    expect(createShare).toMatch(/p_contact_card_id uuid/);
+    expect(createShare).toMatch(/p_items jsonb,\s*p_contact_card_id uuid\s*\)/);
     expect(createShare).not.toContain("p_brand_snapshot");
     expect(createShare).not.toContain("p_contact_card_snapshot");
-    expect(shareSnapshotSql).toMatch(
-      /drop function if exists public\.create_admission_share_board\([\s\S]*jsonb[\s\S]*\);/,
+    expect(legacyCreateShare).toMatch(/p_items jsonb\s*\)/);
+    expect(legacyCreateShare).toContain(
+      "returns public.project_recording_share_boards",
+    );
+    expect(legacyCreateShare).toContain("security invoker");
+    expect(shareSnapshotSql).not.toMatch(
+      /drop function if exists public\.create_admission_share_board\(/,
     );
   });
 

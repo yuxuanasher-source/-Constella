@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   readlink,
   rm,
   symlink,
@@ -620,6 +621,28 @@ select 'commit and rollback are data here';
   }
 });
 
+test("application release migrations pass expand preflight", async () => {
+  const validator = join(
+    process.cwd(),
+    "scripts/validate-expand-migration.mjs",
+  );
+  const migrations = join(process.cwd(), "supabase/migrations");
+  const filenames = (await readdir(migrations))
+    .filter(
+      (filename) => filename.endsWith(".sql") && filename >= "20260731090000_",
+    )
+    .sort();
+  assert.ok(filenames.length > 0, "expected application release migrations");
+
+  for (const filename of filenames) {
+    const migration = join(migrations, filename);
+    const validated = run(process.execPath, {
+      args: [validator, migration],
+    });
+    assert.equal(validated.status, 0, `${filename}: ${validated.stderr}`);
+  }
+});
+
 test("a second deployment fails immediately while the host lock is held", async (t) => {
   const sandbox = await mkdtemp(join(tmpdir(), "deploy-lock-"));
   t.after(() => rm(sandbox, { recursive: true, force: true }));
@@ -914,11 +937,7 @@ node -e '
   );
 
   const verifyPath = join(process.cwd(), "scripts/verify-release.sh");
-  const invoke = (
-    healthSha,
-    pm2Mode = "healthy",
-    healthSequence = "fixed",
-  ) =>
+  const invoke = (healthSha, pm2Mode = "healthy", healthSequence = "fixed") =>
     run(bash, {
       args: [
         "-lc",

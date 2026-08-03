@@ -1,3 +1,5 @@
+-- deploy: expand
+
 create or replace function public.save_organization_brand_draft(
   p_organization_id uuid,
   p_expected_version integer,
