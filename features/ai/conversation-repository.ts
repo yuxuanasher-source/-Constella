@@ -19,6 +19,7 @@ import {
   type HermesTurnCancellation,
 } from "./hermes/hermes-state-repository";
 import { isHermesOutcome, type HermesOutcome } from "./hermes/contracts";
+import { parseHermesGatewayProviderState } from "./hermes/gateway-contracts";
 
 type QueryResult<T> = { data: T | null; error: unknown };
 
@@ -134,6 +135,10 @@ export class ConversationTurnStagePersistenceError extends Error {
 export type ConversationGatewayState = {
   generation: number;
   sessionId?: string;
+  checkpointId?: string;
+  provider?: string;
+  model?: string;
+  lastUsedAt?: string;
   childSessions: string[];
   summary: Record<string, unknown>;
   summaryVersion: number;
@@ -262,6 +267,18 @@ export async function getAiConversationGatewayState(
     : {};
   const generation = numberValue(hermesGateway.generation) ?? 0;
   const sessionId = stringValue(hermesGateway.sessionId);
+  const reusableSession = sessionId
+    ? parseHermesGatewayProviderState({
+        generation,
+        sessionId,
+        ...(stringValue(hermesGateway.checkpointId)
+          ? { checkpointId: stringValue(hermesGateway.checkpointId)! }
+          : {}),
+        provider: hermesGateway.provider,
+        model: hermesGateway.model,
+        lastUsedAt: hermesGateway.lastUsedAt,
+      })
+    : null;
   const checkpoint = isRecord(hermesGateway.checkpoint)
     ? hermesGateway.checkpoint
     : {};
@@ -277,6 +294,16 @@ export async function getAiConversationGatewayState(
   return {
     generation,
     ...(sessionId ? { sessionId } : {}),
+    ...(reusableSession?.checkpointId
+      ? { checkpointId: reusableSession.checkpointId }
+      : {}),
+    ...(reusableSession
+      ? {
+          provider: reusableSession.provider,
+          model: reusableSession.model,
+          lastUsedAt: reusableSession.lastUsedAt,
+        }
+      : {}),
     childSessions,
     ...(pendingClarify ? { pendingClarify } : {}),
     summary,

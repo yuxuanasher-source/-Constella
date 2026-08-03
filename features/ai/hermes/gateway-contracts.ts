@@ -55,6 +55,15 @@ export type HermesGatewayHealth = {
   capabilityManifestSha256: typeof HERMES_CAPABILITY_MANIFEST_SHA256;
 };
 
+export type HermesGatewayProviderState = {
+  generation: number;
+  sessionId: string;
+  checkpointId?: string;
+  provider: string;
+  model: string;
+  lastUsedAt: string;
+};
+
 export type HermesToolResultMetadata = {
   evidenceRefs: string[];
   sourceLabels: string[];
@@ -202,10 +211,7 @@ export type HermesGatewayEvent =
         metadata: HermesToolResultMetadata;
       }
     >
-  | SessionEvent<
-      "status.update",
-      { status: string; message: string }
-    >
+  | SessionEvent<"status.update", { status: string; message: string }>
   | SessionEvent<
       "turn.terminal",
       {
@@ -233,6 +239,17 @@ const SESSION_EVENT_KEYS = [
   "sequence",
   "sessionId",
   "type",
+] as const;
+const PROVIDER_STATE_KEYS = [
+  "generation",
+  "lastUsedAt",
+  "model",
+  "provider",
+  "sessionId",
+] as const;
+const PROVIDER_STATE_WITH_CHECKPOINT_KEYS = [
+  "checkpointId",
+  ...PROVIDER_STATE_KEYS,
 ] as const;
 const GIT_COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -272,6 +289,26 @@ export function parseHermesGatewayHealth(
     return null;
   }
   return value as HermesGatewayHealth;
+}
+
+export function parseHermesGatewayProviderState(
+  value: unknown,
+): HermesGatewayProviderState | null {
+  if (
+    !isRecord(value) ||
+    !("checkpointId" in value
+      ? hasExactKeys(value, PROVIDER_STATE_WITH_CHECKPOINT_KEYS)
+      : hasExactKeys(value, PROVIDER_STATE_KEYS)) ||
+    !isNonNegativeSafeInteger(value.generation) ||
+    !isSessionId(value.sessionId) ||
+    ("checkpointId" in value && !isSessionId(value.checkpointId)) ||
+    !isBoundedText(value.provider, 128) ||
+    !isBoundedText(value.model, 256) ||
+    !isIsoTimestamp(value.lastUsedAt)
+  ) {
+    return null;
+  }
+  return value as HermesGatewayProviderState;
 }
 
 export function parseHermesGatewayCommand(
@@ -464,8 +501,7 @@ function isEventPayload(
       );
     case "message.complete":
       return (
-        hasExactKeys(payload, ["text"]) &&
-        isBoundedText(payload.text, 100_000)
+        hasExactKeys(payload, ["text"]) && isBoundedText(payload.text, 100_000)
       );
     case "tool.start":
       return (
@@ -674,7 +710,9 @@ function isIsoTimestamp(value: unknown): value is string {
     return false;
   }
   const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+  return (
+    Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value
+  );
 }
 
 function isUniqueStringArray(

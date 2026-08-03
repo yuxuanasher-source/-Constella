@@ -435,12 +435,13 @@ describe("native Hermes Gateway executor", () => {
     expect(compareAndSwapGatewayState).toHaveBeenCalledWith(
       expect.objectContaining({
         expectedGeneration: 0,
-        nextState: expect.objectContaining({
+        nextState: {
           generation: 1,
-          checkpoint: {
-            sessionId: "session-rebuilt",
-          },
-        }),
+          sessionId: "session-rebuilt",
+          provider: "hermes",
+          model: "hermes-official-gateway",
+          lastUsedAt: expect.any(String),
+        },
       }),
     );
   });
@@ -783,6 +784,12 @@ describe("native Hermes Gateway executor", () => {
 
     expect(service.listMessages).not.toHaveBeenCalled();
     expect(service.captureGatewayContext).not.toHaveBeenCalled();
+    expect(gateway.resumeSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-frozen",
+        invocationCapability: "root-capability-secret",
+      }),
+    );
     expect(gateway.submitPrompt).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: "frozen question",
@@ -883,12 +890,16 @@ describe("native Hermes Gateway executor", () => {
       name: "iterator throw after delta",
       gatewayPatch: {
         submitPrompt: vi.fn().mockImplementation(async function* () {
+          yield { type: "prompt.accepted" };
           yield { type: "response.output_text.delta", delta: "partial" };
           throw new Error("provider stack trace");
         }),
+        recoverSession: vi.fn().mockImplementation(async function* () {
+          throw new Error("recovery exhausted");
+        }),
       },
       servicePatch: undefined,
-      expectedCode: "gateway_stream_failed",
+      expectedCode: "gateway_stream_recovery_failed",
       expectedContent: "partial",
     },
   ])(
@@ -1608,10 +1619,270 @@ describe("native Hermes Gateway executor", () => {
         mode: "fast",
       }),
     );
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(3);
+    expect(events[0]).toEqual({ type: "prompt.accepted" });
     expect(JSON.stringify(openSession.mock.calls)).not.toContain(
       "/v1/xingyao/gateway",
     );
+  });
+
+  it("creates, CASes, and submits once when no reusable session exists", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    const gateway = gatewayDouble([
+      { type: "prompt.accepted" },
+      { type: "completed", sessionId: "session-rebuilt" },
+    ]);
+
+    await runExecutor({ service, gateway });
+
+    expect(gateway.createSession).toHaveBeenCalledTimes(1);
+    expect(gateway.resumeSession).not.toHaveBeenCalled();
+    expect(service.compareAndSwapGatewayState).toHaveBeenCalledWith(
+      actor,
+      turn.conversationId,
+      0,
+      {
+        generation: 1,
+        sessionId: "session-rebuilt",
+        provider: "hermes",
+        model: "hermes-official-gateway",
+        lastUsedAt: "2026-08-03T16:00:00.000Z",
+      },
+    );
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes a valid session with a fresh capability on every turn and submits once", async () => {
+    const reusableState = {
+      generation: 7,
+      sessionId: "session-reused",
+      checkpointId: "checkpoint-7",
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      lastUsedAt: "2026-08-03T15:55:00.000Z",
+      childSessions: [],
+      summary: {},
+      summaryVersion: 0,
+    };
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+      gatewayState: reusableState,
+    });
+    service.issueGatewayRootCapability
+      .mockResolvedValueOnce({
+        capabilityId: "capability-turn-1",
+        invocationCapability: "fresh-capability-turn-1",
+        expiresAt: "2026-08-03T16:02:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        capabilityId: "capability-turn-2",
+        invocationCapability: "fresh-capability-turn-2",
+        expiresAt: "2026-08-03T16:03:00.000Z",
+      });
+    const gateway = gatewayDouble([
+      { type: "prompt.accepted" },
+      { type: "completed", sessionId: "session-reused" },
+    ]);
+    const secondTurn = {
+      ...turn,
+      turnId: "99999999-9999-4999-8999-999999999999",
+      userMessageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      assistantMessageId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    };
+
+    await runExecutor({ service, gateway });
+    await runExecutor({ service, gateway, inputTurn: secondTurn });
+
+    expect(gateway.createSession).not.toHaveBeenCalled();
+    expect(gateway.resumeSession).toHaveBeenCalledTimes(2);
+    expect(
+      gateway.resumeSession.mock.calls.map(
+        (call) => (call[0] as Record<string, unknown>).invocationCapability,
+      ),
+    ).toEqual(["fresh-capability-turn-1", "fresh-capability-turn-2"]);
+    expect(service.compareAndSwapGatewayState.mock.calls[0]?.[3]).toEqual({
+      generation: 8,
+      sessionId: "session-reused",
+      checkpointId: "checkpoint-7",
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      lastUsedAt: "2026-08-03T16:00:00.000Z",
+    });
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(2);
+  });
+
+  it("replaces one expired session, CASes the replacement, and submits once", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+      gatewayState: reusableGatewayState({
+        sessionId: "session-expired",
+        lastUsedAt: "2026-08-03T15:44:59.000Z",
+      }),
+    });
+    const gateway = gatewayDouble([
+      { type: "prompt.accepted" },
+      { type: "completed", sessionId: "session-rebuilt" },
+    ]);
+
+    await runExecutor({ service, gateway });
+
+    expect(gateway.resumeSession).not.toHaveBeenCalled();
+    expect(gateway.createSession).toHaveBeenCalledTimes(1);
+    expect(service.compareAndSwapGatewayState).toHaveBeenCalledWith(
+      actor,
+      turn.conversationId,
+      4,
+      {
+        generation: 5,
+        sessionId: "session-rebuilt",
+        provider: "hermes",
+        model: "hermes-official-gateway",
+        lastUsedAt: "2026-08-03T16:00:00.000Z",
+      },
+    );
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads and resumes the CAS winner before one prompt submission", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    service.getGatewayState
+      .mockResolvedValueOnce({ generation: 0 })
+      .mockResolvedValueOnce(
+        reusableGatewayState({ generation: 1, sessionId: "session-winner" }),
+      );
+    service.compareAndSwapGatewayState.mockRejectedValueOnce(
+      new Error("gateway_state_conflict"),
+    );
+    const gateway = gatewayDouble([
+      { type: "prompt.accepted" },
+      { type: "completed", sessionId: "session-winner" },
+    ]);
+
+    await runExecutor({ service, gateway });
+
+    expect(gateway.createSession).toHaveBeenCalledTimes(1);
+    expect(gateway.resumeSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-winner" }),
+    );
+    expect(service.getGatewayState).toHaveBeenCalledTimes(2);
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(gateway.submitPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-winner" }),
+    );
+  });
+
+  it("retries prompt submission once when transport is lost before acknowledgement", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    let attempts = 0;
+    const gateway = gatewayDouble([]);
+    gateway.submitPrompt.mockImplementation(async function* () {
+      attempts += 1;
+      if (attempts === 1) throw new Error("transport lost before ack");
+      yield { type: "prompt.accepted" };
+      yield { type: "completed", sessionId: "session-rebuilt" };
+    });
+
+    const events = await runExecutor({ service, gateway });
+
+    expect(events.at(-1)).toMatchObject({ type: "response.completed" });
+    expect(gateway.recoverSession).toHaveBeenCalledTimes(1);
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers events without resubmitting after Gateway acknowledgement", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    const gateway = gatewayDouble([]);
+    gateway.submitPrompt.mockImplementation(async function* () {
+      yield { type: "prompt.accepted" };
+      yield { type: "completed", sessionId: "session-rebuilt" };
+    });
+
+    const events = await runExecutor({ service, gateway });
+
+    expect(events.at(-1)).toMatchObject({ type: "response.completed" });
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(gateway.recoverSession).not.toHaveBeenCalled();
+  });
+
+  it("does not add recovery attempts after client event recovery is exhausted", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    const gateway = gatewayDouble([]);
+    gateway.submitPrompt.mockImplementation(async function* () {
+      yield { type: "prompt.accepted" };
+      throw new Error("client recovery exhausted");
+    });
+    gateway.recoverSession.mockImplementation(async function* () {
+      yield { type: "completed", sessionId: "must-not-be-read" };
+    });
+
+    const events = await runExecutor({ service, gateway });
+
+    expect(events.at(-1)).toMatchObject({
+      type: "response.failed",
+      code: "gateway_stream_recovery_failed",
+    });
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(gateway.recoverSession).not.toHaveBeenCalled();
+  });
+
+  it("does not treat recovered terminal data as acknowledgement", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    let attempts = 0;
+    const gateway = gatewayDouble([]);
+    gateway.submitPrompt.mockImplementation(async function* () {
+      attempts += 1;
+      if (attempts === 1) throw new Error("transport lost before ack");
+      yield { type: "prompt.accepted" };
+      yield { type: "completed", sessionId: "session-rebuilt" };
+    });
+    gateway.recoverSession.mockImplementation(async function* () {
+      yield { type: "completed", sessionId: "unacknowledged-session" };
+    });
+
+    const events = await runExecutor({ service, gateway });
+
+    expect(
+      events.filter((event) => event.type === "response.completed"),
+    ).toHaveLength(1);
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails visibly when the CAS winner cannot resume after one rebuild", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    service.getGatewayState
+      .mockResolvedValueOnce({ generation: 0 })
+      .mockResolvedValueOnce(
+        reusableGatewayState({ generation: 1, sessionId: "session-winner" }),
+      );
+    service.compareAndSwapGatewayState.mockRejectedValueOnce(
+      new Error("gateway_state_conflict"),
+    );
+    const gateway = gatewayDouble([]);
+    gateway.resumeSession.mockRejectedValueOnce(new Error("resume failed"));
+
+    const events = await runExecutor({ service, gateway });
+
+    expect(events.at(-1)).toMatchObject({
+      type: "response.failed",
+      code: "gateway_session_resume_failed",
+    });
+    expect(gateway.createSession).toHaveBeenCalledTimes(1);
+    expect(gateway.resumeSession).toHaveBeenCalledTimes(1);
+    expect(gateway.submitPrompt).not.toHaveBeenCalled();
   });
 
   it("signs the default official Gateway session with a Gateway v2 actor assertion", async () => {
@@ -1847,9 +2118,11 @@ describe("native Hermes Gateway executor", () => {
 function serviceDouble({
   messages,
   gatewayGeneration = 0,
+  gatewayState,
 }: {
   messages: AiConversationMessageDto[];
   gatewayGeneration?: number;
+  gatewayState?: Record<string, unknown>;
 }) {
   return {
     prepareTurn: vi.fn().mockResolvedValue({
@@ -1872,7 +2145,7 @@ function serviceDouble({
     listMessages: vi.fn().mockResolvedValue(messages),
     getGatewayState: vi
       .fn()
-      .mockResolvedValue({ generation: gatewayGeneration }),
+      .mockResolvedValue(gatewayState ?? { generation: gatewayGeneration }),
     compareAndSwapGatewayState: vi
       .fn()
       .mockResolvedValue(gatewayGeneration + 1),
@@ -1961,11 +2234,62 @@ async function withDeadline<T>(promise: Promise<T>, timeoutMs: number) {
 function gatewayDouble(events: unknown[]) {
   return {
     createSession: vi.fn().mockResolvedValue({ sessionId: "session-rebuilt" }),
+    resumeSession: vi
+      .fn()
+      .mockImplementation(async (input: Record<string, unknown>) => ({
+        sessionId: input.sessionId,
+      })),
     branchSession: vi.fn(),
     submitPrompt: vi.fn().mockImplementation(async function* () {
       for (const event of events) yield event;
     }),
+    recoverSession: vi.fn().mockImplementation(async function* () {
+      for (const event of events) yield event;
+    }),
   };
+}
+
+function reusableGatewayState(overrides: Record<string, unknown> = {}) {
+  return {
+    generation: 4,
+    sessionId: "session-reused",
+    checkpointId: "checkpoint-4",
+    provider: "hermes",
+    model: "hermes-official-gateway",
+    lastUsedAt: "2026-08-03T15:55:00.000Z",
+    childSessions: [],
+    summary: {},
+    summaryVersion: 0,
+    ...overrides,
+  };
+}
+
+async function runExecutor({
+  service,
+  gateway,
+  inputTurn = turn,
+}: {
+  service: ReturnType<typeof serviceDouble>;
+  gateway: ReturnType<typeof gatewayDouble>;
+  inputTurn?: typeof turn;
+}) {
+  const executor = createGatewayTurnExecutor({
+    service,
+    gateway,
+    auth: { ...actor, role: "finance" },
+    provider: "hermes",
+    model: "hermes-official-gateway",
+    now: () => new Date("2026-08-03T16:00:00.000Z"),
+  });
+  return collect(
+    executor.execute({
+      request: jsonRequest({ message: "hello", mode: "fast" }),
+      actor,
+      turn: inputTurn,
+      attachments: [],
+      service: {} as never,
+    }),
+  );
 }
 
 function message(

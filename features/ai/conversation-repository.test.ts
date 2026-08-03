@@ -708,6 +708,12 @@ describe("Xingyao conversation repository", () => {
           hermesGateway: {
             generation: 3,
             sessionId: "session-1",
+            checkpointId: "checkpoint-1",
+            provider: "hermes",
+            model: "hermes-official-gateway",
+            lastUsedAt: "2026-08-03T16:00:00.000Z",
+            organizationId: "must-not-escape",
+            invocationCapability: "must-not-escape",
             childSessions: ["child-1", "child-1", ""],
             checkpoint: {
               childSessions: ["child-2", "child-1"],
@@ -746,6 +752,10 @@ describe("Xingyao conversation repository", () => {
     ).resolves.toEqual({
       generation: 3,
       sessionId: "session-1",
+      checkpointId: "checkpoint-1",
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      lastUsedAt: "2026-08-03T16:00:00.000Z",
       childSessions: ["child-1", "child-2"],
       summary: { text: "old" },
       summaryVersion: 2,
@@ -758,6 +768,16 @@ describe("Xingyao conversation repository", () => {
         allowFreeText: false,
       },
     });
+    const loaded = await getAiConversationGatewayState(
+      { from: fromForGet } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: "org-1",
+        ownerUserId: "user-1",
+        conversationId: "conversation-1",
+      },
+    );
+    expect(loaded).not.toHaveProperty("organizationId");
+    expect(loaded).not.toHaveProperty("invocationCapability");
 
     const returns = vi
       .fn()

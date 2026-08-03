@@ -11,9 +11,38 @@ import {
   parseHermesGatewayCommand,
   parseHermesGatewayEvent,
   parseHermesGatewayHealth,
+  parseHermesGatewayProviderState,
 } from "./gateway-contracts";
 
 describe("Hermes Gateway v2 runtime contracts", () => {
+  it("accepts only the minimal reusable Product session envelope", () => {
+    const state = {
+      generation: 4,
+      sessionId: SESSION_ID,
+      checkpointId: "checkpoint-4",
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      lastUsedAt: "2026-08-03T16:00:00.000Z",
+    };
+
+    expect(parseHermesGatewayProviderState(state)).toEqual(state);
+    expect(
+      parseHermesGatewayProviderState({
+        ...state,
+        organizationId: "22222222-2222-4222-8222-222222222222",
+      }),
+    ).toBeNull();
+    expect(
+      parseHermesGatewayProviderState({
+        ...state,
+        invocationCapability: INVOCATION_CAPABILITY,
+      }),
+    ).toBeNull();
+    expect(
+      parseHermesGatewayProviderState({ ...state, lastUsedAt: "not-a-date" }),
+    ).toBeNull();
+  });
+
   it("accepts only the pinned, exact health handshake", () => {
     expect(parseHermesGatewayHealth(HEALTH)).toEqual(HEALTH);
 
@@ -104,7 +133,9 @@ describe("Hermes Gateway v2 runtime contracts", () => {
 
   it("rejects unknown methods, extra fields, malformed UUIDs, and path attachments", () => {
     expect(
-      parseHermesGatewayCommand(command("model.select", { model: "forbidden" })),
+      parseHermesGatewayCommand(
+        command("model.select", { model: "forbidden" }),
+      ),
     ).toBeNull();
 
     const prompt = command("prompt.submit", {
@@ -218,7 +249,9 @@ describe("Hermes Gateway v2 runtime contracts", () => {
 
   it("rejects unknown, private-reasoning, malformed, and widened events", () => {
     for (const type of ["unknown.event", "reasoning.delta", "thinking.delta"]) {
-      expect(parseHermesGatewayEvent(event(type, { text: "private" }))).toBeNull();
+      expect(
+        parseHermesGatewayEvent(event(type, { text: "private" })),
+      ).toBeNull();
     }
 
     const terminal = event("turn.terminal", {
@@ -294,8 +327,7 @@ const HEALTH = {
   forkCommit: "a9c8ea249494075ab7180c7a9df4b07b478d4708",
   protocolVersion: HERMES_PROTOCOL_VERSION,
   profileVersion: HERMES_PROFILE_VERSION,
-  capabilityManifestSha256:
-    HERMES_CAPABILITY_MANIFEST_SHA256,
+  capabilityManifestSha256: HERMES_CAPABILITY_MANIFEST_SHA256,
 } as const;
 
 const EMPTY_METADATA = {

@@ -77,7 +77,7 @@ const DEFAULT_TIMEOUTS: HermesGatewayTimeouts = {
   connectMs: 2_000,
   readyMs: 2_000,
   rpcMs: 15_000,
-  idleMs: 120_000,
+  idleMs: 180_000,
   heartbeatMs: 30_000,
 };
 const XINGYAO_GATEWAY_WS_PATH = "/api/xingyao/ws";

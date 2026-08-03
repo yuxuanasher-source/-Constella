@@ -71,6 +71,10 @@ type GatewayService = {
   ): Promise<{
     generation: number;
     sessionId?: string;
+    checkpointId?: string;
+    provider?: string;
+    model?: string;
+    lastUsedAt?: string;
     summary?: Record<string, unknown>;
     summaryVersion?: number;
     pendingClarify?: {
@@ -141,11 +145,17 @@ type GatewayService = {
 };
 
 type GatewayClient = {
-  createSession(input: Record<string, unknown>): Promise<{ sessionId: string }>;
+  createSession(
+    input: Record<string, unknown>,
+  ): Promise<{ sessionId: string; checkpointId?: string }>;
+  resumeSession?(
+    input: Record<string, unknown>,
+  ): Promise<{ sessionId: string; checkpointId?: string }>;
   branchSession?(
     input: Record<string, unknown>,
   ): Promise<{ sessionId: string }>;
   submitPrompt(input: Record<string, unknown>): AsyncIterable<unknown>;
+  recoverSession?(input: Record<string, unknown>): AsyncIterable<unknown>;
   interruptSession?(input: { sessionId: string }): Promise<unknown>;
   respondToClarify?(input: {
     sessionId: string;
@@ -153,6 +163,18 @@ type GatewayClient = {
     answer: string;
   }): Promise<unknown>;
   closeSession?(input: { sessionId: string }): void;
+};
+
+type GatewayConversationState = NonNullable<
+  Awaited<ReturnType<NonNullable<GatewayService["getGatewayState"]>>>
+>;
+
+type GatewaySessionPreparation = {
+  sessionId: string;
+  checkpointId?: string;
+  action: "resumed" | "rebuilt";
+  generation: number;
+  state: GatewayConversationState;
 };
 
 export type GatewayCheckpoint = {
@@ -202,6 +224,9 @@ type GatewayExecutorOptions = {
   };
 };
 
+const GATEWAY_SESSION_IDLE_TTL_MS = 15 * 60 * 1_000;
+const MAX_PROMPT_SUBMIT_ATTEMPTS = 2;
+
 export function createGatewayTurnExecutor(
   options: GatewayExecutorOptions,
 ): ConversationTurnExecutor<Omit<GatewayService, "listMessages">> {
@@ -249,38 +274,27 @@ export function createGatewayTurnExecutor(
         };
         const frozen = frozenGatewayContext(prepared.snapshot.gatewayContext);
         const sessionSetup = frozen
-          ? {
+          ? await resumeFrozenGatewayContext({
+              input,
+              service,
+              gateway,
               context: frozen,
-              session: {
-                sessionId:
-                  stringValue(frozen.invocationMetadata.sessionId) ??
-                  stringValue(
-                    recordValue(
-                      frozen.invocationMetadata.gatewayCheckpoint,
-                      "sessionId",
-                    ),
-                  ) ??
-                  state.sessionId ??
-                  "",
-              },
-              checkpoint: checkpointFromMetadata(
-                frozen.invocationMetadata.gatewayCheckpoint,
-              ),
-              captured: true,
-              capability: null,
-            }
+              state,
+            })
           : await buildAndCaptureFreshGatewayContext({
               input,
               options,
               service,
               gateway,
               prepared,
+              state,
               now,
             });
         if (!sessionSetup.session.sessionId) {
           throw new GatewayExecutionError("gateway_checkpoint_invalid");
         }
-        telemetry.record("session_ready", frozen ? "resumed" : "rebuilt");
+        state = sessionSetup.state;
+        telemetry.record("session_ready", sessionSetup.action);
         const sessionId = sessionSetup.session.sessionId;
         activeSessionId = sessionId;
         unregisterActiveRun = activeHermesRunRegistry.register({
@@ -320,56 +334,30 @@ export function createGatewayTurnExecutor(
             gatewayContext: sessionSetup.context,
           }));
 
-        if (!frozen) {
-          if (!sessionSetup.checkpoint) {
-            throw new GatewayExecutionError("gateway_checkpoint_invalid");
-          }
-          const nextGeneration = state.generation + 1;
-          const nextState = {
-            generation: nextGeneration,
-            sessionId: sessionSetup.session.sessionId,
-            provider: options.provider,
-            model: options.model,
-            rebuiltAt: now().toISOString(),
-            checkpoint: {
-              sessionId: sessionSetup.checkpoint.sessionId,
-              ...(sessionSetup.checkpoint.checkpointId
-                ? { checkpointId: sessionSetup.checkpoint.checkpointId }
-                : {}),
-            },
-          };
-          try {
-            await service.compareAndSwapGatewayState(
-              input.actor,
-              input.turn.conversationId,
-              state.generation,
-              nextState,
-            );
-            state = {
-              ...state,
-              ...nextState,
-            };
-          } catch {
-            throw new GatewayExecutionError("gateway_state_conflict");
-          }
-        }
-
         const observations: ToolObservation[] = [];
+        let promptAccepted = false;
+        const promptInput = {
+          sessionId: sessionSetup.session.sessionId,
+          prompt: buildGatewayPrompt({
+            context: sessionSetup.context,
+            summary: state.summary ?? {},
+          }),
+          actor:
+            recordValue(sessionSetup.context.invocationMetadata, "actor") ??
+            options.auth,
+          provider: options.provider,
+          model: options.model,
+          mode: sessionSetup.context.mode,
+          conversationId: input.turn.conversationId,
+          invocationCapability: invocationCapability.invocationCapability,
+        };
         try {
-          for await (const gatewayEvent of gateway.submitPrompt({
-            sessionId: sessionSetup.session.sessionId,
-            prompt: buildGatewayPrompt({
-              context: sessionSetup.context,
-              summary: state.summary ?? {},
-            }),
-            actor:
-              recordValue(sessionSetup.context.invocationMetadata, "actor") ??
-              options.auth,
-            provider: options.provider,
-            model: options.model,
-            mode: sessionSetup.context.mode,
-            conversationId: input.turn.conversationId,
-            invocationCapability: invocationCapability.invocationCapability,
+          for await (const gatewayEvent of streamGatewayPrompt({
+            gateway,
+            input: promptInput,
+            onAccepted: () => {
+              promptAccepted = true;
+            },
           })) {
             const terminal = terminalGatewayEvent(gatewayEvent);
             if (terminal) {
@@ -466,7 +454,11 @@ export function createGatewayTurnExecutor(
           }
         } catch (error) {
           if (error instanceof GatewayExecutionError) throw error;
-          throw new GatewayExecutionError("gateway_stream_failed");
+          throw new GatewayExecutionError(
+            promptAccepted
+              ? "gateway_stream_recovery_failed"
+              : "gateway_stream_failed",
+          );
         }
 
         throw new GatewayExecutionError("gateway_stream_ended");
@@ -503,6 +495,300 @@ export function createGatewayTurnExecutor(
       }
     },
   };
+}
+
+async function resumeFrozenGatewayContext({
+  input,
+  service,
+  gateway,
+  context,
+  state,
+}: {
+  input: ConversationTurnExecutorInput<Omit<GatewayService, "listMessages">>;
+  service: GatewayService;
+  gateway: GatewayClient;
+  context: ConversationGatewayContext;
+  state: GatewayConversationState;
+}) {
+  const sessionId =
+    stringValue(context.invocationMetadata.sessionId) ??
+    stringValue(
+      recordValue(context.invocationMetadata.gatewayCheckpoint, "sessionId"),
+    ) ??
+    state.sessionId;
+  if (!sessionId) {
+    throw new GatewayExecutionError("gateway_checkpoint_invalid");
+  }
+  const capability = await issueGatewayInvocationCapability({
+    service,
+    actor: input.actor,
+    turn: input.turn,
+    gatewayContext: context,
+  });
+  const resumed = await resumeGatewaySession(gateway, {
+    sessionId,
+    actor: recordValue(context.invocationMetadata, "actor"),
+    conversationId: input.turn.conversationId,
+    invocationCapability: capability.invocationCapability,
+    attachments: normalizeAttachmentUpload(input.attachments),
+  });
+  return {
+    context,
+    session: { sessionId: resumed.sessionId },
+    checkpoint: checkpointFromMetadata(
+      context.invocationMetadata.gatewayCheckpoint,
+    ),
+    captured: true,
+    capability,
+    action: "resumed" as const,
+    state,
+  };
+}
+
+async function prepareGatewaySession({
+  service,
+  gateway,
+  actor,
+  conversationId,
+  options,
+  capability,
+  state,
+  createInput,
+  now,
+}: {
+  service: GatewayService;
+  gateway: GatewayClient;
+  actor: ConversationActor;
+  conversationId: string;
+  options: GatewayExecutorOptions;
+  capability: GatewayIssuedCapability;
+  state: GatewayConversationState;
+  createInput: Record<string, unknown>;
+  now: () => Date;
+}): Promise<GatewaySessionPreparation> {
+  let session: { sessionId: string; checkpointId?: string };
+  let action: GatewaySessionPreparation["action"] = "rebuilt";
+  if (isReusableGatewaySessionState(state, options, now())) {
+    try {
+      session = await resumeGatewaySession(gateway, {
+        ...createInput,
+        sessionId: state.sessionId,
+      });
+      action = "resumed";
+    } catch {
+      session = await createGatewaySession(gateway, createInput);
+    }
+  } else {
+    session = await createGatewaySession(gateway, createInput);
+  }
+
+  return persistPreparedGatewaySession({
+    service,
+    gateway,
+    actor,
+    conversationId,
+    options,
+    capability,
+    state,
+    session,
+    action,
+    resumeInput: createInput,
+    now,
+  });
+}
+
+async function persistPreparedGatewaySession({
+  service,
+  gateway,
+  actor,
+  conversationId,
+  options,
+  capability,
+  state,
+  session,
+  action,
+  resumeInput,
+  now,
+}: {
+  service: GatewayService;
+  gateway: GatewayClient;
+  actor: ConversationActor;
+  conversationId: string;
+  options: GatewayExecutorOptions;
+  capability: GatewayIssuedCapability;
+  state: GatewayConversationState;
+  session: { sessionId: string; checkpointId?: string };
+  action: GatewaySessionPreparation["action"];
+  resumeInput?: Record<string, unknown>;
+  now: () => Date;
+}): Promise<GatewaySessionPreparation> {
+  const checkpointId =
+    session.checkpointId ??
+    (action === "resumed" ? state.checkpointId : undefined);
+  const nextState = {
+    generation: state.generation + 1,
+    sessionId: session.sessionId,
+    ...(checkpointId ? { checkpointId } : {}),
+    provider: options.provider,
+    model: options.model,
+    lastUsedAt: now().toISOString(),
+  };
+  try {
+    await service.compareAndSwapGatewayState(
+      actor,
+      conversationId,
+      state.generation,
+      nextState,
+    );
+    return {
+      sessionId: session.sessionId,
+      ...(checkpointId ? { checkpointId } : {}),
+      action,
+      generation: nextState.generation,
+      state: { ...state, ...nextState },
+    };
+  } catch {
+    const winner = await service.getGatewayState?.(actor, conversationId);
+    if (
+      !winner ||
+      !isReusableGatewaySessionState(winner, options, now()) ||
+      !resumeInput
+    ) {
+      throw new GatewayExecutionError("gateway_state_conflict");
+    }
+    gateway.closeSession?.({ sessionId: session.sessionId });
+    let resumed: { sessionId: string; checkpointId?: string };
+    try {
+      resumed = await resumeGatewaySession(gateway, {
+        ...resumeInput,
+        actor: recordValue(resumeInput, "actor"),
+        conversationId,
+        invocationCapability: capability.invocationCapability,
+        sessionId: winner.sessionId,
+      });
+    } catch {
+      throw new GatewayExecutionError("gateway_session_resume_failed");
+    }
+    return {
+      sessionId: resumed.sessionId,
+      ...(winner.checkpointId ? { checkpointId: winner.checkpointId } : {}),
+      action: "resumed",
+      generation: winner.generation,
+      state: winner,
+    };
+  }
+}
+
+async function createGatewaySession(
+  gateway: GatewayClient,
+  input: Record<string, unknown>,
+) {
+  try {
+    return await gateway.createSession(input);
+  } catch {
+    throw new GatewayExecutionError("gateway_session_create_failed");
+  }
+}
+
+async function resumeGatewaySession(
+  gateway: GatewayClient,
+  input: Record<string, unknown>,
+) {
+  if (!gateway.resumeSession) {
+    throw new GatewayExecutionError("gateway_session_resume_failed");
+  }
+  try {
+    return await gateway.resumeSession(input);
+  } catch {
+    throw new GatewayExecutionError("gateway_session_resume_failed");
+  }
+}
+
+function isReusableGatewaySessionState(
+  state: GatewayConversationState,
+  options: Pick<GatewayExecutorOptions, "provider" | "model">,
+  now: Date,
+): state is GatewayConversationState & {
+  sessionId: string;
+  provider: string;
+  model: string;
+  lastUsedAt: string;
+} {
+  const lastUsedAtValue = stringValue(state.lastUsedAt);
+  if (
+    !stringValue(state.sessionId) ||
+    state.provider !== options.provider ||
+    state.model !== options.model ||
+    !lastUsedAtValue
+  ) {
+    return false;
+  }
+  const lastUsedAt = Date.parse(lastUsedAtValue);
+  return (
+    Number.isFinite(lastUsedAt) &&
+    lastUsedAt <= now.getTime() &&
+    now.getTime() - lastUsedAt <= GATEWAY_SESSION_IDLE_TTL_MS
+  );
+}
+
+async function* streamGatewayPrompt({
+  gateway,
+  input,
+  onAccepted,
+}: {
+  gateway: GatewayClient;
+  input: Record<string, unknown>;
+  onAccepted: () => void;
+}): AsyncIterable<unknown> {
+  let promptAccepted = false;
+  let submitAttempts = 0;
+
+  while (submitAttempts < MAX_PROMPT_SUBMIT_ATTEMPTS) {
+    submitAttempts += 1;
+    try {
+      for await (const event of gateway.submitPrompt(input)) {
+        if (isGatewayPromptAcceptedEvent(event)) {
+          promptAccepted = true;
+          onAccepted();
+          continue;
+        }
+        yield event;
+      }
+      return;
+    } catch (submitError) {
+      if (promptAccepted) throw submitError;
+      if (!gateway.recoverSession) {
+        if (submitAttempts >= MAX_PROMPT_SUBMIT_ATTEMPTS) throw submitError;
+        continue;
+      }
+      try {
+        const recoveredBeforeAcceptance: unknown[] = [];
+        for await (const event of gateway.recoverSession(input)) {
+          if (isGatewayPromptAcceptedEvent(event)) {
+            promptAccepted = true;
+            onAccepted();
+            for (const recovered of recoveredBeforeAcceptance) yield recovered;
+            recoveredBeforeAcceptance.length = 0;
+            continue;
+          }
+          if (promptAccepted) yield event;
+          else recoveredBeforeAcceptance.push(event);
+        }
+        if (promptAccepted) return;
+      } catch (recoveryError) {
+        if (promptAccepted) throw recoveryError;
+        if (submitAttempts >= MAX_PROMPT_SUBMIT_ATTEMPTS) throw submitError;
+      }
+    }
+  }
+
+  throw new GatewayExecutionError("gateway_stream_failed");
+}
+
+function isGatewayPromptAcceptedEvent(
+  value: unknown,
+): value is { type: "prompt.accepted" } {
+  return isRecord(value) && value.type === "prompt.accepted";
 }
 
 type BestEffortStageRecorder = {
@@ -631,6 +917,7 @@ async function buildAndCaptureFreshGatewayContext({
   service,
   gateway,
   prepared,
+  state,
   now,
 }: {
   input: ConversationTurnExecutorInput<Omit<GatewayService, "listMessages">>;
@@ -638,6 +925,7 @@ async function buildAndCaptureFreshGatewayContext({
   service: GatewayService;
   gateway: GatewayClient;
   prepared: Awaited<ReturnType<GatewayService["prepareTurn"]>>;
+  state: GatewayConversationState;
   now: () => Date;
 }) {
   const messages = await service.listMessages(
@@ -702,14 +990,14 @@ async function buildAndCaptureFreshGatewayContext({
     },
   });
 
-  let session: { sessionId: string };
+  let preparation: GatewaySessionPreparation;
   const branchSession =
     sourceCheckpoint !== null && input.turn.attempt > 1
       ? gateway.branchSession
       : undefined;
   try {
     if (sourceCheckpoint && branchSession) {
-      session = await branchSession({
+      const branched = await branchSession({
         sessionId: sourceCheckpoint.sessionId,
         actor: context.actor,
         conversationId: input.turn.conversationId,
@@ -719,33 +1007,55 @@ async function buildAndCaptureFreshGatewayContext({
           sourceTurnId,
         },
       });
-    } else {
-      session = await gateway.createSession({
-        actor: context.actor,
+      if (
+        !isValidBranchedSessionId(
+          branched.sessionId,
+          sourceCheckpoint.sessionId,
+        )
+      ) {
+        throw new GatewayExecutionError("gateway_checkpoint_invalid");
+      }
+      preparation = await persistPreparedGatewaySession({
+        service,
+        gateway,
+        actor: input.actor,
         conversationId: input.turn.conversationId,
-        invocationCapability: capability.invocationCapability,
-        budget: context.budget,
-        personalMemoryRevision: context.personalMemoryRevision,
-        transcript: context.ledgerTranscript,
-        attachments: normalizeAttachmentUpload(input.attachments),
+        options,
+        capability,
+        state,
+        session: branched,
+        action: "rebuilt",
+        now,
+      });
+    } else {
+      preparation = await prepareGatewaySession({
+        service,
+        gateway,
+        actor: input.actor,
+        conversationId: input.turn.conversationId,
+        options,
+        capability,
+        state,
+        createInput: {
+          actor: context.actor,
+          conversationId: input.turn.conversationId,
+          invocationCapability: capability.invocationCapability,
+          budget: context.budget,
+          personalMemoryRevision: context.personalMemoryRevision,
+          transcript: context.ledgerTranscript,
+          attachments: normalizeAttachmentUpload(input.attachments),
+        },
+        now,
       });
     }
   } catch (error) {
     if (error instanceof GatewayExecutionError) throw error;
     throw new GatewayExecutionError("gateway_session_create_failed");
   }
-  if (
-    sourceCheckpoint &&
-    branchSession &&
-    !isValidBranchedSessionId(session.sessionId, sourceCheckpoint.sessionId)
-  ) {
-    throw new GatewayExecutionError("gateway_checkpoint_invalid");
-  }
-
   const checkpoint: GatewayCheckpoint = {
-    sessionId: session.sessionId,
-    ...(sourceCheckpoint?.checkpointId
-      ? { checkpointId: sourceCheckpoint.checkpointId }
+    sessionId: preparation.sessionId,
+    ...(preparation.checkpointId
+      ? { checkpointId: preparation.checkpointId }
       : {}),
     turnId: input.turn.turnId,
     conversationId: input.turn.conversationId,
@@ -773,7 +1083,7 @@ async function buildAndCaptureFreshGatewayContext({
       skillGrantsHash: context.actor.skillGrantsHash,
       capabilityId: capability.capabilityId,
       capabilityExpiresAt: capability.expiresAt,
-      sessionId: session.sessionId,
+      sessionId: preparation.sessionId,
       gatewayCheckpoint: checkpoint,
       sourceCheckpoint: sourceCheckpoint ?? null,
       frozenAt: now().toISOString(),
@@ -796,10 +1106,12 @@ async function buildAndCaptureFreshGatewayContext({
   );
   return {
     context: gatewayContext,
-    session,
+    session: { sessionId: preparation.sessionId },
     checkpoint,
     captured: true,
     capability,
+    action: preparation.action,
+    state: preparation.state,
   };
 }
 
@@ -1199,6 +1511,22 @@ export function createHermesGatewayClient({
       await attachGatewayBytes(session, input, attachBytes);
       return { sessionId: session.sessionId };
     },
+    async resumeSession(input) {
+      const sessionId = stringValue(input.sessionId);
+      if (!sessionId) {
+        throw new GatewayExecutionError("gateway_session_resume_failed");
+      }
+      session = await openOfficialGatewaySession({
+        input,
+        config,
+        actorAssertionConfig,
+        openSession,
+        createActorAssertion,
+        sessionId,
+      });
+      await attachGatewayBytes(session, input, attachBytes);
+      return { sessionId: session.sessionId };
+    },
     async branchSession(input) {
       const sourceSessionId = stringValue(input.sessionId);
       if (!sourceSessionId) {
@@ -1243,13 +1571,27 @@ export function createHermesGatewayClient({
       if (!session.rpc) {
         throw new GatewayExecutionError("gateway_protocol_failed");
       }
-      await session.rpc("prompt.submit", {
+      const acknowledgement = await session.rpc("prompt.submit", {
         conversationId:
           stringValue(input.conversationId) ??
           gatewayActor(input).conversationId,
         text: stringValue(input.prompt) ?? "",
         mode: input.mode === "deep" ? "deep" : "fast",
       });
+      if (!isRecord(acknowledgement) || acknowledgement.accepted !== true) {
+        throw new GatewayExecutionError("gateway_prompt_not_accepted");
+      }
+      yield { type: "prompt.accepted" };
+      yield* session.events;
+    },
+    async *recoverSession(input) {
+      const sessionId = stringValue(input.sessionId);
+      if (!sessionId || !session || session.sessionId !== sessionId) {
+        throw new GatewayExecutionError("gateway_checkpoint_invalid");
+      }
+      await session.recover();
+      await session.waitForAccepted();
+      yield { type: "prompt.accepted" };
       yield* session.events;
     },
     async interruptSession(input) {

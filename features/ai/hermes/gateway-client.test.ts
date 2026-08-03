@@ -98,6 +98,13 @@ describe("Hermes Gateway JSON-RPC client", () => {
 
     await createHermesGatewaySession(sessionOptions(config!));
 
+    expect(config?.timeouts).toEqual({
+      connectMs: 2_000,
+      readyMs: 2_000,
+      rpcMs: 15_000,
+      idleMs: 180_000,
+      heartbeatMs: 30_000,
+    });
     expect(server.handshakeHeaders.at(0)?.authorization).toBe(
       "Bearer gateway-service-token-that-is-long-enough",
     );
@@ -841,6 +848,26 @@ describe("Hermes Gateway JSON-RPC client", () => {
 
     session.close();
     expect(session.listenerCount()).toBe(0);
+  });
+
+  it("closes only the local transport and leaves the server session reusable", async () => {
+    const { server, config } = await configuredGateway();
+    servers.push(server);
+    server.on("connection", (socket) => {
+      socket.send(JSON.stringify(readyEvent()));
+      respondTo(socket, "session.create", { sessionId: SESSION_ID });
+    });
+
+    const session = await createHermesGatewaySession(sessionOptions(config));
+    session.close();
+    await waitForServerClients(
+      server,
+      (client) => client.readyState === WebSocket.CLOSED,
+    );
+
+    expect(server.commands.map((command) => command.method)).toEqual([
+      "session.create",
+    ]);
   });
 });
 
