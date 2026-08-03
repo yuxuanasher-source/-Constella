@@ -1169,6 +1169,37 @@ describe("native Hermes Gateway executor", () => {
     });
   });
 
+  it("reconciles an ambiguously committed terminal response before reporting failure", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    service.finishTurnV3.mockRejectedValueOnce(
+      new Error("response lost after commit"),
+    );
+    service.verifyTerminalState.mockResolvedValueOnce(true);
+    const gateway = gatewayDouble([
+      { type: "text.delta", delta: "durable answer" },
+      { type: "completed" },
+    ]);
+
+    const events = await runExecutor({ service, gateway });
+
+    expect(events.at(-1)).toMatchObject({
+      type: "response.completed",
+      content: "durable answer",
+    });
+    expect(service.verifyTerminalState).toHaveBeenCalledWith(
+      actor,
+      turn.turnId,
+      expect.objectContaining({
+        type: "response.completed",
+        messageId: turn.assistantMessageId,
+      }),
+    );
+    expect(service.finishTurnV3).toHaveBeenCalledTimes(1);
+    expect(service.finishTurnV2).not.toHaveBeenCalled();
+  });
+
   it("persists a valid terminal memory delta in the single v3 terminal call", async () => {
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
@@ -2430,6 +2461,10 @@ describe("native Hermes Gateway executor", () => {
       { type: "prompt.accepted" },
       { type: "completed", sessionId: "session-winner" },
     ]);
+    gateway.resumeSession.mockResolvedValueOnce({
+      sessionId: "session-winner",
+      checkpointId: "checkpoint-winner-resumed",
+    });
 
     await runExecutor({ service, gateway });
 
@@ -2438,6 +2473,17 @@ describe("native Hermes Gateway executor", () => {
       expect.objectContaining({ sessionId: "session-winner" }),
     );
     expect(service.getGatewayState).toHaveBeenCalledTimes(2);
+    expect(service.compareAndSwapGatewayState).toHaveBeenNthCalledWith(
+      2,
+      actor,
+      turn.conversationId,
+      1,
+      expect.objectContaining({
+        generation: 2,
+        sessionId: "session-winner",
+        checkpointId: "checkpoint-winner-resumed",
+      }),
+    );
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
     expect(gateway.submitPrompt).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "session-winner" }),
@@ -2934,6 +2980,7 @@ function serviceDouble({
       memoryStatus: "ready",
       summaryVersion: 1,
     }),
+    verifyTerminalState: vi.fn().mockResolvedValue(false),
     renewLeaseV2: vi.fn().mockResolvedValue(undefined),
   };
 }

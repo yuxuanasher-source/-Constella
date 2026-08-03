@@ -168,6 +168,11 @@ type GatewayService = {
       metadata?: Record<string, unknown>;
     },
   ): Promise<void>;
+  verifyTerminalState?(
+    actor: ConversationActor,
+    turnId: string,
+    event: ConversationStreamEvent,
+  ): Promise<boolean>;
   recordTurnStage?(
     actor: ConversationActor,
     conversationId: string,
@@ -743,12 +748,36 @@ async function persistPreparedGatewaySession({
     } catch {
       throw new GatewayExecutionError("gateway_session_resume_failed");
     }
+    const resumedCheckpointId = resumed.checkpointId ?? winner.checkpointId;
+    let resolvedWinner = winner;
+    if (resumedCheckpointId && resumedCheckpointId !== winner.checkpointId) {
+      const nextWinnerState = {
+        generation: winner.generation + 1,
+        sessionId: resumed.sessionId,
+        checkpointId: resumedCheckpointId,
+        provider: options.provider,
+        model: options.model,
+        lastUsedAt: now().toISOString(),
+        ...copyGatewayTransientControls(winner),
+      };
+      try {
+        await service.compareAndSwapGatewayState(
+          actor,
+          conversationId,
+          winner.generation,
+          nextWinnerState,
+        );
+      } catch {
+        throw new GatewayExecutionError("gateway_state_conflict");
+      }
+      resolvedWinner = { ...winner, ...nextWinnerState };
+    }
     return {
       sessionId: resumed.sessionId,
-      ...(winner.checkpointId ? { checkpointId: winner.checkpointId } : {}),
+      ...(resumedCheckpointId ? { checkpointId: resumedCheckpointId } : {}),
       action: "resumed",
-      generation: winner.generation,
-      state: winner,
+      generation: resolvedWinner.generation,
+      state: resolvedWinner,
     };
   }
 }
@@ -1446,6 +1475,19 @@ async function completeWithCoherentSummary({
     previousSummary,
   });
   telemetry.record("terminal");
+  const completedEvent: ConversationStreamEvent = {
+    type: "response.completed",
+    conversationId: turn.conversationId,
+    turnId: turn.turnId,
+    messageId: turn.assistantMessageId,
+    content,
+    outcome,
+    evidence: metadata.evidence,
+    missing: metadata.missing,
+    observationTimes: metadata.observationTimes,
+    meta: metadata,
+    invocationId: turn.turnId,
+  };
   try {
     const finish = await service.finishTurnV3(actor, turn.turnId, {
       invocationId: turn.turnId,
@@ -1463,6 +1505,13 @@ async function completeWithCoherentSummary({
     metadata.summaryVersion = finish.summaryVersion;
     telemetry.record("persisted");
   } catch {
+    const terminalAlreadyCommitted = await service
+      .verifyTerminalState?.(actor, turn.turnId, completedEvent)
+      .catch(() => false);
+    if (terminalAlreadyCommitted === true) {
+      telemetry.record("persisted");
+      return { type: "completed", event: completedEvent };
+    }
     await persistTerminalFailure({
       service,
       actor,
@@ -1478,19 +1527,7 @@ async function completeWithCoherentSummary({
   }
   return {
     type: "completed",
-    event: {
-      type: "response.completed",
-      conversationId: turn.conversationId,
-      turnId: turn.turnId,
-      messageId: turn.assistantMessageId,
-      content,
-      outcome,
-      evidence: metadata.evidence,
-      missing: metadata.missing,
-      observationTimes: metadata.observationTimes,
-      meta: metadata,
-      invocationId: turn.turnId,
-    },
+    event: completedEvent,
   };
 }
 
