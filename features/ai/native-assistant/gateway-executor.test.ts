@@ -1114,6 +1114,7 @@ describe("native Hermes Gateway executor", () => {
     expect(gateway.branchSession).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "session-source",
+        checkpointId: "checkpoint-source",
         actor: expect.objectContaining({
           userId: actor.userId,
           organizationId: actor.organizationId,
@@ -1235,6 +1236,7 @@ describe("native Hermes Gateway executor", () => {
       });
       expect(service.getGatewayState).toHaveBeenCalledTimes(1);
       expect(gateway.closeSession).not.toHaveBeenCalled();
+      expect(gateway.closeTransport).toHaveBeenCalledTimes(1);
       expect(gateway.resumeSession).not.toHaveBeenCalled();
       expect(gateway.submitPrompt).not.toHaveBeenCalled();
     },
@@ -1262,6 +1264,7 @@ describe("native Hermes Gateway executor", () => {
     });
     expect(service.getGatewayState).toHaveBeenCalledTimes(2);
     expect(gateway.closeSession).not.toHaveBeenCalled();
+    expect(gateway.closeTransport).toHaveBeenCalledTimes(1);
     expect(gateway.resumeSession).not.toHaveBeenCalled();
     expect(gateway.submitPrompt).not.toHaveBeenCalled();
   });
@@ -1317,6 +1320,7 @@ describe("native Hermes Gateway executor", () => {
       );
 
       expect(gateway.submitPrompt).not.toHaveBeenCalled();
+      expect(gateway.closeTransport).toHaveBeenCalledTimes(1);
       expect(service.finishTurnV2).toHaveBeenLastCalledWith(
         actor,
         retryTurn.turnId,
@@ -1331,6 +1335,27 @@ describe("native Hermes Gateway executor", () => {
       });
     },
   );
+
+  it("closes the opened local transport once when context capture fails", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    service.captureGatewayContext.mockRejectedValueOnce(
+      new Error("context persistence failed"),
+    );
+    const gateway = gatewayDouble([]);
+
+    const events = await runExecutor({ service, gateway });
+
+    expect(events.at(-1)).toMatchObject({
+      type: "response.failed",
+      code: "gateway_internal_failed",
+    });
+    expect(gateway.createSession).toHaveBeenCalledTimes(1);
+    expect(gateway.submitPrompt).not.toHaveBeenCalled();
+    expect(gateway.closeTransport).toHaveBeenCalledTimes(1);
+    expect(gateway.closeSession).not.toHaveBeenCalled();
+  });
 
   it("refuses to branch from another actor or conversation checkpoint", async () => {
     const service = serviceDouble({
@@ -2428,6 +2453,7 @@ describe("native Hermes Gateway executor", () => {
 
     const branch = await client.branchSession?.({
       sessionId: "session-source",
+      checkpointId: "checkpoint-source",
       actor: gatewayActor(),
       conversationId: turn.conversationId,
       invocationCapability: "root-capability-secret",
@@ -2446,6 +2472,10 @@ describe("native Hermes Gateway executor", () => {
     );
 
     expect(branch).toEqual({ sessionId: "session-branch" });
+    expect(sourceSession.branch).toHaveBeenCalledWith({
+      conversationId: turn.conversationId,
+      checkpointId: "checkpoint-source",
+    });
     expect(openSession).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ sessionId: "session-branch" }),
@@ -2683,6 +2713,7 @@ function gatewayDouble(events: unknown[]) {
       for (const event of events) yield event;
     }),
     closeSession: vi.fn(),
+    closeTransport: vi.fn(),
   };
 }
 

@@ -119,7 +119,10 @@ export type HermesGatewayCommand =
   | JsonRpcCommand<"session.list", ActorParams>
   | JsonRpcCommand<
       "session.branch",
-      SessionInvocationParams & { conversationId: string }
+      SessionInvocationParams & {
+        conversationId: string;
+        checkpointId: string;
+      }
     >
   | JsonRpcCommand<"session.compress", SessionInvocationParams>
   | JsonRpcCommand<"image.attach_bytes", AttachmentParams>
@@ -384,7 +387,6 @@ function isCommandParams(
         isInvocationParams(params)
       );
     case "session.resume":
-    case "session.branch":
       return (
         hasExactKeys(params, [
           "actorAssertion",
@@ -393,6 +395,20 @@ function isCommandParams(
           "invocationId",
           "sessionId",
         ]) &&
+        isUuid(params.conversationId) &&
+        isSessionInvocationParams(params)
+      );
+    case "session.branch":
+      return (
+        hasExactKeys(params, [
+          "actorAssertion",
+          "checkpointId",
+          "conversationId",
+          "invocationCapability",
+          "invocationId",
+          "sessionId",
+        ]) &&
+        isSessionId(params.checkpointId) &&
         isUuid(params.conversationId) &&
         isSessionInvocationParams(params)
       );

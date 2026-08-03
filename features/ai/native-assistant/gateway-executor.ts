@@ -172,6 +172,7 @@ type GatewayClient = {
     answer: string;
   }): Promise<unknown>;
   closeSession?(input: { sessionId: string }): void;
+  closeTransport?(): void;
 };
 
 type GatewayConversationState = NonNullable<
@@ -494,12 +495,14 @@ export function createGatewayTurnExecutor(
         yield failedEvent(input.turn, code, true);
       } finally {
         unregisterActiveRun?.();
-        if (activeSessionId) {
-          try {
+        try {
+          if (activeSessionId && gateway.closeSession) {
             gateway.closeSession?.({ sessionId: activeSessionId });
-          } catch {
-            // Best-effort cleanup after terminal persistence or iterator return.
+          } else {
+            gateway.closeTransport?.();
           }
+        } catch {
+          // Best-effort cleanup after terminal persistence or iterator return.
         }
       }
     },
@@ -1085,6 +1088,7 @@ async function buildAndCaptureFreshGatewayContext({
     if (sourceCheckpoint && branchSession) {
       const branched = await branchSession({
         sessionId: sourceCheckpoint.sessionId,
+        checkpointId: sourceCheckpoint.checkpointId,
         actor: context.actor,
         conversationId: input.turn.conversationId,
         invocationCapability: capability.invocationCapability,
@@ -1612,7 +1616,12 @@ export function createHermesGatewayClient({
     },
     async branchSession(input) {
       const sourceSessionId = stringValue(input.sessionId);
-      if (!sourceSessionId) {
+      const checkpointId =
+        stringValue(input.checkpointId) ??
+        stringValue(
+          recordValue(recordValue(input, "checkpoint"), "checkpointId"),
+        );
+      if (!sourceSessionId || !checkpointId) {
         throw new GatewayExecutionError("gateway_checkpoint_invalid");
       }
       session = await openOfficialGatewaySession({
@@ -1623,9 +1632,12 @@ export function createHermesGatewayClient({
         createActorAssertion,
         sessionId: sourceSessionId,
       });
-      const result = await session.branch(
-        stringValue(input.conversationId) ?? gatewayActor(input).conversationId,
-      );
+      const result = await session.branch({
+        conversationId:
+          stringValue(input.conversationId) ??
+          gatewayActor(input).conversationId,
+        checkpointId,
+      });
       const branchedSessionId = isRecord(result)
         ? stringValue(result.sessionId)
         : null;
@@ -1732,6 +1744,10 @@ export function createHermesGatewayClient({
         session.close();
         session = null;
       }
+    },
+    closeTransport() {
+      session?.close();
+      session = null;
     },
   };
 }

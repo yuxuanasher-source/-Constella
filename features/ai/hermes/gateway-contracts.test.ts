@@ -105,6 +105,7 @@ describe("Hermes Gateway v2 runtime contracts", () => {
       command("session.list", { actorAssertion: ACTOR_ASSERTION }),
       command("session.branch", {
         sessionId: SESSION_ID,
+        checkpointId: CHECKPOINT_ID,
         conversationId: BRANCH_CONVERSATION_ID,
         invocationId: INVOCATION_ID,
         actorAssertion: ACTOR_ASSERTION,
@@ -170,6 +171,18 @@ describe("Hermes Gateway v2 runtime contracts", () => {
         ...prompt,
         params: { ...prompt.params, model: "forbidden" },
       }),
+    ).toBeNull();
+
+    expect(
+      parseHermesGatewayCommand(
+        command("session.branch", {
+          sessionId: SESSION_ID,
+          conversationId: BRANCH_CONVERSATION_ID,
+          invocationId: INVOCATION_ID,
+          actorAssertion: ACTOR_ASSERTION,
+          invocationCapability: INVOCATION_CAPABILITY,
+        }),
+      ),
     ).toBeNull();
     expect(
       parseHermesGatewayCommand({
@@ -335,6 +348,7 @@ const CLARIFY_REQUEST_ID = "55555555-5555-4555-8555-555555555555";
 const TOOL_CALL_ID = "66666666-6666-4666-8666-666666666666";
 const SUBAGENT_ID = "77777777-7777-4777-8777-777777777777";
 const SESSION_ID = "gateway-session-1";
+const CHECKPOINT_ID = "checkpoint-source";
 const ACTOR_ASSERTION = "signed.actor.assertion";
 const INVOCATION_CAPABILITY = "opaque-invocation-capability";
 

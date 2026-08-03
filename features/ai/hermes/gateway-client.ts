@@ -53,7 +53,10 @@ export type HermesGatewaySession = {
   readonly events: AsyncIterable<HermesGatewayEvent>;
   info(): Promise<unknown>;
   list(): Promise<unknown>;
-  branch(conversationId: string): Promise<unknown>;
+  branch(input: {
+    conversationId: string;
+    checkpointId: string;
+  }): Promise<unknown>;
   compress(): Promise<unknown>;
   respondToClarify(input: {
     requestId: string;
@@ -279,8 +282,11 @@ class HermesGatewayClient implements HermesGatewaySession {
     return this.rpc("session.list", {});
   }
 
-  branch(conversationId: string): Promise<unknown> {
-    return this.rpc("session.branch", { conversationId });
+  branch(input: {
+    conversationId: string;
+    checkpointId: string;
+  }): Promise<unknown> {
+    return this.rpc("session.branch", input);
   }
 
   compress(): Promise<unknown> {
@@ -524,7 +530,7 @@ class HermesGatewayClient implements HermesGatewaySession {
       const timer = this.timeout("ready", () => {
         cleanup();
         const error = this.error("hermes_gateway_ready_timeout");
-        this.fatalProtocolFailure(error);
+        this.recoverableTransportTeardown(socket, error);
         reject(error);
       });
       const cleanup = () => {

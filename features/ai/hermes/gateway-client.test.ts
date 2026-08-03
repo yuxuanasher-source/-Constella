@@ -586,7 +586,10 @@ describe("Hermes Gateway JSON-RPC client", () => {
     const source = await createHermesGatewaySession(
       sessionOptions(config, { sessionId: SESSION_ID }),
     );
-    const branch = await source.branch(CONVERSATION_ID);
+    const branch = await source.branch({
+      conversationId: CONVERSATION_ID,
+      checkpointId: CHECKPOINT_ID,
+    });
     source.close();
     const branched = await createHermesGatewaySession(
       sessionOptions(config, {
@@ -613,6 +616,81 @@ describe("Hermes Gateway JSON-RPC client", () => {
       branchedSessionId,
       branchedSessionId,
     ]);
+    expect(server.commands[1]?.params).toEqual({
+      actorAssertion: ACTOR_ASSERTION,
+      invocationId: INVOCATION_ID,
+      invocationCapability: INVOCATION_CAPABILITY,
+      sessionId: SESSION_ID,
+      conversationId: CONVERSATION_ID,
+      checkpointId: CHECKPOINT_ID,
+    });
+  });
+
+  it("uses a second bounded recovery after gateway.ready times out", async () => {
+    const { server, config } = await configuredGateway({
+      timeouts: {
+        connectMs: 100,
+        readyMs: 30,
+        rpcMs: 100,
+        idleMs: 1_000,
+        heartbeatMs: 1_000,
+      },
+    });
+    servers.push(server);
+    let connectionCount = 0;
+    server.on("connection", (socket) => {
+      connectionCount += 1;
+      if (connectionCount === 2) return;
+
+      socket.send(JSON.stringify(readyEvent()));
+      if (connectionCount === 1) {
+        respondTo(socket, "session.create", { sessionId: SESSION_ID });
+        respondTo(
+          socket,
+          "prompt.submit",
+          { accepted: true, invocationId: INVOCATION_ID },
+          () => socket.close(),
+        );
+        return;
+      }
+
+      respondTo(socket, "session.resume", {
+        sessionId: SESSION_ID,
+        invocationId: INVOCATION_ID,
+        actorFingerprint: ACTOR_FINGERPRINT,
+      });
+      respondTo(
+        socket,
+        "session.info",
+        {
+          sessionId: SESSION_ID,
+          invocationId: INVOCATION_ID,
+          actorFingerprint: ACTOR_FINGERPRINT,
+          status: "accepted",
+        },
+        () =>
+          socket.send(
+            JSON.stringify(
+              event("turn.terminal", 1, {
+                outcome: "complete",
+                message: "recovered",
+                metadata: metadata(),
+              }),
+            ),
+          ),
+      );
+    });
+
+    const session = await createHermesGatewaySession(
+      sessionOptions(config, { prompt: "Recover twice" }),
+    );
+    const events = await collectEvents(session.events, 1);
+
+    expect(events[0]?.params.type).toBe("turn.terminal");
+    expect(connectionCount).toBe(3);
+    expect(session.listenerCount()).toBe(3);
+    session.close();
+    expect(session.listenerCount()).toBe(0);
   });
 
   it("does not resubmit prompt when the prompt response is lost after gateway receipt", async () => {
@@ -949,6 +1027,7 @@ describe("Hermes Gateway JSON-RPC client", () => {
 });
 
 const SESSION_ID = "gateway-session-1";
+const CHECKPOINT_ID = "checkpoint-source";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const ORG_ID = "22222222-2222-4222-8222-222222222222";
 const CONVERSATION_ID = "33333333-3333-4333-8333-333333333333";
