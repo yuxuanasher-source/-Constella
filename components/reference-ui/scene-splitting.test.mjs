@@ -10,6 +10,29 @@ const referenceSource = fs.readFileSync(
 );
 
 describe("OpsReferenceApp scene splitting", () => {
+  it("keeps AdmissionShareCenter in the admission lazy chunk and injects it during configuration", () => {
+    const admissionLoader = referenceSource.slice(
+      referenceSource.indexOf("const ScreenAdmission = lazy"),
+      referenceSource.indexOf("const ScreenSettlement = lazy"),
+    );
+    const admissionDependencies = referenceSource.slice(
+      referenceSource.indexOf("const ADMISSION_SCENE_DEPENDENCIES = {"),
+      referenceSource.indexOf(
+        "\n};",
+        referenceSource.indexOf("const ADMISSION_SCENE_DEPENDENCIES = {"),
+      ),
+    );
+
+    expect(referenceSource).not.toMatch(
+      /import\s*\{\s*AdmissionShareCenter\s*\}\s*from\s*["']\.\/admission-share-center["']/,
+    );
+    expect(admissionLoader).toContain('import("./admission-share-center")');
+    expect(admissionLoader).toMatch(
+      /configureAdmissionScene\(\s*\{[\s\S]*\.\.\.ADMISSION_SCENE_DEPENDENCIES,[\s\S]*AdmissionShareCenter:\s*\w+\.AdmissionShareCenter[\s\S]*\}\s*\)/,
+    );
+    expect(admissionDependencies).not.toMatch(/\bAdmissionShareCenter\b/);
+  });
+
   it("loads the knowledge base through a dedicated lazy scene and stable fallback", () => {
     const knowledgeSceneSource = fs.readFileSync(
       path.join(currentDirectory, "scenes", "knowledge-base-scene.jsx"),

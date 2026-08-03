@@ -44,7 +44,6 @@ import {
 } from "@/lib/markdown/render-markdown";
 
 import AiUsageDashboard from "./ai-usage-dashboard";
-import { AdmissionShareCenter } from "./admission-share-center";
 import CustomSettlementRuleWorkspace from "./custom-settlement-rule-workspace";
 import SettlementRuleBuilder, {
   builderRuleFromStored,
@@ -233,8 +232,14 @@ export function normalizeAdmissionSharePresentation(value) {
 
 const ScreenKnowledge = lazy(() => import("./scenes/knowledge-base-scene"));
 const ScreenAdmission = lazy(async () => {
-  const scene = await import("./scenes/admission-scene");
-  scene.configureAdmissionScene(ADMISSION_SCENE_DEPENDENCIES);
+  const [scene, admissionShareCenter] = await Promise.all([
+    import("./scenes/admission-scene"),
+    import("./admission-share-center"),
+  ]);
+  scene.configureAdmissionScene({
+    ...ADMISSION_SCENE_DEPENDENCIES,
+    AdmissionShareCenter: admissionShareCenter.AdmissionShareCenter,
+  });
   return scene;
 });
 const ScreenSettlement = lazy(async () => {
@@ -30173,7 +30178,6 @@ const KNOWLEDGE_SCENE_DEPENDENCIES = {
 
 const ADMISSION_SCENE_DEPENDENCIES = {
   AdmissionCalibrationDashboard,
-  AdmissionShareCenter,
   Avatar,
   Badge,
   Button,
