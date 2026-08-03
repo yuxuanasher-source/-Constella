@@ -1,7 +1,9 @@
 import type {
   ConversationGatewayContext,
   ConversationResponseOutcome,
+  ConversationSessionAction,
   ConversationStreamEvent,
+  ConversationTurnStage,
 } from "../conversation-contracts";
 import type { AiAttachment, AiProviderName } from "../contracts";
 import type {
@@ -105,6 +107,16 @@ type GatewayService = {
       metadata?: Record<string, unknown>;
     },
   ): Promise<void>;
+  recordTurnStage?(
+    actor: ConversationActor,
+    conversationId: string,
+    turnId: string,
+    input: {
+      stage: ConversationTurnStage;
+      observedAt: string;
+      sessionAction?: ConversationSessionAction;
+    },
+  ): Promise<unknown>;
   captureGatewayContext?(
     actor: ConversationActor,
     turnId: string,
@@ -180,6 +192,13 @@ type GatewayExecutorOptions = {
   personalMemoryRevision?: number;
   sourceTurnId?: string;
   now?: () => Date;
+  telemetryLogger?: {
+    warn(input: {
+      code: "conversation_turn_stage_persist_failed";
+      stage: ConversationTurnStage;
+      turnId: string;
+    }): void;
+  };
 };
 
 export function createGatewayTurnExecutor(
@@ -200,7 +219,15 @@ export function createGatewayTurnExecutor(
       > | null = null;
       let unregisterActiveRun: (() => void) | null = null;
       let activeSessionId: string | null = null;
+      const telemetry = createBestEffortStageRecorder({
+        service,
+        actor: input.actor,
+        turn: input.turn,
+        now,
+        logger: options.telemetryLogger,
+      });
 
+      await telemetry.record("accepted");
       yield started(input.turn);
 
       try {
@@ -209,6 +236,7 @@ export function createGatewayTurnExecutor(
           input.turn.turnId,
           [],
         );
+        await telemetry.record("context_ready");
         state = (await service.getGatewayState?.(
           input.actor,
           input.turn.conversationId,
@@ -250,6 +278,10 @@ export function createGatewayTurnExecutor(
         if (!sessionSetup.session.sessionId) {
           throw new GatewayExecutionError("gateway_checkpoint_invalid");
         }
+        await telemetry.record(
+          "session_ready",
+          frozen ? "resumed" : "rebuilt",
+        );
         const sessionId = sessionSetup.session.sessionId;
         activeSessionId = sessionId;
         unregisterActiveRun = activeHermesRunRegistry.register({
@@ -342,6 +374,7 @@ export function createGatewayTurnExecutor(
           })) {
             const terminal = terminalGatewayEvent(gatewayEvent);
             if (terminal) {
+              await telemetry.record("agent_ready");
               if (terminal.message && !content) content = terminal.message;
               if (terminal.observation) observations.push(terminal.observation);
               if (terminal.status === "cancelled") {
@@ -354,6 +387,7 @@ export function createGatewayTurnExecutor(
                   model: options.model,
                   code: "turn_cancelled",
                   retryable: false,
+                  telemetry,
                 });
                 yield {
                   type: "response.cancelled",
@@ -377,6 +411,7 @@ export function createGatewayTurnExecutor(
                   model: options.model,
                   code,
                   retryable: true,
+                  telemetry,
                 });
                 yield failedEvent(input.turn, code, true);
                 return;
@@ -393,6 +428,7 @@ export function createGatewayTurnExecutor(
                 summary: terminal.summary,
                 forcedOutcome: terminal.outcome,
                 state,
+                telemetry,
               });
               if (completed.type === "failed") {
                 yield failedEvent(input.turn, completed.code, true);
@@ -404,6 +440,7 @@ export function createGatewayTurnExecutor(
 
             const event = normalizeGatewayEvent(gatewayEvent, input.turn);
             if (!event) continue;
+            await telemetry.record("agent_ready");
             if (event.type === "clarify.requested") {
               state = await persistGatewayClarifyRequest({
                 service,
@@ -413,7 +450,10 @@ export function createGatewayTurnExecutor(
                 event,
               });
             }
-            if (event.type === "response.delta") content += event.delta;
+            if (event.type === "response.delta") {
+              await telemetry.record("first_delta");
+              content += event.delta;
+            }
             if (event.type === "tool.completed") {
               observations.push({
                 status: event.status,
@@ -446,6 +486,7 @@ export function createGatewayTurnExecutor(
             model: options.model,
             code,
             retryable: true,
+            telemetry,
           });
         } catch {
           throw new Error("AI terminal state could not be persisted");
@@ -459,6 +500,58 @@ export function createGatewayTurnExecutor(
           } catch {
             // Best-effort cleanup after terminal persistence or iterator return.
           }
+        }
+      }
+    },
+  };
+}
+
+type BestEffortStageRecorder = {
+  record(
+    stage: ConversationTurnStage,
+    sessionAction?: ConversationSessionAction,
+  ): Promise<void>;
+};
+
+function createBestEffortStageRecorder({
+  service,
+  actor,
+  turn,
+  now,
+  logger,
+}: {
+  service: GatewayService;
+  actor: ConversationActor;
+  turn: CreatedConversationTurn;
+  now: () => Date;
+  logger?: GatewayExecutorOptions["telemetryLogger"];
+}): BestEffortStageRecorder {
+  const attempted = new Set<ConversationTurnStage>();
+  return {
+    async record(stage, sessionAction) {
+      if (attempted.has(stage)) return;
+      attempted.add(stage);
+      if (!service.recordTurnStage) return;
+      try {
+        await service.recordTurnStage(
+          actor,
+          turn.conversationId,
+          turn.turnId,
+          {
+            stage,
+            observedAt: now().toISOString(),
+            ...(sessionAction ? { sessionAction } : {}),
+          },
+        );
+      } catch {
+        try {
+          logger?.warn({
+            code: "conversation_turn_stage_persist_failed",
+            stage,
+            turnId: turn.turnId,
+          });
+        } catch {
+          // Telemetry diagnostics cannot affect the authoritative turn path.
         }
       }
     },
@@ -770,6 +863,7 @@ async function completeWithCoherentSummary({
   summary,
   forcedOutcome,
   state,
+  telemetry,
 }: {
   service: GatewayService;
   actor: ConversationActor;
@@ -783,6 +877,7 @@ async function completeWithCoherentSummary({
   state: Awaited<
     ReturnType<NonNullable<GatewayService["getGatewayState"]>>
   > | null;
+  telemetry: BestEffortStageRecorder;
 }): Promise<
   | { type: "completed"; event: ConversationStreamEvent }
   | { type: "failed"; code: string }
@@ -790,6 +885,7 @@ async function completeWithCoherentSummary({
   const outcome = forcedOutcome ?? classifyOutcome(observations);
   const metadata = completionMetadata({ observations, provider, model });
   const expectedSummaryVersion = state?.summaryVersion ?? 0;
+  await telemetry.record("terminal");
   try {
     await service.finishTurnV2(actor, turn.turnId, {
       invocationId: turn.turnId,
@@ -801,6 +897,7 @@ async function completeWithCoherentSummary({
       retryable: false,
       metadata,
     });
+    await telemetry.record("persisted");
   } catch {
     await persistTerminalFailure({
       service,
@@ -811,6 +908,7 @@ async function completeWithCoherentSummary({
       model,
       code: "gateway_terminal_persist_failed",
       retryable: true,
+      telemetry,
     });
     return { type: "failed", code: "gateway_terminal_persist_failed" };
   }
@@ -852,6 +950,7 @@ async function persistTerminalFailure({
   model,
   code,
   retryable,
+  telemetry,
 }: {
   service: GatewayService;
   actor: ConversationActor;
@@ -861,7 +960,9 @@ async function persistTerminalFailure({
   model: string;
   code: string;
   retryable: boolean;
+  telemetry: BestEffortStageRecorder;
 }) {
+  await telemetry.record("terminal");
   await service.finishTurnV2(actor, turn.turnId, {
     invocationId: turn.turnId,
     outcome: "failed",
@@ -876,6 +977,7 @@ async function persistTerminalFailure({
       model,
     },
   });
+  await telemetry.record("persisted");
 }
 
 function terminalGatewayEvent(event: unknown):

@@ -23,6 +23,15 @@ export type ConversationTurnStatus =
   | "completed"
   | "failed"
   | "cancelled";
+export type ConversationTurnStage =
+  | "accepted"
+  | "context_ready"
+  | "session_ready"
+  | "agent_ready"
+  | "first_delta"
+  | "terminal"
+  | "persisted";
+export type ConversationSessionAction = "resumed" | "rebuilt";
 
 export type ConversationContextSnapshot = {
   version: number;
@@ -234,6 +243,29 @@ export function canTransitionConversationTurn(
   to: ConversationTurnStatus,
 ): boolean {
   return TURN_TRANSITIONS[from].includes(to);
+}
+
+export function isConversationTurnStage(
+  value: unknown,
+): value is ConversationTurnStage {
+  return (
+    typeof value === "string" &&
+    [
+      "accepted",
+      "context_ready",
+      "session_ready",
+      "agent_ready",
+      "first_delta",
+      "terminal",
+      "persisted",
+    ].includes(value)
+  );
+}
+
+export function isConversationSessionAction(
+  value: unknown,
+): value is ConversationSessionAction {
+  return value === "resumed" || value === "rebuilt";
 }
 
 export function parseCreateTurnCommand(value: unknown): CreateTurnCommand | null {

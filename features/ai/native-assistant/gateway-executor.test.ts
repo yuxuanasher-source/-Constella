@@ -33,6 +33,215 @@ const turn = {
 };
 
 describe("native Hermes Gateway executor", () => {
+  it("records the successful Gateway lifecycle once and brackets terminal persistence", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    const gateway = gatewayDouble([
+      { type: "text.delta", delta: "first" },
+      { type: "text.delta", delta: " second" },
+      { type: "completed" },
+    ]);
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      now: () => new Date("2026-08-03T16:00:00.000Z"),
+    });
+
+    const events = await collect(
+      executor.execute({
+        request: jsonRequest({ message: "hello", mode: "fast" }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      }),
+    );
+
+    expect(events.at(-1)).toMatchObject({ type: "response.completed" });
+    expect(
+      service.recordTurnStage.mock.calls.map((call) => call[3]),
+    ).toEqual([
+      { stage: "accepted", observedAt: "2026-08-03T16:00:00.000Z" },
+      { stage: "context_ready", observedAt: "2026-08-03T16:00:00.000Z" },
+      {
+        stage: "session_ready",
+        observedAt: "2026-08-03T16:00:00.000Z",
+        sessionAction: "rebuilt",
+      },
+      { stage: "agent_ready", observedAt: "2026-08-03T16:00:00.000Z" },
+      { stage: "first_delta", observedAt: "2026-08-03T16:00:00.000Z" },
+      { stage: "terminal", observedAt: "2026-08-03T16:00:00.000Z" },
+      { stage: "persisted", observedAt: "2026-08-03T16:00:00.000Z" },
+    ]);
+    expect(
+      service.recordTurnStage.mock.calls.filter(
+        (call) => call[3].stage === "first_delta",
+      ),
+    ).toHaveLength(1);
+    const terminalCall = service.recordTurnStage.mock.invocationCallOrder[5];
+    const persistedCall = service.recordTurnStage.mock.invocationCallOrder[6];
+    expect(terminalCall).toBeLessThan(
+      service.finishTurnV2.mock.invocationCallOrder[0],
+    );
+    expect(service.finishTurnV2.mock.invocationCallOrder[0]).toBeLessThan(
+      persistedCall,
+    );
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      name: "failed",
+      terminal: { type: "failed", code: "model_timeout" },
+      expectedType: "response.failed",
+    },
+    {
+      name: "cancelled",
+      terminal: { type: "cancelled" },
+      expectedType: "response.cancelled",
+    },
+  ])(
+    "records agent, terminal, and persisted stages for $name terminal events",
+    async ({ terminal, expectedType }) => {
+      const service = serviceDouble({
+        messages: [
+          message(turn.userMessageId, 1, "user", "completed", "hello"),
+        ],
+      });
+      const gateway = gatewayDouble([terminal]);
+      const executor = createGatewayTurnExecutor({
+        service,
+        gateway,
+        auth: { ...actor, role: "finance" },
+        provider: "hermes",
+        model: "hermes-official-gateway",
+      });
+
+      const events = await collect(
+        executor.execute({
+          request: jsonRequest({ message: "hello", mode: "fast" }),
+          actor,
+          turn,
+          attachments: [],
+          service: {} as never,
+        }),
+      );
+
+      expect(events.at(-1)).toMatchObject({ type: expectedType });
+      expect(
+        service.recordTurnStage.mock.calls.map((call) => call[3].stage),
+      ).toEqual([
+        "accepted",
+        "context_ready",
+        "session_ready",
+        "agent_ready",
+        "terminal",
+        "persisted",
+      ]);
+      expect(service.recordTurnStage.mock.invocationCallOrder[4]).toBeLessThan(
+        service.finishTurnV2.mock.invocationCallOrder[0],
+      );
+      expect(service.finishTurnV2.mock.invocationCallOrder[0]).toBeLessThan(
+        service.recordTurnStage.mock.invocationCallOrder[5],
+      );
+    },
+  );
+
+  it("keeps user events and one prompt submission when every telemetry write fails", async () => {
+    async function run(recordingFails: boolean) {
+      const service = serviceDouble({
+        messages: [
+          message(turn.userMessageId, 1, "user", "completed", "hello"),
+        ],
+      });
+      if (recordingFails) {
+        service.recordTurnStage.mockRejectedValue(
+          new Error("secret telemetry response"),
+        );
+      }
+      const telemetryLogger = { warn: vi.fn() };
+      const gateway = gatewayDouble([
+        { type: "text.delta", delta: "answer" },
+        { type: "completed" },
+      ]);
+      const executor = createGatewayTurnExecutor({
+        service,
+        gateway,
+        auth: { ...actor, role: "finance" },
+        provider: "hermes",
+        model: "hermes-official-gateway",
+        telemetryLogger,
+      });
+      const events = await collect(
+        executor.execute({
+          request: jsonRequest({ message: "hello", mode: "fast" }),
+          actor,
+          turn,
+          attachments: [],
+          service: {} as never,
+        }),
+      );
+      return { events, gateway, service, telemetryLogger };
+    }
+
+    const control = await run(false);
+    const failed = await run(true);
+
+    expect(failed.events).toEqual(control.events);
+    expect(failed.gateway.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(failed.service.finishTurnV2).toHaveBeenCalledTimes(1);
+    expect(failed.telemetryLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "conversation_turn_stage_persist_failed",
+        turnId: turn.turnId,
+      }),
+    );
+    expect(JSON.stringify(failed.telemetryLogger.warn.mock.calls)).not.toContain(
+      "secret telemetry response",
+    );
+  });
+
+  it("does not turn a persisted completion into failure when persisted-stage recording fails", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    service.recordTurnStage.mockImplementation(
+      async (_actor, _conversationId, _turnId, input) => {
+        if (input.stage === "persisted") throw new Error("telemetry unavailable");
+        return null;
+      },
+    );
+    const gateway = gatewayDouble([
+      { type: "text.delta", delta: "answer" },
+      { type: "completed" },
+    ]);
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+    });
+
+    const events = await collect(
+      executor.execute({
+        request: jsonRequest({ message: "hello", mode: "fast" }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      }),
+    );
+
+    expect(events.at(-1)).toMatchObject({ type: "response.completed" });
+    expect(service.finishTurnV2).toHaveBeenCalledTimes(1);
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+  });
+
   it("persists its generated Gateway context through the real conversation service validator", async () => {
     const transitionTurn = vi.fn().mockResolvedValue(true);
     const compareAndSwapGatewayState = vi.fn().mockResolvedValue(1);
@@ -459,6 +668,15 @@ describe("native Hermes Gateway executor", () => {
       expect.objectContaining({
         prompt: "frozen question",
         sessionId: "session-frozen",
+      }),
+    );
+    expect(service.recordTurnStage).toHaveBeenCalledWith(
+      actor,
+      turn.conversationId,
+      turn.turnId,
+      expect.objectContaining({
+        stage: "session_ready",
+        sessionAction: "resumed",
       }),
     );
   });
@@ -1554,6 +1772,7 @@ function serviceDouble({
       expiresAt: "2026-07-22T09:02:00.000Z",
     }),
     getSourceGatewayCheckpoint: vi.fn().mockResolvedValue(null),
+    recordTurnStage: vi.fn().mockResolvedValue(null),
     finishTurnV2: vi.fn().mockResolvedValue(undefined),
     renewLeaseV2: vi.fn().mockResolvedValue(undefined),
   };

@@ -12,6 +12,15 @@ const migrationPath = join(
 const migration = existsSync(migrationPath)
   ? readFileSync(migrationPath, "utf8").toLowerCase()
   : "";
+const telemetryMigrationPath = join(
+  process.cwd(),
+  "supabase",
+  "migrations",
+  "20260803120000_ai_turn_stage_telemetry.sql",
+);
+const telemetryMigration = existsSync(telemetryMigrationPath)
+  ? readFileSync(telemetryMigrationPath, "utf8").toLowerCase()
+  : "";
 
 function tableSql(tableName: string) {
   const marker = `create table public.${tableName} (`;
@@ -27,6 +36,16 @@ function functionSql(functionName: string) {
   if (start < 0) return "";
   const end = migration.indexOf("\n$$;", start);
   return end < 0 ? migration.slice(start) : migration.slice(start, end + 4);
+}
+
+function telemetryFunctionSql(functionName: string) {
+  const marker = `create or replace function public.${functionName}(`;
+  const start = telemetryMigration.indexOf(marker);
+  if (start < 0) return "";
+  const end = telemetryMigration.indexOf("\n$$;", start);
+  return end < 0
+    ? telemetryMigration.slice(start)
+    : telemetryMigration.slice(start, end + 4);
 }
 
 function expectSqlOrder(sql: string, markers: string[]) {
@@ -54,6 +73,103 @@ const serviceOnlyFunctions = [
 ] as const;
 
 describe("Xingyao Hermes native state schema contract", () => {
+  it("adds nullable, first-write turn-stage telemetry without replacing terminal persistence", () => {
+    expect(existsSync(telemetryMigrationPath)).toBe(true);
+    for (const column of [
+      "accepted_at",
+      "context_ready_at",
+      "session_ready_at",
+      "agent_ready_at",
+      "first_delta_at",
+      "terminal_at",
+      "persisted_at",
+    ]) {
+      expect(telemetryMigration).toContain(
+        `add column if not exists ${column} timestamptz`,
+      );
+    }
+    expect(telemetryMigration).toContain(
+      "add column if not exists session_action text",
+    );
+    expect(telemetryMigration).toMatch(
+      /constraint ai_chat_turns_session_action_check check \(\s*session_action is null or session_action in \('resumed', 'rebuilt'\)\s*\)/,
+    );
+    expectSqlOrder(telemetryMigration, [
+      "add column if not exists accepted_at timestamptz",
+      "update public.ai_chat_turns",
+      "set accepted_at = created_at",
+      "alter column accepted_at set default now()",
+    ]);
+    expect(telemetryMigration).not.toContain(
+      "create or replace function public.finish_ai_chat_turn_v2(",
+    );
+  });
+
+  it("records tenant-bound stages under a lock with bounded monotonic timestamps", () => {
+    const recordStage = telemetryFunctionSql("record_ai_chat_turn_stage");
+
+    expect(recordStage).toContain("security definer");
+    expect(recordStage).toContain("set search_path = pg_catalog, public");
+    for (const identity of [
+      "locked_turn.organization_id = p_organization_id",
+      "locked_turn.owner_user_id = p_owner_user_id",
+      "locked_turn.conversation_id = p_conversation_id",
+      "locked_turn.id = p_turn_id",
+    ]) {
+      expect(recordStage).toContain(identity);
+    }
+    expect(recordStage).toMatch(
+      /from public\.ai_chat_turns (?:as )?locked_turn[\s\S]*?for update/,
+    );
+    expect(recordStage).toContain("p_observed_at is null");
+    expect(recordStage).toContain("statement_timestamp() + interval '5 minutes'");
+    expect(recordStage).toContain("interval '5 seconds'");
+    expect(recordStage).toContain("v_turn.accepted_at is null");
+    expect(recordStage).toContain("p_stage in ('terminal', 'persisted')");
+    expect(recordStage).toMatch(
+      /p_stage not in \(\s*'accepted',\s*'context_ready',\s*'session_ready',\s*'agent_ready',\s*'first_delta',\s*'terminal',\s*'persisted'\s*\)/,
+    );
+  });
+
+  it("keeps stage retries idempotent and returns only sanitized telemetry", () => {
+    const recordStage = telemetryFunctionSql("record_ai_chat_turn_stage");
+
+    for (const column of [
+      "accepted_at",
+      "context_ready_at",
+      "session_ready_at",
+      "agent_ready_at",
+      "first_delta_at",
+      "terminal_at",
+      "persisted_at",
+      "session_action",
+    ]) {
+      expect(recordStage).toContain(`coalesce(${column},`);
+    }
+    expect(recordStage).toContain("p_session_action is not null and p_stage <> 'session_ready'");
+    expect(recordStage).toContain("p_session_action not in ('resumed', 'rebuilt')");
+    expect(recordStage).toContain("jsonb_build_object(");
+    for (const key of ["'turnid'", "'stage'", "'observedat'"]) {
+      expect(recordStage).toContain(key);
+    }
+    for (const forbidden of ["prompt", "content", "provider_name", "context_snapshot"]) {
+      expect(recordStage).not.toContain(`'${forbidden}'`);
+    }
+  });
+
+  it("grants turn-stage recording only to service_role", () => {
+    const signature =
+      "public.record_ai_chat_turn_stage(uuid, uuid, uuid, uuid, text, timestamptz, text)";
+    for (const role of ["public", "anon", "authenticated"]) {
+      expect(telemetryMigration).toContain(
+        `revoke execute on function ${signature} from ${role}`,
+      );
+    }
+    expect(telemetryMigration).toContain(
+      `grant execute on function ${signature} to service_role`,
+    );
+  });
+
   it("ships as one additive migration", () => {
     expect(existsSync(migrationPath)).toBe(true);
     expect(migration).not.toContain("drop table public.ai_");

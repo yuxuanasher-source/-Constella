@@ -13,6 +13,7 @@ import {
   listAiConversationMessages,
   listAiConversationTurns,
   listAiConversations,
+  recordAiConversationTurnStage,
   renewAiConversationTurnLease,
   renewAiConversationTurnLeaseV2,
   syncAiConversationSummary,
@@ -50,6 +51,164 @@ const gatewayRuntimeSnapshot = {
 };
 
 describe("Xingyao conversation repository", () => {
+  it("records a turn stage with exact actor and conversation RPC bindings", async () => {
+    const observedAt = "2026-08-03T16:00:00.000Z";
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        turnId: v2Ids.turnId,
+        stage: "session_ready",
+        observedAt,
+        sessionAction: "rebuilt",
+        content: "must-not-escape",
+      },
+      error: null,
+    });
+
+    const result = await recordAiConversationTurnStage(
+      { rpc } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: v2Ids.organizationId,
+        ownerUserId: v2Ids.ownerUserId,
+        conversationId: v2Ids.conversationId,
+        turnId: v2Ids.turnId,
+        stage: "session_ready",
+        observedAt,
+        sessionAction: "rebuilt",
+      },
+    );
+
+    expect(rpc).toHaveBeenCalledWith("record_ai_chat_turn_stage", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_conversation_id: v2Ids.conversationId,
+      p_turn_id: v2Ids.turnId,
+      p_stage: "session_ready",
+      p_observed_at: observedAt,
+      p_session_action: "rebuilt",
+    });
+    expect(result).toEqual({
+      turnId: v2Ids.turnId,
+      stage: "session_ready",
+      observedAt,
+      sessionAction: "rebuilt",
+    });
+  });
+
+  it("returns the first persisted timestamp when a stage is recorded repeatedly", async () => {
+    const firstObservedAt = "2026-08-03T16:00:00.000Z";
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        turnId: v2Ids.turnId,
+        stage: "first_delta",
+        observedAt: firstObservedAt,
+      },
+      error: null,
+    });
+    const client = { rpc } as unknown as ConversationRepositoryClient;
+    const base = {
+      organizationId: v2Ids.organizationId,
+      ownerUserId: v2Ids.ownerUserId,
+      conversationId: v2Ids.conversationId,
+      turnId: v2Ids.turnId,
+      stage: "first_delta" as const,
+    };
+
+    const first = await recordAiConversationTurnStage(client, {
+      ...base,
+      observedAt: firstObservedAt,
+    });
+    const replay = await recordAiConversationTurnStage(client, {
+      ...base,
+      observedAt: "2026-08-03T16:00:01.000Z",
+    });
+
+    expect(first).toEqual(replay);
+    expect(rpc).toHaveBeenCalledTimes(2);
+  });
+
+  it("sanitizes turn-stage RPC errors and malformed responses", async () => {
+    for (const response of [
+      { data: null, error: { message: "secret Supabase body" } },
+      {
+        data: {
+          turnId: v2Ids.turnId,
+          stage: "context_ready",
+          observedAt: "not-a-timestamp",
+        },
+        error: null,
+      },
+    ]) {
+      const error = await recordAiConversationTurnStage(
+        {
+          rpc: vi.fn().mockResolvedValue(response),
+        } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          turnId: v2Ids.turnId,
+          stage: "context_ready",
+          observedAt: "2026-08-03T16:00:00.000Z",
+        },
+      ).then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+      expect(error).toMatchObject({
+        code: "conversation_turn_stage_persist_failed",
+      });
+      expect(String(error)).not.toContain("Supabase");
+      expect(String(error)).not.toContain("not-a-timestamp");
+    }
+
+    const rejected = await recordAiConversationTurnStage(
+      {
+        rpc: vi.fn().mockRejectedValue(new Error("secret transport body")),
+      } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: v2Ids.organizationId,
+        ownerUserId: v2Ids.ownerUserId,
+        conversationId: v2Ids.conversationId,
+        turnId: v2Ids.turnId,
+        stage: "context_ready",
+        observedAt: "2026-08-03T16:00:00.000Z",
+      },
+    ).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    expect(rejected).toMatchObject({
+      code: "conversation_turn_stage_persist_failed",
+    });
+    expect(String(rejected)).not.toContain("secret transport body");
+
+    await expect(
+      recordAiConversationTurnStage(
+        {
+          rpc: vi.fn().mockResolvedValue({
+            data: {
+              turnId: v2Ids.turnId,
+              stage: "agent_ready",
+              observedAt: "2026-08-03T16:00:00.000Z",
+            },
+            error: null,
+          }),
+        } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          turnId: v2Ids.turnId,
+          stage: "context_ready",
+          observedAt: "2026-08-03T16:00:00.000Z",
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "conversation_turn_stage_persist_failed",
+    });
+  });
+
   it("creates an owner-scoped conversation and maps the public DTO", async () => {
     const single = vi
       .fn()

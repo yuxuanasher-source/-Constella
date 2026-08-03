@@ -8,7 +8,9 @@ import type {
   ConversationContextSnapshot,
   ConversationGatewayContext,
   ConversationRuntimeSelection,
+  ConversationSessionAction,
   ConversationStreamEvent,
+  ConversationTurnStage,
   CreateTurnCommand,
   RetryTurnCommand,
 } from "./conversation-contracts";
@@ -31,12 +33,14 @@ import {
   listAiConversations,
   renewAiConversationTurnLease,
   renewAiConversationTurnLeaseV2,
+  recordAiConversationTurnStage,
   syncAiConversationSummary,
   transitionAiConversationTurn,
   verifyAiConversationTerminalState,
   type ConversationRepositoryClient,
   type ConversationClarifyClaim,
   type ConversationGatewayState,
+  ConversationTurnStagePersistenceError,
   type CreatedConversationTurn,
   type StoredConversationTurn,
 } from "./conversation-repository";
@@ -122,6 +126,9 @@ export type ConversationPersistence = {
   finishTurnV2?(
     input: Parameters<typeof finishAiConversationTurnV2>[1],
   ): Promise<void>;
+  recordTurnStage?(
+    input: Parameters<typeof recordAiConversationTurnStage>[1],
+  ): ReturnType<typeof recordAiConversationTurnStage>;
   cancelTurnV2?(
     input: Parameters<typeof cancelAiConversationTurnV2>[1],
   ): ReturnType<typeof cancelAiConversationTurnV2>;
@@ -199,6 +206,7 @@ export function createSupabaseConversationPersistence(
     failTurn: (input) => failAiConversationTurn(client, input),
     renewLease: (input) => renewAiConversationTurnLease(client, input),
     finishTurnV2: (input) => finishAiConversationTurnV2(client, input),
+    recordTurnStage: (input) => recordAiConversationTurnStage(client, input),
     cancelTurnV2: (input) => cancelAiConversationTurnV2(client, input),
     renewLeaseV2: (input) => renewAiConversationTurnLeaseV2(client, input),
     compareAndSwapGatewayState: (input) =>
@@ -656,6 +664,34 @@ export function createConversationService(
         });
       } catch (error) {
         throw mapHermesStateRepositoryError(error);
+      }
+    },
+
+    async recordTurnStage(
+      actor: ConversationActor,
+      conversationId: string,
+      turnId: string,
+      input: {
+        stage: ConversationTurnStage;
+        observedAt: string;
+        sessionAction?: ConversationSessionAction;
+      },
+    ) {
+      if (!persistence.recordTurnStage) return null;
+      try {
+        return await persistence.recordTurnStage({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          conversationId,
+          turnId,
+          stage: input.stage,
+          observedAt: input.observedAt,
+          sessionAction: input.sessionAction,
+        });
+      } catch (error) {
+        throw error instanceof ConversationTurnStagePersistenceError
+          ? error
+          : new ConversationTurnStagePersistenceError();
       }
     },
 

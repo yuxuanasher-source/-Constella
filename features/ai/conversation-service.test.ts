@@ -85,6 +85,77 @@ function persistence(
 }
 
 describe("Xingyao conversation service", () => {
+  it("forwards turn-stage telemetry through actor and conversation boundaries", async () => {
+    const observedAt = "2026-08-03T16:00:00.000Z";
+    const recordTurnStage = vi.fn().mockResolvedValue({
+      turnId: "turn-1",
+      stage: "session_ready",
+      observedAt,
+      sessionAction: "resumed",
+    });
+    const service = createConversationService(persistence({ recordTurnStage }));
+
+    await expect(
+      service.recordTurnStage(actor, "conversation-1", "turn-1", {
+        stage: "session_ready",
+        observedAt,
+        sessionAction: "resumed",
+      }),
+    ).resolves.toEqual({
+      turnId: "turn-1",
+      stage: "session_ready",
+      observedAt,
+      sessionAction: "resumed",
+    });
+    expect(recordTurnStage).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+      stage: "session_ready",
+      observedAt,
+      sessionAction: "resumed",
+    });
+  });
+
+  it("treats an unavailable optional stage persistence as a no-op", async () => {
+    const store = persistence();
+    delete store.recordTurnStage;
+    const service = createConversationService(store);
+
+    await expect(
+      service.recordTurnStage(actor, "conversation-1", "turn-1", {
+        stage: "accepted",
+        observedAt: "2026-08-03T16:00:00.000Z",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("normalizes unknown stage persistence failures without leaking internals", async () => {
+    const service = createConversationService(
+      persistence({
+        recordTurnStage: vi
+          .fn()
+          .mockRejectedValue(new Error("secret database response")),
+      }),
+    );
+
+    const error = await service
+      .recordTurnStage(actor, "conversation-1", "turn-1", {
+        stage: "terminal",
+        observedAt: "2026-08-03T16:00:00.000Z",
+      })
+      .then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+    expect(error).toMatchObject({
+      code: "conversation_turn_stage_persist_failed",
+    });
+    expect(String(error)).not.toContain("secret database response");
+  });
+
   it("accepts one user message as an idempotent turn", async () => {
     const store = persistence();
     const service = createConversationService(store);

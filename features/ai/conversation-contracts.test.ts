@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   canTransitionConversationTurn,
+  isConversationSessionAction,
   isConversationStreamEvent,
+  isConversationTurnStage,
   parseCreateTurnCommand,
   parseRetryTurnCommand,
   type ConversationStreamEvent,
@@ -10,6 +12,26 @@ import {
 import { hasMeaningfulAiContent } from "./response-quality";
 
 describe("Xingyao conversation protocol contracts", () => {
+  it("recognizes only durable turn stages and session actions", () => {
+    for (const stage of [
+      "accepted",
+      "context_ready",
+      "session_ready",
+      "agent_ready",
+      "first_delta",
+      "terminal",
+      "persisted",
+    ]) {
+      expect(isConversationTurnStage(stage)).toBe(true);
+    }
+    expect(isConversationTurnStage("generating")).toBe(false);
+    expect(isConversationTurnStage(null)).toBe(false);
+
+    expect(isConversationSessionAction("resumed")).toBe(true);
+    expect(isConversationSessionAction("rebuilt")).toBe(true);
+    expect(isConversationSessionAction("created")).toBe(false);
+  });
+
   it("parses a normalized, idempotent create-turn command", () => {
     expect(
       parseCreateTurnCommand({

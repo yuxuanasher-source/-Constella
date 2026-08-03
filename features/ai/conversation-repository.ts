@@ -5,7 +5,13 @@ import type {
   ConversationStreamEvent,
   ConversationMessageRole,
   ConversationMessageStatus,
+  ConversationSessionAction,
+  ConversationTurnStage,
   ConversationTurnStatus,
+} from "./conversation-contracts";
+import {
+  isConversationSessionAction,
+  isConversationTurnStage,
 } from "./conversation-contracts";
 import type { AiChatMode, AiProviderName } from "./contracts";
 import {
@@ -108,6 +114,22 @@ export type CreatedConversationTurn = {
   attempt: number;
   duplicate: boolean;
 };
+
+export type RecordedConversationTurnStage = {
+  turnId: string;
+  stage: ConversationTurnStage;
+  observedAt: string;
+  sessionAction?: ConversationSessionAction;
+};
+
+export class ConversationTurnStagePersistenceError extends Error {
+  readonly code = "conversation_turn_stage_persist_failed";
+
+  constructor() {
+    super("Conversation turn stage could not be persisted");
+    this.name = "ConversationTurnStagePersistenceError";
+  }
+}
 
 export type ConversationGatewayState = {
   generation: number;
@@ -466,6 +488,41 @@ export async function renewAiConversationTurnLease(
   return !error && data === true;
 }
 
+export async function recordAiConversationTurnStage(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+    stage: ConversationTurnStage;
+    observedAt: string;
+    sessionAction?: ConversationSessionAction;
+  },
+): Promise<RecordedConversationTurnStage> {
+  let result: QueryResult<unknown>;
+  try {
+    result = await client.rpc("record_ai_chat_turn_stage", {
+      p_organization_id: input.organizationId,
+      p_owner_user_id: input.ownerUserId,
+      p_conversation_id: input.conversationId,
+      p_turn_id: input.turnId,
+      p_stage: input.stage,
+      p_observed_at: input.observedAt,
+      p_session_action: input.sessionAction ?? null,
+    });
+  } catch {
+    throw new ConversationTurnStagePersistenceError();
+  }
+  const recorded = result.error
+    ? null
+    : parseRecordedTurnStage(result.data, input.turnId, input.stage);
+  if (!recorded) {
+    throw new ConversationTurnStagePersistenceError();
+  }
+  return recorded;
+}
+
 export async function finishAiConversationTurnV2(
   client: ConversationRepositoryClient,
   input: {
@@ -732,6 +789,42 @@ function parseCreatedTurn(value: unknown): CreatedConversationTurn | null {
     status,
     attempt,
     duplicate: value.duplicate === true,
+  };
+}
+
+function parseRecordedTurnStage(
+  value: unknown,
+  expectedTurnId: string,
+  expectedStage: ConversationTurnStage,
+): RecordedConversationTurnStage | null {
+  if (!isRecord(value)) return null;
+  const turnId = stringValue(value.turnId);
+  const observedAt = stringValue(value.observedAt);
+  if (
+    turnId !== expectedTurnId ||
+    !isConversationTurnStage(value.stage) ||
+    value.stage !== expectedStage ||
+    !observedAt ||
+    !Number.isFinite(Date.parse(observedAt))
+  ) {
+    return null;
+  }
+  if (value.stage !== "session_ready" && value.sessionAction != null) {
+    return null;
+  }
+  if (
+    value.sessionAction != null &&
+    !isConversationSessionAction(value.sessionAction)
+  ) {
+    return null;
+  }
+  return {
+    turnId,
+    stage: value.stage,
+    observedAt,
+    ...(value.sessionAction != null
+      ? { sessionAction: value.sessionAction }
+      : {}),
   };
 }
 
