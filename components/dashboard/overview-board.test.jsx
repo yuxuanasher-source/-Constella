@@ -1,4 +1,5 @@
 import React from "react";
+import { renderToString } from "react-dom/server";
 import {
   act,
   fireEvent,
@@ -25,6 +26,34 @@ const dashboard = {
   queue: [],
   risks: [],
 };
+
+describe("OverviewBoard server hydration contract", () => {
+  it("server-renders a stable initial update label before the client clock starts", () => {
+    const renderedAt = Date.parse("2026-08-03T02:00:02.000Z");
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(renderedAt);
+
+    try {
+      const html = renderToString(
+        <OverviewBoard
+          dashboard={{
+            ...dashboard,
+            generatedAt: "2026-08-03T02:00:00.000Z",
+          }}
+          projects={[]}
+          tasks={[]}
+          reports={[]}
+          batches={[]}
+          currentUser={{ name: "123", role: "owner" }}
+        />,
+      );
+
+      expect(html).toContain("刚刚更新");
+      expect(html).not.toContain("2 秒前更新");
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+});
 
 describe("OverviewBoard AI panel", () => {
   beforeEach(() => {

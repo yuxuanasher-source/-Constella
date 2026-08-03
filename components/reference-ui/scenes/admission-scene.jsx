@@ -921,11 +921,42 @@ export default function ScreenAdmission({ focusRequest = null }) {
           </div>
         )}
         {shareCenterProject ? (
-          <AdmissionShareCenter
-            project={shareCenterProject}
-            actions={actions}
-            onClose={() => setShareCenterProject(null)}
-          />
+          <React.Suspense
+            fallback={
+              <div
+                role="status"
+                aria-label="录屏分享中心加载中"
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  zIndex: 100,
+                  display: "grid",
+                  placeItems: "center",
+                  background: "rgba(15, 23, 42, 0.28)",
+                  color: "var(--ink-700)",
+                  fontSize: 13,
+                }}
+              >
+                <span
+                  style={{
+                    padding: "12px 16px",
+                    border: "1px solid var(--line)",
+                    borderRadius: 10,
+                    background: "#fff",
+                    boxShadow: "0 16px 40px rgba(15, 23, 42, 0.18)",
+                  }}
+                >
+                  正在加载录屏分享中心…
+                </span>
+              </div>
+            }
+          >
+            <AdmissionShareCenter
+              project={shareCenterProject}
+              actions={actions}
+              onClose={() => setShareCenterProject(null)}
+            />
+          </React.Suspense>
         ) : null}
         {playbackRecording ? (
           <RecordingPlaybackDialog

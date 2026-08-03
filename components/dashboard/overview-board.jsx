@@ -1716,22 +1716,25 @@ function AdmissionFunnelModel({ admission }) {
 }
 
 function useClock() {
-  const [, force] = React.useReducer((x) => x + 1, 0);
+  const [now, setNow] = React.useState(null);
   React.useEffect(() => {
-    const id = setInterval(force, 5000);
+    const update = () => setNow(Date.now());
+    update();
+    const id = setInterval(update, 5000);
     return () => clearInterval(id);
   }, []);
+  return now;
 }
 function nowClock() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
-function updatedLabelFrom(generatedAt) {
-  if (!generatedAt) return "刚刚更新";
+function updatedLabelFrom(generatedAt, now) {
+  if (!generatedAt || !Number.isFinite(now)) return "刚刚更新";
   const diff = Math.max(
     0,
-    Math.floor((Date.now() - new Date(generatedAt).getTime()) / 1000),
+    Math.floor((now - new Date(generatedAt).getTime()) / 1000),
   );
   return diff < 60 ? `${diff} 秒前更新` : `${Math.floor(diff / 60)} 分钟前更新`;
 }
@@ -6060,14 +6063,14 @@ export function OverviewBoard({
 }) {
   const [drawer, setDrawer] = React.useState(false);
   const [period, setPeriod] = React.useState("实时");
-  useClock();
+  const now = useClock();
   const d = dashboard || {};
   const profile = d.profile || {};
   const role = String(profile.role || "owner");
   const panels = d.panels || {};
   const kpis = d.kpis || [];
   const risks = d.risks || [];
-  const updatedLabel = updatedLabelFrom(d.generatedAt);
+  const updatedLabel = updatedLabelFrom(d.generatedAt, now);
   const periodScopedData = React.useMemo(
     () =>
       scopeDashboardDataByPeriod(period, d.generatedAt, {

@@ -1443,12 +1443,20 @@ async function openShareCenter(page: Page) {
   await page.goto("/console");
   await expect(page.locator(".ops-reference-shell")).toBeVisible();
   await page.getByRole("button", { name: "选播准入" }).click();
-  await expect(page.getByRole("heading", { name: "选播准入" })).toBeVisible();
+  const admissionHeading = page.getByRole("heading", { name: "选播准入" });
+  await expect(
+    page.getByRole("status", { name: "准入审核加载中" }).or(admissionHeading),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(admissionHeading).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Task11 Project").first()).toBeVisible();
   await page.getByRole("button", { name: "录屏分享中心" }).click();
+  const shareCenter = page.getByRole("dialog", {
+    name: "Task11 Project 录屏分享中心",
+  });
   await expect(
-    page.getByRole("dialog", { name: "Task11 Project 录屏分享中心" }),
-  ).toBeVisible();
+    page.getByRole("status", { name: "录屏分享中心加载中" }).or(shareCenter),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(shareCenter).toBeVisible({ timeout: 30_000 });
   await expect(
     page.getByRole("checkbox", { name: /选择 Streamer One/ }),
   ).toBeVisible();
