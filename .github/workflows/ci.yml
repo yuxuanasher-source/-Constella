@@ -166,6 +166,11 @@ jobs:
           SETTLEMENT_AI_DB_LOCK_REGRESSION_CONTAINER: supabase_db_jingying-cabin
         run: pnpm exec vitest run lib/db/schema-contract.test.ts
 
+      - name: Run AI turn-stage telemetry database regression
+        env:
+          AI_TURN_STAGE_TELEMETRY_DB_REGRESSION_CONTAINER: supabase_db_jingying-cabin
+        run: pnpm exec vitest run lib/db/xingyao-hermes-turn-stage-telemetry.live.test.ts
+
       - name: Run atomic deploy database and PostgREST contract
         env:
           RUN_DEPLOY_DB_TESTS: 1

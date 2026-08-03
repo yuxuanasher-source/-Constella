@@ -1264,6 +1264,14 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
     ciWorkflow,
     /vitest run scripts\/deploy-database-contract\.test\.mjs/,
   );
+  assert.match(
+    ciWorkflow,
+    /AI_TURN_STAGE_TELEMETRY_DB_REGRESSION_CONTAINER:\s*supabase_db_jingying-cabin/,
+  );
+  assert.match(
+    ciWorkflow,
+    /vitest run lib\/db\/xingyao-hermes-turn-stage-telemetry\.live\.test\.ts/,
+  );
 
   const mainActivation = main.slice(position(main, "atomic_switch_current"));
   const reload = position(mainActivation, 'reload_pm2 "$TARGET_SHA"');

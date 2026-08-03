@@ -75,6 +75,7 @@ const serviceOnlyFunctions = [
 describe("Xingyao Hermes native state schema contract", () => {
   it("adds nullable, first-write turn-stage telemetry without replacing terminal persistence", () => {
     expect(existsSync(telemetryMigrationPath)).toBe(true);
+    expect(telemetryMigration.split(/\r?\n/)[0]).toBe("-- deploy: expand");
     for (const column of [
       "accepted_at",
       "context_ready_at",
@@ -92,14 +93,15 @@ describe("Xingyao Hermes native state schema contract", () => {
       "add column if not exists session_action text",
     );
     expect(telemetryMigration).toMatch(
-      /constraint ai_chat_turns_session_action_check check \(\s*session_action is null or session_action in \('resumed', 'rebuilt'\)\s*\)/,
+      /constraint ai_chat_turns_session_action_check check \(\s*session_action is null or session_action in \('resumed', 'rebuilt'\)\s*\) not valid/,
     );
     expectSqlOrder(telemetryMigration, [
       "add column if not exists accepted_at timestamptz",
-      "update public.ai_chat_turns",
-      "set accepted_at = created_at",
       "alter column accepted_at set default now()",
     ]);
+    expect(telemetryMigration).not.toMatch(
+      /update public\.ai_chat_turns\s+set accepted_at = created_at/,
+    );
     expect(telemetryMigration).not.toContain(
       "create or replace function public.finish_ai_chat_turn_v2(",
     );
@@ -122,7 +124,9 @@ describe("Xingyao Hermes native state schema contract", () => {
       /from public\.ai_chat_turns (?:as )?locked_turn[\s\S]*?for update/,
     );
     expect(recordStage).toContain("p_observed_at is null");
-    expect(recordStage).toContain("statement_timestamp() + interval '5 minutes'");
+    expect(recordStage).toContain(
+      "statement_timestamp() + interval '5 minutes'",
+    );
     expect(recordStage).not.toContain("interval '5 seconds'");
     expect(recordStage).toMatch(
       /v_previous is not null\s+and v_candidate < v_previous then/,
@@ -130,7 +134,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(recordStage).toMatch(
       /v_next is not null\s+and v_candidate > v_next then/,
     );
-    expect(recordStage).toContain("v_turn.accepted_at is null");
+    expect(recordStage).toContain("v_effective_accepted_at is null");
     expect(recordStage).toContain("p_stage in ('terminal', 'persisted')");
     expect(recordStage).toMatch(
       /p_stage not in \(\s*'accepted',\s*'context_ready',\s*'session_ready',\s*'agent_ready',\s*'first_delta',\s*'terminal',\s*'persisted'\s*\)/,
@@ -161,15 +165,59 @@ describe("Xingyao Hermes native state schema contract", () => {
     ]) {
       expect(recordStage).toContain(`coalesce(${column},`);
     }
-    expect(recordStage).toContain("p_session_action is not null and p_stage <> 'session_ready'");
-    expect(recordStage).toContain("p_session_action not in ('resumed', 'rebuilt')");
+    expect(recordStage).toContain(
+      "p_session_action is not null and p_stage <> 'session_ready'",
+    );
+    expect(recordStage).toContain(
+      "p_session_action not in ('resumed', 'rebuilt')",
+    );
+    expect(recordStage).toContain(
+      "v_effective_accepted_at := coalesce(v_turn.accepted_at, v_turn.created_at)",
+    );
+    expectSqlOrder(recordStage, [
+      "if v_existing is not null",
+      "return jsonb_build_object(",
+      "update public.ai_chat_turns",
+    ]);
     expect(recordStage).toContain("jsonb_build_object(");
     for (const key of ["'turnid'", "'stage'", "'observedat'"]) {
       expect(recordStage).toContain(key);
     }
-    for (const forbidden of ["prompt", "content", "provider_name", "context_snapshot"]) {
+    for (const forbidden of [
+      "prompt",
+      "content",
+      "provider_name",
+      "context_snapshot",
+    ]) {
       expect(recordStage).not.toContain(`'${forbidden}'`);
     }
+  });
+
+  it("preserves product updated_at for telemetry-only row updates", () => {
+    const preserveUpdatedAt = telemetryFunctionSql(
+      "preserve_ai_chat_turn_updated_at_for_telemetry",
+    );
+
+    expect(preserveUpdatedAt).toContain("returns trigger");
+    expect(preserveUpdatedAt).toContain("to_jsonb(new)");
+    expect(preserveUpdatedAt).toContain("to_jsonb(old)");
+    for (const column of [
+      "accepted_at",
+      "context_ready_at",
+      "session_ready_at",
+      "agent_ready_at",
+      "first_delta_at",
+      "terminal_at",
+      "persisted_at",
+      "session_action",
+      "updated_at",
+    ]) {
+      expect(preserveUpdatedAt).toContain(`'${column}'`);
+    }
+    expect(preserveUpdatedAt).toContain("new.updated_at := old.updated_at");
+    expect(telemetryMigration).toMatch(
+      /create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry[\s\S]*before update on public\.ai_chat_turns[\s\S]*preserve_ai_chat_turn_updated_at_for_telemetry\(\)/,
+    );
   });
 
   it("grants turn-stage recording only to service_role", () => {
@@ -596,12 +644,8 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(atomic).toMatch(
       /if v_broker_call\.status <> 'claimed'[\s\S]*?claim_lease_expires_at <= now\(\)[\s\S]*?raise exception 'broker_claim_fence_invalid';[\s\S]*?end if;\s+if \(p_operation = 'remember'/,
     );
-    expect(atomic).not.toContain(
-      "or v_capability.revoked_at is not null",
-    );
-    expect(atomic).not.toContain(
-      "or v_capability.expires_at <= now()",
-    );
+    expect(atomic).not.toContain("or v_capability.revoked_at is not null");
+    expect(atomic).not.toContain("or v_capability.expires_at <= now()");
   });
 
   it("validates memory provenance against the exact owner user message", () => {

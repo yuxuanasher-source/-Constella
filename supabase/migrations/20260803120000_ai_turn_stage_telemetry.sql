@@ -1,3 +1,5 @@
+-- deploy: expand
+
 alter table public.ai_chat_turns
   add column if not exists accepted_at timestamptz,
   add column if not exists context_ready_at timestamptz,
@@ -8,15 +10,55 @@ alter table public.ai_chat_turns
   add column if not exists persisted_at timestamptz,
   add column if not exists session_action text;
 
-update public.ai_chat_turns
-set accepted_at = created_at
-where accepted_at is null;
-
 alter table public.ai_chat_turns
   alter column accepted_at set default now(),
   add constraint ai_chat_turns_session_action_check check (
     session_action is null or session_action in ('resumed', 'rebuilt')
-  );
+  ) not valid;
+
+create or replace function public.preserve_ai_chat_turn_updated_at_for_telemetry()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+begin
+  if (
+    to_jsonb(new) - array[
+      'accepted_at',
+      'context_ready_at',
+      'session_ready_at',
+      'agent_ready_at',
+      'first_delta_at',
+      'terminal_at',
+      'persisted_at',
+      'session_action',
+      'updated_at'
+    ]
+  ) is not distinct from (
+    to_jsonb(old) - array[
+      'accepted_at',
+      'context_ready_at',
+      'session_ready_at',
+      'agent_ready_at',
+      'first_delta_at',
+      'terminal_at',
+      'persisted_at',
+      'session_action',
+      'updated_at'
+    ]
+  ) then
+    new.updated_at := old.updated_at;
+  end if;
+  return new;
+end
+$$;
+
+create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry
+before update on public.ai_chat_turns
+for each row execute function public.preserve_ai_chat_turn_updated_at_for_telemetry();
+
+revoke all on function public.preserve_ai_chat_turn_updated_at_for_telemetry()
+  from public, anon, authenticated, service_role;
 
 create or replace function public.record_ai_chat_turn_stage(
   p_organization_id uuid,
@@ -34,6 +76,7 @@ set search_path = pg_catalog, public
 as $$
 declare
   v_turn public.ai_chat_turns%rowtype;
+  v_effective_accepted_at timestamptz;
   v_existing timestamptz;
   v_candidate timestamptz;
   v_previous timestamptz;
@@ -81,12 +124,14 @@ begin
   if not found then
     raise exception 'ai_chat_turn_stage_identity_mismatch';
   end if;
-  if p_stage in ('terminal', 'persisted') and v_turn.accepted_at is null then
+  v_effective_accepted_at := coalesce(v_turn.accepted_at, v_turn.created_at);
+  if p_stage in ('terminal', 'persisted')
+     and v_effective_accepted_at is null then
     raise exception 'ai_chat_turn_stage_accepted_required';
   end if;
 
   v_existing := case p_stage
-    when 'accepted' then v_turn.accepted_at
+    when 'accepted' then v_effective_accepted_at
     when 'context_ready' then v_turn.context_ready_at
     when 'session_ready' then v_turn.session_ready_at
     when 'agent_ready' then v_turn.agent_ready_at
@@ -94,31 +139,50 @@ begin
     when 'terminal' then v_turn.terminal_at
     when 'persisted' then v_turn.persisted_at
   end;
+  if v_existing is not null
+     and (
+       p_stage <> 'session_ready'
+       or p_session_action is null
+       or v_turn.session_action is not null
+     ) then
+    return jsonb_build_object(
+      'turnId', v_turn.id,
+      'stage', p_stage,
+      'observedAt', v_existing
+    ) || case
+      when p_stage = 'session_ready' and v_turn.session_action is not null
+        then jsonb_build_object('sessionAction', v_turn.session_action)
+      else '{}'::jsonb
+    end;
+  end if;
   v_candidate := coalesce(v_existing, p_observed_at);
 
   v_previous := case p_stage
-    when 'context_ready' then v_turn.accepted_at
-    when 'session_ready' then greatest(v_turn.accepted_at, v_turn.context_ready_at)
+    when 'context_ready' then v_effective_accepted_at
+    when 'session_ready' then greatest(
+      v_effective_accepted_at,
+      v_turn.context_ready_at
+    )
     when 'agent_ready' then greatest(
-      v_turn.accepted_at,
+      v_effective_accepted_at,
       v_turn.context_ready_at,
       v_turn.session_ready_at
     )
     when 'first_delta' then greatest(
-      v_turn.accepted_at,
+      v_effective_accepted_at,
       v_turn.context_ready_at,
       v_turn.session_ready_at,
       v_turn.agent_ready_at
     )
     when 'terminal' then greatest(
-      v_turn.accepted_at,
+      v_effective_accepted_at,
       v_turn.context_ready_at,
       v_turn.session_ready_at,
       v_turn.agent_ready_at,
       v_turn.first_delta_at
     )
     when 'persisted' then greatest(
-      v_turn.accepted_at,
+      v_effective_accepted_at,
       v_turn.context_ready_at,
       v_turn.session_ready_at,
       v_turn.agent_ready_at,
@@ -168,10 +232,7 @@ begin
   end if;
 
   update public.ai_chat_turns
-  set accepted_at = case
-        when p_stage = 'accepted' then coalesce(accepted_at, p_observed_at)
-        else accepted_at
-      end,
+  set accepted_at = coalesce(accepted_at, created_at),
       context_ready_at = case
         when p_stage = 'context_ready' then coalesce(context_ready_at, p_observed_at)
         else context_ready_at

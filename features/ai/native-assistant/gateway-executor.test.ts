@@ -33,7 +33,7 @@ const turn = {
 };
 
 describe("native Hermes Gateway executor", () => {
-  it("records the successful Gateway lifecycle once and brackets terminal persistence", async () => {
+  it("records the successful Gateway lifecycle once", async () => {
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
     });
@@ -62,9 +62,7 @@ describe("native Hermes Gateway executor", () => {
     );
 
     expect(events.at(-1)).toMatchObject({ type: "response.completed" });
-    expect(
-      service.recordTurnStage.mock.calls.map((call) => call[3]),
-    ).toEqual([
+    expect(service.recordTurnStage.mock.calls.map((call) => call[3])).toEqual([
       { stage: "accepted", observedAt: "2026-08-03T16:00:00.000Z" },
       { stage: "context_ready", observedAt: "2026-08-03T16:00:00.000Z" },
       {
@@ -82,14 +80,6 @@ describe("native Hermes Gateway executor", () => {
         (call) => call[3].stage === "first_delta",
       ),
     ).toHaveLength(1);
-    const terminalCall = service.recordTurnStage.mock.invocationCallOrder[5];
-    const persistedCall = service.recordTurnStage.mock.invocationCallOrder[6];
-    expect(terminalCall).toBeLessThan(
-      service.finishTurnV2.mock.invocationCallOrder[0],
-    );
-    expect(service.finishTurnV2.mock.invocationCallOrder[0]).toBeLessThan(
-      persistedCall,
-    );
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
   });
 
@@ -142,12 +132,6 @@ describe("native Hermes Gateway executor", () => {
         "terminal",
         "persisted",
       ]);
-      expect(service.recordTurnStage.mock.invocationCallOrder[4]).toBeLessThan(
-        service.finishTurnV2.mock.invocationCallOrder[0],
-      );
-      expect(service.finishTurnV2.mock.invocationCallOrder[0]).toBeLessThan(
-        service.recordTurnStage.mock.invocationCallOrder[5],
-      );
     },
   );
 
@@ -200,9 +184,9 @@ describe("native Hermes Gateway executor", () => {
         turnId: turn.turnId,
       }),
     );
-    expect(JSON.stringify(failed.telemetryLogger.warn.mock.calls)).not.toContain(
-      "secret telemetry response",
-    );
+    expect(
+      JSON.stringify(failed.telemetryLogger.warn.mock.calls),
+    ).not.toContain("secret telemetry response");
   });
 
   it("does not turn a persisted completion into failure when persisted-stage recording fails", async () => {
@@ -211,7 +195,8 @@ describe("native Hermes Gateway executor", () => {
     });
     service.recordTurnStage.mockImplementation(
       async (_actor, _conversationId, _turnId, input) => {
-        if (input.stage === "persisted") throw new Error("telemetry unavailable");
+        if (input.stage === "persisted")
+          throw new Error("telemetry unavailable");
         return null;
       },
     );
@@ -240,6 +225,140 @@ describe("native Hermes Gateway executor", () => {
     expect(events.at(-1)).toMatchObject({ type: "response.completed" });
     expect(service.finishTurnV2).toHaveBeenCalledTimes(1);
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps never-settling telemetry off prompt, delta, and terminal persistence paths", async () => {
+    const trace: string[] = [];
+    const timestamps = [
+      "2026-08-03T16:00:00.000Z",
+      "2026-08-03T16:00:01.000Z",
+      "2026-08-03T16:00:02.000Z",
+      "2026-08-03T16:00:03.000Z",
+      "2026-08-03T16:00:04.000Z",
+      "2026-08-03T16:00:05.000Z",
+      "2026-08-03T16:00:06.000Z",
+    ];
+    const service = frozenServiceDouble();
+    service.recordTurnStage.mockImplementation(
+      async (_actor, _conversationId, _turnId, input) => {
+        trace.push(`rpc:${input.stage}:${input.observedAt}`);
+        return new Promise(() => {});
+      },
+    );
+    service.finishTurnV2.mockImplementation(async () => {
+      trace.push("finish");
+    });
+    const telemetryLogger = { warn: vi.fn() };
+    const gateway = gatewayDouble([
+      { type: "text.delta", delta: "answer" },
+      { type: "completed" },
+    ]);
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      telemetryTimeoutMs: 5,
+      telemetryLogger,
+      now: () => {
+        const timestamp = timestamps.shift();
+        if (!timestamp) throw new Error("unexpected clock read");
+        trace.push(`sample:${timestamp}`);
+        return new Date(timestamp);
+      },
+    });
+
+    const events = await withDeadline(
+      collect(
+        executor.execute({
+          request: jsonRequest({ message: "hello", mode: "fast" }),
+          actor,
+          turn,
+          attachments: [],
+          service: {} as never,
+        }),
+      ),
+      100,
+    );
+
+    expect(events.map((event) => event.type)).toEqual([
+      "turn.started",
+      "context.ready",
+      "response.delta",
+      "response.completed",
+    ]);
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(service.finishTurnV2).toHaveBeenCalledTimes(1);
+    expect(service.recordTurnStage).toHaveBeenCalledTimes(7);
+    expect(timestamps).toEqual([]);
+    expect(trace.indexOf("sample:2026-08-03T16:00:03.000Z")).toBeLessThan(
+      trace.indexOf("sample:2026-08-03T16:00:04.000Z"),
+    );
+    expect(trace.indexOf("sample:2026-08-03T16:00:04.000Z")).toBeLessThan(
+      trace.indexOf("rpc:agent_ready:2026-08-03T16:00:03.000Z"),
+    );
+    expect(trace.indexOf("sample:2026-08-03T16:00:05.000Z")).toBeLessThan(
+      trace.indexOf("finish"),
+    );
+    expect(trace.indexOf("finish")).toBeLessThan(
+      trace.indexOf("sample:2026-08-03T16:00:06.000Z"),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(telemetryLogger.warn).toHaveBeenCalledTimes(7);
+  });
+
+  it("contains delayed telemetry rejection after emitting one successful answer", async () => {
+    const pending: Array<{ reject: (reason: Error) => void }> = [];
+    const service = frozenServiceDouble();
+    service.recordTurnStage.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          pending.push({ reject });
+        }),
+    );
+    const telemetryLogger = { warn: vi.fn() };
+    const gateway = gatewayDouble([
+      { type: "text.delta", delta: "answer" },
+      { type: "completed" },
+    ]);
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      telemetryTimeoutMs: 1_000,
+      telemetryLogger,
+    });
+
+    const events = await withDeadline(
+      collect(
+        executor.execute({
+          request: jsonRequest({ message: "hello", mode: "fast" }),
+          actor,
+          turn,
+          attachments: [],
+          service: {} as never,
+        }),
+      ),
+      100,
+    );
+
+    expect(events.at(-1)).toMatchObject({ type: "response.completed" });
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(service.finishTurnV2).toHaveBeenCalledTimes(1);
+    expect(pending).toHaveLength(7);
+    for (const deferred of pending) {
+      deferred.reject(new Error("secret delayed telemetry failure"));
+    }
+    await vi.waitFor(() => {
+      expect(telemetryLogger.warn).toHaveBeenCalledTimes(7);
+    });
+    expect(JSON.stringify(telemetryLogger.warn.mock.calls)).not.toContain(
+      "secret delayed telemetry failure",
+    );
   });
 
   it("persists its generated Gateway context through the real conversation service validator", async () => {
@@ -1776,6 +1895,67 @@ function serviceDouble({
     finishTurnV2: vi.fn().mockResolvedValue(undefined),
     renewLeaseV2: vi.fn().mockResolvedValue(undefined),
   };
+}
+
+function frozenServiceDouble() {
+  const service = serviceDouble({
+    messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+  });
+  service.prepareTurn.mockResolvedValue({
+    turn: {
+      id: turn.turnId,
+      conversationId: turn.conversationId,
+      mode: "fast",
+    },
+    messages: [{ role: "user", content: "hello" }],
+    snapshot: {
+      version: 1,
+      summaryVersion: 0,
+      messageIds: [turn.userMessageId],
+      groundingRefs: [],
+      assembledAt: "2026-08-03T15:59:59.000Z",
+      gatewayContext: {
+        messages: [{ role: "user", content: "hello" }],
+        attachments: [],
+        mode: "fast",
+        primaryProvider: "hermes",
+        lastUserMessage: "hello",
+        responseMetadata: {
+          grounding: {},
+          knowledge: {},
+          retrospectiveDraft: null,
+        },
+        invocationMetadata: {
+          actor: { ...actor, role: "finance" },
+          budget: { maxIterations: 24 },
+          personalMemoryRevision: 0,
+          sessionId: "session-frozen",
+          gatewayCheckpoint: {
+            sessionId: "session-frozen",
+            turnId: turn.turnId,
+          },
+        },
+      },
+    },
+  });
+  return service;
+}
+
+async function withDeadline<T>(promise: Promise<T>, timeoutMs: number) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("test deadline exceeded")),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function gatewayDouble(events: unknown[]) {
