@@ -1,3 +1,5 @@
+-- deploy: expand
+
 alter table public.organizations
   add column if not exists branding_version integer not null default 0;
 

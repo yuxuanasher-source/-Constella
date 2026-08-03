@@ -1,3 +1,5 @@
+-- deploy: expand
+
 alter table public.project_recording_share_boards
   add column if not exists brand_snapshot jsonb,
   add column if not exists brand_version integer,
@@ -700,13 +702,6 @@ revoke all on function public.get_internal_admission_share_board_hydration(uuid,
 from public, anon, authenticated, service_role;
 grant execute on function public.get_internal_admission_share_board_hydration(uuid, uuid)
 to authenticated;
-
-drop function if exists public.create_admission_share_board(
-  uuid, uuid, text, text, text, text, text, timestamptz, boolean, uuid, jsonb
-);
-drop function if exists public.create_admission_share_board(
-  uuid, uuid, text, text, text, text, text, timestamptz, boolean, uuid, jsonb, uuid
-);
 
 create or replace function public.create_admission_share_board(
   p_organization_id uuid,
