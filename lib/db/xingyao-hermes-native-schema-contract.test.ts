@@ -250,7 +250,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(telemetryBackfillMigration).toMatch(
       /create trigger ai_chat_turns_touch_updated_at before update of %s on public\.ai_chat_turns/,
     );
-    for (const column of [
+    const telemetryColumns = [
       "accepted_at",
       "context_ready_at",
       "session_ready_at",
@@ -259,10 +259,20 @@ describe("Xingyao Hermes native state schema contract", () => {
       "terminal_at",
       "persisted_at",
       "session_action",
-      "updated_at",
-    ]) {
-      expect(telemetryBackfillMigration).toContain(`'${column}'`);
+    ];
+    for (const sql of [telemetryMigration, telemetryBackfillMigration]) {
+      const exclusion = sql.match(
+        /attribute\.attname not in \(([\s\S]*?)\n\s*\);/,
+      );
+      expect(exclusion).not.toBeNull();
+      const excludedColumns = [
+        ...(exclusion?.[1].matchAll(/'([^']+)'/g) ?? []),
+      ].map((match) => match[1]);
+      expect(excludedColumns).toEqual(telemetryColumns);
     }
+    expect(telemetryBackfillMigration).not.toMatch(
+      /attribute\.attname not in \([\s\S]*?'updated_at'[\s\S]*?\);/,
+    );
     expect(telemetryBackfillMigration).toContain("v_business_columns is null");
     expect(telemetryBackfillMigration).not.toContain(
       "create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry",

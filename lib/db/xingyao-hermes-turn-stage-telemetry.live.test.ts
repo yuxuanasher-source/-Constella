@@ -118,12 +118,30 @@ describe.runIf(Boolean(container))(
         runSql(
           dbContainer,
           `update public.ai_chat_turns
+           set updated_at = '2000-01-01T00:00:00Z'::timestamptz
+           where id = '${ids.ordinaryUpdate}'::uuid;`,
+        );
+        const explicitUpdatedAtAfter = rowVersion(
+          dbContainer,
+          ids.ordinaryUpdate,
+        );
+        expect(explicitUpdatedAtAfter.updatedAt).not.toBe(
+          "2000-01-01 00:00:00+00",
+        );
+        expect(Date.parse(explicitUpdatedAtAfter.updatedAt)).toBeGreaterThan(
+          Date.parse(telemetryOnlyAfter.updatedAt),
+        );
+        runSql(
+          dbContainer,
+          `update public.ai_chat_turns
            set error_code = 'mixed-update',
                session_ready_at = '${base}'::timestamptz + interval '2 minutes'
            where id = '${ids.ordinaryUpdate}'::uuid;`,
         );
         const ordinaryAfter = rowVersion(dbContainer, ids.ordinaryUpdate);
-        expect(ordinaryAfter.updatedAt).not.toBe(telemetryOnlyAfter.updatedAt);
+        expect(ordinaryAfter.updatedAt).not.toBe(
+          explicitUpdatedAtAfter.updatedAt,
+        );
         expect(
           runSqlText(
             dbContainer,
@@ -141,9 +159,37 @@ describe.runIf(Boolean(container))(
         expect(touchTrigger).toContain("before update of");
         expect(touchTrigger).toContain("context_snapshot");
         expect(touchTrigger).toContain("error_code");
+        expect(touchTrigger).toContain("updated_at");
         expect(touchTrigger).not.toContain("accepted_at");
         expect(touchTrigger).not.toContain("session_ready_at");
         expect(touchTrigger).not.toContain("to_jsonb");
+        expect(
+          runSqlText(
+            dbContainer,
+            `select expected.attnums = trigger.tgattr::text
+             from pg_trigger trigger
+             cross join lateral (
+               select string_agg(attribute.attnum::text, ' ' order by attribute.attnum) as attnums
+               from pg_attribute attribute
+               where attribute.attrelid = 'public.ai_chat_turns'::regclass
+                 and attribute.attnum > 0
+                 and not attribute.attisdropped
+                 and attribute.attgenerated = ''
+                 and attribute.attname not in (
+                   'accepted_at',
+                   'context_ready_at',
+                   'session_ready_at',
+                   'agent_ready_at',
+                   'first_delta_at',
+                   'terminal_at',
+                   'persisted_at',
+                   'session_action'
+                 )
+             ) expected
+             where trigger.tgrelid = 'public.ai_chat_turns'::regclass
+               and trigger.tgname = 'ai_chat_turns_touch_updated_at';`,
+          ),
+        ).toBe("t");
         expect(
           runSqlText(
             dbContainer,

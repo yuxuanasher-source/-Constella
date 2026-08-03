@@ -487,7 +487,7 @@ function schemaCacheGeneration(metrics) {
           end
           $$;
           create trigger ai_chat_turns_touch_updated_at
-          before update of id, created_at on public.ai_chat_turns
+          before update of id, created_at, updated_at on public.ai_chat_turns
           for each row execute function public.touch_updated_at();
           insert into public.ai_chat_turns (
             id, created_at, updated_at, accepted_at
@@ -938,7 +938,7 @@ function schemaCacheGeneration(metrics) {
            (select count(*) from supabase_migrations.schema_migrations),
            to_regclass('public.candidate_activation_probe') is not null,
            (
-             select lower(pg_get_triggerdef(trigger.oid)) like '%before update of id%'
+             select lower(pg_get_triggerdef(trigger.oid)) like '%before update of id, updated_at%'
              from pg_trigger trigger
              where trigger.tgrelid = 'public.ai_chat_turns'::regclass
                and trigger.tgname = 'ai_chat_turns_touch_updated_at'

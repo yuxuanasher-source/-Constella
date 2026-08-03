@@ -41,8 +41,7 @@ begin
       'first_delta_at',
       'terminal_at',
       'persisted_at',
-      'session_action',
-      'updated_at'
+      'session_action'
     );
 
   if v_business_columns is null then
