@@ -21,6 +21,15 @@ const telemetryMigrationPath = join(
 const telemetryMigration = existsSync(telemetryMigrationPath)
   ? readFileSync(telemetryMigrationPath, "utf8").toLowerCase()
   : "";
+const telemetryBackfillMigrationPath = join(
+  process.cwd(),
+  "supabase",
+  "migrations",
+  "20260803120500_ai_turn_stage_telemetry_backfill.sql",
+);
+const telemetryBackfillMigration = existsSync(telemetryBackfillMigrationPath)
+  ? readFileSync(telemetryBackfillMigrationPath, "utf8").toLowerCase()
+  : "";
 
 function tableSql(tableName: string) {
   const marker = `create table public.${tableName} (`;
@@ -107,6 +116,33 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
   });
 
+  it("materializes the historical acceptance baseline in bounded batches before validation", () => {
+    expect(existsSync(telemetryBackfillMigrationPath)).toBe(true);
+    expect(telemetryBackfillMigration.split(/\r?\n/)[0]).toBe(
+      "-- deploy: expand",
+    );
+    expect(telemetryBackfillMigration).toContain("loop");
+    expect(telemetryBackfillMigration).toMatch(/limit\s+[1-9][0-9]{1,3}/);
+    expect(telemetryBackfillMigration).toContain("for update skip locked");
+    expect(telemetryBackfillMigration).toMatch(
+      /where backfill_turn\.id = backfill_batch\.id\s+and backfill_turn\.accepted_at is null/,
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "accepted_at = backfill_turn.created_at",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "get diagnostics v_batch_count = row_count",
+    );
+    expect(telemetryBackfillMigration).toContain("exit when v_batch_count = 0");
+    expectSqlOrder(telemetryBackfillMigration, [
+      "accepted_at = backfill_turn.created_at",
+      "validate constraint ai_chat_turns_session_action_check",
+    ]);
+    expect(telemetryBackfillMigration).not.toMatch(
+      /set[\s\S]{0,120}updated_at\s*=/,
+    );
+  });
+
   it("records tenant-bound stages under a lock with strict monotonic timestamps", () => {
     const recordStage = telemetryFunctionSql("record_ai_chat_turn_stage");
 
@@ -174,11 +210,18 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(recordStage).toContain(
       "v_effective_accepted_at := coalesce(v_turn.accepted_at, v_turn.created_at)",
     );
+    expect(recordStage).toContain(
+      "not (p_stage = 'accepted' and v_turn.accepted_at is null)",
+    );
     expectSqlOrder(recordStage, [
       "if v_existing is not null",
+      "not (p_stage = 'accepted' and v_turn.accepted_at is null)",
       "return jsonb_build_object(",
       "update public.ai_chat_turns",
     ]);
+    expect(recordStage).toContain(
+      "set accepted_at = coalesce(accepted_at, created_at)",
+    );
     expect(recordStage).toContain("jsonb_build_object(");
     for (const key of ["'turnid'", "'stage'", "'observedat'"]) {
       expect(recordStage).toContain(key);
@@ -216,8 +259,35 @@ describe("Xingyao Hermes native state schema contract", () => {
     }
     expect(preserveUpdatedAt).toContain("new.updated_at := old.updated_at");
     expect(telemetryMigration).toMatch(
-      /create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry[\s\S]*before update on public\.ai_chat_turns[\s\S]*preserve_ai_chat_turn_updated_at_for_telemetry\(\)/,
+      /create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry[\s\S]*before update of\s+accepted_at,\s+context_ready_at,\s+session_ready_at,\s+agent_ready_at,\s+first_delta_at,\s+terminal_at,\s+persisted_at,\s+session_action\s+on public\.ai_chat_turns[\s\S]*preserve_ai_chat_turn_updated_at_for_telemetry\(\)/,
     );
+    expect(telemetryMigration).not.toContain(
+      "before update on public.ai_chat_turns",
+    );
+    expect(telemetryBackfillMigration).toMatch(
+      /create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry[\s\S]*before update of\s+accepted_at,\s+context_ready_at,\s+session_ready_at,\s+agent_ready_at,\s+first_delta_at,\s+terminal_at,\s+persisted_at,\s+session_action\s+on public\.ai_chat_turns/,
+    );
+  });
+
+  it("keeps authoritative finish persistence independent from telemetry machinery", () => {
+    const finishV2 = functionSql("finish_ai_chat_turn_v2");
+
+    expect(finishV2).not.toContain("record_ai_chat_turn_stage");
+    expect(finishV2).not.toContain(
+      "preserve_ai_chat_turn_updated_at_for_telemetry",
+    );
+    for (const column of [
+      "accepted_at",
+      "context_ready_at",
+      "session_ready_at",
+      "agent_ready_at",
+      "first_delta_at",
+      "terminal_at",
+      "persisted_at",
+      "session_action",
+    ]) {
+      expect(finishV2).not.toContain(column);
+    }
   });
 
   it("grants turn-stage recording only to service_role", () => {

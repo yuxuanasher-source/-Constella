@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -15,6 +17,9 @@ const ids = {
   invalidOrder: "a7100000-0000-4000-8000-000000000105",
   concurrent: "a7100000-0000-4000-8000-000000000106",
   defaulted: "a7100000-0000-4000-8000-000000000107",
+  backfill: "a7100000-0000-4000-8000-000000000108",
+  acceptedFallback: "a7100000-0000-4000-8000-000000000109",
+  ordinaryUpdate: "a7100000-0000-4000-8000-000000000110",
 } as const;
 
 const turnIds = [
@@ -25,6 +30,9 @@ const turnIds = [
   ids.invalidOrder,
   ids.concurrent,
   ids.defaulted,
+  ids.backfill,
+  ids.acceptedFallback,
+  ids.ordinaryUpdate,
 ];
 const base = "2026-08-03T16:00:00.000Z";
 
@@ -37,6 +45,83 @@ describe.runIf(Boolean(container))(
 
       try {
         seedTurns(dbContainer);
+
+        const beforeBackfill = rowVersion(dbContainer, ids.backfill);
+        applyTelemetryBackfill(dbContainer);
+        const afterBackfill = rowVersion(dbContainer, ids.backfill);
+        expect(
+          runSqlText(
+            dbContainer,
+            `select accepted_at = created_at from public.ai_chat_turns where id = '${ids.backfill}'::uuid;`,
+          ),
+        ).toBe("t");
+        expect(afterBackfill.xmin).not.toBe(beforeBackfill.xmin);
+        expect(afterBackfill.updatedAt).toBe(beforeBackfill.updatedAt);
+
+        runSql(
+          dbContainer,
+          `set session_replication_role = replica;
+           update public.ai_chat_turns
+           set accepted_at = null
+           where id = '${ids.acceptedFallback}'::uuid;
+           set session_replication_role = origin;`,
+        );
+        const beforeAcceptedFallback = rowVersion(
+          dbContainer,
+          ids.acceptedFallback,
+        );
+        const acceptedFallback = runRpc(
+          dbContainer,
+          ids.acceptedFallback,
+          "accepted",
+          1,
+        );
+        const afterAcceptedFallback = rowVersion(
+          dbContainer,
+          ids.acceptedFallback,
+        );
+        expect(Date.parse(String(acceptedFallback.observedAt))).toBe(
+          Date.parse(base),
+        );
+        expect(
+          runSqlText(
+            dbContainer,
+            `select accepted_at = created_at from public.ai_chat_turns where id = '${ids.acceptedFallback}'::uuid;`,
+          ),
+        ).toBe("t");
+        expect(afterAcceptedFallback.xmin).not.toBe(
+          beforeAcceptedFallback.xmin,
+        );
+        expect(afterAcceptedFallback.updatedAt).toBe(
+          beforeAcceptedFallback.updatedAt,
+        );
+
+        const ordinaryBefore = rowVersion(dbContainer, ids.ordinaryUpdate);
+        runSql(
+          dbContainer,
+          `update public.ai_chat_turns
+           set error_code = 'ordinary-update'
+           where id = '${ids.ordinaryUpdate}'::uuid;`,
+        );
+        const ordinaryAfter = rowVersion(dbContainer, ids.ordinaryUpdate);
+        expect(ordinaryAfter.updatedAt).not.toBe(ordinaryBefore.updatedAt);
+        expect(
+          runSqlText(
+            dbContainer,
+            `select error_code from public.ai_chat_turns where id = '${ids.ordinaryUpdate}'::uuid;`,
+          ),
+        ).toBe("ordinary-update");
+        expect(
+          runSqlText(
+            dbContainer,
+            `select lower(pg_get_triggerdef(trigger.oid))
+             from pg_trigger trigger
+             where trigger.tgrelid = 'public.ai_chat_turns'::regclass
+               and trigger.tgname = 'zz_ai_chat_turns_preserve_updated_at_for_telemetry';`,
+          ),
+        ).toContain(
+          "update of accepted_at, context_ready_at, session_ready_at, agent_ready_at, first_delta_at, terminal_at, persisted_at, session_action",
+        );
 
         const exact = runRpc(
           dbContainer,
@@ -246,6 +331,9 @@ function seedTurns(containerName: string) {
     ids.missing,
     ids.invalidOrder,
     ids.concurrent,
+    ids.backfill,
+    ids.acceptedFallback,
+    ids.ordinaryUpdate,
   ];
   runSql(
     containerName,
@@ -266,7 +354,7 @@ function seedTurns(containerName: string) {
        'completed',
        '${base}'::timestamptz,
        '2026-01-01T00:00:00Z'::timestamptz,
-       case when turn_id = '${ids.idempotent}'::uuid
+       case when turn_id = '${ids.backfill}'::uuid
          then null
          else '${base}'::timestamptz
        end
@@ -287,6 +375,19 @@ function seedTurns(containerName: string) {
      );
      set session_replication_role = origin;`,
   );
+}
+
+function applyTelemetryBackfill(containerName: string) {
+  const migration = readFileSync(
+    join(
+      process.cwd(),
+      "supabase",
+      "migrations",
+      "20260803120500_ai_turn_stage_telemetry_backfill.sql",
+    ),
+    "utf8",
+  );
+  runSql(containerName, migration);
 }
 
 function cleanupTurns(containerName: string) {

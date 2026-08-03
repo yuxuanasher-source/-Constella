@@ -54,7 +54,16 @@ end
 $$;
 
 create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry
-before update on public.ai_chat_turns
+before update of
+  accepted_at,
+  context_ready_at,
+  session_ready_at,
+  agent_ready_at,
+  first_delta_at,
+  terminal_at,
+  persisted_at,
+  session_action
+on public.ai_chat_turns
 for each row execute function public.preserve_ai_chat_turn_updated_at_for_telemetry();
 
 revoke all on function public.preserve_ai_chat_turn_updated_at_for_telemetry()
@@ -140,6 +149,7 @@ begin
     when 'persisted' then v_turn.persisted_at
   end;
   if v_existing is not null
+     and not (p_stage = 'accepted' and v_turn.accepted_at is null)
      and (
        p_stage <> 'session_ready'
        or p_session_action is null
