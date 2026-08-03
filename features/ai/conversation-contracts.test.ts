@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyConversationMemoryDelta,
   canTransitionConversationTurn,
   isConversationSessionAction,
   isConversationStreamEvent,
@@ -104,6 +105,40 @@ describe("Xingyao conversation protocol contracts", () => {
         },
       ),
     ).toBeNull();
+  });
+
+  it("applies a validated memory delta as the next bounded summary", () => {
+    const previous = memorySummary({
+      confirmedFacts: [memoryItem("The target is 20%", [MESSAGE_1])],
+      lastCompactedSequence: 1,
+    });
+    const delta = parseConversationMemoryDelta(
+      {
+        goals: [],
+        confirmedFacts: [memoryItem("The target is 25%", [MESSAGE_2])],
+        decisions: [memoryItem("Review weekly", [MESSAGE_2])],
+        unresolvedQuestions: [],
+        throughSequence: 10,
+      },
+      {
+        conversationId: CONVERSATION_ID,
+        sourceMessages: [
+          { id: MESSAGE_1, conversationId: CONVERSATION_ID, sequence: 1 },
+          { id: MESSAGE_2, conversationId: CONVERSATION_ID, sequence: 10 },
+        ],
+        previousSummary: previous,
+      },
+    );
+
+    expect(delta).not.toBeNull();
+    expect(applyConversationMemoryDelta(previous, delta!)).toEqual({
+      schemaVersion: 1,
+      goals: [],
+      confirmedFacts: [memoryItem("The target is 25%", [MESSAGE_2])],
+      decisions: [memoryItem("Review weekly", [MESSAGE_2])],
+      unresolvedQuestions: [],
+      lastCompactedSequence: 10,
+    });
   });
 
   it("recognizes only durable turn stages and session actions", () => {

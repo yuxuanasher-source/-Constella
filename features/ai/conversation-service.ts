@@ -31,6 +31,7 @@ import {
   getAiConversation,
   getAiConversationTurn,
   listAiConversationMessages,
+  listAiConversationContextMessages,
   listAiConversationTurns,
   listAiConversations,
   renewAiConversationTurnLease,
@@ -101,6 +102,12 @@ export type ConversationPersistence = {
     ownerUserId: string;
     conversationId: string;
     limit?: number;
+  }): Promise<AiConversationMessageDto[]>;
+  listContextMessages?(input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    afterSequence: number;
   }): Promise<AiConversationMessageDto[]>;
   listTurns(input: {
     organizationId: string;
@@ -204,6 +211,8 @@ export function createSupabaseConversationPersistence(
     listConversations: (input) => listAiConversations(client, input),
     getConversation: (input) => getAiConversation(client, input),
     listMessages: (input) => listAiConversationMessages(client, input),
+    listContextMessages: (input) =>
+      listAiConversationContextMessages(client, input),
     listTurns: (input) => listAiConversationTurns(client, input),
     createTurn: (input) => createAiConversationTurn(client, input),
     getTurn: (input) => getAiConversationTurn(client, input),
@@ -316,6 +325,40 @@ export function createConversationService(
         conversationId,
         limit,
       });
+    },
+
+    async listContextMessages(
+      actor: ConversationActor,
+      conversationId: string,
+      afterSequence: number,
+    ) {
+      const scope = {
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        conversationId,
+        afterSequence,
+      };
+      if (persistence.listContextMessages) {
+        return persistence.listContextMessages(scope);
+      }
+
+      const messages = await persistence.listMessages({
+        organizationId: scope.organizationId,
+        ownerUserId: scope.ownerUserId,
+        conversationId: scope.conversationId,
+        limit: Number.MAX_SAFE_INTEGER,
+      });
+      return messages
+        .filter(
+          (message) =>
+            message.status === "completed" &&
+            (message.sequence > afterSequence ||
+              message.metadata?.pinned === true),
+        )
+        .sort(
+          (left, right) =>
+            left.sequence - right.sequence || left.id.localeCompare(right.id),
+        );
     },
 
     async acceptTurn(

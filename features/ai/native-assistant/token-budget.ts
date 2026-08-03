@@ -10,7 +10,6 @@ export type ConversationTokenBudget = {
 };
 
 export const DEFAULT_CONVERSATION_CONTEXT_WINDOW_TOKENS = 16_384;
-export const CONVERSATION_MESSAGE_ENVELOPE_TOKENS = 8;
 
 export function estimateConservativeTokens(text: string): number {
   let asciiBytes = 0;
@@ -29,23 +28,17 @@ export function selectConversationContext(input: {
   recentMessages: GatewayLedgerTranscriptMessage[];
   budget: ConversationTokenBudget;
 }): GatewayLedgerTranscriptMessage[] {
-  const available = availableContextTokens(input.budget);
+  const available = availableConversationContextTokens(input.budget);
   const mandatory = [input.currentRequest, ...input.pinnedFacts];
-  let used = mandatory.reduce(
-    (total, message) => total + messageTokens(message),
-    0,
-  );
-  if (used > available) {
+  if (serializedPromptTokens(input, mandatory) > available) {
     throw new RangeError("conversation_context_budget_exceeded");
   }
 
   const selected = [...mandatory];
   if (hasConversationMemory(input.summary)) {
     const summary = summaryMessage(input.summary);
-    const summaryTokens = messageTokens(summary);
-    if (used + summaryTokens <= available) {
+    if (serializedPromptTokens(input, [...selected, summary]) <= available) {
       selected.push(summary);
-      used += summaryTokens;
     }
   }
 
@@ -55,13 +48,69 @@ export function selectConversationContext(input: {
     if (!message) continue;
     const identity = messageIdentity(message);
     if (identity && selectedIds.has(identity)) continue;
-    const tokens = messageTokens(message);
-    if (used + tokens > available) continue;
+    if (serializedPromptTokens(input, [...selected, message]) > available) {
+      continue;
+    }
     selected.push(message);
-    used += tokens;
     if (identity) selectedIds.add(identity);
   }
   return selected;
+}
+
+export function serializeConversationContextPrompt(input: {
+  currentRequest: GatewayLedgerTranscriptMessage;
+  pinnedFacts: GatewayLedgerTranscriptMessage[];
+  selectedMessages: GatewayLedgerTranscriptMessage[];
+}): string {
+  const currentRequest = input.currentRequest.content.trim();
+  const currentReference = promptMessageReference(input.currentRequest);
+  const currentIdentity = messageIdentity(input.currentRequest);
+  const pinnedIdentities = new Set(
+    input.pinnedFacts.map(messageIdentity).filter(Boolean),
+  );
+  const isCurrent = (message: GatewayLedgerTranscriptMessage) => {
+    const identity = messageIdentity(message);
+    return (
+      message === input.currentRequest ||
+      (Boolean(currentIdentity) && identity === currentIdentity)
+    );
+  };
+  const isPinned = (message: GatewayLedgerTranscriptMessage) => {
+    const identity = messageIdentity(message);
+    return (
+      input.pinnedFacts.includes(message) ||
+      (Boolean(identity) && pinnedIdentities.has(identity))
+    );
+  };
+  const summaryMessage = input.selectedMessages.find(
+    (message) => message.metadata?.kind === "conversation.memory.summary",
+  );
+  const pinnedLines = input.selectedMessages
+    .filter((message) => !isCurrent(message) && isPinned(message))
+    .map(serializePromptMessage);
+  const historyLines = input.selectedMessages
+    .filter(
+      (message) =>
+        !isCurrent(message) && message !== summaryMessage && !isPinned(message),
+    )
+    .map(serializePromptMessage);
+  const summaryText = summaryMessage?.content ?? "";
+
+  if (!summaryText && historyLines.length === 0 && pinnedLines.length === 0) {
+    return `<current_request messageId="${escapeXml(currentReference.messageId)}" sequence="${currentReference.sequence}">${escapeXml(currentRequest)}</current_request>`;
+  }
+  return [
+    "<conversation_context>",
+    ...(summaryText ? ["<summary>", escapeXml(summaryText), "</summary>"] : []),
+    ...(pinnedLines.length
+      ? ["<pinned_facts>", ...pinnedLines, "</pinned_facts>"]
+      : []),
+    ...(historyLines.length
+      ? ["<recent_messages>", ...historyLines, "</recent_messages>"]
+      : []),
+    "</conversation_context>",
+    `<current_request messageId="${escapeXml(currentReference.messageId)}" sequence="${currentReference.sequence}">${escapeXml(currentRequest)}</current_request>`,
+  ].join("\n");
 }
 
 function hasConversationMemory(summary: ConversationMemorySummary): boolean {
@@ -90,7 +139,9 @@ export function resolveConversationTokenBudget(
   };
 }
 
-function availableContextTokens(budget: ConversationTokenBudget): number {
+export function availableConversationContextTokens(
+  budget: ConversationTokenBudget,
+): number {
   for (const value of Object.values(budget)) {
     if (!Number.isInteger(value) || value < 0) {
       throw new RangeError("conversation_token_budget_invalid");
@@ -106,16 +157,49 @@ function availableContextTokens(budget: ConversationTokenBudget): number {
   );
 }
 
-function messageTokens(message: GatewayLedgerTranscriptMessage): number {
-  return (
-    CONVERSATION_MESSAGE_ENVELOPE_TOKENS +
-    estimateConservativeTokens(message.content)
+function serializedPromptTokens(
+  input: Pick<
+    Parameters<typeof selectConversationContext>[0],
+    "currentRequest" | "pinnedFacts"
+  >,
+  selectedMessages: GatewayLedgerTranscriptMessage[],
+): number {
+  return estimateConservativeTokens(
+    serializeConversationContextPrompt({ ...input, selectedMessages }),
   );
 }
 
 function messageIdentity(message: GatewayLedgerTranscriptMessage): string {
   const id = message.metadata?.messageId;
   return typeof id === "string" ? id : "";
+}
+
+function serializePromptMessage(
+  message: GatewayLedgerTranscriptMessage,
+): string {
+  const reference = promptMessageReference(message);
+  return `<message messageId="${escapeXml(reference.messageId)}" sequence="${reference.sequence}" role="${message.role}">${escapeXml(message.content.trim())}</message>`;
+}
+
+function promptMessageReference(message: GatewayLedgerTranscriptMessage): {
+  messageId: string;
+  sequence: number;
+} {
+  const messageId = messageIdentity(message);
+  const sequence = message.metadata?.sequence;
+  if (!messageId || !Number.isInteger(sequence) || Number(sequence) <= 0) {
+    throw new RangeError("conversation_context_message_identity_invalid");
+  }
+  return { messageId, sequence: Number(sequence) };
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
 }
 
 function summaryMessage(

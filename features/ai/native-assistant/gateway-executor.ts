@@ -54,6 +54,7 @@ import {
 } from "./context-engine";
 import {
   resolveConversationTokenBudget,
+  serializeConversationContextPrompt,
   selectConversationContext,
 } from "./token-budget";
 
@@ -76,6 +77,17 @@ type GatewayService = {
   listMessages(
     actor: ConversationActor,
     conversationId: string,
+  ): Promise<
+    Array<
+      Parameters<
+        typeof buildGatewayNativeAssistantContext
+      >[0]["messages"][number]
+    >
+  >;
+  listContextMessages(
+    actor: ConversationActor,
+    conversationId: string,
+    afterSequence: number,
   ): Promise<
     Array<
       Parameters<
@@ -192,7 +204,7 @@ type GatewayClient = {
   ): Promise<{ sessionId: string; checkpointId?: string }>;
   branchSession?(
     input: Record<string, unknown>,
-  ): Promise<{ sessionId: string }>;
+  ): Promise<{ sessionId: string; checkpointId?: string }>;
   submitPrompt(input: Record<string, unknown>): AsyncIterable<unknown>;
   recoverSession?(input: Record<string, unknown>): AsyncIterable<unknown>;
   interruptSession?(input: { sessionId: string }): Promise<unknown>;
@@ -550,7 +562,9 @@ async function resumeFrozenGatewayContext({
   context,
   state,
 }: {
-  input: ConversationTurnExecutorInput<Omit<GatewayService, "listMessages">>;
+  input: ConversationTurnExecutorInput<
+    Omit<GatewayService, "listMessages" | "listContextMessages">
+  >;
   service: GatewayService;
   gateway: GatewayClient;
   context: ConversationGatewayContext;
@@ -580,7 +594,10 @@ async function resumeFrozenGatewayContext({
   });
   return {
     context,
-    session: { sessionId: resumed.sessionId },
+    session: {
+      sessionId: resumed.sessionId,
+      ...(resumed.checkpointId ? { checkpointId: resumed.checkpointId } : {}),
+    },
     checkpoint: checkpointFromMetadata(
       context.invocationMetadata.gatewayCheckpoint,
     ),
@@ -982,17 +999,24 @@ function buildGatewayPrompt({
   const memorySummary =
     parseConversationMemorySummary(summary) ?? emptyConversationMemorySummary();
   const frozenTranscript = gatewayLedgerTranscript(context);
-  const currentMessage = {
-    role: "user" as const,
-    content: currentRequest,
-    metadata: { messageId: "current-request" },
-  };
+  const currentMessage = [...frozenTranscript]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === "user" &&
+        message.content.trim() === currentRequest &&
+        isString(message.metadata?.messageId) &&
+        Number.isInteger(message.metadata?.sequence),
+    );
+  if (!currentMessage) {
+    throw new GatewayExecutionError("gateway_context_message_identity_missing");
+  }
   const pinnedFacts = frozenTranscript.filter(
     (message) => message.metadata?.pinned === true,
   );
   const recentMessages = frozenTranscript.filter(
     (message) =>
-      !(message.role === "user" && message.content.trim() === currentRequest),
+      message.metadata?.messageId !== currentMessage.metadata?.messageId,
   );
   const selected = selectConversationContext({
     currentRequest: currentMessage,
@@ -1001,42 +1025,11 @@ function buildGatewayPrompt({
     recentMessages,
     budget: resolveConversationTokenBudget(model),
   });
-  const summaryMessage = selected.find(
-    (message) => message.metadata?.kind === "conversation.memory.summary",
-  );
-  const historyLines = selected
-    .filter(
-      (message) =>
-        message !== currentMessage &&
-        message !== summaryMessage &&
-        !pinnedFacts.includes(message),
-    )
-    .map(
-      (message) => `${message.role.toUpperCase()}: ${message.content.trim()}`,
-    );
-  const pinnedLines = selected
-    .filter((message) => pinnedFacts.includes(message))
-    .map((message) => message.content.trim());
-  const summaryText = summaryMessage?.content ?? "";
-
-  if (!summaryText && historyLines.length === 0 && pinnedLines.length === 0) {
-    return currentRequest;
-  }
-
-  return [
-    "<conversation_context>",
-    ...(summaryText ? ["<summary>", summaryText, "</summary>"] : []),
-    ...(pinnedLines.length
-      ? ["<pinned_facts>", ...pinnedLines, "</pinned_facts>"]
-      : []),
-    ...(historyLines.length
-      ? ["<recent_messages>", ...historyLines, "</recent_messages>"]
-      : []),
-    "</conversation_context>",
-    "<current_request>",
-    currentRequest,
-    "</current_request>",
-  ].join("\n");
+  return serializeConversationContextPrompt({
+    currentRequest: currentMessage,
+    pinnedFacts,
+    selectedMessages: selected,
+  });
 }
 
 function gatewayLedgerTranscript(
@@ -1091,9 +1084,13 @@ async function buildAndCaptureFreshGatewayContext({
   state: GatewayConversationState;
   now: () => Date;
 }) {
-  const messages = await service.listMessages(
+  const memorySummary =
+    parseConversationMemorySummary(state.summary) ??
+    emptyConversationMemorySummary();
+  const messages = await service.listContextMessages(
     input.actor,
     input.turn.conversationId,
+    memorySummary.lastCompactedSequence,
   );
   const body = await readJsonBody(input.request);
   const context = buildGatewayNativeAssistantContext({
@@ -1112,9 +1109,7 @@ async function buildAndCaptureFreshGatewayContext({
     conversationMemory: {
       status: state.memoryStatus === "degraded" ? "degraded" : "ready",
       summaryVersion: state.summaryVersion ?? prepared.snapshot.summaryVersion,
-      summary:
-        parseConversationMemorySummary(state.summary) ??
-        emptyConversationMemorySummary(),
+      summary: memorySummary,
     },
     messages,
   });
@@ -1258,11 +1253,11 @@ async function buildAndCaptureFreshGatewayContext({
       personalMemoryRevision: context.personalMemoryRevision,
       conversationMemory: context.conversationMemory,
       ledgerTranscript: context.ledgerTranscript,
-      memorySourceMessages: messages.map((message) => ({
-        id: message.id,
-        conversationId: message.conversationId,
-        sequence: message.sequence,
-      })),
+      memorySourceMessages: conversationMemorySourceMessages({
+        messages,
+        summary: context.conversationMemory.summary,
+        conversationId: input.turn.conversationId,
+      }),
       skillGrantsHash: context.actor.skillGrantsHash,
       capabilityId: capability.capabilityId,
       capabilityExpiresAt: capability.expiresAt,
@@ -1292,13 +1287,59 @@ async function buildAndCaptureFreshGatewayContext({
   );
   return {
     context: gatewayContext,
-    session: { sessionId: preparation.sessionId },
+    session: {
+      sessionId: preparation.sessionId,
+      ...(preparation.checkpointId
+        ? { checkpointId: preparation.checkpointId }
+        : {}),
+    },
     checkpoint,
     captured: true,
     capability,
     action: preparation.action,
     state: preparation.state,
   };
+}
+
+function conversationMemorySourceMessages({
+  messages,
+  summary,
+  conversationId,
+}: {
+  messages: Awaited<ReturnType<GatewayService["listContextMessages"]>>;
+  summary: ConversationMemorySummary;
+  conversationId: string;
+}) {
+  const known = new Map(
+    messages.map((message) => [
+      message.id,
+      {
+        id: message.id,
+        conversationId: message.conversationId,
+        sequence: message.sequence,
+      },
+    ]),
+  );
+  for (const item of [
+    ...summary.goals,
+    ...summary.confirmedFacts,
+    ...summary.decisions,
+    ...summary.unresolvedQuestions,
+  ]) {
+    for (const id of item.sourceMessageIds) {
+      if (!known.has(id)) {
+        known.set(id, {
+          id,
+          conversationId,
+          sequence: summary.lastCompactedSequence,
+        });
+      }
+    }
+  }
+  return [...known.values()].sort(
+    (left, right) =>
+      left.sequence - right.sequence || left.id.localeCompare(right.id, "en"),
+  );
 }
 
 async function issueGatewayInvocationCapability({
@@ -1766,7 +1807,10 @@ export function createHermesGatewayClient({
         createActorAssertion,
       });
       await attachGatewayBytes(session, input, attachBytes);
-      return { sessionId: session.sessionId };
+      return {
+        sessionId: session.sessionId,
+        ...(session.checkpointId ? { checkpointId: session.checkpointId } : {}),
+      };
     },
     async resumeSession(input) {
       const sessionId = stringValue(input.sessionId);
@@ -1782,7 +1826,10 @@ export function createHermesGatewayClient({
         sessionId,
       });
       await attachGatewayBytes(session, input, attachBytes);
-      return { sessionId: session.sessionId };
+      return {
+        sessionId: session.sessionId,
+        ...(session.checkpointId ? { checkpointId: session.checkpointId } : {}),
+      };
     },
     async branchSession(input) {
       const sourceSessionId = stringValue(input.sessionId);
@@ -1811,6 +1858,9 @@ export function createHermesGatewayClient({
       const branchedSessionId = isRecord(result)
         ? stringValue(result.sessionId)
         : null;
+      const branchCheckpointId = isRecord(result)
+        ? stringValue(result.checkpointId)
+        : null;
       if (!branchedSessionId || branchedSessionId === sourceSessionId) {
         session.close();
         session = null;
@@ -1826,7 +1876,14 @@ export function createHermesGatewayClient({
         createActorAssertion,
         sessionId: branchedSessionId,
       });
-      return { sessionId: branchedSessionId };
+      return {
+        sessionId: branchedSessionId,
+        ...(session.checkpointId || branchCheckpointId
+          ? {
+              checkpointId: session.checkpointId ?? branchCheckpointId!,
+            }
+          : {}),
+      };
     },
     async *submitPrompt(input) {
       const sessionId = stringValue(input.sessionId);

@@ -29,7 +29,9 @@ import { parseHermesGatewayProviderState } from "./hermes/gateway-contracts";
 type QueryResult<T> = { data: T | null; error: unknown };
 
 type RepositoryQuery = PromiseLike<QueryResult<unknown>> & {
+  contains(column: string, value: unknown): RepositoryQuery;
   eq(column: string, value: unknown): RepositoryQuery;
+  gt(column: string, value: unknown): RepositoryQuery;
   in(column: string, values: string[]): RepositoryQuery;
   order(column: string, options: { ascending: boolean }): RepositoryQuery;
   limit(count: number): RepositoryQuery;
@@ -247,6 +249,91 @@ export async function listAiConversationMessages(
   return error || !Array.isArray(data)
     ? []
     : data.filter(isMessageRow).map(toMessageDto).reverse();
+}
+
+export async function listAiConversationContextMessages(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    afterSequence: number;
+    pageSize?: number;
+  },
+): Promise<AiConversationMessageDto[]> {
+  if (!Number.isInteger(input.afterSequence) || input.afterSequence < 0) {
+    throw new RangeError("conversation_message_cursor_invalid");
+  }
+  const pageSize = input.pageSize ?? 200;
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 200) {
+    throw new RangeError("conversation_message_page_size_invalid");
+  }
+
+  const recent = await listConversationMessagePages(client, {
+    ...input,
+    pageSize,
+    cursor: input.afterSequence,
+    pinnedOnly: false,
+  });
+  const pinned = await listConversationMessagePages(client, {
+    ...input,
+    pageSize,
+    cursor: 0,
+    pinnedOnly: true,
+  });
+  const byId = new Map<string, AiConversationMessageDto>();
+  for (const message of [...recent, ...pinned]) byId.set(message.id, message);
+  return [...byId.values()].sort(
+    (left, right) => left.sequence - right.sequence,
+  );
+}
+
+async function listConversationMessagePages(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    pageSize: number;
+    cursor: number;
+    pinnedOnly: boolean;
+  },
+): Promise<AiConversationMessageDto[]> {
+  const messages: AiConversationMessageDto[] = [];
+  let cursor = input.cursor;
+  while (true) {
+    let query = client
+      .from("ai_chat_messages")
+      .select(
+        "id, conversation_id, sequence_no, role, status, content, parent_message_id, metadata, created_at, updated_at",
+      )
+      .eq("conversation_id", input.conversationId)
+      .eq("organization_id", input.organizationId)
+      .eq("owner_user_id", input.ownerUserId)
+      .eq("status", "completed")
+      .gt("sequence_no", cursor);
+    if (input.pinnedOnly) {
+      query = query.contains("metadata", { pinned: true });
+    }
+    const { data, error } = (await query
+      .order("sequence_no", { ascending: true })
+      .limit(input.pageSize)) as QueryResult<unknown[]>;
+    if (error || !Array.isArray(data)) {
+      throw new Error("conversation_message_page_unavailable");
+    }
+    const rows = data.filter(isMessageRow);
+    if (rows.length !== data.length) {
+      throw new Error("conversation_message_page_invalid");
+    }
+    const page = rows.map(toMessageDto);
+    messages.push(...page);
+    if (page.length < input.pageSize) return messages;
+    const nextCursor = page.at(-1)?.sequence;
+    if (nextCursor == null || nextCursor <= cursor) {
+      throw new Error("conversation_message_cursor_stalled");
+    }
+    cursor = nextCursor;
+  }
 }
 
 export async function getAiConversationGatewayState(

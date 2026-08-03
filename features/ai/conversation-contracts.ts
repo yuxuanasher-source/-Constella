@@ -415,6 +415,23 @@ export function parseConversationMemoryDelta(
   return { ...sections, throughSequence };
 }
 
+export function applyConversationMemoryDelta(
+  previousSummary: ConversationMemorySummary,
+  delta: ConversationMemoryDelta,
+): ConversationMemorySummary {
+  if (delta.throughSequence < previousSummary.lastCompactedSequence) {
+    throw new RangeError("conversation_memory_sequence_regression");
+  }
+  return {
+    schemaVersion: 1,
+    goals: delta.goals,
+    confirmedFacts: delta.confirmedFacts,
+    decisions: delta.decisions,
+    unresolvedQuestions: delta.unresolvedQuestions,
+    lastCompactedSequence: delta.throughSequence,
+  };
+}
+
 export function isConversationStreamEvent(
   value: unknown,
 ): value is ConversationStreamEvent {

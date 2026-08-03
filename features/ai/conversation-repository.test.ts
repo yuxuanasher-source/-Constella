@@ -10,6 +10,7 @@ import {
   finishAiConversationTurnV2,
   finishAiConversationTurnV3,
   getAiConversationGatewayState,
+  listAiConversationContextMessages,
   verifyAiConversationTerminalState,
   listAiConversationMessages,
   listAiConversationTurns,
@@ -50,6 +51,25 @@ const gatewayRuntimeSnapshot = {
     profile: "hermes-xingyao-v2",
   },
 };
+
+function repositoryMessageRow(
+  sequence: number,
+  metadata: Record<string, unknown> = {},
+) {
+  const suffix = String(sequence).padStart(12, "0");
+  return {
+    id: `90000000-0000-4000-8000-${suffix}`,
+    conversation_id: "conversation-1",
+    sequence_no: sequence,
+    role: sequence % 2 === 0 ? "user" : "assistant",
+    status: "completed",
+    content: `message ${sequence}`,
+    parent_message_id: null,
+    metadata,
+    created_at: "2026-08-03T16:00:00.000Z",
+    updated_at: "2026-08-03T16:00:00.000Z",
+  };
+}
 
 describe("Xingyao conversation repository", () => {
   it("records a turn stage with exact actor and conversation RPC bindings", async () => {
@@ -500,6 +520,58 @@ describe("Xingyao conversation repository", () => {
       cancelRequestedAt: "2026-07-11T03:01:30.000Z",
     });
     expect(turns[0]).toMatchObject({ outcome: null, cancelRequestedAt: null });
+  });
+
+  it("cursor-pages every completed post-compaction message and independently deduplicates pinned history", async () => {
+    const recentRows = Array.from({ length: 250 }, (_, index) =>
+      repositoryMessageRow(index + 2, {
+        pinned: index + 2 === 201,
+      }),
+    );
+    const compactedPinned = repositoryMessageRow(1, { pinned: true });
+    const limit = vi
+      .fn()
+      .mockResolvedValueOnce({ data: recentRows.slice(0, 200), error: null })
+      .mockResolvedValueOnce({ data: recentRows.slice(200), error: null })
+      .mockResolvedValueOnce({
+        data: [compactedPinned, recentRows[199]],
+        error: null,
+      });
+    const query: Record<string, ReturnType<typeof vi.fn>> = {};
+    for (const method of ["select", "eq", "gt", "contains", "order"]) {
+      query[method] = vi.fn(() => query);
+    }
+    query.limit = limit;
+    const from = vi.fn(() => query);
+
+    const messages = await listAiConversationContextMessages(
+      { from } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: "org-1",
+        ownerUserId: "user-1",
+        conversationId: "conversation-1",
+        afterSequence: 1,
+        pageSize: 200,
+      },
+    );
+
+    expect(limit).toHaveBeenCalledTimes(3);
+    expect(query.eq).toHaveBeenCalledWith("conversation_id", "conversation-1");
+    expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(query.eq).toHaveBeenCalledWith("owner_user_id", "user-1");
+    expect(query.eq).toHaveBeenCalledWith("status", "completed");
+    expect(query.gt).toHaveBeenCalledWith("sequence_no", 1);
+    expect(query.gt).toHaveBeenCalledWith("sequence_no", 201);
+    expect(query.contains).toHaveBeenCalledWith("metadata", { pinned: true });
+    expect(messages).toHaveLength(251);
+    expect(messages[0]).toMatchObject({
+      sequence: 1,
+      metadata: { pinned: true },
+    });
+    expect(messages.at(-1)?.sequence).toBe(251);
+    expect(messages.filter((message) => message.sequence === 201)).toHaveLength(
+      1,
+    );
   });
 
   it("guards every state transition with the expected current status", async () => {

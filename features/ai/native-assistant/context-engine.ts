@@ -196,7 +196,12 @@ function sanitizeLedgerTranscript({
   return messages
     .filter((message) => {
       if (message.status !== "completed") return false;
-      if (message.sequence <= afterSequence) return false;
+      if (
+        message.sequence <= afterSequence &&
+        message.metadata?.pinned !== true
+      ) {
+        return false;
+      }
       if (
         typeof message.metadata?.ownerUserId === "string" &&
         message.metadata.ownerUserId !== ownerUserId

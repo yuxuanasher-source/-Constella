@@ -50,6 +50,7 @@ export type HermesGatewayByteAttachment = {
 
 export type HermesGatewaySession = {
   readonly sessionId: string;
+  readonly checkpointId?: string;
   readonly events: AsyncIterable<HermesGatewayEvent>;
   info(): Promise<unknown>;
   list(): Promise<unknown>;
@@ -73,7 +74,7 @@ type JsonRpcResponse = {
   jsonrpc: "2.0";
   id: string;
   result?: unknown;
-  error?: { code?: string; message?: string };
+  error?: { code?: string | number; message?: string };
 };
 
 const DEFAULT_TIMEOUTS: HermesGatewayTimeouts = {
@@ -199,6 +200,7 @@ export async function attachHermesGatewayBytes(
 
 class HermesGatewayClient implements HermesGatewaySession {
   sessionId = "";
+  checkpointId?: string;
   readonly events: AsyncIterable<HermesGatewayEvent>;
   private readonly options: HermesGatewaySessionOptions;
   private readonly actorFingerprint: string;
@@ -421,6 +423,9 @@ class HermesGatewayClient implements HermesGatewaySession {
       throw this.error("hermes_gateway_session_mismatch");
     }
     this.sessionId = sessionId;
+    if (typeof result.checkpointId === "string" && result.checkpointId) {
+      this.checkpointId = result.checkpointId;
+    }
     if (
       typeof result.invocationId === "string" &&
       result.invocationId !== this.options.actor.invocationId
@@ -977,7 +982,11 @@ function gatewayError(code: string): HermesGatewayError {
   return new HermesGatewayError(redactText(code));
 }
 
-function safeRpcErrorCode(error: { code?: string; message?: string }): string {
+function safeRpcErrorCode(error: {
+  code?: string | number;
+  message?: string;
+}): string {
+  if (error.code === 4040) return "hermes_gateway_session_not_found";
   return isSafeSymbolicErrorCode(error.code)
     ? error.code
     : "hermes_gateway_rpc_failed";

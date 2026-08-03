@@ -245,6 +245,54 @@ describe("native assistant context engine", () => {
       context?.ledgerTranscript.map((entry) => entry.metadata?.sequence),
     ).toEqual([3, 4]);
   });
+
+  it("retains a completed pinned fact from the compacted sequence range", () => {
+    const context = buildGatewayNativeAssistantContext({
+      auth: {
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        role: "finance",
+      },
+      conversationId: CONVERSATION_ID,
+      invocationId: INVOCATION_ID,
+      clientRequest: { message: "use the pinned constraint", mode: "fast" },
+      personalMemoryRevision: 0,
+      conversationMemory: {
+        status: "ready",
+        summaryVersion: 4,
+        summary: {
+          schemaVersion: 1,
+          goals: [],
+          confirmedFacts: [],
+          decisions: [],
+          unresolvedQuestions: [],
+          lastCompactedSequence: 2,
+        },
+      },
+      messages: [
+        ledgerMessage(
+          MESSAGE_ID_1,
+          "user",
+          1,
+          "completed",
+          "Never exceed the approved spend",
+          { pinned: true },
+        ),
+        ledgerMessage(MESSAGE_ID_2, "assistant", 2, "completed", "compacted"),
+        ledgerMessage(MESSAGE_ID_3, "user", 3, "completed", "new request"),
+      ],
+    });
+
+    expect(
+      context?.ledgerTranscript.map((entry) => ({
+        sequence: entry.metadata?.sequence,
+        pinned: entry.metadata?.pinned,
+      })),
+    ).toEqual([
+      { sequence: 1, pinned: true },
+      { sequence: 3, pinned: undefined },
+    ]);
+  });
 });
 
 const USER_ID = "22222222-2222-4222-8222-222222222222";

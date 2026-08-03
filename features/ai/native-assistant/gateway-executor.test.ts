@@ -95,6 +95,101 @@ describe("native Hermes Gateway executor", () => {
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
   });
 
+  it("loads and freezes every post-compaction page plus compacted pinned facts", async () => {
+    const compactedSummarySourceId = "91000000-0000-4000-8000-000000000001";
+    const compactedPinned = message(
+      "90000000-0000-4000-8000-000000000001",
+      1,
+      "user",
+      "completed",
+      "Pinned approval threshold",
+      { pinned: true },
+    );
+    const recent = Array.from({ length: 205 }, (_, index) =>
+      message(
+        index === 204
+          ? turn.userMessageId
+          : `90000000-0000-4000-8000-${String(index + 11).padStart(12, "0")}`,
+        index + 11,
+        index % 2 === 0 ? "user" : "assistant",
+        "completed",
+        index === 204 ? "current request" : `ledger message ${index + 11}`,
+      ),
+    );
+    const service = serviceDouble({
+      messages: [compactedPinned, ...recent],
+      gatewayState: {
+        generation: 0,
+        summaryVersion: 3,
+        memoryStatus: "degraded",
+        summary: {
+          schemaVersion: 1,
+          goals: [],
+          confirmedFacts: [
+            {
+              text: "The original approval threshold was recorded",
+              sourceMessageIds: [compactedSummarySourceId],
+            },
+          ],
+          decisions: [],
+          unresolvedQuestions: [],
+          lastCompactedSequence: 10,
+        },
+      },
+    });
+    const gateway = gatewayDouble([{ type: "completed" }]);
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+    });
+
+    await collect(
+      executor.execute({
+        request: jsonRequest({ message: "current request", mode: "fast" }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      }),
+    );
+
+    expect(service.listContextMessages).toHaveBeenCalledWith(
+      actor,
+      turn.conversationId,
+      10,
+    );
+    const capturedContext = service.captureGatewayContext.mock.calls[0]?.[3];
+    expect(capturedContext.invocationMetadata.ledgerTranscript).toHaveLength(
+      206,
+    );
+    expect(
+      capturedContext.invocationMetadata.memorySourceMessages,
+    ).toHaveLength(207);
+    expect(
+      capturedContext.invocationMetadata.memorySourceMessages,
+    ).toContainEqual({
+      id: compactedSummarySourceId,
+      conversationId: turn.conversationId,
+      sequence: 10,
+    });
+    expect(
+      capturedContext.invocationMetadata.ledgerTranscript[0],
+    ).toMatchObject({
+      content: "Pinned approval threshold",
+      metadata: { sequence: 1, pinned: true },
+    });
+    const prompt = String(
+      gateway.submitPrompt.mock.calls[0]?.[0]?.prompt ?? "",
+    );
+    expect(prompt).toContain(compactedSummarySourceId);
+    expect(prompt).toContain(
+      `messageId="${turn.userMessageId}" sequence="215"`,
+    );
+  });
+
   it.each([
     {
       name: "failed",
@@ -146,6 +241,31 @@ describe("native Hermes Gateway executor", () => {
       ]);
     },
   );
+
+  it("rebuilds exactly once for real numeric 4040 and submits once", async () => {
+    const result = await runRealGatewayCompositionScenario({
+      resumeErrorCode: 4040,
+    });
+
+    expect(result.events.at(-1)).toMatchObject({ type: "response.completed" });
+    expect(result.resumeCount).toBe(1);
+    expect(result.createCount).toBe(1);
+    expect(result.submitCount).toBe(1);
+  });
+
+  it("does not rebuild or submit for real numeric 4090 conflict", async () => {
+    const result = await runRealGatewayCompositionScenario({
+      resumeErrorCode: 4090,
+    });
+
+    expect(result.events.at(-1)).toMatchObject({
+      type: "response.failed",
+      code: "hermes_gateway_rpc_failed",
+    });
+    expect(result.resumeCount).toBe(1);
+    expect(result.createCount).toBe(0);
+    expect(result.submitCount).toBe(0);
+  });
 
   it("keeps user events and one prompt submission when every telemetry write fails", async () => {
     async function run(recordingFails: boolean) {
@@ -404,6 +524,10 @@ describe("native Hermes Gateway executor", () => {
         summary: { text: "done" },
       },
     ]);
+    gateway.createSession.mockResolvedValueOnce({
+      sessionId: "session-rebuilt",
+      checkpointId: "checkpoint-rebuilt",
+    });
     const executor = createGatewayTurnExecutor({
       service,
       gateway,
@@ -444,13 +568,14 @@ describe("native Hermes Gateway executor", () => {
       transitionTurn.mock.calls[0]?.[0]?.patch?.contextSnapshot;
     expect(
       persistedSnapshot?.gatewayContext?.invocationMetadata?.gatewayCheckpoint,
-    ).not.toHaveProperty("checkpointId");
+    ).toMatchObject({ checkpointId: "checkpoint-rebuilt" });
     expect(compareAndSwapGatewayState).toHaveBeenCalledWith(
       expect.objectContaining({
         expectedGeneration: 0,
         nextState: {
           generation: 1,
           sessionId: "session-rebuilt",
+          checkpointId: "checkpoint-rebuilt",
           provider: "hermes",
           model: "hermes-official-gateway",
           lastUsedAt: expect.any(String),
@@ -752,6 +877,20 @@ describe("native Hermes Gateway executor", () => {
           turnId: turn.turnId,
           checkpointId: "checkpoint-frozen",
         },
+        ledgerTranscript: [
+          {
+            role: "user",
+            content: "frozen question",
+            metadata: { messageId: turn.userMessageId, sequence: 1 },
+          },
+        ],
+        memorySourceMessages: [
+          {
+            id: turn.userMessageId,
+            conversationId: turn.conversationId,
+            sequence: 1,
+          },
+        ],
       },
     };
     const service = serviceDouble({
@@ -808,7 +947,7 @@ describe("native Hermes Gateway executor", () => {
     );
     expect(gateway.submitPrompt).toHaveBeenCalledWith(
       expect.objectContaining({
-        prompt: "frozen question",
+        prompt: `<current_request messageId="${turn.userMessageId}" sequence="1">frozen question</current_request>`,
         sessionId: "session-frozen",
       }),
     );
@@ -878,6 +1017,10 @@ describe("native Hermes Gateway executor", () => {
         model: "hermes-official-gateway",
       }),
     );
+    expect(events.at(-1)).toMatchObject({
+      type: "response.failed",
+      code: "gateway_model_timeout",
+    });
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
   });
 
@@ -1264,9 +1407,7 @@ describe("native Hermes Gateway executor", () => {
 
   it("reloads and resumes the CAS winner after a retry branch conflict before submitting once", async () => {
     const service = serviceDouble({
-      messages: [
-        message(turn.userMessageId, 1, "user", "completed", "retry this"),
-      ],
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
       gatewayGeneration: 2,
     });
     service.getGatewayState
@@ -1316,14 +1457,14 @@ describe("native Hermes Gateway executor", () => {
         attachments: [],
       }),
     );
-    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
-    expect(gateway.submitPrompt).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: "session-winner" }),
-    );
     expect(events.at(-1)).toMatchObject({
       type: "response.completed",
       outcome: "complete",
     });
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(gateway.submitPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-winner" }),
+    );
   });
 
   it.each([
@@ -1791,6 +1932,9 @@ describe("native Hermes Gateway executor", () => {
     expect(prompt).toContain("What was the target?");
     expect(prompt).toContain("The target was 20%.");
     expect(prompt.match(/What about now\?/g)).toHaveLength(1);
+    expect(prompt).toContain(`messageId="${turn.userMessageId}" sequence="3"`);
+    expect(prompt).toContain('messageId="prior-user" sequence="1"');
+    expect(prompt).not.toContain('messageId="current-request"');
   });
 
   it("closes the live Gateway session on terminal completion and failure", async () => {
@@ -1881,6 +2025,7 @@ describe("native Hermes Gateway executor", () => {
   it("uses the official Gateway session adapter for production client calls", async () => {
     const session = {
       sessionId: "session-official",
+      checkpointId: "checkpoint-official",
       events: gatewayDouble([
         officialEvent("message.delta", { text: "official" }),
         officialEvent("turn.terminal", {
@@ -1916,10 +2061,14 @@ describe("native Hermes Gateway executor", () => {
       createActorAssertion,
     });
 
-    await client.createSession({
+    const created = await client.createSession({
       actor: gatewayActor(),
       conversationId: turn.conversationId,
       invocationCapability: "root-capability-secret",
+    });
+    expect(created).toEqual({
+      sessionId: "session-official",
+      checkpointId: "checkpoint-official",
     });
     const events = await collect(
       client.submitPrompt({
@@ -2545,13 +2694,18 @@ describe("native Hermes Gateway executor", () => {
   it("reopens the branched official Gateway session before prompt submission", async () => {
     const sourceSession = {
       sessionId: "session-source",
+      checkpointId: "checkpoint-source-resumed",
       events: gatewayDouble([]).submitPrompt({}),
       close: vi.fn(),
-      branch: vi.fn().mockResolvedValue({ sessionId: "session-branch" }),
+      branch: vi.fn().mockResolvedValue({
+        sessionId: "session-branch",
+        checkpointId: "checkpoint-branch",
+      }),
       rpc: vi.fn().mockResolvedValue({ accepted: true }),
     };
     const branchedSession = {
       sessionId: "session-branch",
+      checkpointId: "checkpoint-branch-resumed",
       events: gatewayDouble([
         officialEvent("message.delta", { text: "branched" }),
         officialEvent("turn.terminal", {
@@ -2610,7 +2764,10 @@ describe("native Hermes Gateway executor", () => {
       }),
     );
 
-    expect(branch).toEqual({ sessionId: "session-branch" });
+    expect(branch).toEqual({
+      sessionId: "session-branch",
+      checkpointId: "checkpoint-branch-resumed",
+    });
     expect(sourceSession.branch).toHaveBeenCalledWith({
       conversationId: turn.conversationId,
       checkpointId: "checkpoint-source",
@@ -2748,6 +2905,7 @@ function serviceDouble({
       },
     }),
     listMessages: vi.fn().mockResolvedValue(messages),
+    listContextMessages: vi.fn().mockResolvedValue(messages),
     getGatewayState: vi
       .fn()
       .mockResolvedValue(gatewayState ?? { generation: gatewayGeneration }),
@@ -2828,6 +2986,20 @@ function frozenServiceDouble() {
             sessionId: "session-frozen",
             turnId: turn.turnId,
           },
+          ledgerTranscript: [
+            {
+              role: "user",
+              content: "hello",
+              metadata: { messageId: turn.userMessageId, sequence: 1 },
+            },
+          ],
+          memorySourceMessages: [
+            {
+              id: turn.userMessageId,
+              conversationId: turn.conversationId,
+              sequence: 1,
+            },
+          ],
         },
       },
     },
@@ -2918,6 +3090,7 @@ async function runExecutor({
 async function runRealGatewayCompositionScenario(scenario: {
   recoveryStatus?: string;
   rejectionCode?: string;
+  resumeErrorCode?: number;
 }) {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   const commands: Array<{ method: string }> = [];
@@ -2943,6 +3116,19 @@ async function runRealGatewayCompositionScenario(scenario: {
         return;
       }
       if (command.method === "session.resume") {
+        if (scenario.resumeErrorCode) {
+          socket.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: command.id,
+              error: {
+                code: scenario.resumeErrorCode,
+                message: "wire lifecycle failure",
+              },
+            }),
+          );
+          return;
+        }
         sendGatewayRpcResult(socket, command.id, {
           sessionId: "session-official",
           invocationId: turn.turnId,
@@ -2977,7 +3163,7 @@ async function runRealGatewayCompositionScenario(scenario: {
       const submitCount = commands.filter(
         (item) => item.method === "prompt.submit",
       ).length;
-      if (submitCount === 1) {
+      if (submitCount === 1 && scenario.resumeErrorCode == null) {
         errorEstablishedGatewayTransport(realSession);
         return;
       }
@@ -3023,12 +3209,19 @@ async function runRealGatewayCompositionScenario(scenario: {
   try {
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+      ...(scenario.resumeErrorCode
+        ? { gatewayState: reusableGatewayState() }
+        : {}),
     });
     const events = await runExecutor({ service, gateway });
     return {
       events,
       connectionCount,
       listenerCount: reconnectListenerCount,
+      createCount: commands.filter((item) => item.method === "session.create")
+        .length,
+      resumeCount: commands.filter((item) => item.method === "session.resume")
+        .length,
       submitCount: commands.filter((item) => item.method === "prompt.submit")
         .length,
     };

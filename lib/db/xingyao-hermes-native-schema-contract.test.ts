@@ -2062,6 +2062,290 @@ describe.runIf(Boolean(structuredMemoryDbContainer))(
         runStructuredMemorySql(container, cleanup);
       }
     });
+
+    it("rolls back message, turn, and invocation terminal failures without partial state", () => {
+      const container = structuredMemoryDbContainer ?? "";
+      expect(container).toMatch(/^supabase_db_[A-Za-z0-9_.-]+$/u);
+
+      const organizationId = "8f110000-0000-4000-8000-000000000001";
+      const ownerId = "8f110000-0000-4000-8000-000000000002";
+      const fixtures = {
+        message: {
+          conversationId: "8f110000-0000-4000-8000-000000000101",
+          turnId: "8f110000-0000-4000-8000-000000000201",
+          userMessageId: "8f110000-0000-4000-8000-000000000301",
+          assistantMessageId: "8f110000-0000-4000-8000-000000000302",
+        },
+        turn: {
+          conversationId: "8f110000-0000-4000-8000-000000000102",
+          turnId: "8f110000-0000-4000-8000-000000000202",
+          userMessageId: "8f110000-0000-4000-8000-000000000303",
+          assistantMessageId: "8f110000-0000-4000-8000-000000000304",
+        },
+        invocation: {
+          conversationId: "8f110000-0000-4000-8000-000000000103",
+          turnId: "8f110000-0000-4000-8000-000000000203",
+          userMessageId: "8f110000-0000-4000-8000-000000000305",
+          assistantMessageId: "8f110000-0000-4000-8000-000000000306",
+        },
+      } as const;
+
+      const result = JSON.parse(
+        runStructuredMemorySql(
+          container,
+          `
+            begin;
+
+            insert into auth.users (id, email) values
+              ('${ownerId}'::uuid, 'task5-rollback@example.test');
+            insert into public.profiles (id, email, full_name) values
+              ('${ownerId}'::uuid, 'task5-rollback@example.test', 'Task 5 Rollback');
+            insert into public.organizations (id, name, code) values
+              ('${organizationId}'::uuid, 'Task 5 Rollback', 'task5-rollback');
+            insert into public.organization_members (
+              organization_id, user_id, role, status
+            ) values (
+              '${organizationId}'::uuid, '${ownerId}'::uuid, 'owner', 'active'
+            );
+
+            insert into public.ai_conversations (
+              id, organization_id, owner_user_id, title
+            ) values
+              ('${fixtures.message.conversationId}', '${organizationId}', '${ownerId}', 'Message rollback'),
+              ('${fixtures.turn.conversationId}', '${organizationId}', '${ownerId}', 'Turn rollback'),
+              ('${fixtures.invocation.conversationId}', '${organizationId}', '${ownerId}', 'Invocation rollback');
+
+            insert into public.ai_chat_messages (
+              id, organization_id, owner_user_id, conversation_id,
+              sequence_no, role, status, content
+            ) values
+              ('${fixtures.message.userMessageId}', '${organizationId}', '${ownerId}', '${fixtures.message.conversationId}', 1, 'user', 'completed', 'Message failure source.'),
+              ('${fixtures.message.assistantMessageId}', '${organizationId}', '${ownerId}', '${fixtures.message.conversationId}', 2, 'assistant', 'pending', ''),
+              ('${fixtures.turn.userMessageId}', '${organizationId}', '${ownerId}', '${fixtures.turn.conversationId}', 1, 'user', 'completed', 'Turn failure source.'),
+              ('${fixtures.turn.assistantMessageId}', '${organizationId}', '${ownerId}', '${fixtures.turn.conversationId}', 2, 'assistant', 'pending', ''),
+              ('${fixtures.invocation.userMessageId}', '${organizationId}', '${ownerId}', '${fixtures.invocation.conversationId}', 1, 'user', 'completed', 'Invocation failure source.'),
+              ('${fixtures.invocation.assistantMessageId}', '${organizationId}', '${ownerId}', '${fixtures.invocation.conversationId}', 2, 'assistant', 'pending', '');
+
+            insert into public.ai_chat_turns (
+              id, organization_id, owner_user_id, conversation_id,
+              user_message_id, assistant_message_id, status,
+              idempotency_key, lease_expires_at
+            ) values
+              ('${fixtures.message.turnId}', '${organizationId}', '${ownerId}', '${fixtures.message.conversationId}', '${fixtures.message.userMessageId}', '${fixtures.message.assistantMessageId}', 'generating', 'task5-message-rollback', now() + interval '5 minutes'),
+              ('${fixtures.turn.turnId}', '${organizationId}', '${ownerId}', '${fixtures.turn.conversationId}', '${fixtures.turn.userMessageId}', '${fixtures.turn.assistantMessageId}', 'generating', 'task5-turn-rollback', now() + interval '5 minutes'),
+              ('${fixtures.invocation.turnId}', '${organizationId}', '${ownerId}', '${fixtures.invocation.conversationId}', '${fixtures.invocation.userMessageId}', '${fixtures.invocation.assistantMessageId}', 'generating', 'task5-invocation-rollback', now() + interval '5 minutes');
+
+            do $task5_setup$
+            begin
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('4', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${fixtures.message.conversationId}', '${fixtures.message.turnId}', '${fixtures.message.turnId}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('5', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${fixtures.turn.conversationId}', '${fixtures.turn.turnId}', '${fixtures.turn.turnId}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('6', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${fixtures.invocation.conversationId}', '${fixtures.invocation.turnId}', '${fixtures.invocation.turnId}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+            end;
+            $task5_setup$;
+
+            create temporary table task5_terminal_failures (
+              failure_point text primary key,
+              error_message text not null
+            );
+
+            create function pg_temp.fail_task5_message_terminal_write()
+            returns trigger language plpgsql as $trigger$
+            begin
+              raise exception 'task5_message_terminal_failure';
+            end;
+            $trigger$;
+            create trigger task5_fail_message_terminal_write
+            before update on public.ai_chat_messages
+            for each row
+            when (old.id = '${fixtures.message.assistantMessageId}'::uuid)
+            execute function pg_temp.fail_task5_message_terminal_write();
+
+            do $task5_message$
+            begin
+              begin
+                perform public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${fixtures.message.turnId}',
+                  'complete', 'Message terminal response', 'hermes', '${fixtures.message.turnId}',
+                  null, null, false, '{}'::jsonb, 0,
+                  jsonb_build_object(
+                    'goals', '[]'::jsonb,
+                    'confirmedFacts', jsonb_build_array(jsonb_build_object(
+                      'text', 'Message write must be atomic',
+                      'sourceMessageIds', jsonb_build_array('${fixtures.message.userMessageId}')
+                    )),
+                    'decisions', '[]'::jsonb,
+                    'unresolvedQuestions', '[]'::jsonb,
+                    'throughSequence', 1
+                  )
+                );
+                raise exception 'task5_message_failure_not_raised';
+              exception when others then
+                insert into task5_terminal_failures values ('message', sqlerrm);
+              end;
+            end;
+            $task5_message$;
+            drop trigger task5_fail_message_terminal_write on public.ai_chat_messages;
+
+            create function pg_temp.fail_task5_turn_terminal_write()
+            returns trigger language plpgsql as $trigger$
+            begin
+              raise exception 'task5_turn_terminal_failure';
+            end;
+            $trigger$;
+            create trigger task5_fail_turn_terminal_write
+            before update on public.ai_chat_turns
+            for each row
+            when (old.id = '${fixtures.turn.turnId}'::uuid)
+            execute function pg_temp.fail_task5_turn_terminal_write();
+
+            do $task5_turn$
+            begin
+              begin
+                perform public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${fixtures.turn.turnId}',
+                  'complete', 'Turn terminal response', 'hermes', '${fixtures.turn.turnId}',
+                  null, null, false, '{}'::jsonb, 0,
+                  jsonb_build_object(
+                    'goals', '[]'::jsonb,
+                    'confirmedFacts', jsonb_build_array(jsonb_build_object(
+                      'text', 'Turn write must be atomic',
+                      'sourceMessageIds', jsonb_build_array('${fixtures.turn.userMessageId}')
+                    )),
+                    'decisions', '[]'::jsonb,
+                    'unresolvedQuestions', '[]'::jsonb,
+                    'throughSequence', 1
+                  )
+                );
+                raise exception 'task5_turn_failure_not_raised';
+              exception when others then
+                insert into task5_terminal_failures values ('turn', sqlerrm);
+              end;
+            end;
+            $task5_turn$;
+            drop trigger task5_fail_turn_terminal_write on public.ai_chat_turns;
+
+            create function pg_temp.fail_task5_invocation_terminal_write()
+            returns trigger language plpgsql as $trigger$
+            begin
+              raise exception 'task5_invocation_terminal_failure';
+            end;
+            $trigger$;
+            create trigger task5_fail_invocation_terminal_write
+            before update on public.ai_invocations
+            for each row
+            when (old.id = '${fixtures.invocation.turnId}'::uuid)
+            execute function pg_temp.fail_task5_invocation_terminal_write();
+
+            do $task5_invocation$
+            begin
+              begin
+                perform public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${fixtures.invocation.turnId}',
+                  'complete', 'Invocation terminal response', 'hermes', '${fixtures.invocation.turnId}',
+                  null, null, false, '{}'::jsonb, 0,
+                  jsonb_build_object(
+                    'goals', '[]'::jsonb,
+                    'confirmedFacts', jsonb_build_array(jsonb_build_object(
+                      'text', 'Invocation write must be atomic',
+                      'sourceMessageIds', jsonb_build_array('${fixtures.invocation.userMessageId}')
+                    )),
+                    'decisions', '[]'::jsonb,
+                    'unresolvedQuestions', '[]'::jsonb,
+                    'throughSequence', 1
+                  )
+                );
+                raise exception 'task5_invocation_failure_not_raised';
+              exception when others then
+                insert into task5_terminal_failures values ('invocation', sqlerrm);
+              end;
+            end;
+            $task5_invocation$;
+            drop trigger task5_fail_invocation_terminal_write on public.ai_invocations;
+
+            select jsonb_build_object(
+              'errors', (select jsonb_object_agg(failure_point, error_message) from task5_terminal_failures),
+              'messageFailure', jsonb_build_object(
+                'message', (select jsonb_build_object('status', status, 'content', content) from public.ai_chat_messages where id = '${fixtures.message.assistantMessageId}'),
+                'turn', (select jsonb_build_object('status', status, 'outcome', outcome) from public.ai_chat_turns where id = '${fixtures.message.turnId}'),
+                'invocationStatus', (select status from public.ai_invocations where id = '${fixtures.message.turnId}'),
+                'capabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${fixtures.message.turnId}'),
+                'conversation', (select jsonb_build_object('summary', summary, 'summaryVersion', summary_version, 'memoryStatus', memory_status) from public.ai_conversations where id = '${fixtures.message.conversationId}'),
+                'memoryJobs', (select count(*) from public.ai_conversation_memory_jobs where turn_id = '${fixtures.message.turnId}')
+              ),
+              'turnFailure', jsonb_build_object(
+                'message', (select jsonb_build_object('status', status, 'content', content) from public.ai_chat_messages where id = '${fixtures.turn.assistantMessageId}'),
+                'turn', (select jsonb_build_object('status', status, 'outcome', outcome) from public.ai_chat_turns where id = '${fixtures.turn.turnId}'),
+                'invocationStatus', (select status from public.ai_invocations where id = '${fixtures.turn.turnId}'),
+                'capabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${fixtures.turn.turnId}'),
+                'conversation', (select jsonb_build_object('summary', summary, 'summaryVersion', summary_version, 'memoryStatus', memory_status) from public.ai_conversations where id = '${fixtures.turn.conversationId}'),
+                'memoryJobs', (select count(*) from public.ai_conversation_memory_jobs where turn_id = '${fixtures.turn.turnId}')
+              ),
+              'invocationFailure', jsonb_build_object(
+                'message', (select jsonb_build_object('status', status, 'content', content) from public.ai_chat_messages where id = '${fixtures.invocation.assistantMessageId}'),
+                'turn', (select jsonb_build_object('status', status, 'outcome', outcome) from public.ai_chat_turns where id = '${fixtures.invocation.turnId}'),
+                'invocationStatus', (select status from public.ai_invocations where id = '${fixtures.invocation.turnId}'),
+                'capabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${fixtures.invocation.turnId}'),
+                'conversation', (select jsonb_build_object('summary', summary, 'summaryVersion', summary_version, 'memoryStatus', memory_status) from public.ai_conversations where id = '${fixtures.invocation.conversationId}'),
+                'memoryJobs', (select count(*) from public.ai_conversation_memory_jobs where turn_id = '${fixtures.invocation.turnId}')
+              )
+            );
+
+            rollback;
+          `,
+        ),
+      ) as Record<string, unknown>;
+
+      const untouchedTerminalState = {
+        message: { status: "pending", content: "" },
+        turn: { status: "generating", outcome: null },
+        invocationStatus: "started",
+        capabilityRevoked: false,
+        conversation: {
+          summary: {},
+          summaryVersion: 0,
+          memoryStatus: "ready",
+        },
+        memoryJobs: 0,
+      };
+
+      expect(result).toMatchObject({
+        errors: {
+          message: "task5_message_terminal_failure",
+          turn: "task5_turn_terminal_failure",
+          invocation: "task5_invocation_terminal_failure",
+        },
+        messageFailure: untouchedTerminalState,
+        turnFailure: untouchedTerminalState,
+        invocationFailure: untouchedTerminalState,
+      });
+    });
   },
 );
 

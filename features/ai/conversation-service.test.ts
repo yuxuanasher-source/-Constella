@@ -61,6 +61,7 @@ function persistence(
     listConversations: vi.fn().mockResolvedValue([]),
     getConversation: vi.fn(),
     listMessages: vi.fn().mockResolvedValue([]),
+    listContextMessages: vi.fn().mockResolvedValue([]),
     listTurns: vi.fn().mockResolvedValue([]),
     createTurn: vi.fn().mockResolvedValue(createdTurn),
     getTurn: vi.fn().mockResolvedValue(storedTurn()),
@@ -90,6 +91,54 @@ function persistence(
 }
 
 describe("Xingyao conversation service", () => {
+  it("loads Gateway context messages through actor scope and a sequence cursor", async () => {
+    const listContextMessages = vi.fn().mockResolvedValue([]);
+    const service = createConversationService(
+      persistence({ listContextMessages }),
+    );
+
+    await service.listContextMessages(actor, "conversation-1", 200);
+
+    expect(listContextMessages).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      afterSequence: 200,
+    });
+  });
+
+  it("keeps legacy persistence implementations compatible with deterministic context filtering", async () => {
+    const messages: AiConversationMessageDto[] = [
+      message("message-recent-2", 12, "assistant", "completed", "recent 2"),
+      message("message-pending", 13, "assistant", "pending", "pending"),
+      {
+        ...message("message-pinned-old", 4, "user", "completed", "pinned"),
+        metadata: { pinned: true },
+      },
+      message("message-compacted", 3, "user", "completed", "compacted"),
+      message("message-recent-1", 11, "user", "completed", "recent 1"),
+    ];
+    const store = persistence({
+      listMessages: vi.fn().mockResolvedValue(messages),
+    });
+    delete store.listContextMessages;
+    const service = createConversationService(store);
+
+    await expect(
+      service.listContextMessages(actor, "conversation-1", 10),
+    ).resolves.toEqual([
+      expect.objectContaining({ id: "message-pinned-old" }),
+      expect.objectContaining({ id: "message-recent-1" }),
+      expect.objectContaining({ id: "message-recent-2" }),
+    ]);
+    expect(store.listMessages).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      limit: Number.MAX_SAFE_INTEGER,
+    });
+  });
+
   it("forwards turn-stage telemetry through actor and conversation boundaries", async () => {
     const observedAt = "2026-08-03T16:00:00.000Z";
     const recordTurnStage = vi.fn().mockResolvedValue({
