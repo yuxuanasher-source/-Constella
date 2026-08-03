@@ -1,7 +1,10 @@
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { HERMES_MODE_BUDGETS } from "./contracts";
 
 type EvalCase = {
   id: string;
@@ -40,6 +43,7 @@ type EvaluationReport = {
   records: Array<{
     caseId: string;
     category: string;
+    mode: "fast" | "deep";
     outcome: string;
     completion: boolean;
     toolSuccess: boolean;
@@ -58,8 +62,15 @@ type EvaluationReport = {
 const root = process.cwd();
 const casesPath = join(root, "scripts", "xingyao-hermes-eval-cases.json");
 const runnerPath = join(root, "scripts", "test-xingyao-hermes-e2e.mjs");
+const temporaryDirectories: string[] = [];
 
-describe("Hermes native restoration performance contract", () => {
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+describe("Hermes native restoration schema and safety fixture", () => {
   it("defines at least 20 fixed prompts across the required product categories", () => {
     const cases = readCases();
     expect(cases.length).toBeGreaterThanOrEqual(20);
@@ -172,6 +183,171 @@ describe("Hermes native restoration performance contract", () => {
       subagentCount: 2,
     });
   });
+
+  it("keeps deterministic fixture latency within mode budgets without claiming production SLO evidence", () => {
+    const report = runLocalEvaluation();
+
+    for (const record of report.records) {
+      expect(record.latencyMs).toBeLessThanOrEqual(
+        HERMES_MODE_BUDGETS[record.mode].wallClockMs,
+      );
+    }
+  });
+});
+
+describe("Hermes sanitized performance report gate", () => {
+  it("evaluates only Fast samples and permits numeric token counts", () => {
+    const samples: Array<{
+      mode: "fast" | "deep";
+      success: boolean;
+      firstDeltaMs: number | null;
+      totalMs: number;
+      tokens: { input: number; output: number };
+    }> = Array.from({ length: 100 }, (_, index) => ({
+      mode: "fast",
+      success: true,
+      firstDeltaMs: 1_000 + index,
+      totalMs: 10_000 + index,
+      tokens: { input: 100 + index, output: 200 + index },
+    }));
+    samples.push({
+      mode: "deep",
+      success: false,
+      firstDeltaMs: null,
+      totalMs: 60_000,
+      tokens: { input: 1_000, output: 2_000 },
+    });
+    const reportPath = writePerformanceReport({ samples });
+
+    const result = runPerformanceReport(reportPath);
+    const output = JSON.parse(result.stdout) as Record<string, unknown>;
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(output).toEqual({
+      harness: "xingyao-hermes-e2e",
+      mode: "performance-report",
+      sampleCount: 101,
+      fastSampleCount: 100,
+      metrics: {
+        successRate: 1,
+        firstDeltaP95Ms: 1_094,
+        totalP95Ms: 10_094,
+      },
+      gate: { ok: true, failures: [] },
+    });
+    expect(result.stdout).not.toContain(reportPath);
+  });
+
+  it("prints a sanitized report and exits nonzero when the gate fails", () => {
+    const reportPath = writePerformanceReport({
+      samples: [
+        {
+          mode: "fast",
+          success: true,
+          firstDeltaMs: 1_000,
+          totalMs: 10_000,
+        },
+      ],
+    });
+
+    const result = runPerformanceReport(reportPath);
+    const output = JSON.parse(result.stdout) as {
+      mode: string;
+      fastSampleCount: number;
+      gate: { ok: boolean; failures: string[] };
+    };
+
+    expect(result.status).toBe(1);
+    expect(result.stderr.trim()).toBe("Hermes performance gate failed");
+    expect(output.mode).toBe("performance-report");
+    expect(output.fastSampleCount).toBe(1);
+    expect(output.gate.ok).toBe(false);
+    expect(output.gate.failures).toContain("insufficient_samples");
+  });
+
+  it.each([
+    "prompt",
+    "content",
+    "assertion",
+    "capability",
+    "authorization",
+    "serviceToken",
+    "accessToken",
+    "secret",
+    "chainOfThought",
+  ])("rejects a recursively nested forbidden %s field", (forbiddenKey) => {
+    const sensitiveValue = `must-not-echo-${forbiddenKey}`;
+    const reportPath = writePerformanceReport({
+      samples: [],
+      metadata: { nested: [{ [forbiddenKey]: sensitiveValue }] },
+    });
+
+    const result = runPerformanceReport(reportPath);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr.trim()).toBe(
+      "Hermes performance report rejected: forbidden_field",
+    );
+    expect(`${result.stdout}${result.stderr}`).not.toContain(sensitiveValue);
+  });
+
+  it("normalizes forbidden key names without substring matching legitimate metrics", () => {
+    const reportPath = writePerformanceReport({
+      samples: [],
+      metadata: { nested: { "Service-Token": "must-not-echo" } },
+    });
+
+    const result = runPerformanceReport(reportPath);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr.trim()).toBe(
+      "Hermes performance report rejected: forbidden_field",
+    );
+    expect(result.stderr).not.toContain("must-not-echo");
+  });
+
+  it("handles missing, malformed, and invalid reports with stable sanitized errors", () => {
+    const directory = createTemporaryDirectory();
+    const missingPath = join(directory, "missing.json");
+    const malformedPath = join(directory, "malformed.json");
+    const invalidPath = join(directory, "invalid.json");
+    writeFileSync(malformedPath, '{"samples":["raw-sensitive-marker"', "utf8");
+    writeFileSync(invalidPath, JSON.stringify({ records: [] }), "utf8");
+
+    const missing = runPerformanceReport(missingPath);
+    const malformed = runPerformanceReport(malformedPath);
+    const invalid = runPerformanceReport(invalidPath);
+    const noArgument = spawnSync(
+      process.execPath,
+      [runnerPath, "--performance-report"],
+      {
+        cwd: root,
+        encoding: "utf8",
+      },
+    );
+
+    expect(missing.status).toBe(1);
+    expect(missing.stderr.trim()).toBe(
+      "Hermes performance report rejected: unreadable",
+    );
+    expect(malformed.status).toBe(1);
+    expect(malformed.stderr.trim()).toBe(
+      "Hermes performance report rejected: invalid_json",
+    );
+    expect(`${malformed.stdout}${malformed.stderr}`).not.toContain(
+      "raw-sensitive-marker",
+    );
+    expect(invalid.status).toBe(1);
+    expect(invalid.stderr.trim()).toBe(
+      "Hermes performance report rejected: invalid_shape",
+    );
+    expect(noArgument.status).toBe(1);
+    expect(noArgument.stderr.trim()).toBe(
+      "Hermes performance report rejected: missing_path",
+    );
+  });
 });
 
 function readCases(): EvalCase[] {
@@ -185,4 +361,24 @@ function runLocalEvaluation(): EvaluationReport {
     env: { ...process.env, HERMES_E2E_FIXED_NOW: "2026-07-22T00:00:00.000Z" },
   });
   return JSON.parse(stdout) as EvaluationReport;
+}
+
+function createTemporaryDirectory(): string {
+  const directory = mkdtempSync(join(tmpdir(), "hermes-performance-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+function writePerformanceReport(report: unknown): string {
+  const reportPath = join(createTemporaryDirectory(), "report.json");
+  writeFileSync(reportPath, JSON.stringify(report), "utf8");
+  return reportPath;
+}
+
+function runPerformanceReport(reportPath: string) {
+  return spawnSync(
+    process.execPath,
+    [runnerPath, "--performance-report", reportPath],
+    { cwd: root, encoding: "utf8" },
+  );
 }

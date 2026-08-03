@@ -20,6 +20,7 @@
     "test:ci-contracts": "vitest run scripts/ci-workflow-contract.test.ts",
     "test:api-integration-smoke": "node scripts/api-integration-smoke.mjs",
     "test:manual-acceptance-smoke": "node scripts/manual-acceptance-smoke.mjs",
+    "test:ai-performance": "vitest run features/ai/hermes/performance-statistics.test.ts features/ai/hermes/performance-contract.test.ts",
     "test:deploy-contract": "node --test scripts/deploy-contract.test.mjs",
     "verify:xingyao-hermes-release": "node scripts/verify-xingyao-hermes-release.mjs",
     "test:xingyao-hermes-e2e": "node scripts/test-xingyao-hermes-e2e.mjs --local",
