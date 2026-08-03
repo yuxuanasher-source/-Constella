@@ -4,6 +4,11 @@ This runbook covers Product release evidence, deploy controls, canary enablement
 and rollback packaging for the Xingyao Hermes native intelligence restoration.
 The deploy path stays repo-native and uses the existing `scripts/deploy.sh`.
 
+Conversation durability and performance evidence is defined in
+`docs/runbooks/ai-conversation-performance-rollout.md`. That runbook separates
+local contract evidence from production canary evidence and documents the
+observability gaps that currently block traffic expansion.
+
 ## Safety Defaults
 
 - Start every release with `XINGYAO_HERMES_GATEWAY_ENABLED=false`.

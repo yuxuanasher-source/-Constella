@@ -56,7 +56,7 @@ The ten tasks below produce five reviewable changesets:
 - Create: `features/ai/hermes/performance-statistics.test.ts`
 - Modify: `package.json`
 
-- [ ] **Step 1: Write failing percentile and release-gate tests**
+- [x] **Step 1: Write failing percentile and release-gate tests**
 
 Add pure statistics tests for nearest-rank percentile, success rate, and minimum sample enforcement:
 
@@ -94,7 +94,7 @@ pnpm vitest run features/ai/hermes/performance-statistics.test.ts features/ai/he
 
 Expected: fail because the statistics module and enforceable thresholds do not exist.
 
-- [ ] **Step 2: Implement deterministic statistics and separate fixture validation from live gates**
+- [x] **Step 2: Implement deterministic statistics and separate fixture validation from live gates**
 
 Export these types and functions from `performance-statistics.ts`:
 
@@ -126,7 +126,7 @@ Add:
 "test:ai-performance": "vitest run features/ai/hermes/performance-statistics.test.ts features/ai/hermes/performance-contract.test.ts"
 ```
 
-- [ ] **Step 3: Verify focused behavior**
+- [x] **Step 3: Verify focused behavior**
 
 Run:
 
@@ -137,7 +137,7 @@ node scripts/test-xingyao-hermes-e2e.mjs --local
 
 Expected: tests pass; the local fixture remains deterministic and does not claim production SLO compliance.
 
-- [ ] **Step 4: Commit the executable baseline**
+- [x] **Step 4: Commit the executable baseline**
 
 ```powershell
 git add features/ai/hermes/performance-contract.test.ts features/ai/hermes/performance-statistics.ts features/ai/hermes/performance-statistics.test.ts scripts/test-xingyao-hermes-e2e.mjs package.json
@@ -160,7 +160,7 @@ git commit -m "test(ai): enforce conversation performance budgets"
 - Modify: `features/ai/native-assistant/gateway-executor.ts`
 - Modify: `features/ai/native-assistant/gateway-executor.test.ts`
 
-- [ ] **Step 1: Write failing schema-contract tests**
+- [x] **Step 1: Write failing schema-contract tests**
 
 Require these additive `ai_chat_turns` columns:
 
@@ -185,7 +185,7 @@ pnpm vitest run lib/db/xingyao-hermes-native-schema-contract.test.ts
 
 Expected: fail because the migration and RPC do not exist.
 
-- [ ] **Step 2: Add the migration and monotonic stage RPC**
+- [x] **Step 2: Add the migration and monotonic stage RPC**
 
 The RPC must:
 
@@ -197,7 +197,7 @@ The RPC must:
 
 Set `accepted_at = coalesce(accepted_at, created_at)` for existing rows. Do not rewrite terminal or historical status.
 
-- [ ] **Step 3: Add repository and service contracts**
+- [x] **Step 3: Add repository and service contracts**
 
 Add:
 
@@ -216,13 +216,13 @@ export type ConversationSessionAction = "resumed" | "rebuilt";
 
 Expose `recordTurnStage(...)` through repository and service layers. Convert unknown RPC failures to a sanitized `conversation_turn_stage_persist_failed` error without echoing Supabase response bodies.
 
-- [ ] **Step 4: Instrument the executor in current behavior**
+- [x] **Step 4: Instrument the executor in current behavior**
 
 Record accepted, context-ready, session-ready, first-delta, terminal, and persisted timestamps around existing operations. This task must not change session creation, prompt retry, runtime selection, or Legacy fallback behavior.
 
 Test that duplicate stage calls are idempotent and that instrumentation failure does not submit the prompt twice. A pre-terminal telemetry failure may continue with a structured warning; terminal persistence still remains authoritative.
 
-- [ ] **Step 5: Verify migration and focused suites**
+- [x] **Step 5: Verify migration and focused suites**
 
 ```powershell
 pnpm vitest run lib/db/xingyao-hermes-native-schema-contract.test.ts features/ai/conversation-contracts.test.ts features/ai/conversation-repository.test.ts features/ai/conversation-service.test.ts features/ai/native-assistant/gateway-executor.test.ts
@@ -231,7 +231,7 @@ pnpm type-check
 
 Expected: all listed suites and type-check pass.
 
-- [ ] **Step 6: Commit telemetry**
+- [x] **Step 6: Commit telemetry**
 
 ```powershell
 git add supabase/migrations/20260803120000_ai_turn_stage_telemetry.sql lib/db/xingyao-hermes-native-schema-contract.test.ts features/ai/conversation-contracts.ts features/ai/conversation-contracts.test.ts features/ai/conversation-repository.ts features/ai/conversation-repository.test.ts features/ai/conversation-service.ts features/ai/conversation-service.test.ts features/ai/native-assistant/gateway-executor.ts features/ai/native-assistant/gateway-executor.test.ts
@@ -252,7 +252,7 @@ git commit -m "feat(ai): record durable turn stage timings"
 - Modify: `tests/xingyao/test_gateway_ws_transport.py`
 - Modify: `tests/xingyao/test_gateway_protocol.py`
 
-- [ ] **Step 1: Create a clean Gateway implementation branch**
+- [x] **Step 1: Create a clean Gateway implementation branch**
 
 ```powershell
 git status --short
@@ -262,7 +262,7 @@ git switch -c codex/xingyao-session-lifecycle-resilience
 
 Expected: clean worktree at `de80fbf83f13fd8e72d2efe66961baa385dd5919` before the branch is created.
 
-- [ ] **Step 2: Write failing session-resume and heartbeat tests**
+- [x] **Step 2: Write failing session-resume and heartbeat tests**
 
 Cover these exact cases:
 
@@ -284,7 +284,7 @@ uv run pytest -q tests/xingyao/test_gateway_session_binding.py tests/xingyao/tes
 
 Expected: new tests fail against the current lifecycle.
 
-- [ ] **Step 3: Extend existing cache and session records**
+- [x] **Step 3: Extend existing cache and session records**
 
 Reuse the existing Agent cache, LRU cap, active-Agent protection, and idle sweep. Do not create a second Agent cache. Add explicit session last-used timestamps and use monotonic time for TTL decisions.
 
@@ -299,11 +299,11 @@ _XINGYAO_AGENT_PROGRESS_INTERVAL_SECONDS = 15
 
 Configuration, provider, model, profile, and skill-grant signature changes invalidate a cached Agent before the next prompt. Eviction must happen outside `_agent_cache_lock` when cleanup can block.
 
-- [ ] **Step 4: Add bounded initialization progress**
+- [x] **Step 4: Add bounded initialization progress**
 
 While waiting for Agent readiness, emit a sanitized `activity.updated` event with label `Preparing AI session` and status `running`. Any emitted event must refresh Product's event-idle clock. On readiness emit the existing ready/progress transition; on timeout emit the stable error code.
 
-- [ ] **Step 5: Verify Gateway security and lifecycle suites**
+- [x] **Step 5: Verify Gateway security and lifecycle suites**
 
 ```powershell
 uv run pytest -q tests/xingyao/test_gateway_session_binding.py tests/xingyao/test_gateway_ws_transport.py tests/xingyao/test_gateway_protocol.py tests/gateway/test_agent_cache.py tests/test_tui_gateway_server.py
@@ -313,7 +313,7 @@ git diff --check
 
 Expected: focused tests and lint pass; secret scans in the tests find no forbidden payload fields.
 
-- [ ] **Step 6: Commit Gateway lifecycle changes**
+- [x] **Step 6: Commit Gateway lifecycle changes**
 
 ```powershell
 git add tui_gateway/server.py tests/test_tui_gateway_server.py tests/gateway/test_agent_cache.py tests/xingyao/test_gateway_session_binding.py tests/xingyao/test_gateway_ws_transport.py tests/xingyao/test_gateway_protocol.py
@@ -334,7 +334,7 @@ git commit -m "feat(gateway): retain resumable conversation agents"
 - Modify: `features/ai/native-assistant/gateway-executor.ts`
 - Modify: `features/ai/native-assistant/gateway-executor.test.ts`
 
-- [ ] **Step 1: Write failing session-reuse tests**
+- [x] **Step 1: Write failing session-reuse tests**
 
 Test the executor state machine:
 
@@ -358,11 +358,11 @@ pnpm vitest run features/ai/hermes/gateway-contracts.test.ts features/ai/hermes/
 
 Expected: tests fail because ordinary turns still build a fresh session.
 
-- [ ] **Step 2: Separate transport lifecycle from Gateway session lifecycle**
+- [x] **Step 2: Separate transport lifecycle from Gateway session lifecycle**
 
 Update `gateway-client.ts` so `close()` closes only the local WebSocket. Preserve the server session unless Product explicitly calls a destructive session command. Keep connect and ready timeouts at 2 seconds, short RPC timeout at 15 seconds, and set client event idle to 180 seconds. Retain two bounded event-recovery attempts.
 
-- [ ] **Step 3: Replace fresh-only context creation with resume-or-rebuild**
+- [x] **Step 3: Replace fresh-only context creation with resume-or-rebuild**
 
 Refactor `buildAndCaptureFreshGatewayContext` into an explicit helper such as:
 
@@ -378,11 +378,11 @@ async function prepareGatewaySession(...): Promise<GatewaySessionPreparation>;
 
 Read provider state once, resume when possible, rebuild at most once, and update state through existing generation CAS. A CAS conflict is resolved before `prompt.submit` by rereading and resuming the winning state.
 
-- [ ] **Step 4: Track acknowledgement as an irreversible boundary**
+- [x] **Step 4: Track acknowledgement as an irreversible boundary**
 
 Maintain an executor-local `promptAccepted` boolean that is set only from the Gateway acknowledgement. Before it is true, one retry or Legacy fallback may occur under existing policy. After it is true, only session resume and event recovery are permitted. Tests must count `prompt.submit` calls and prove the count is one.
 
-- [ ] **Step 5: Verify focused Product suites**
+- [x] **Step 5: Verify focused Product suites**
 
 ```powershell
 pnpm vitest run features/ai/hermes/gateway-contracts.test.ts features/ai/hermes/gateway-client.test.ts features/ai/conversation-repository.test.ts features/ai/native-assistant/gateway-executor.test.ts features/ai/conversation-stream-adapter.test.ts
@@ -392,7 +392,7 @@ pnpm lint -- features/ai/hermes/gateway-contracts.ts features/ai/hermes/gateway-
 
 Expected: focused tests, type-check, and scoped lint pass.
 
-- [ ] **Step 6: Commit Product reuse**
+- [x] **Step 6: Commit Product reuse**
 
 ```powershell
 git add features/ai/hermes/gateway-contracts.ts features/ai/hermes/gateway-contracts.test.ts features/ai/hermes/gateway-client.ts features/ai/hermes/gateway-client.test.ts features/ai/conversation-repository.ts features/ai/conversation-repository.test.ts features/ai/native-assistant/gateway-executor.ts features/ai/native-assistant/gateway-executor.test.ts
@@ -419,7 +419,7 @@ git commit -m "feat(ai): reuse gateway sessions without duplicate submit"
 - Modify: `features/ai/native-assistant/gateway-executor.ts`
 - Modify: `features/ai/native-assistant/gateway-executor.test.ts`
 
-- [ ] **Step 1: Write failing memory-contract tests**
+- [x] **Step 1: Write failing memory-contract tests**
 
 Add this bounded schema:
 
@@ -441,7 +441,7 @@ export type ConversationMemoryDelta = Omit<
 
 Reject unknown keys, blank text, duplicate source IDs, cross-conversation message IDs, non-monotonic sequence, and arrays over the declared bounds. Do not accept raw prompt transcripts as summary fields.
 
-- [ ] **Step 2: Write failing atomic persistence tests**
+- [x] **Step 2: Write failing atomic persistence tests**
 
 The migration must add:
 
@@ -456,7 +456,7 @@ finish_ai_chat_turn_v3 RPC
 
 Test rollback for message/turn/invocation failures and the degraded-memory savepoint path separately.
 
-- [ ] **Step 3: Implement deterministic token budgeting**
+- [x] **Step 3: Implement deterministic token budgeting**
 
 Create a pure selector with this contract:
 
@@ -481,15 +481,15 @@ export function selectConversationContext(input: {
 
 Use a conservative deterministic estimate: count each non-ASCII code point as one token and each group of four ASCII bytes as one token, then add a fixed per-message envelope. Model configuration supplies the context window; unknown models use a conservative configured default. Current request and pinned facts are mandatory. Include summary next, then whole recent messages newest-first. Never split a message.
 
-- [ ] **Step 4: Integrate summary and recent ledger into context assembly**
+- [x] **Step 4: Integrate summary and recent ledger into context assembly**
 
 Replace the current character cap in `gateway-executor.ts` with the token selector. `context-engine.ts` must return the summary version and `lastCompactedSequence` used to build the immutable turn snapshot. Include all completed messages after `lastCompactedSequence` even when memory is degraded.
 
-- [ ] **Step 5: Persist Gateway memory delta at terminal completion**
+- [x] **Step 5: Persist Gateway memory delta at terminal completion**
 
 Parse and validate `memoryDelta` from terminal metadata. Call `finish_ai_chat_turn_v3` once. Do not call the old best-effort `syncConversationSummary` afterward. A malformed or absent delta completes the answer but records `memory_degraded`; it never discards assistant content.
 
-- [ ] **Step 6: Add 20-turn recall and correction tests**
+- [x] **Step 6: Add 20-turn recall and correction tests**
 
 Build a deterministic 20-turn fixture where turn 1 establishes a fact, turn 9 corrects it, turn 14 records a decision, and turn 20 asks for all retained state. Assert the correction supersedes the original, confirmed decisions remain, unresolved questions remain, and the context stays under budget.
 
@@ -502,7 +502,7 @@ pnpm type-check
 
 Expected: all focused suites pass, including the 20-turn fixture and degraded-memory path.
 
-- [ ] **Step 7: Commit structured memory**
+- [x] **Step 7: Commit structured memory**
 
 ```powershell
 git add supabase/migrations/20260803130000_ai_conversation_structured_memory.sql lib/db/xingyao-hermes-native-schema-contract.test.ts features/ai/conversation-contracts.ts features/ai/conversation-contracts.test.ts features/ai/conversation-repository.ts features/ai/conversation-repository.test.ts features/ai/conversation-service.ts features/ai/conversation-service.test.ts features/ai/native-assistant/context-engine.ts features/ai/native-assistant/context-engine.test.ts features/ai/native-assistant/token-budget.ts features/ai/native-assistant/token-budget.test.ts features/ai/native-assistant/gateway-executor.ts features/ai/native-assistant/gateway-executor.test.ts
@@ -533,7 +533,7 @@ git commit -m "feat(ai): persist structured conversation memory"
 - Create: `app/api/ai/conversations/[conversationId]/turns/[turnId]/status/route.ts`
 - Create: `app/api/ai/conversations/[conversationId]/turns/[turnId]/status/route.test.ts`
 
-- [ ] **Step 1: Write failing recovery-contract and schema tests**
+- [x] **Step 1: Write failing recovery-contract and schema tests**
 
 Add:
 
@@ -550,7 +550,7 @@ export type TurnRecoverySnapshot = {
 
 Require an `ai_chat_turn_events` table keyed by `(turn_id, event_sequence)` and turn snapshot columns for current sequence, partial content, partial update timestamp, and terminal event. Require RPCs `append_ai_chat_turn_recovery_event` and `get_ai_chat_turn_recovery_snapshot` with organization/user/conversation/turn boundaries.
 
-- [ ] **Step 2: Implement bounded persistence**
+- [x] **Step 2: Implement bounded persistence**
 
 Persist accepted, context-ready, session action, tool, clarify, cancel, and terminal milestones immediately. Coalesce text into the turn snapshot at most once per second or after 2 KiB of additional UTF-8 content. Never insert one database row per token.
 
@@ -558,7 +558,7 @@ The append RPC must lock the turn, increment `event_sequence`, insert the saniti
 
 Move `pendingClarify` and child-session control identifiers out of the reusable `hermesGateway` session envelope into turn-scoped recovery state. Update cancel and clarify routes to read that turn-scoped state after a process restart. Keep a backward-compatible reader for old provider-state records during rollout, but write only the new location. After this task, the persisted `hermesGateway` envelope must match the approved minimal schema.
 
-- [ ] **Step 3: Implement the status endpoint**
+- [x] **Step 3: Implement the status endpoint**
 
 `GET /api/ai/conversations/:conversationId/turns/:turnId/status?after=<sequence>` must:
 
@@ -570,11 +570,11 @@ Move `pendingClarify` and child-session control identifiers out of the reusable 
 - set `Cache-Control: no-store`;
 - avoid `getHistory`, message-list, turn-list, and provider-state calls.
 
-- [ ] **Step 4: Make stream disconnection subscriber-only**
+- [x] **Step 4: Make stream disconnection subscriber-only**
 
 Ensure `conversation-stream-adapter.ts` detaches the transport on cancel/abort without calling the authoritative executor cancellation path. The executor continues to write snapshots and terminal state. Explicit cancel route behavior remains unchanged.
 
-- [ ] **Step 5: Verify recovery behavior**
+- [x] **Step 5: Verify recovery behavior**
 
 ```powershell
 pnpm vitest run lib/db/xingyao-hermes-native-schema-contract.test.ts features/ai/conversation-contracts.test.ts features/ai/conversation-repository.test.ts features/ai/conversation-service.test.ts features/ai/conversation-stream-adapter.test.ts features/ai/native-assistant/gateway-executor.test.ts 'app/api/ai/conversations/[conversationId]/turns/[turnId]/cancel/route.test.ts' 'app/api/ai/conversations/[conversationId]/turns/[turnId]/clarify/route.test.ts' 'app/api/ai/conversations/[conversationId]/turns/[turnId]/status/route.test.ts'
@@ -583,7 +583,7 @@ pnpm type-check
 
 Expected: refresh/disconnect tests show one authoritative turn and one prompt submission; status route tests prove no full-history calls.
 
-- [ ] **Step 6: Commit recovery persistence**
+- [x] **Step 6: Commit recovery persistence**
 
 ```powershell
 git add supabase/migrations/20260803140000_ai_turn_recovery_snapshots.sql lib/db/xingyao-hermes-native-schema-contract.test.ts features/ai/conversation-contracts.ts features/ai/conversation-contracts.test.ts features/ai/conversation-repository.ts features/ai/conversation-repository.test.ts features/ai/conversation-service.ts features/ai/conversation-service.test.ts features/ai/conversation-stream-adapter.ts features/ai/conversation-stream-adapter.test.ts features/ai/native-assistant/gateway-executor.ts features/ai/native-assistant/gateway-executor.test.ts 'app/api/ai/conversations/[conversationId]/turns/[turnId]/cancel/route.ts' 'app/api/ai/conversations/[conversationId]/turns/[turnId]/cancel/route.test.ts' 'app/api/ai/conversations/[conversationId]/turns/[turnId]/clarify/route.ts' 'app/api/ai/conversations/[conversationId]/turns/[turnId]/clarify/route.test.ts' 'app/api/ai/conversations/[conversationId]/turns/[turnId]/status/route.ts' 'app/api/ai/conversations/[conversationId]/turns/[turnId]/status/route.test.ts'
@@ -600,7 +600,7 @@ git commit -m "feat(ai): persist resumable turn snapshots"
 - Modify: `components/dashboard/overview-board.jsx`
 - Modify: `components/dashboard/overview-board.test.jsx`
 
-- [ ] **Step 1: Write failing stream-buffer tests**
+- [x] **Step 1: Write failing stream-buffer tests**
 
 Test that:
 
@@ -611,17 +611,17 @@ Test that:
 - scrolling occurs only when the viewport was already near the bottom;
 - disposal flushes or transfers pending content without cancelling the turn.
 
-- [ ] **Step 2: Implement a framework-neutral buffer**
+- [x] **Step 2: Implement a framework-neutral buffer**
 
 Expose `pushDelta`, `flush`, and `dispose` from a small pure module. Inject clock and animation-frame scheduling in tests. Do not put timer policy directly into `overview-board.jsx`.
 
-- [ ] **Step 3: Replace active-turn full-history polling**
+- [x] **Step 3: Replace active-turn full-history polling**
 
 Keep one full-history fetch when opening a conversation. During an active turn, call the new status endpoint with the last applied sequence and back off at 1, 2, 4, then 5 seconds. After terminal state, fetch full history once and clear recovery timers.
 
 Route change, component unmount, page refresh, visibility change, and transient fetch failure must preserve the accepted turn ID and reattach on return. Only the cancel button calls the cancel endpoint.
 
-- [ ] **Step 4: Add browser-state regression tests**
+- [x] **Step 4: Add browser-state regression tests**
 
 Cover:
 
@@ -642,7 +642,7 @@ pnpm lint -- features/ai/conversation-stream-buffer.ts components/dashboard/over
 
 Expected: tests pass without React act warnings caused by unflushed timers.
 
-- [ ] **Step 5: Commit frontend recovery and batching**
+- [x] **Step 5: Commit frontend recovery and batching**
 
 ```powershell
 git add features/ai/conversation-stream-buffer.ts features/ai/conversation-stream-buffer.test.ts components/dashboard/overview-board.jsx components/dashboard/overview-board.test.jsx
@@ -650,63 +650,52 @@ git diff --cached --check
 git commit -m "perf(ai): batch streaming and recover by cursor"
 ```
 
-## Task 8: Add Production-Like Recovery, Recall, And Restart Gates
+## Task 8: Aggregate Real Local Recovery And Lifecycle Gates
 
 **Files:**
 
-- Modify: `scripts/test-xingyao-hermes-e2e.mjs`
-- Modify: `scripts/xingyao-hermes-eval-cases.json`
 - Create: `scripts/test-ai-conversation-resilience.mjs`
 - Create: `scripts/test-ai-conversation-resilience.test.mjs`
 - Modify: `package.json`
 
-- [ ] **Step 1: Write failing script contract tests**
+- [x] **Step 1: Write failing aggregator contract tests**
 
-Require scenario names and exit behavior for:
+Require the runner to invoke existing real suites for local PostgreSQL recovery
+and memory behavior, Product executor and recovery routes, browser reattachment
+and batching, and optional Gateway lifecycle pytest. Reject remote application
+URLs and unsafe database container names. Do not generate synthetic scenario
+outcomes or performance samples.
 
-```text
-twenty_turn_recall_and_correction
-route_switch_recovery
-page_refresh_recovery
-network_disconnect_recovery
-product_restart_recovery
-gateway_restart_recovery
-expired_agent_single_rebuild
-terminal_persist_failure_visibility
-clarify_after_recovery
-cancel_after_recovery
-```
+- [x] **Step 2: Implement the fail-fast real-suite aggregator**
 
-The runner must use generated local UUIDs and disposable local database records. It must refuse production URLs unless `RUN_AI_RESILIENCE_CANARY=1` and an explicit canary organization/user pair are provided. It must never manufacture or print production credentials.
-
-- [ ] **Step 2: Implement a resumable scenario runner**
-
-Record sanitized per-turn stage timings, submit count, session action, recovery attempts, and terminal status. On failure, print IDs and stable error codes only. Always clean up local test records; never delete production records.
+The runner must pass the explicit local container only to PostgreSQL-backed
+tests, preserve each child process exit status, stop on the first failure, and
+label each evidence source. Gateway verification requires an explicit local
+Gateway worktree. State that the output is contract evidence, not PM2, systemd,
+Nginx, production-network, or completed-canary evidence.
 
 Add:
 
 ```json
-"test:ai-resilience": "node --test scripts/test-ai-conversation-resilience.test.mjs && node scripts/test-ai-conversation-resilience.mjs --local"
+"test:ai-resilience": "vitest run scripts/test-ai-conversation-resilience.test.mjs && node scripts/test-ai-conversation-resilience.mjs"
 ```
 
-- [ ] **Step 3: Verify full focused Product gate**
+- [x] **Step 3: Verify the full local contract gate**
 
 ```powershell
-pnpm test:ai-performance
+$env:HERMES_RESILIENCE_DB_CONTAINER = "supabase_db_jingying-cabin"
+$env:HERMES_RESILIENCE_SUPABASE_PROJECT = "jingying-cabin"
+$env:XINGYAO_HERMES_GATEWAY_WORKTREE = "C:\path\to\xingyao-hermes-agent"
 pnpm test:ai-resilience
-pnpm test:ai-system
-pnpm type-check
-pnpm lint
-pnpm build
-git diff --check
 ```
 
-Expected: all commands pass. If an unrelated baseline failure appears, record it with command output and do not label this task complete until focused AI suites and build pass.
+Expected: PostgreSQL, Product, browser, and Gateway suites all execute and pass.
+This does not satisfy production restart or SLO observation.
 
-- [ ] **Step 4: Commit resilience gates**
+- [x] **Step 4: Commit resilience gates**
 
 ```powershell
-git add scripts/test-xingyao-hermes-e2e.mjs scripts/xingyao-hermes-eval-cases.json scripts/test-ai-conversation-resilience.mjs scripts/test-ai-conversation-resilience.test.mjs package.json
+git add scripts/test-ai-conversation-resilience.mjs scripts/test-ai-conversation-resilience.test.mjs package.json
 git diff --cached --check
 git commit -m "test(ai): gate durable conversation recovery"
 ```
@@ -717,44 +706,39 @@ git commit -m "test(ai): gate durable conversation recovery"
 
 - Modify: `docs/runbooks/xingyao-hermes-gateway.md`
 - Create: `docs/runbooks/ai-conversation-performance-rollout.md`
-- Modify: `.env.example`
-- Modify: `lib/config/env.ts`
-- Modify: `lib/config/env.test.ts`
-- Modify: `app/api/health/route.ts`
-- Modify: `app/api/health/route.test.ts`
 
-- [ ] **Step 1: Write failing feature-flag and health-contract tests**
+- [x] **Step 1: Document the actual control boundary**
 
-Add server-only flags for session reuse, structured memory, recovery snapshots, and stream batching. Default all rollout flags to false. Health output may expose enabled/configured booleans and release identity, but no allowlist values or secrets.
+Do not add flags that are only parsed or displayed. The implemented traffic
+control is `XINGYAO_HERMES_GATEWAY_ENABLED` plus the actor allowlist. Product
+code rollback uses the previous immutable release, while additive database
+state remains intact. State explicitly that no per-phase runtime flags exist.
 
-Use these exact names:
-
-```text
-XINGYAO_HERMES_SESSION_REUSE_ENABLED
-XINGYAO_HERMES_STRUCTURED_MEMORY_ENABLED
-XINGYAO_HERMES_TURN_RECOVERY_ENABLED
-XINGYAO_HERMES_STREAM_BATCHING_ENABLED
-```
-
-Test that disabling any phase returns to the previous compatible behavior without deleting state.
-
-- [ ] **Step 2: Write the deployment order**
+- [x] **Step 2: Write the deployment order**
 
 The runbook must require:
 
 1. Exact Product and Gateway commits and clean source trees.
-2. Gateway release first with lifecycle flags disabled.
+2. Gateway release first while Product Gateway routing remains disabled.
 3. Database backup and additive migrations.
-4. Product release with all new behavior disabled.
+4. Product release with Gateway routing disabled and an empty allowlist.
 5. Phase 0 telemetry observation.
 6. One organization/user canary for 24 hours.
-7. At least 100 Fast samples before 5 percent expansion.
-8. 5 percent, 25 percent, and 100 percent stages with complete observation windows.
+7. At least 100 Fast samples before any expansion.
+8. 5 percent, 25 percent, and 100 percent operator-selected actor cohorts with complete observation windows.
 9. PM2 dump persistence, systemd enablement, health checks, and immutable release evidence.
 
-- [ ] **Step 3: Define SQL and API evidence checks**
+- [x] **Step 3: Define SQL and API evidence checks**
 
-Include queries for success rate, first-delta P95, total P95, session resume rate, Agent rebuild duration, recovery success, duplicate submit count, degraded memory count, terminal persistence failures, and active-turn leaks. Queries must aggregate timings and counts only.
+Include executable queries for sample counts, success rate, first-delta P95,
+total P95, session action, recovery coverage, terminal persistence gaps, and
+active-turn leaks. Queries must aggregate timings and counts only. Report
+first-delta and terminal sample counts separately from percentile values.
+
+Mark duplicate submit count, recovery endpoint P95, and production
+tenant/capability violation count as observability gaps until those metrics are
+actually persisted. They block expansion beyond the one-user canary; unit or
+component tests must not be presented as production counts.
 
 Release gates:
 
@@ -762,40 +746,41 @@ Release gates:
 Fast success >= 99 percent over >= 100 samples
 Fast first-delta P95 <= 8 seconds
 Fast total P95 <= 30 seconds
-Recovery endpoint P95 <= 200 milliseconds
-20-turn recall suite passes
-duplicate submit count = 0
 terminal persistence failures = 0
 tenant/capability violations = 0
 ```
 
-- [ ] **Step 4: Define automatic rollback**
+- [x] **Step 4: Define automatic rollback**
 
-Rollback removes the affected Gateway allowlist and disables the phase flag, then restarts Product with `--update-env` and saves PM2 state. It preserves provider state, Gateway sessions, turns, messages, summaries, recovery snapshots, telemetry, and release evidence.
+Rollback clears the Gateway allowlist and disables Gateway routing, then
+restarts Product with `--update-env` and saves PM2 state. If needed, switch to
+the previous reviewed immutable Product release. Preserve provider state,
+Gateway sessions, turns, messages, summaries, recovery snapshots, telemetry,
+and release evidence.
 
 Trigger rollback for a 15-minute success rate below 99 percent, two consecutive total-P95 breaches, any duplicate prompt/tool execution, terminal persistence failure, tenant mismatch, secret leak, or active turn exceeding its declared budget.
 
-- [ ] **Step 5: Verify configuration and docs**
+- [x] **Step 5: Verify configuration and docs**
 
 ```powershell
-pnpm vitest run lib/config/env.test.ts app/api/health/route.test.ts
-pnpm prettier --check docs/runbooks/xingyao-hermes-gateway.md docs/runbooks/ai-conversation-performance-rollout.md .env.example lib/config/env.ts app/api/health/route.ts
+pnpm vitest run scripts/test-ai-conversation-resilience.test.mjs
+pnpm prettier --check docs/runbooks/xingyao-hermes-gateway.md docs/runbooks/ai-conversation-performance-rollout.md scripts/test-ai-conversation-resilience.mjs scripts/test-ai-conversation-resilience.test.mjs package.json
 git diff --check
 ```
 
-Expected: config and health tests pass; docs formatting and diff checks pass.
+Expected: runner contract, docs formatting, and diff checks pass.
 
-- [ ] **Step 6: Commit rollout controls**
+- [x] **Step 6: Commit rollout controls**
 
 ```powershell
-git add docs/runbooks/xingyao-hermes-gateway.md docs/runbooks/ai-conversation-performance-rollout.md .env.example lib/config/env.ts lib/config/env.test.ts app/api/health/route.ts app/api/health/route.test.ts
+git add docs/runbooks/xingyao-hermes-gateway.md docs/runbooks/ai-conversation-performance-rollout.md docs/superpowers/plans/2026-08-03-ai-conversation-performance-resilience.md
 git diff --cached --check
 git commit -m "docs(ai): define performance rollout and rollback"
 ```
 
 ## Task 10: Final Review And Release Readiness
 
-- [ ] **Step 1: Review spec coverage**
+- [x] **Step 1: Review spec coverage**
 
 Confirm every requirement in `docs/superpowers/specs/2026-08-03-ai-conversation-performance-resilience-design.md` maps to at least one implementation task and one test. Verify especially:
 
@@ -810,7 +795,7 @@ Confirm every requirement in `docs/superpowers/specs/2026-08-03-ai-conversation-
 - 50-millisecond render batching;
 - one-user to 5/25/100-percent rollout.
 
-- [ ] **Step 2: Scan for incomplete implementation markers**
+- [x] **Step 2: Scan for incomplete implementation markers**
 
 ```powershell
 rg -n "TODO|TBD|FIXME|NotImplemented|throw new Error\(\"not implemented" features/ai app/api/ai components/dashboard scripts docs/runbooks supabase/migrations
@@ -818,10 +803,13 @@ rg -n "TODO|TBD|FIXME|NotImplemented|throw new Error\(\"not implemented" feature
 
 Expected: no marker introduced by this implementation remains in changed files.
 
-- [ ] **Step 3: Run Product release verification**
+- [x] **Step 3: Run Product release verification**
 
 ```powershell
 pnpm test:ai-performance
+$env:HERMES_RESILIENCE_DB_CONTAINER = "supabase_db_jingying-cabin"
+$env:HERMES_RESILIENCE_SUPABASE_PROJECT = "jingying-cabin"
+$env:XINGYAO_HERMES_GATEWAY_WORKTREE = "C:\path\to\xingyao-hermes-agent"
 pnpm test:ai-resilience
 pnpm test:ai-system
 pnpm type-check
@@ -834,7 +822,7 @@ git status --short
 
 Expected: all commands pass and the Product worktree is clean after commits.
 
-- [ ] **Step 4: Run Gateway release verification**
+- [x] **Step 4: Run Gateway release verification**
 
 From the Gateway worktree:
 
