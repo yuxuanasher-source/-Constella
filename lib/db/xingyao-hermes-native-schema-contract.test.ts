@@ -116,31 +116,19 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
   });
 
-  it("materializes the historical acceptance baseline in bounded batches before validation", () => {
+  it("keeps historical backfill transaction control out of the expand migration", () => {
     expect(existsSync(telemetryBackfillMigrationPath)).toBe(true);
     expect(telemetryBackfillMigration.split(/\r?\n/)[0]).toBe(
       "-- deploy: expand",
     );
-    expect(telemetryBackfillMigration).toContain("loop");
-    expect(telemetryBackfillMigration).toMatch(/limit\s+[1-9][0-9]{1,3}/);
-    expect(telemetryBackfillMigration).toContain("for update skip locked");
-    expect(telemetryBackfillMigration).toMatch(
-      /where backfill_turn\.id = backfill_batch\.id\s+and backfill_turn\.accepted_at is null/,
-    );
     expect(telemetryBackfillMigration).toContain(
-      "accepted_at = backfill_turn.created_at",
+      "scripts/deploy.sh backfills accepted_at in separately committed batches",
     );
-    expect(telemetryBackfillMigration).toContain(
-      "get diagnostics v_batch_count = row_count",
+    expect(telemetryBackfillMigration).not.toMatch(/\bdo\s+\$\$/);
+    expect(telemetryBackfillMigration).not.toContain(
+      "update public.ai_chat_turns",
     );
-    expect(telemetryBackfillMigration).toContain("exit when v_batch_count = 0");
-    expectSqlOrder(telemetryBackfillMigration, [
-      "accepted_at = backfill_turn.created_at",
-      "validate constraint ai_chat_turns_session_action_check",
-    ]);
-    expect(telemetryBackfillMigration).not.toMatch(
-      /set[\s\S]{0,120}updated_at\s*=/,
-    );
+    expect(telemetryBackfillMigration).not.toContain("validate constraint");
   });
 
   it("records tenant-bound stages under a lock with strict monotonic timestamps", () => {

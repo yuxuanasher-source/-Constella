@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Atomic production deployment:
 #   secure env + host lock -> exact reviewed CI artifact -> read-only migration
-#   preflight -> transactionally serialized expand migrations -> atomic symlink
-#   switch -> exact release verification -> persistent PM2 state.
+#   preflight -> serialized expand migrations -> committed bounded backfills ->
+#   atomic symlink switch -> exact release verification -> persistent PM2 state.
 set -Eeuo pipefail
 umask 077
 export LC_ALL=C
@@ -39,6 +39,9 @@ BOOTSTRAP_VERSION="bootstrap-v1"
 BOOTSTRAP_CONTENT_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
 MIGRATION_LOCK_KEY="jingying-cabin:deploy-migrations:v1"
 MIGRATION_LEASE_KEY="jingying-cabin:deploy-lease:v2"
+readonly AI_TURN_TELEMETRY_BACKFILL_VERSION="20260803120500"
+readonly AI_TURN_TELEMETRY_BACKFILL_BATCH_SIZE=500
+readonly AI_TURN_TELEMETRY_BACKFILL_TASK="ai_turn_stage_telemetry_accepted_at_v1"
 
 TARGET_SHA=""
 release_dir=""
@@ -930,9 +933,19 @@ create table if not exists deploy_internal.schema_migrations (
   content_sha256 text not null check (content_sha256 ~ '^[0-9a-f]{64}$'),
   applied_at timestamptz not null default now()
 );
+create table if not exists deploy_internal.backfill_progress (
+  task_name text primary key,
+  migration_version text not null,
+  cursor_uuid uuid,
+  completed_at timestamptz,
+  updated_at timestamptz not null default now()
+);
 alter table deploy_internal.schema_migrations enable row level security;
 alter table deploy_internal.schema_migrations force row level security;
+alter table deploy_internal.backfill_progress enable row level security;
+alter table deploy_internal.backfill_progress force row level security;
 revoke all on table deploy_internal.schema_migrations from public;
+revoke all on table deploy_internal.backfill_progress from public;
 do $deploy_roles$
 declare role_name text;
 begin
@@ -941,6 +954,10 @@ begin
     if exists (select 1 from pg_roles where rolname = role_name) then
       execute format(
         'revoke all on table deploy_internal.schema_migrations from %I',
+        role_name
+      );
+      execute format(
+        'revoke all on table deploy_internal.backfill_progress from %I',
         role_name
       );
     end if;
@@ -987,6 +1004,24 @@ begin
   end if;
   if to_regclass('public.deploy_migrations') is not null then
     raise exception 'legacy public deploy ledger must be moved before deployment';
+  end if;
+  if not exists (
+    select 1
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'deploy_internal'
+      and c.relname = 'backfill_progress'
+      and c.relkind = 'r'
+      and pg_get_userbyid(c.relowner) = current_user
+      and c.relrowsecurity
+      and c.relforcerowsecurity
+      and not exists (
+        select 1
+        from aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) acl
+        where acl.grantee <> c.relowner
+      )
+  ) then
+    raise exception 'internal backfill progress owner, RLS, or ACL is unsafe';
   end if;
   if (
     select count(*)
@@ -1110,6 +1145,212 @@ apply_migrations() {
     die "PostgREST did not expose this target's schema probe in a newer ready cache within 25 seconds"
   assert_database_deploy_lease
   log "Migrations complete ($applied newly applied)"
+}
+
+run_ai_turn_stage_telemetry_backfill() {
+  local migration_applied schema_ready progress_state progress_version completed
+  local constraint_validated batch_result batch_count cursor_uuid pending
+
+  migration_applied="$(db_q "
+    select exists (
+      select 1
+      from supabase_migrations.schema_migrations
+      where version = '$AI_TURN_TELEMETRY_BACKFILL_VERSION'
+    )
+  ")" || die "cannot read the telemetry backfill migration state"
+  [[ "$migration_applied" == "t" ]] || return 0
+
+  assert_database_deploy_lease ||
+    die "database deploy lease is no longer provably held during telemetry backfill"
+  schema_ready="$(db_q "
+    select
+      to_regclass('public.ai_chat_turns') is not null
+      and exists (
+        select 1
+        from pg_attribute
+        where attrelid = 'public.ai_chat_turns'::regclass
+          and attname = 'accepted_at'
+          and not attisdropped
+      )
+      and exists (
+        select 1
+        from pg_constraint
+        where conrelid = 'public.ai_chat_turns'::regclass
+          and conname = 'ai_chat_turns_session_action_check'
+      )
+      and exists (
+        select 1
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'deploy_internal'
+          and c.relname = 'backfill_progress'
+          and c.relkind = 'r'
+          and pg_get_userbyid(c.relowner) = current_user
+          and c.relrowsecurity
+          and c.relforcerowsecurity
+          and not exists (
+            select 1
+            from aclexplode(
+              coalesce(c.relacl, acldefault('r', c.relowner))
+            ) acl
+            where acl.grantee <> c.relowner
+          )
+      )
+  ")" || die "cannot inspect the telemetry backfill schema"
+  [[ "$schema_ready" == "t" ]] ||
+    die "telemetry backfill migration is ledgered but its schema is incomplete"
+
+  db -Atqc "
+    insert into deploy_internal.backfill_progress(
+      task_name, migration_version
+    ) values (
+      '$AI_TURN_TELEMETRY_BACKFILL_TASK',
+      '$AI_TURN_TELEMETRY_BACKFILL_VERSION'
+    ) on conflict (task_name) do nothing
+  " >/dev/null || die "cannot initialize telemetry backfill progress"
+  progress_state="$(db_q "
+    select migration_version || '|' || (completed_at is not null)::text
+    from deploy_internal.backfill_progress
+    where task_name = '$AI_TURN_TELEMETRY_BACKFILL_TASK'
+  ")" || die "cannot read telemetry backfill progress"
+  IFS='|' read -r progress_version completed <<< "$progress_state"
+  [[ "$progress_version" == "$AI_TURN_TELEMETRY_BACKFILL_VERSION" ]] ||
+    die "telemetry backfill progress has an unexpected migration version"
+  if [[ "$completed" == "true" ]]; then
+    constraint_validated="$(db_q "
+      select convalidated
+      from pg_constraint
+      where conrelid = 'public.ai_chat_turns'::regclass
+        and conname = 'ai_chat_turns_session_action_check'
+    ")" || die "cannot verify completed telemetry validation"
+    [[ "$constraint_validated" == "t" ]] ||
+      die "telemetry backfill is marked complete without validation"
+    return 0
+  fi
+  [[ "$completed" == "false" ]] ||
+    die "telemetry backfill completion state is invalid"
+
+  while true; do
+    batch_result="$(db_q "
+      with progress as materialized (
+        select cursor_uuid
+        from deploy_internal.backfill_progress
+        where task_name = '$AI_TURN_TELEMETRY_BACKFILL_TASK'
+        for update
+      ), backfill_batch as materialized (
+        select historical_turn.id
+        from public.ai_chat_turns historical_turn
+        cross join progress
+        where historical_turn.accepted_at is null
+          and (
+            progress.cursor_uuid is null
+            or historical_turn.id > progress.cursor_uuid
+          )
+        order by historical_turn.id
+        limit $AI_TURN_TELEMETRY_BACKFILL_BATCH_SIZE
+        for update of historical_turn skip locked
+      ), updated as (
+        update public.ai_chat_turns backfill_turn
+        set accepted_at = backfill_turn.created_at
+        from backfill_batch
+        where backfill_turn.id = backfill_batch.id
+          and backfill_turn.accepted_at is null
+        returning backfill_turn.id
+      ), advanced as (
+        update deploy_internal.backfill_progress task_progress
+        set cursor_uuid = (
+              select updated.id
+              from updated
+              order by updated.id desc
+              limit 1
+            ),
+            updated_at = statement_timestamp()
+        where task_progress.task_name = '$AI_TURN_TELEMETRY_BACKFILL_TASK'
+          and exists (select 1 from updated)
+        returning task_progress.cursor_uuid
+      )
+      select
+        (select count(*) from updated) || '|' ||
+        coalesce(
+          (select cursor_uuid::text from advanced),
+          (select cursor_uuid::text from progress),
+          ''
+        )
+    ")" || die "telemetry backfill batch failed"
+    IFS='|' read -r batch_count cursor_uuid <<< "$batch_result"
+    [[ "$batch_count" =~ ^[0-9]+$ ]] ||
+      die "telemetry backfill returned an invalid batch count"
+    (( batch_count <= AI_TURN_TELEMETRY_BACKFILL_BATCH_SIZE )) ||
+      die "telemetry backfill exceeded its transaction batch bound"
+
+    assert_database_deploy_lease ||
+      die "database deploy lease is no longer provably held during telemetry backfill"
+    [[ "$batch_count" == "0" ]] || continue
+
+    pending="$(db_q "
+      select exists (
+        select 1
+        from public.ai_chat_turns
+        where accepted_at is null
+      )
+    ")" || die "cannot verify telemetry backfill completion"
+    [[ "$pending" == "t" || "$pending" == "f" ]] ||
+      die "telemetry backfill returned an invalid completion state"
+    [[ "$pending" == "t" ]] || break
+    [[ -n "$cursor_uuid" ]] ||
+      die "telemetry backfill made no progress"
+    db -Atqc "
+      update deploy_internal.backfill_progress
+      set cursor_uuid = null,
+          updated_at = statement_timestamp()
+      where task_name = '$AI_TURN_TELEMETRY_BACKFILL_TASK'
+    " >/dev/null || die "cannot restart telemetry backfill cursor"
+    assert_database_deploy_lease ||
+      die "database deploy lease is no longer provably held during telemetry backfill"
+  done
+
+  assert_database_deploy_lease ||
+    die "database deploy lease is no longer provably held before telemetry validation"
+  constraint_validated="$(db_q "
+    select convalidated
+    from pg_constraint
+    where conrelid = 'public.ai_chat_turns'::regclass
+      and conname = 'ai_chat_turns_session_action_check'
+  ")" || die "cannot verify telemetry constraint validation"
+  if [[ "$constraint_validated" == "f" ]]; then
+    db -Atqc "alter table public.ai_chat_turns validate constraint ai_chat_turns_session_action_check" >/dev/null ||
+      die "telemetry constraint validation failed"
+  elif [[ "$constraint_validated" != "t" ]]; then
+    die "telemetry constraint validation state is invalid"
+  fi
+  pending="$(db_q "
+    select
+      exists (
+        select 1
+        from public.ai_chat_turns
+        where accepted_at is null
+      )
+      or not (
+        select convalidated
+        from pg_constraint
+        where conrelid = 'public.ai_chat_turns'::regclass
+          and conname = 'ai_chat_turns_session_action_check'
+      )
+  ")" || die "cannot verify telemetry backfill and validation"
+  [[ "$pending" == "f" ]] ||
+    die "telemetry backfill or validation remains incomplete"
+  assert_database_deploy_lease ||
+    die "database deploy lease is no longer provably held after telemetry validation"
+  db -Atqc "
+    update deploy_internal.backfill_progress
+    set completed_at = coalesce(completed_at, statement_timestamp()),
+        updated_at = statement_timestamp()
+    where task_name = '$AI_TURN_TELEMETRY_BACKFILL_TASK'
+      and completed_at is null
+  " >/dev/null || die "cannot mark telemetry backfill complete"
+  assert_database_deploy_lease ||
+    die "database deploy lease is no longer provably held after telemetry completion"
+  log "AI turn telemetry backfill and validation complete"
 }
 
 atomic_switch_current() {
@@ -1303,6 +1544,7 @@ main() {
   assert_database_deploy_lease
   preflight_migration_ledgers
   apply_migrations
+  run_ai_turn_stage_telemetry_backfill
 
   log "Atomically switching current release to $TARGET_SHA"
   assert_database_deploy_lease

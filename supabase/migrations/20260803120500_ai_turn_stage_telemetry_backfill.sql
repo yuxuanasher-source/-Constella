@@ -16,30 +16,5 @@ before update of
 on public.ai_chat_turns
 for each row execute function public.preserve_ai_chat_turn_updated_at_for_telemetry();
 
-do $$
-declare
-  v_batch_count integer;
-begin
-  loop
-    with backfill_batch as materialized (
-      select historical_turn.id
-      from public.ai_chat_turns historical_turn
-      where historical_turn.accepted_at is null
-      order by historical_turn.created_at, historical_turn.id
-      limit 500
-      for update skip locked
-    )
-    update public.ai_chat_turns backfill_turn
-    set accepted_at = backfill_turn.created_at
-    from backfill_batch
-    where backfill_turn.id = backfill_batch.id
-      and backfill_turn.accepted_at is null;
-
-    get diagnostics v_batch_count = row_count;
-    exit when v_batch_count = 0;
-  end loop;
-end
-$$;
-
-alter table public.ai_chat_turns
-  validate constraint ai_chat_turns_session_action_check;
+-- scripts/deploy.sh backfills accepted_at in separately committed batches,
+-- then validates ai_chat_turns_session_action_check before release activation.

@@ -60,6 +60,7 @@ const [
   standalonePreparer,
   artifactRoundtripVerifier,
   ciWorkflow,
+  telemetryBackfillMigration,
 ] = await Promise.all([
   readFile(join(process.cwd(), "scripts/deploy.sh"), "utf8"),
   readFile(join(process.cwd(), "scripts/verify-release.sh"), "utf8"),
@@ -91,6 +92,13 @@ const [
     "utf8",
   ),
   readFile(join(process.cwd(), ".github/workflows/ci.yml"), "utf8"),
+  readFile(
+    join(
+      process.cwd(),
+      "supabase/migrations/20260803120500_ai_turn_stage_telemetry_backfill.sql",
+    ),
+    "utf8",
+  ),
 ]);
 
 function position(source, marker) {
@@ -643,6 +651,37 @@ test("application release migrations pass expand preflight", async () => {
   }
 });
 
+test("telemetry backfill is runner-owned, bounded, and precedes activation", () => {
+  const main = deploy.slice(position(deploy, "main() {"));
+  const migrations = position(main, "apply_migrations");
+  const backfill = position(main, "run_ai_turn_stage_telemetry_backfill");
+  const activation = position(main, "atomic_switch_current");
+  const runner = deploy.slice(
+    position(deploy, "run_ai_turn_stage_telemetry_backfill()"),
+    position(deploy, "atomic_switch_current()"),
+  );
+
+  assert.ok(migrations < backfill);
+  assert.ok(backfill < activation);
+  assert.match(runner, /limit \$AI_TURN_TELEMETRY_BACKFILL_BATCH_SIZE/);
+  assert.match(runner, /for update(?: of historical_turn)? skip locked/);
+  assert.match(runner, /db_q/);
+  assert.match(runner, /deploy_internal\.backfill_progress/);
+  assert.match(runner, /historical_turn\.id > progress\.cursor_uuid/);
+  assert.match(runner, /completed_at/);
+  assert.match(
+    runner,
+    /validate constraint ai_chat_turns_session_action_check/,
+  );
+  assert.match(runner, /accepted_at is null/);
+  assert.match(runner, /convalidated/);
+  assert.doesNotMatch(telemetryBackfillMigration, /\bdo\s+\$\$/i);
+  assert.doesNotMatch(
+    telemetryBackfillMigration,
+    /validate constraint ai_chat_turns_session_action_check/i,
+  );
+});
+
 test("a second deployment fails immediately while the host lock is held", async (t) => {
   const sandbox = await mkdtemp(join(tmpdir(), "deploy-lock-"));
   t.after(() => rm(sandbox, { recursive: true, force: true }));
@@ -1114,6 +1153,7 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(deploy, /external release record/);
   assert.match(deploy, /supabase_migrations\.schema_migrations/);
   assert.match(deploy, /__atomic_release_bootstrap_v1__/);
+  assert.match(deploy, /deploy_internal\.backfill_progress/);
   assert.match(deploy, /pg_advisory_xact_lock/);
   assert.match(deploy, /write_migration_manifest/);
   assert.match(deploy, /if ! find/);

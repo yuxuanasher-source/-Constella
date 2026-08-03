@@ -1,10 +1,15 @@
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 const container = process.env.AI_TURN_STAGE_TELEMETRY_DB_REGRESSION_CONTAINER;
+const bashBin = [
+  "C:\\Program Files\\Git\\bin\\bash.exe",
+  "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
+  "bash",
+].find((candidate) => candidate === "bash" || existsSync(candidate));
 
 const ids = {
   organization: "a7100000-0000-4000-8000-000000000001",
@@ -317,6 +322,7 @@ describe.runIf(Boolean(container))(
         ).toEqual([Date.parse(storedConcurrent), Date.parse(storedConcurrent)]);
       } finally {
         cleanupTurns(dbContainer);
+        cleanupBackfillProgress(dbContainer);
       }
     }, 30_000);
   },
@@ -388,6 +394,67 @@ function applyTelemetryBackfill(containerName: string) {
     "utf8",
   );
   runSql(containerName, migration);
+  runSql(
+    containerName,
+    `alter table public.ai_chat_turns
+       drop constraint ai_chat_turns_session_action_check;
+     alter table public.ai_chat_turns
+       add constraint ai_chat_turns_session_action_check check (
+         session_action is null or session_action in ('resumed', 'rebuilt')
+       ) not valid;`,
+  );
+  const deployScript = shellPath(join(process.cwd(), "scripts", "deploy.sh"));
+  const result = spawnSync(
+    bashBin ?? "bash",
+    [
+      "-c",
+      [
+        "set -Eeuo pipefail",
+        `export DB_CONTAINER=${shellQuote(containerName)}`,
+        "export DB_NAME=postgres",
+        `source ${shellQuote(deployScript)}`,
+        "emit_internal_ledger_security_sql | db -Atq",
+        `db -Atqc ${shellQuote(
+          "delete from deploy_internal.backfill_progress where task_name = 'ai_turn_stage_telemetry_accepted_at_v1'",
+        )}`,
+        "DB_LEASE_ACTIVE=1",
+        "assert_database_deploy_lease() { :; }",
+        "run_ai_turn_stage_telemetry_backfill",
+      ].join("\n"),
+    ],
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      result.stderr || result.stdout || "telemetry backfill failed",
+    );
+  }
+}
+
+function shellPath(path: string) {
+  const normalized = path.replace(/\\/g, "/");
+  if (process.platform !== "win32") return normalized;
+  return `/${normalized[0].toLowerCase()}${normalized.slice(2)}`;
+}
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function cleanupBackfillProgress(containerName: string) {
+  runSql(
+    containerName,
+    `do $$
+     begin
+       if to_regclass('deploy_internal.backfill_progress') is not null then
+         execute $cleanup$
+           delete from deploy_internal.backfill_progress
+           where task_name = 'ai_turn_stage_telemetry_accepted_at_v1'
+         $cleanup$;
+       end if;
+     end
+     $$;`,
+  );
 }
 
 function cleanupTurns(containerName: string) {
