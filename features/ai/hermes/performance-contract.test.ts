@@ -100,6 +100,13 @@ const gateThresholds = {
   maxFirstDeltaP95Ms: 8_000,
   maxTotalP95Ms: 30_000,
 };
+const forbiddenFixtureClaimKeys = [
+  "gate",
+  "releasegate",
+  "productioncompliance",
+  "productionslocompliance",
+  "slocompliance",
+];
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -272,22 +279,22 @@ describe("Hermes native restoration schema and safety fixture", () => {
 
   it("identifies the local schema fixture without release-gate or production-compliance claims", () => {
     const report = runLocalEvaluation();
-    const normalizedKeys = collectNormalizedKeys(report);
 
     expect(report).toMatchObject({
       harness: "xingyao-hermes-e2e",
       mode: "local",
     });
-    expect(normalizedKeys).not.toEqual(
-      expect.arrayContaining([
-        "gate",
-        "releasegate",
-        "productioncompliance",
-        "productionslocompliance",
-        "slocompliance",
-      ]),
-    );
+    expectNoFixtureProductionClaims(report);
   });
+
+  it.each(forbiddenFixtureClaimKeys)(
+    "rejects a local fixture carrying the single claim field %s",
+    (forbiddenKey) => {
+      expect(() =>
+        expectNoFixtureProductionClaims({ [forbiddenKey]: true }),
+      ).toThrow();
+    },
+  );
 });
 
 describe("Hermes sanitized performance report gate", () => {
@@ -338,9 +345,9 @@ describe("Hermes sanitized performance report gate", () => {
     expect(result.stdout).not.toContain(reportPath);
   });
 
-  it("matches nearest-rank and threshold-equality behavior with the TypeScript gate", () => {
+  it("uses nearest-rank ceil behavior when ranks 95 and 96 differ", () => {
     const samples: PerformanceInputSample[] = Array.from(
-      { length: 100 },
+      { length: 101 },
       (_, index) => ({
         mode: "fast",
         success: true,
@@ -351,17 +358,21 @@ describe("Hermes sanitized performance report gate", () => {
 
     const { result, output } = runParityReport(samples);
 
-    expect(result.status).toBe(0);
+    expect(result.status).toBe(1);
     expect(output.metrics).toMatchObject({
-      firstDeltaP95Ms: 8_000,
-      totalP95Ms: 30_000,
+      firstDeltaP95Ms: 8_001,
+      totalP95Ms: 30_001,
     });
     expect(output).toMatchObject({
-      totalSamples: 100,
-      successfulSamples: 100,
-      firstDeltaSamples: 100,
-      totalLatencySamples: 100,
+      totalSamples: 101,
+      successfulSamples: 101,
+      firstDeltaSamples: 101,
+      totalLatencySamples: 101,
     });
+    expect(output.gate.failures).toEqual([
+      "first_delta_p95_exceeded",
+      "total_p95_exceeded",
+    ]);
   });
 
   it("matches the exact 0.99 success boundary with the TypeScript gate", () => {
@@ -763,4 +774,11 @@ function collectNormalizedKeys(value: unknown): string[] {
     key.toLowerCase().replace(/[^a-z0-9]/g, ""),
     ...collectNormalizedKeys(nestedValue),
   ]);
+}
+
+function expectNoFixtureProductionClaims(value: unknown): void {
+  const normalizedKeys = collectNormalizedKeys(value);
+  for (const forbiddenKey of forbiddenFixtureClaimKeys) {
+    expect(normalizedKeys).not.toContain(forbiddenKey);
+  }
 }
