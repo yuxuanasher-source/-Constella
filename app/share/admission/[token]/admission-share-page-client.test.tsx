@@ -187,7 +187,7 @@ describe("AdmissionSharePageClient", () => {
       screen.queryByText(formalBoard.brand.brandName),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByLabelText("待判断主播 原始录屏播放器"),
+      await screen.findByLabelText("待判断主播 原始录屏播放器"),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "播放录屏" }),

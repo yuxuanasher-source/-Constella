@@ -1062,14 +1062,26 @@ describe("OrganizationBrandCenter", () => {
       target: { value: "商务总监" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存王负责人名片" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("联系名片已更新。")).toBeVisible();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "停用王负责人" }),
+      ).toBeEnabled(),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
       displayName: "王负责人",
       title: "商务总监",
     });
 
     fireEvent.click(screen.getByRole("button", { name: "停用王负责人" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(await screen.findByText("联系名片已停用。")).toBeVisible();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "启用王负责人" }),
+      ).toBeEnabled(),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({
       status: "disabled",
     });
