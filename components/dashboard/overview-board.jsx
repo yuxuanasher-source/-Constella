@@ -565,6 +565,27 @@ function normalizeAiTarget(value) {
   };
 }
 
+const AI_ACTIVE_TURN_STATUSES = new Set([
+  "accepted",
+  "grounding",
+  "generating",
+  "validating",
+]);
+const AI_CONVERSATION_RECOVERY_POLL_MS = 1_000;
+
+function latestActiveConversationTurn(value) {
+  const turns = Array.isArray(value?.turns) ? value.turns : [];
+  return (
+    [...turns]
+      .reverse()
+      .find(
+        (turn) =>
+          typeof turn?.id === "string" &&
+          AI_ACTIVE_TURN_STATUSES.has(turn?.status),
+      ) || null
+  );
+}
+
 function normalizeConversationHistory(value) {
   const turns = Array.isArray(value?.turns) ? value.turns : [];
   const turnByAssistantMessage = new Map(
@@ -3225,6 +3246,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   const conversationEpochRef = React.useRef(0);
   const conversationInitRef = React.useRef(null);
   const conversationCreateRef = React.useRef(null);
+  const conversationRecoveryRef = React.useRef(0);
   const panelMountedRef = React.useRef(true);
   const activeRunRef = React.useRef(null);
   const runProgressRef = React.useRef(runProgress);
@@ -3247,6 +3269,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     void conversationInitRef.current.then(() => refreshConversations());
     return () => {
       panelMountedRef.current = false;
+      conversationRecoveryRef.current += 1;
     };
   }, [conversationStorageKey]);
 
@@ -3261,9 +3284,92 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         },
       ]),
     );
+
+  function applyServerConversationHistory(history, activeId) {
+    if (!panelMountedRef.current || conversationIdRef.current !== activeId) {
+      return null;
+    }
+
+    setMsgs(normalizeConversationHistory(history));
+    setRunProgress({
+      ...createEmptyAiRunProgress(),
+      clarify: normalizePendingClarify(history),
+    });
+
+    const activeTurn = latestActiveConversationTurn(history);
+    if (activeTurn) {
+      setBusy(true);
+      const currentRun = activeRunRef.current;
+      if (!currentRun || currentRun.turnId !== activeTurn.id) {
+        activeRunRef.current = {
+          controller: null,
+          conversationId: activeId,
+          turnId: activeTurn.id,
+          assistantMessageId:
+            typeof activeTurn.assistantMessageId === "string"
+              ? activeTurn.assistantMessageId
+              : "",
+          cancelRequested: false,
+          stopQueued: false,
+          canceling: false,
+          localAbort: false,
+        };
+      }
+      return activeTurn;
+    }
+
+    setBusy(false);
+    if (activeRunRef.current?.conversationId === activeId) {
+      activeRunRef.current = null;
+    }
+    return null;
+  }
+
+  function beginConversationRecovery(activeId) {
+    const recoveryId = conversationRecoveryRef.current + 1;
+    conversationRecoveryRef.current = recoveryId;
+
+    void (async () => {
+      while (
+        panelMountedRef.current &&
+        conversationIdRef.current === activeId &&
+        conversationRecoveryRef.current === recoveryId
+      ) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, AI_CONVERSATION_RECOVERY_POLL_MS),
+        );
+        if (
+          !panelMountedRef.current ||
+          conversationIdRef.current !== activeId ||
+          conversationRecoveryRef.current !== recoveryId
+        ) {
+          return;
+        }
+
+        try {
+          const response = await fetch(
+            `/api/ai/conversations/${encodeURIComponent(activeId)}`,
+            { cache: "no-store" },
+          );
+          const history = await response.json().catch(() => ({}));
+          if (!response.ok || history?.conversation?.id !== activeId) {
+            continue;
+          }
+          if (!applyServerConversationHistory(history, activeId)) {
+            void refreshConversations();
+            return;
+          }
+        } catch {
+          // The authoritative turn keeps running; retry history restoration.
+        }
+      }
+    })();
+  }
+
   async function restoreServerConversation() {
     const clearActiveConversation = () => {
       conversationEpochRef.current += 1;
+      conversationRecoveryRef.current += 1;
       conversationIdRef.current = "";
       if (panelMountedRef.current) {
         setConversationId("");
@@ -3305,16 +3411,13 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
 
       if (conversationIdRef.current !== activeId) {
         conversationEpochRef.current += 1;
+        conversationRecoveryRef.current += 1;
         conversationIdRef.current = activeId;
       }
       if (panelMountedRef.current) {
         setConversationId(activeId);
-        setMsgs(normalizeConversationHistory(history));
-        const pendingClarify = normalizePendingClarify(history);
-        setRunProgress({
-          ...createEmptyAiRunProgress(),
-          clarify: pendingClarify,
-        });
+        const activeTurn = applyServerConversationHistory(history, activeId);
+        if (activeTurn) beginConversationRecovery(activeId);
       }
       saveStoredConversationId(conversationStorageKey, activeId);
       return activeId;
@@ -3359,14 +3462,12 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }
 
       conversationEpochRef.current += 1;
+      conversationRecoveryRef.current += 1;
       conversationIdRef.current = nextId;
       if (panelMountedRef.current) {
         setConversationId(nextId);
-        setMsgs(normalizeConversationHistory(history));
-        setRunProgress({
-          ...createEmptyAiRunProgress(),
-          clarify: normalizePendingClarify(history),
-        });
+        const activeTurn = applyServerConversationHistory(history, nextId);
+        if (activeTurn) beginConversationRecovery(nextId);
         setAttachments([]);
         setAttachmentError("");
       }
@@ -3400,6 +3501,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         throw new Error(payload?.error || "无法创建新会话，请稍后重试");
       }
       conversationEpochRef.current += 1;
+      conversationRecoveryRef.current += 1;
       conversationIdRef.current = nextId;
       if (panelMountedRef.current) {
         setConversationId(nextId);
@@ -3443,6 +3545,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }
 
       conversationEpochRef.current += 1;
+      conversationRecoveryRef.current += 1;
       conversationIdRef.current = nextId;
       if (panelMountedRef.current) {
         setMsgs([]);
@@ -3868,6 +3971,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           }
         : null;
     let acceptedTurn = null;
+    let activeConversationId = "";
+    let backgroundRecoveryStarted = false;
     let userMessagePushed = false;
     const pushUserMessage = () => {
       if (userMessagePushed) return;
@@ -3891,8 +3996,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     try {
       let text = "";
       let meta;
-      const activeConversationId =
-        kind === "ask" ? await ensureServerConversation(userText) : null;
+      activeConversationId =
+        kind === "ask" ? await ensureServerConversation(userText) : "";
       if (askRunControl)
         askRunControl.conversationId = activeConversationId || "";
       pushUserMessage();
@@ -3960,6 +4065,11 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       if (kind === "ask" && activeRunRef.current?.localAbort) {
         return;
       }
+      if (kind === "ask" && acceptedTurn && activeConversationId) {
+        backgroundRecoveryStarted = true;
+        beginConversationRecovery(activeConversationId);
+        return;
+      }
       const errorMessage =
         kind === "ask"
           ? aiPublicText(
@@ -4003,8 +4113,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         push("ai", `⚠ ${errorMessage}`);
       }
     } finally {
-      if (!activeRunRef.current?.localAbort) setBusy(false);
-      activeRunRef.current = null;
+      if (!backgroundRecoveryStarted) {
+        if (!activeRunRef.current?.localAbort) setBusy(false);
+        activeRunRef.current = null;
+      }
       void refreshConversations();
     }
   }

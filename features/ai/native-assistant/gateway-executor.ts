@@ -199,8 +199,6 @@ export function createGatewayTurnExecutor(
         ReturnType<NonNullable<GatewayService["getGatewayState"]>>
       > | null = null;
       let unregisterActiveRun: (() => void) | null = null;
-      let abortListener: (() => void) | null = null;
-      let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
       let activeSessionId: string | null = null;
 
       yield started(input.turn);
@@ -271,18 +269,6 @@ export function createGatewayTurnExecutor(
             ? { parentTurnId: parentTurnId(input.turn)! }
             : {}),
         });
-        abortListener = () => {
-          if (disconnectTimer) return;
-          disconnectTimer = setTimeout(() => {
-            void gateway
-              .interruptSession?.({ sessionId })
-              .catch(() => undefined);
-          }, 2_000);
-        };
-        input.request.signal.addEventListener("abort", abortListener, {
-          once: true,
-        });
-
         yield {
           type: "context.ready",
           conversationId: input.turn.conversationId,
@@ -341,7 +327,10 @@ export function createGatewayTurnExecutor(
         try {
           for await (const gatewayEvent of gateway.submitPrompt({
             sessionId: sessionSetup.session.sessionId,
-            prompt: sessionSetup.context.lastUserMessage,
+            prompt: buildGatewayPrompt({
+              context: sessionSetup.context,
+              summary: state.summary ?? {},
+            }),
             actor:
               recordValue(sessionSetup.context.invocationMetadata, "actor") ??
               options.auth,
@@ -463,10 +452,6 @@ export function createGatewayTurnExecutor(
         }
         yield failedEvent(input.turn, code, true);
       } finally {
-        if (abortListener) {
-          input.request.signal.removeEventListener("abort", abortListener);
-        }
-        if (disconnectTimer) clearTimeout(disconnectTimer);
         unregisterActiveRun?.();
         if (activeSessionId) {
           try {
@@ -478,6 +463,62 @@ export function createGatewayTurnExecutor(
       }
     },
   };
+}
+
+const GATEWAY_CONTEXT_PROMPT_LIMIT = 24_000;
+const GATEWAY_SUMMARY_PROMPT_LIMIT = 6_000;
+
+function buildGatewayPrompt({
+  context,
+  summary,
+}: {
+  context: ConversationGatewayContext;
+  summary: Record<string, unknown>;
+}): string {
+  const currentRequest = context.lastUserMessage.trim();
+  const messages = context.messages.slice();
+  const lastMessage = messages.at(-1);
+  if (
+    lastMessage?.role === "user" &&
+    lastMessage.content.trim() === currentRequest
+  ) {
+    messages.pop();
+  }
+
+  const summaryText = Object.keys(summary).length
+    ? JSON.stringify(summary).slice(0, GATEWAY_SUMMARY_PROMPT_LIMIT)
+    : "";
+  const historyLines = messages.map(
+    (message) => `${message.role.toUpperCase()}: ${message.content.trim()}`,
+  );
+  const fixedLength = currentRequest.length + summaryText.length + 256;
+  let remaining = Math.max(0, GATEWAY_CONTEXT_PROMPT_LIMIT - fixedLength);
+  const recentHistory: string[] = [];
+  for (
+    let index = historyLines.length - 1;
+    index >= 0 && remaining > 0;
+    index -= 1
+  ) {
+    const line = historyLines[index];
+    if (!line) continue;
+    const kept = line.slice(Math.max(0, line.length - remaining));
+    recentHistory.unshift(kept);
+    remaining -= kept.length + 1;
+  }
+
+  if (!summaryText && recentHistory.length === 0) return currentRequest;
+
+  return [
+    "<conversation_context>",
+    ...(summaryText ? ["<summary>", summaryText, "</summary>"] : []),
+    ...(recentHistory.length
+      ? ["<recent_messages>", ...recentHistory, "</recent_messages>"]
+      : []),
+    "</conversation_context>",
+    "<current_request>",
+    currentRequest,
+    "</current_request>",
+  ].join("\n");
 }
 
 async function buildAndCaptureFreshGatewayContext({

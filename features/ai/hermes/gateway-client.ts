@@ -81,6 +81,7 @@ const DEFAULT_TIMEOUTS: HermesGatewayTimeouts = {
   heartbeatMs: 30_000,
 };
 const XINGYAO_GATEWAY_WS_PATH = "/api/xingyao/ws";
+const MAX_EVENT_RECOVERY_ATTEMPTS = 2;
 const XINGYAO_LOOPBACK_WS_URL =
   /^ws:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?(?:\/|\/api\/xingyao\/ws)?$/i;
 
@@ -163,6 +164,7 @@ class HermesGatewayClient implements HermesGatewaySession {
   private closeHandler: ((code: number) => void) | null = null;
   private messageHandler: ((data: WebSocket.RawData) => void) | null = null;
   private errorHandler: ((error: Error) => void) | null = null;
+  private eventRecoveryAttempts = 0;
 
   constructor(options: HermesGatewaySessionOptions) {
     const url = normalizeLoopbackWsUrl(options.config.url);
@@ -176,7 +178,7 @@ class HermesGatewayClient implements HermesGatewaySession {
     this.actorFingerprint = createHermesActorFingerprint(options.actor);
     this.events = {
       [Symbol.asyncIterator]: () => ({
-        next: () => this.nextEvent(),
+        next: () => this.nextEventWithRecovery(),
       }),
     };
   }
@@ -243,6 +245,7 @@ class HermesGatewayClient implements HermesGatewaySession {
   async recover(): Promise<void> {
     this.assertCanReconnect();
     await this.resumeAndLoadInvocationStatus();
+    this.eventError = null;
   }
 
   close(): void {
@@ -491,8 +494,7 @@ class HermesGatewayClient implements HermesGatewaySession {
 
   private attachSocket(socket: WebSocket): void {
     this.messageHandler = (data) => this.handleMessage(data);
-    this.closeHandler = () =>
-      this.rejectPending("hermes_gateway_connection_closed");
+    this.closeHandler = () => this.handleSocketClose(socket);
     this.errorHandler = (error) =>
       this.fatalProtocolFailure(
         this.redactError(error, "hermes_gateway_connection_failed"),
@@ -500,6 +502,16 @@ class HermesGatewayClient implements HermesGatewaySession {
     socket.on("message", this.messageHandler);
     socket.on("close", this.closeHandler);
     socket.on("error", this.errorHandler);
+  }
+
+  private handleSocketClose(socket: WebSocket): void {
+    if (this.socket !== socket || this.closed || this.fatalError) return;
+    const error = this.error("hermes_gateway_connection_closed");
+    this.detachSocket();
+    this.socket = null;
+    this.clearConnectionTimers();
+    this.rejectPendingError(error);
+    this.failEvents(error);
   }
 
   private detachSocket(): void {
@@ -615,6 +627,36 @@ class HermesGatewayClient implements HermesGatewaySession {
     return new Promise((resolve, reject) => {
       this.eventWaiters.push({ resolve, reject });
     });
+  }
+
+  private async nextEventWithRecovery(): Promise<
+    IteratorResult<HermesGatewayEvent>
+  > {
+    while (true) {
+      try {
+        const result = await this.nextEvent();
+        if (!result.done) this.eventRecoveryAttempts = 0;
+        return result;
+      } catch (error) {
+        if (
+          !isRecoverableConnectionError(error) ||
+          this.eventRecoveryAttempts >= MAX_EVENT_RECOVERY_ATTEMPTS
+        ) {
+          throw error;
+        }
+        this.eventRecoveryAttempts += 1;
+        try {
+          await this.recover();
+        } catch (recoveryError) {
+          if (
+            !isRecoverableConnectionError(recoveryError) ||
+            this.eventRecoveryAttempts >= MAX_EVENT_RECOVERY_ATTEMPTS
+          ) {
+            throw recoveryError;
+          }
+        }
+      }
+    }
   }
 
   private failEvents(error: Error): void {
@@ -741,6 +783,13 @@ class HermesGatewayClient implements HermesGatewaySession {
     this.idleTimer = null;
   }
 
+  private clearConnectionTimers(): void {
+    if (this.heartbeatTimer) this.clearTrackedTimer(this.heartbeatTimer);
+    if (this.idleTimer) this.clearTrackedTimer(this.idleTimer);
+    this.heartbeatTimer = null;
+    this.idleTimer = null;
+  }
+
   private error(code: string): Error {
     return new Error(redactText(code, this.sensitiveValues()));
   }
@@ -781,8 +830,7 @@ function normalizeLoopbackWsUrl(value: string): string | null {
       url.password ||
       url.search ||
       url.hash ||
-      (configuredPath !== "" &&
-        configuredPath !== XINGYAO_GATEWAY_WS_PATH)
+      (configuredPath !== "" && configuredPath !== XINGYAO_GATEWAY_WS_PATH)
     ) {
       return null;
     }
@@ -863,4 +911,16 @@ function redactText(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRecoverableConnectionError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    [
+      "hermes_gateway_connection_closed",
+      "hermes_gateway_connect_failed",
+      "hermes_gateway_connect_timeout",
+      "hermes_gateway_ready_timeout",
+    ].includes(error.message)
+  );
 }
