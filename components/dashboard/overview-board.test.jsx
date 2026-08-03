@@ -1216,14 +1216,18 @@ describe("OverviewBoard AI panel", () => {
     ).toBe(true);
   });
 
-  it("rejects malformed terminal SSE envelopes", async () => {
+  it("recovers malformed terminal SSE envelopes from persisted turn state", async () => {
     const encoder = new TextEncoder();
+    let historyCalls = 0;
     const protocolFetch = createConversationProtocolFetch({
       content: "unused",
       conversationId: "conversation-malformed",
     });
     fetch.mockImplementation((url, options) => {
-      if (url === "/api/ai/conversations/conversation-malformed/turns") {
+      if (
+        url === "/api/ai/conversations/conversation-malformed/turns" &&
+        options?.method === "POST"
+      ) {
         return Promise.resolve(
           protocolStreamResponse(encoder, [
             [
@@ -1249,6 +1253,37 @@ describe("OverviewBoard AI panel", () => {
           ]),
         );
       }
+      if (url === "/api/ai/conversations/conversation-malformed") {
+        historyCalls += 1;
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-malformed" },
+              messages: [
+                {
+                  id: "message-user-malformed",
+                  role: "user",
+                  status: "completed",
+                  content: "检查协议",
+                },
+                {
+                  id: "message-assistant-malformed",
+                  role: "assistant",
+                  status: "completed",
+                  content: "Recovered protocol result",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-malformed",
+                  assistantMessageId: "message-assistant-malformed",
+                  status: "completed",
+                },
+              ],
+            }),
+        });
+      }
       return protocolFetch(url, options) || defaultFetchResponse(url);
     });
 
@@ -1266,7 +1301,12 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.change(input, { target: { value: "检查协议" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
 
-    expect(await screen.findByText(/AI 会话连接提前结束/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("Recovered protocol result", undefined, {
+        timeout: 2500,
+      }),
+    ).toBeInTheDocument();
+    expect(historyCalls).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("检查协议")).toBeInTheDocument();
     expect(screen.queryByText(".")).not.toBeInTheDocument();
   });
@@ -1546,6 +1586,82 @@ describe("OverviewBoard AI panel", () => {
     expect(await screen.findByText("远端会话问题")).toBeInTheDocument();
     expect(screen.getByText("⚠ 上游暂时不可用")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+
+  it("polls an active restored turn until its persisted assistant response completes", async () => {
+    let historyCalls = 0;
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversations: [{ id: "conversation-background" }],
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-background") {
+        historyCalls += 1;
+        const completed = historyCalls > 1;
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-background" },
+              messages: [
+                {
+                  id: "message-user-background",
+                  role: "user",
+                  status: "completed",
+                  content: "Keep working in the background",
+                },
+                {
+                  id: "message-assistant-background",
+                  role: "assistant",
+                  status: completed ? "completed" : "streaming",
+                  content: completed ? "Recovered background answer" : "",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-background",
+                  assistantMessageId: "message-assistant-background",
+                  status: completed ? "completed" : "generating",
+                },
+              ],
+            }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+    localStorage.setItem(
+      "jingying-cabin.dashboard.ai.conversation.v1.user-background",
+      "conversation-background",
+    );
+
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-background", name: "123", role: "owner" }}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Keep working in the background"),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("Recovered background answer", undefined, {
+        timeout: 2500,
+      }),
+    ).toBeInTheDocument();
+    expect(historyCalls).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.queryByText("AI response unavailable"),
+    ).not.toBeInTheDocument();
   });
 
   it("redacts unsafe restored assistant content and failed turn summaries", async () => {

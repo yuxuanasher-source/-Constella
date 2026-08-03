@@ -246,10 +246,14 @@ describe("conversation stream adapter", () => {
     await expect(response.text()).rejects.toThrow("terminal state");
   });
 
-  it("interrupts the active native run after a client disconnect grace period", async () => {
+  it("keeps the server turn running and persists its terminal state after the client disconnects", async () => {
     vi.useFakeTimers();
     const abortController = new AbortController();
     const service = serviceDouble({ callOrder: [] });
+    let finishExecution: (() => void) | undefined;
+    const executionFinished = new Promise<void>((resolve) => {
+      finishExecution = resolve;
+    });
     const session = {
       interrupt: vi.fn().mockResolvedValue({ interrupted: true }),
       respondToClarify: vi.fn(),
@@ -264,7 +268,21 @@ describe("conversation stream adapter", () => {
           userMessageId: "message-user-1",
           assistantMessageId: "message-assistant-1",
         };
-        await new Promise(() => undefined);
+        await executionFinished;
+        yield {
+          type: "response.completed",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          messageId: "message-assistant-1",
+          content: "completed in the background",
+          outcome: "complete",
+          evidence: [],
+          missing: [],
+          observationTimes: {
+            firstObservedAt: null,
+            lastObservedAt: null,
+          },
+        };
       }),
     };
     const response = createConversationTurnStream({
@@ -280,18 +298,25 @@ describe("conversation stream adapter", () => {
         sessionId: "session-1",
         session,
       },
-      disconnectGraceMs: 250,
     });
 
     const reader = response.body!.getReader();
     await reader.read();
     abortController.abort();
-    await vi.advanceTimersByTimeAsync(249);
+    await vi.advanceTimersByTimeAsync(2_001);
     expect(session.interrupt).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-
-    expect(session.interrupt).toHaveBeenCalledTimes(1);
     await reader.cancel();
+    finishExecution?.();
+
+    await vi.waitFor(() => {
+      expect(service.verifyTerminalState).toHaveBeenCalledWith(
+        { organizationId: "org-1", userId: "user-1" },
+        "turn-1",
+        expect.objectContaining({ type: "response.completed" }),
+      );
+    });
+    expect(session.interrupt).not.toHaveBeenCalled();
+    expect(session.close).toHaveBeenCalledTimes(1);
   });
 
   it("does not emit terminal SSE unless the matching DB terminal state exists", async () => {

@@ -26,7 +26,9 @@ export type ConversationTurnExecutorInput<TService = unknown> = {
 };
 
 export type ConversationTurnExecutor<TService = unknown> = {
-  execute(input: ConversationTurnExecutorInput<TService>): AsyncIterable<ConversationStreamEvent>;
+  execute(
+    input: ConversationTurnExecutorInput<TService>,
+  ): AsyncIterable<ConversationStreamEvent>;
 };
 
 export function createConversationTurnStream<
@@ -41,7 +43,6 @@ export function createConversationTurnStream<
   executor,
   executeLegacyChat,
   activeRun,
-  disconnectGraceMs,
 }: {
   request: Request;
   actor: ConversationActor;
@@ -57,7 +58,6 @@ export function createConversationTurnStream<
       close?(): void;
     };
   };
-  disconnectGraceMs?: number;
 }): Response {
   if (turn.duplicate) {
     return new Response(
@@ -74,18 +74,22 @@ export function createConversationTurnStream<
   }
 
   const encoder = new TextEncoder();
+  let transportClosed = false;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
       let renewalInFlight = false;
-      let disconnectTimer: ReturnType<typeof setTimeout> | null = null;
       const send = (event: ConversationStreamEvent) => {
-        if (closed) return;
-        controller.enqueue(
-          encoder.encode(
-            `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
-          ),
-        );
+        if (closed || transportClosed) return;
+        try {
+          controller.enqueue(
+            encoder.encode(
+              `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+            ),
+          );
+        } catch {
+          transportClosed = true;
+        }
       };
       const heartbeat = setInterval(() => {
         send({
@@ -104,14 +108,6 @@ export function createConversationTurnStream<
             });
         }
       }, 15_000);
-      const abortListener = () => {
-        if (!activeRun || closed || disconnectTimer) return;
-        disconnectTimer = setTimeout(() => {
-          void activeRun.session.interrupt().catch(() => undefined);
-        }, disconnectGraceMs ?? 2_000);
-      };
-      request.signal.addEventListener("abort", abortListener, { once: true });
-
       try {
         const source =
           executor ??
@@ -139,20 +135,27 @@ export function createConversationTurnStream<
         }
       } catch {
         closed = true;
-        controller.error(new Error("AI terminal state could not be persisted"));
+        if (!transportClosed) {
+          controller.error(
+            new Error("AI terminal state could not be persisted"),
+          );
+        }
         return;
       } finally {
         clearInterval(heartbeat);
-        request.signal.removeEventListener("abort", abortListener);
-        if (disconnectTimer) clearTimeout(disconnectTimer);
         closed = true;
         activeRun?.session.close?.();
-        try {
-          controller.close();
-        } catch {
-          // Client disconnected after terminal persistence.
+        if (!transportClosed) {
+          try {
+            controller.close();
+          } catch {
+            // Client disconnected after terminal persistence.
+          }
         }
       }
+    },
+    cancel() {
+      transportClosed = true;
     },
   });
 

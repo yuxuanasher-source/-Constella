@@ -370,6 +370,70 @@ describe("Hermes Gateway JSON-RPC client", () => {
     );
   });
 
+  it("automatically resumes event delivery after an accepted prompt loses its socket", async () => {
+    const { server, config } = await configuredGateway();
+    servers.push(server);
+    let connectionCount = 0;
+    server.on("connection", (socket) => {
+      connectionCount += 1;
+      socket.send(JSON.stringify(readyEvent()));
+      if (connectionCount === 1) {
+        respondTo(socket, "session.create", { sessionId: SESSION_ID });
+        respondTo(
+          socket,
+          "prompt.submit",
+          { accepted: true, invocationId: INVOCATION_ID },
+          () => {
+            socket.send(
+              JSON.stringify(event("message.complete", 1, { text: "working" })),
+            );
+            socket.close();
+          },
+        );
+        return;
+      }
+      respondTo(socket, "session.resume", {
+        sessionId: SESSION_ID,
+        invocationId: INVOCATION_ID,
+        actorFingerprint: ACTOR_FINGERPRINT,
+      });
+      respondTo(
+        socket,
+        "session.info",
+        {
+          sessionId: SESSION_ID,
+          invocationId: INVOCATION_ID,
+          actorFingerprint: ACTOR_FINGERPRINT,
+          status: "accepted",
+        },
+        () =>
+          socket.send(
+            JSON.stringify(
+              event("turn.terminal", 2, {
+                outcome: "complete",
+                message: "done",
+                metadata: metadata(),
+              }),
+            ),
+          ),
+      );
+    });
+
+    const session = await createHermesGatewaySession(
+      sessionOptions(config, { prompt: "Continue reliably" }),
+    );
+    const events = await collectEvents(session.events, 2);
+
+    expect(events.map((item) => item.params.type)).toEqual([
+      "message.complete",
+      "turn.terminal",
+    ]);
+    expect(connectionCount).toBe(2);
+    expect(
+      server.commands.filter((command) => command.method === "prompt.submit"),
+    ).toHaveLength(1);
+  });
+
   it("resumes recorded and branched sessions instead of creating replacement sessions", async () => {
     const { server, config } = await configuredGateway();
     servers.push(server);
