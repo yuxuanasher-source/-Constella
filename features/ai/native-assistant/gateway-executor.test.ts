@@ -2006,6 +2006,68 @@ describe("native Hermes Gateway executor", () => {
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    "hermes_gateway_unauthorized",
+    "hermes_gateway_capability_invalid",
+    "hermes_gateway_capability_revoked",
+    "hermes_gateway_capability_expired",
+    "hermes_gateway_actor_mismatch",
+    "hermes_gateway_session_mismatch",
+    "hermes_gateway_tenant_mismatch",
+    "hermes_gateway_protocol_rejected",
+  ])(
+    "fails a stored-session resume visibly for non-rebuildable code %s",
+    async (code) => {
+      const service = serviceDouble({
+        messages: [
+          message(turn.userMessageId, 1, "user", "completed", "hello"),
+        ],
+        gatewayState: reusableGatewayState(),
+      });
+      const gateway = gatewayDouble([]);
+      gateway.resumeSession.mockRejectedValueOnce(new HermesGatewayError(code));
+
+      const events = await runExecutor({ service, gateway });
+
+      expect(events.at(-1)).toMatchObject({
+        type: "response.failed",
+        code,
+      });
+      expect(gateway.resumeSession).toHaveBeenCalledTimes(1);
+      expect(gateway.createSession).not.toHaveBeenCalled();
+      expect(gateway.submitPrompt).not.toHaveBeenCalled();
+      expect(service.compareAndSwapGatewayState).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "hermes_gateway_session_not_found",
+    "hermes_gateway_session_expired",
+  ])(
+    "rebuilds a stored session exactly once for lifecycle code %s",
+    async (code) => {
+      const service = serviceDouble({
+        messages: [
+          message(turn.userMessageId, 1, "user", "completed", "hello"),
+        ],
+        gatewayState: reusableGatewayState(),
+      });
+      const gateway = gatewayDouble([
+        { type: "prompt.accepted" },
+        { type: "completed", sessionId: "session-rebuilt" },
+      ]);
+      gateway.resumeSession.mockRejectedValueOnce(new HermesGatewayError(code));
+
+      const events = await runExecutor({ service, gateway });
+
+      expect(events.at(-1)).toMatchObject({ type: "response.completed" });
+      expect(gateway.resumeSession).toHaveBeenCalledTimes(1);
+      expect(gateway.createSession).toHaveBeenCalledTimes(1);
+      expect(service.compareAndSwapGatewayState).toHaveBeenCalledTimes(1);
+      expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("replaces one expired session, CASes the replacement, and submits once", async () => {
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],

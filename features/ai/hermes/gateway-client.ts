@@ -100,6 +100,13 @@ const RECOVERABLE_CONNECTION_ERROR_CODES = new Set([
   "hermes_gateway_connect_timeout",
   "hermes_gateway_ready_timeout",
 ]);
+const SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES = {
+  missing: "hermes_gateway_session_missing",
+  notFound: "hermes_gateway_session_not_found",
+  expired: "hermes_gateway_session_expired",
+  incompatibleAgentSignature: "hermes_gateway_agent_signature_incompatible",
+  incompatibleCheckpoint: "hermes_gateway_checkpoint_incompatible",
+} as const;
 const XINGYAO_LOOPBACK_WS_URL =
   /^ws:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?(?:\/|\/api\/xingyao\/ws)?$/i;
 
@@ -120,6 +127,23 @@ export function isAmbiguousHermesGatewayTransportError(
     error instanceof HermesGatewayError &&
     AMBIGUOUS_TRANSPORT_ERROR_CODES.has(error.code)
   );
+}
+
+export function isHermesGatewaySessionLifecycleRebuildableError(
+  error: unknown,
+): error is HermesGatewayError {
+  if (!(error instanceof HermesGatewayError)) return false;
+
+  switch (error.code) {
+    case SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES.missing:
+    case SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES.notFound:
+    case SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES.expired:
+    case SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES.incompatibleAgentSignature:
+    case SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES.incompatibleCheckpoint:
+      return true;
+    default:
+      return false;
+  }
 }
 
 export function resolveHermesGatewayConfig(

@@ -18,6 +18,7 @@ import {
   createHermesGatewaySession as openHermesGatewaySession,
   HermesGatewayError,
   isAmbiguousHermesGatewayTransportError,
+  isHermesGatewaySessionLifecycleRebuildableError,
   resolveHermesGatewayConfig as resolveOfficialHermesGatewayConfig,
   type HermesGatewayByteAttachment,
   type HermesGatewayClientConfig,
@@ -583,7 +584,10 @@ async function prepareGatewaySession({
         sessionId: state.sessionId,
       });
       action = "resumed";
-    } catch {
+    } catch (error) {
+      if (!isHermesGatewaySessionLifecycleRebuildableError(error)) {
+        throw error;
+      }
       session = await createGatewaySession(gateway, createInput);
     }
   } else {
@@ -765,7 +769,8 @@ async function resumeGatewaySession(
   }
   try {
     return await gateway.resumeSession(input);
-  } catch {
+  } catch (error) {
+    if (error instanceof HermesGatewayError) throw error;
     throw new GatewayExecutionError("gateway_session_resume_failed");
   }
 }
@@ -1124,6 +1129,9 @@ async function buildAndCaptureFreshGatewayContext({
     }
   } catch (error) {
     if (error instanceof GatewayExecutionError) throw error;
+    if (error instanceof HermesGatewayError) {
+      throw new GatewayExecutionError(error.code);
+    }
     throw new GatewayExecutionError("gateway_session_create_failed");
   }
   const checkpoint: GatewayCheckpoint = {

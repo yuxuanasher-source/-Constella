@@ -63,6 +63,46 @@ it("classifies only typed ambiguous Gateway transport errors as retryable before
   );
 });
 
+it("classifies only typed session lifecycle failures as rebuildable", () => {
+  const moduleExports = gatewayClientModule as Record<string, unknown>;
+  const ErrorType = moduleExports.HermesGatewayError;
+  const classify =
+    moduleExports.isHermesGatewaySessionLifecycleRebuildableError;
+
+  expect(ErrorType).toBeTypeOf("function");
+  expect(classify).toBeTypeOf("function");
+  if (typeof ErrorType !== "function" || typeof classify !== "function") return;
+
+  const GatewayError = ErrorType as new (code: string) => Error & {
+    code: string;
+  };
+  const isRebuildable = classify as (error: unknown) => boolean;
+  for (const code of [
+    "hermes_gateway_session_missing",
+    "hermes_gateway_session_not_found",
+    "hermes_gateway_session_expired",
+    "hermes_gateway_agent_signature_incompatible",
+    "hermes_gateway_checkpoint_incompatible",
+  ]) {
+    expect(isRebuildable(new GatewayError(code))).toBe(true);
+  }
+  for (const code of [
+    "hermes_gateway_unauthorized",
+    "hermes_gateway_capability_invalid",
+    "hermes_gateway_capability_revoked",
+    "hermes_gateway_capability_expired",
+    "hermes_gateway_actor_mismatch",
+    "hermes_gateway_session_mismatch",
+    "hermes_gateway_tenant_mismatch",
+    "hermes_gateway_protocol_rejected",
+  ]) {
+    expect(isRebuildable(new GatewayError(code))).toBe(false);
+  }
+  expect(isRebuildable(new Error("hermes_gateway_session_expired"))).toBe(
+    false,
+  );
+});
+
 describe("Hermes Gateway JSON-RPC client", () => {
   const servers: WebSocketServer[] = [];
   afterEach(async () => {
