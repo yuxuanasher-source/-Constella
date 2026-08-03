@@ -1367,6 +1367,14 @@ describe("native Hermes Gateway executor", () => {
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
       gatewayGeneration: 6,
+      gatewayState: {
+        generation: 6,
+        childSessions: ["session-child-1"],
+        summary: { sensitive: "must not be copied" },
+        summaryVersion: 9,
+        organizationId: actor.organizationId,
+        arbitraryMixedProviderState: true,
+      },
     });
     const clarifyId = "55555555-5555-4555-8555-555555555555";
     const gateway = gatewayDouble([
@@ -1388,6 +1396,7 @@ describe("native Hermes Gateway executor", () => {
       auth: { ...actor, role: "finance" },
       provider: "hermes",
       model: "hermes-official-gateway",
+      now: () => new Date("2026-08-03T16:00:00.000Z"),
     });
 
     const events = await collect(
@@ -1409,12 +1418,17 @@ describe("native Hermes Gateway executor", () => {
         allowFreeText: false,
       }),
     );
-    expect(service.compareAndSwapGatewayState).toHaveBeenCalledWith(
+    expect(service.compareAndSwapGatewayState.mock.calls[1]).toEqual([
       actor,
       turn.conversationId,
       7,
-      expect.objectContaining({
+      {
         generation: 8,
+        sessionId: "session-rebuilt",
+        provider: "hermes",
+        model: "hermes-official-gateway",
+        lastUsedAt: "2026-08-03T16:00:00.000Z",
+        childSessions: ["session-child-1"],
         pendingClarify: {
           turnId: turn.turnId,
           clarifyId,
@@ -1423,8 +1437,13 @@ describe("native Hermes Gateway executor", () => {
           choices: ["project", "streamer"],
           allowFreeText: false,
         },
-      }),
-    );
+      },
+    ]);
+    const clarifyState = service.compareAndSwapGatewayState.mock.calls[1]?.[3];
+    expect(clarifyState).not.toHaveProperty("summary");
+    expect(clarifyState).not.toHaveProperty("summaryVersion");
+    expect(clarifyState).not.toHaveProperty("organizationId");
+    expect(clarifyState).not.toHaveProperty("arbitraryMixedProviderState");
   });
 
   it("does not interrupt the live Gateway session when only the POST transport aborts", async () => {
@@ -1717,6 +1736,7 @@ describe("native Hermes Gateway executor", () => {
   });
 
   it("preserves only allowlisted transient controls when persisting a reusable session", async () => {
+    const answerSha256 = "a".repeat(64);
     const pendingClarify = {
       turnId: "66666666-6666-4666-8666-666666666666",
       clarifyId: "88888888-8888-4888-8888-888888888888",
@@ -1724,13 +1744,23 @@ describe("native Hermes Gateway executor", () => {
       question: "Which project?",
       choices: ["project", "streamer"],
       allowFreeText: false,
+      response: {
+        clarifyId: "88888888-8888-4888-8888-888888888888",
+        answerSha256,
+      },
     };
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
       gatewayState: {
         ...reusableGatewayState(),
         childSessions: ["session-child-1", "session-child-2"],
-        pendingClarify,
+        pendingClarify: {
+          ...pendingClarify,
+          response: {
+            ...pendingClarify.response,
+            answer: "must-not-persist",
+          },
+        },
         summary: { sensitive: "must not be copied" },
         summaryVersion: 9,
         organizationId: actor.organizationId,

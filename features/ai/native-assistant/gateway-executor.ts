@@ -86,6 +86,10 @@ type GatewayService = {
       question: string;
       choices: string[];
       allowFreeText: boolean;
+      response?: {
+        clarifyId: string;
+        answerSha256?: string;
+      };
     };
   } | null>;
   compareAndSwapGatewayState(
@@ -683,11 +687,10 @@ async function persistPreparedGatewaySession({
 }
 
 function copyGatewayTransientControls(state: GatewayConversationState) {
-  const childSessions = state.childSessions;
   const pendingClarify = state.pendingClarify;
 
   return {
-    ...(childSessions ? { childSessions: [...childSessions] } : {}),
+    ...copyGatewayChildSessionControl(state),
     ...(pendingClarify
       ? {
           pendingClarify: {
@@ -699,9 +702,39 @@ function copyGatewayTransientControls(state: GatewayConversationState) {
             question: pendingClarify.question,
             choices: [...pendingClarify.choices],
             allowFreeText: pendingClarify.allowFreeText,
+            ...(pendingClarify.response
+              ? {
+                  response: {
+                    clarifyId: pendingClarify.response.clarifyId,
+                    ...(pendingClarify.response.answerSha256
+                      ? {
+                          answerSha256: pendingClarify.response.answerSha256,
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
           },
         }
       : {}),
+  };
+}
+
+function copyGatewayChildSessionControl(state: GatewayConversationState) {
+  return state.childSessions ? { childSessions: [...state.childSessions] } : {};
+}
+
+function copyGatewayReusableSessionEnvelope(
+  state: GatewayConversationState,
+  generation: number,
+) {
+  return {
+    generation,
+    ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+    ...(state.checkpointId ? { checkpointId: state.checkpointId } : {}),
+    ...(state.provider ? { provider: state.provider } : {}),
+    ...(state.model ? { model: state.model } : {}),
+    ...(state.lastUsedAt ? { lastUsedAt: state.lastUsedAt } : {}),
   };
 }
 
@@ -1963,16 +1996,17 @@ async function persistGatewayClarifyRequest({
     allowFreeText: event.allowFreeText === true,
   };
   const nextGeneration = state.generation + 1;
+  const nextState = {
+    ...copyGatewayReusableSessionEnvelope(state, nextGeneration),
+    ...copyGatewayChildSessionControl(state),
+    pendingClarify,
+  };
   try {
     await service.compareAndSwapGatewayState(
       actor,
       turn.conversationId,
       state.generation,
-      {
-        ...state,
-        generation: nextGeneration,
-        pendingClarify,
-      },
+      nextState,
     );
   } catch {
     throw new GatewayExecutionError("gateway_state_conflict");
