@@ -135,6 +135,12 @@ describe("evaluateFastTurnGate", () => {
         totalMs: Number.POSITIVE_INFINITY,
       },
     },
+    {
+      sample: { success: true, firstDeltaMs: 10_001, totalMs: 10_000 },
+    },
+    {
+      sample: { success: false, firstDeltaMs: 10_001, totalMs: 10_000 },
+    },
   ])("fails closed for an invalid performance sample: %o", ({ sample }) => {
     const result = evaluateFastTurnGate({
       samples: [sample],

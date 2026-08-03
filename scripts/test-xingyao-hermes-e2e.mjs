@@ -24,6 +24,8 @@ const forbiddenReportKeys = new Set([
   "secret",
   "chainofthought",
 ]);
+const forbiddenGeneratedOutputValuePattern =
+  /(?:api[_-]?key|authorization|bearer|chain[-_ ]?of[-_ ]?thought|credential|password|secret|sk-[a-z0-9_-]+)/i;
 const fastTurnGateThresholds = {
   minSamples: 100,
   minSuccessRate: 0.99,
@@ -406,6 +408,11 @@ function assertNoPromptSecrets(report) {
       "Hermes evaluation report contains prompt secrets or reasoning",
     );
   }
+  if (hasForbiddenGeneratedOutputValue(report)) {
+    throw new Error(
+      "Hermes evaluation report contains a forbidden sensitive value",
+    );
+  }
 }
 
 function loadPerformanceReport(reportPath) {
@@ -449,6 +456,9 @@ function evaluatePerformanceReport(report) {
       totalMs: sample.totalMs,
     }));
   const gate = evaluateFastTurnGate(fastSamples, fastTurnGateThresholds);
+  const successfulSamples = fastSamples.filter(
+    (sample) => sample.success === true,
+  );
   const validSuccessfulSamples = fastSamples.filter(
     (sample) => !isInvalidFastTurnSample(sample) && sample.success,
   );
@@ -462,16 +472,15 @@ function evaluatePerformanceReport(report) {
     mode: "performance-report",
     sampleCount: report.samples.length,
     fastSampleCount: fastSamples.length,
+    totalSamples: fastSamples.length,
+    successfulSamples: successfulSamples.length,
+    firstDeltaSamples: firstDeltaValues.length,
+    totalLatencySamples: totalValues.length,
     metrics: {
       successRate:
         fastSamples.length === 0
           ? 0
-          : Number(
-              (
-                fastSamples.filter((sample) => sample.success).length /
-                fastSamples.length
-              ).toFixed(4),
-            ),
+          : successfulSamples.length / fastSamples.length,
       firstDeltaP95Ms:
         firstDeltaValues.length === 0
           ? null
@@ -556,7 +565,10 @@ function isInvalidFastTurnSample(sample) {
   if (sample.firstDeltaMs === null) {
     return sample.success;
   }
-  return !isNonNegativeFiniteNumber(sample.firstDeltaMs);
+  return (
+    !isNonNegativeFiniteNumber(sample.firstDeltaMs) ||
+    sample.firstDeltaMs > sample.totalMs
+  );
 }
 
 function hasForbiddenReportKey(value) {
@@ -571,6 +583,19 @@ function hasForbiddenReportKey(value) {
       forbiddenReportKeys.has(normalizeReportKey(key)) ||
       hasForbiddenReportKey(nestedValue),
   );
+}
+
+function hasForbiddenGeneratedOutputValue(value) {
+  if (typeof value === "string") {
+    return forbiddenGeneratedOutputValuePattern.test(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some(hasForbiddenGeneratedOutputValue);
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  return Object.values(value).some(hasForbiddenGeneratedOutputValue);
 }
 
 function normalizeReportKey(key) {

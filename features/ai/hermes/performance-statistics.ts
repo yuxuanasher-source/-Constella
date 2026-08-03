@@ -111,7 +111,10 @@ function isInvalidSample(sample: FastTurnPerformanceSample): boolean {
   if (sample.firstDeltaMs === null) {
     return sample.success;
   }
-  return !isNonNegativeFiniteNumber(sample.firstDeltaMs);
+  return (
+    !isNonNegativeFiniteNumber(sample.firstDeltaMs) ||
+    sample.firstDeltaMs > sample.totalMs
+  );
 }
 
 function isNonNegativeFiniteNumber(value: unknown): value is number {
