@@ -47,6 +47,9 @@ begin
   if p_observed_at > statement_timestamp() + interval '5 minutes' then
     raise exception 'ai_chat_turn_stage_observed_at_in_future';
   end if;
+  if p_stage is null then
+    raise exception 'ai_chat_turn_stage_invalid';
+  end if;
   if p_stage not in (
     'accepted',
     'context_ready',
@@ -154,13 +157,13 @@ begin
     when 'terminal' then v_turn.persisted_at
   end;
 
-  -- Permit five seconds of clock skew while rejecting materially inverted stages.
+  -- Preserve observed evidence by rejecting any persisted stage inversion.
   if v_previous is not null
-     and v_candidate < v_previous - interval '5 seconds' then
+     and v_candidate < v_previous then
     raise exception 'ai_chat_turn_stage_before_previous';
   end if;
   if v_next is not null
-     and v_candidate > v_next + interval '5 seconds' then
+     and v_candidate > v_next then
     raise exception 'ai_chat_turn_stage_after_next';
   end if;
 

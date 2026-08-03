@@ -105,7 +105,7 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
   });
 
-  it("records tenant-bound stages under a lock with bounded monotonic timestamps", () => {
+  it("records tenant-bound stages under a lock with strict monotonic timestamps", () => {
     const recordStage = telemetryFunctionSql("record_ai_chat_turn_stage");
 
     expect(recordStage).toContain("security definer");
@@ -123,12 +123,27 @@ describe("Xingyao Hermes native state schema contract", () => {
     );
     expect(recordStage).toContain("p_observed_at is null");
     expect(recordStage).toContain("statement_timestamp() + interval '5 minutes'");
-    expect(recordStage).toContain("interval '5 seconds'");
+    expect(recordStage).not.toContain("interval '5 seconds'");
+    expect(recordStage).toMatch(
+      /v_previous is not null\s+and v_candidate < v_previous then/,
+    );
+    expect(recordStage).toMatch(
+      /v_next is not null\s+and v_candidate > v_next then/,
+    );
     expect(recordStage).toContain("v_turn.accepted_at is null");
     expect(recordStage).toContain("p_stage in ('terminal', 'persisted')");
     expect(recordStage).toMatch(
       /p_stage not in \(\s*'accepted',\s*'context_ready',\s*'session_ready',\s*'agent_ready',\s*'first_delta',\s*'terminal',\s*'persisted'\s*\)/,
     );
+  });
+
+  it("rejects a null stage before SQL enum membership evaluation", () => {
+    const recordStage = telemetryFunctionSql("record_ai_chat_turn_stage");
+
+    expect(recordStage).toMatch(
+      /if p_stage is null then\s+raise exception 'ai_chat_turn_stage_invalid';\s+end if;/,
+    );
+    expectSqlOrder(recordStage, ["p_stage is null", "p_stage not in ("]);
   });
 
   it("keeps stage retries idempotent and returns only sanitized telemetry", () => {
