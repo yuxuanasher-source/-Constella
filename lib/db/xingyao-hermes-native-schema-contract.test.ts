@@ -30,6 +30,17 @@ const telemetryBackfillMigrationPath = join(
 const telemetryBackfillMigration = existsSync(telemetryBackfillMigrationPath)
   ? readFileSync(telemetryBackfillMigrationPath, "utf8").toLowerCase()
   : "";
+const capabilityVerificationMigrationPath = join(
+  process.cwd(),
+  "supabase",
+  "migrations",
+  "20260803121000_ai_hermes_capability_verification.sql",
+);
+const capabilityVerificationMigration = existsSync(
+  capabilityVerificationMigrationPath,
+)
+  ? readFileSync(capabilityVerificationMigrationPath, "utf8").toLowerCase()
+  : "";
 
 function tableSql(tableName: string) {
   const marker = `create table public.${tableName} (`;
@@ -57,6 +68,16 @@ function telemetryFunctionSql(functionName: string) {
     : telemetryMigration.slice(start, end + 4);
 }
 
+function capabilityVerificationFunctionSql(functionName: string) {
+  const marker = `create or replace function public.${functionName}(`;
+  const start = capabilityVerificationMigration.indexOf(marker);
+  if (start < 0) return "";
+  const end = capabilityVerificationMigration.indexOf("\n$$;", start);
+  return end < 0
+    ? capabilityVerificationMigration.slice(start)
+    : capabilityVerificationMigration.slice(start, end + 4);
+}
+
 function expectSqlOrder(sql: string, markers: string[]) {
   const positions = markers.map((marker) => sql.indexOf(marker));
   expect(positions).not.toContain(-1);
@@ -82,6 +103,95 @@ const serviceOnlyFunctions = [
 ] as const;
 
 describe("Xingyao Hermes native state schema contract", () => {
+  it("verifies invocation capabilities atomically under the canonical lock order", () => {
+    expect(existsSync(capabilityVerificationMigrationPath)).toBe(true);
+    expect(capabilityVerificationMigration.split(/\r?\n/)[0]).toBe(
+      "-- deploy: expand",
+    );
+    expect(capabilityVerificationMigration).not.toContain("drop function");
+    const verifyCapability = capabilityVerificationFunctionSql(
+      "verify_ai_hermes_invocation_capability",
+    );
+
+    expect(verifyCapability).toContain("security definer");
+    expect(verifyCapability).toContain("set search_path = pg_catalog, public");
+    expect(verifyCapability).toContain(
+      "lower(coalesce(p_token_sha256, '')) !~ '^[0-9a-f]{64}$'",
+    );
+    expect(verifyCapability).not.toContain("p_capability_token");
+    expectSqlOrder(verifyCapability, [
+      "from public.ai_conversations locked_conversation",
+      "from public.ai_chat_turns locked_turn",
+      "from public.ai_invocations locked_invocation",
+      "perform public.lock_and_validate_ai_hermes_capability_lineage(",
+      "from public.ai_hermes_run_capabilities locked_capability",
+    ]);
+    expect(verifyCapability).toContain("locked_conversation.status = 'active'");
+    expect(verifyCapability).toContain(
+      "locked_turn.status in ('accepted', 'grounding', 'generating', 'validating')",
+    );
+    expect(verifyCapability).toContain(
+      "locked_turn.lease_expires_at > clock_timestamp()",
+    );
+    expect(verifyCapability).toContain(
+      "locked_turn.cancel_requested_at is null",
+    );
+    expect(verifyCapability).toContain(
+      "locked_turn.ai_invocation_id = v_capability.root_invocation_id",
+    );
+    expect(verifyCapability).toContain(
+      "locked_invocation.status in ('started', 'queued')",
+    );
+    expect(verifyCapability).toContain(
+      "v_locked_invocation_count <> v_capability.depth + 1",
+    );
+    expect(verifyCapability).toContain(
+      "v_final_lineage_ids is distinct from v_discovered_lineage_ids",
+    );
+    expect(verifyCapability).toContain(
+      "v_final_invocation_ids is distinct from v_discovered_invocation_ids",
+    );
+    expect(verifyCapability).toMatch(
+      /lineage_capability\.revoked_at is not null[\s\S]*?lineage_capability\.expires_at <= clock_timestamp\(\)/,
+    );
+    expect(verifyCapability).toContain(
+      "locked_capability.token_sha256 = lower(p_token_sha256)",
+    );
+    expect(verifyCapability).toContain("locked_capability.revoked_at is null");
+    expect(verifyCapability).toContain(
+      "locked_capability.expires_at > clock_timestamp()",
+    );
+  });
+
+  it("returns only Gateway's sanitized binding and grants execution only to service_role", () => {
+    const verifyCapability = capabilityVerificationFunctionSql(
+      "verify_ai_hermes_invocation_capability",
+    );
+    const signature = "public.verify_ai_hermes_invocation_capability(text)";
+
+    expect(verifyCapability).toMatch(
+      /returns table \(\s*organization_id uuid,\s*owner_user_id uuid,\s*conversation_id uuid,\s*invocation_id uuid,\s*actor_fingerprint text,\s*expires_at timestamptz,\s*revoked_at timestamptz\s*\)/,
+    );
+    for (const forbidden of [
+      "token_sha256 text,",
+      "turn_id uuid,",
+      "root_invocation_id uuid,",
+      "parent_capability_id uuid,",
+      "skill_grants_hash text,",
+    ]) {
+      expect(verifyCapability).not.toContain(forbidden);
+    }
+    expect(capabilityVerificationMigration).toContain(
+      `revoke all on function ${signature} from public, anon, authenticated;`,
+    );
+    expect(capabilityVerificationMigration).toContain(
+      `grant execute on function ${signature} to service_role;`,
+    );
+    expect(capabilityVerificationMigration).not.toMatch(
+      /grant execute on function public\.verify_ai_hermes_invocation_capability\(text\) to (public|anon|authenticated)/,
+    );
+  });
+
   it("adds nullable, first-write turn-stage telemetry without replacing terminal persistence", () => {
     expect(existsSync(telemetryMigrationPath)).toBe(true);
     expect(telemetryMigration.split(/\r?\n/)[0]).toBe("-- deploy: expand");
