@@ -154,7 +154,7 @@ export type ConversationGatewayPendingClarify = {
   allowFreeText: boolean;
   response?: {
     clarifyId: string;
-    answerSha256?: string;
+    answerSha256: string;
   };
 };
 
@@ -920,14 +920,16 @@ function parsePendingClarify(
       )
     : [];
   if (!turnId || !clarifyId || !requestId || !question) return null;
-  const response = isRecord(value.response)
-    ? {
-        clarifyId: stringValue(value.response.clarifyId) ?? clarifyId,
-        ...(stringValue(value.response.answerSha256)
-          ? { answerSha256: stringValue(value.response.answerSha256)! }
-          : {}),
-      }
-    : undefined;
+  const responseClarifyId = isRecord(value.response)
+    ? stringValue(value.response.clarifyId)
+    : null;
+  const responseAnswerSha256 = isRecord(value.response)
+    ? stringValue(value.response.answerSha256)
+    : null;
+  const response =
+    responseClarifyId === clarifyId && isSha256(responseAnswerSha256)
+      ? { clarifyId: responseClarifyId, answerSha256: responseAnswerSha256 }
+      : undefined;
   return {
     turnId,
     clarifyId,
@@ -937,6 +939,10 @@ function parsePendingClarify(
     allowFreeText: value.allowFreeText === true,
     ...(response ? { response } : {}),
   };
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
 function isClarifyClaimStatus(

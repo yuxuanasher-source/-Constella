@@ -1257,6 +1257,7 @@ describe("Hermes state repository", () => {
     ["memory_idempotency_conflict", "idempotency_conflict"],
     ["turn_lease_invalid", "lease_expired"],
     ["hermes_state_conflict", "state_conflict"],
+    ["database connection timed out", "repository_unavailable"],
     ["memory_revision_invalid", "invalid_input"],
     ["capability_parallel_limit_extra", "state_conflict"],
     ["relation public.ai_hermes_memories does not exist", "state_conflict"],

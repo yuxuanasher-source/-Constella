@@ -725,6 +725,11 @@ describe("Xingyao conversation repository", () => {
               question: "Which scope?",
               choices: ["project", "streamer"],
               allowFreeText: false,
+              response: {
+                clarifyId: "00000000-0000-4000-8000-000000000007",
+                answerSha256:
+                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              },
             },
           },
         },
@@ -766,6 +771,11 @@ describe("Xingyao conversation repository", () => {
         question: "Which scope?",
         choices: ["project", "streamer"],
         allowFreeText: false,
+        response: {
+          clarifyId: "00000000-0000-4000-8000-000000000007",
+          answerSha256:
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
       },
     });
     const loaded = await getAiConversationGatewayState(
@@ -809,6 +819,69 @@ describe("Xingyao conversation repository", () => {
     });
     expect(syncEqSummaryVersion).toHaveBeenCalledWith("summary_version", 2);
   });
+
+  it.each([
+    ["arbitrary object", {}],
+    ["missing hash", { clarifyId: "00000000-0000-4000-8000-000000000007" }],
+    [
+      "mismatched clarify id",
+      {
+        clarifyId: "00000000-0000-4000-8000-000000000008",
+        answerSha256:
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+    ],
+    [
+      "malformed hash",
+      {
+        clarifyId: "00000000-0000-4000-8000-000000000007",
+        answerSha256: "not-a-sha256",
+      },
+    ],
+  ])(
+    "omits $name pending clarification response state",
+    async (_name, response) => {
+      const maybeSingle = vi.fn().mockResolvedValue({
+        data: {
+          provider_state: {
+            hermesGateway: {
+              generation: 1,
+              pendingClarify: {
+                turnId: v2Ids.turnId,
+                clarifyId: "00000000-0000-4000-8000-000000000007",
+                requestId: "00000000-0000-4000-8000-000000000007",
+                question: "Which scope?",
+                choices: ["project"],
+                allowFreeText: false,
+                response,
+              },
+            },
+          },
+          summary: {},
+          summary_version: 0,
+        },
+        error: null,
+      });
+      const from = vi.fn(() => ({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle })) })),
+          })),
+        })),
+      }));
+
+      const state = await getAiConversationGatewayState(
+        { from } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: "org-1",
+          ownerUserId: "user-1",
+          conversationId: "conversation-1",
+        },
+      );
+
+      expect(state?.pendingClarify).not.toHaveProperty("response");
+    },
+  );
 
   it("claims clarify responses atomically through the actor-scoped RPC before Gateway control", async () => {
     const rpc = vi.fn().mockResolvedValue({

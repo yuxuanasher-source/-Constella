@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 
+import { WebSocket, WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AiConversationMessageDto } from "../conversation-contracts";
@@ -8,7 +9,17 @@ import {
   type ConversationPersistence,
 } from "../conversation-service";
 import { verifyHermesActorAssertion } from "../hermes/actor-assertion";
+import { createHermesActorFingerprint } from "../hermes/actor-fingerprint";
 import {
+  HERMES_CAPABILITY_MANIFEST_SHA256,
+  HERMES_PROFILE_VERSION,
+  HERMES_PROTOCOL_VERSION,
+  HERMES_UPSTREAM_COMMIT,
+  HERMES_UPSTREAM_TAG,
+} from "../hermes/contracts";
+import { HermesStateRepositoryError } from "../hermes/hermes-state-repository";
+import {
+  createHermesGatewaySession,
   HermesGatewayError,
   type HermesGatewaySession,
   type HermesGatewaySessionOptions,
@@ -882,7 +893,7 @@ describe("native Hermes Gateway executor", () => {
       servicePatch: {
         compareAndSwapGatewayState: vi
           .fn()
-          .mockRejectedValue(new Error("hermes_state_conflict")),
+          .mockRejectedValue(new HermesStateRepositoryError("state_conflict")),
       },
       gatewayEvents: undefined,
       expectedCode: "gateway_state_conflict",
@@ -1133,7 +1144,7 @@ describe("native Hermes Gateway executor", () => {
         reusableGatewayState({ generation: 3, sessionId: "session-winner" }),
       );
     service.compareAndSwapGatewayState.mockRejectedValueOnce(
-      new Error("gateway_state_conflict"),
+      new HermesStateRepositoryError("state_conflict"),
     );
     service.getSourceGatewayCheckpoint.mockResolvedValue({
       sessionId: "session-source",
@@ -1157,6 +1168,9 @@ describe("native Hermes Gateway executor", () => {
     });
 
     expect(gateway.branchSession).toHaveBeenCalledTimes(1);
+    expect(gateway.closeSession).toHaveBeenCalledWith({
+      sessionId: "session-branch",
+    });
     expect(service.getGatewayState).toHaveBeenCalledTimes(2);
     expect(gateway.resumeSession).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1179,6 +1193,77 @@ describe("native Hermes Gateway executor", () => {
       type: "response.completed",
       outcome: "complete",
     });
+  });
+
+  it.each([
+    [
+      "transient database",
+      new HermesStateRepositoryError("repository_unavailable"),
+    ],
+    ["permission", new HermesStateRepositoryError("permission_denied")],
+  ])(
+    "fails a retry branch visibly without discarding it after a %s CAS error",
+    async (_name, casError) => {
+      const service = serviceDouble({
+        messages: [
+          message(turn.userMessageId, 1, "user", "completed", "retry this"),
+        ],
+        gatewayGeneration: 2,
+      });
+      service.compareAndSwapGatewayState.mockRejectedValueOnce(casError);
+      service.getSourceGatewayCheckpoint.mockResolvedValue({
+        sessionId: "session-source",
+        checkpointId: "checkpoint-source",
+        turnId: "source-turn",
+        conversationId: turn.conversationId,
+        ownerUserId: actor.userId,
+        organizationId: actor.organizationId,
+      });
+      const gateway = gatewayDouble([]);
+      gateway.branchSession.mockResolvedValue({ sessionId: "session-branch" });
+      const retryTurn = { ...turn, attempt: 2, retryOfTurnId: "source-turn" };
+
+      const events = await runExecutor({
+        service,
+        gateway,
+        inputTurn: retryTurn,
+      });
+
+      expect(events.at(-1)).toMatchObject({
+        type: "response.failed",
+        code: "gateway_state_persist_failed",
+      });
+      expect(service.getGatewayState).toHaveBeenCalledTimes(1);
+      expect(gateway.closeSession).not.toHaveBeenCalled();
+      expect(gateway.resumeSession).not.toHaveBeenCalled();
+      expect(gateway.submitPrompt).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a typed CAS conflict when the reloaded generation did not advance", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    service.getGatewayState
+      .mockResolvedValueOnce({ generation: 0 })
+      .mockResolvedValueOnce(
+        reusableGatewayState({ generation: 0, sessionId: "session-stale" }),
+      );
+    service.compareAndSwapGatewayState.mockRejectedValueOnce(
+      new HermesStateRepositoryError("state_conflict"),
+    );
+    const gateway = gatewayDouble([]);
+
+    const events = await runExecutor({ service, gateway });
+
+    expect(events.at(-1)).toMatchObject({
+      type: "response.failed",
+      code: "gateway_state_conflict",
+    });
+    expect(service.getGatewayState).toHaveBeenCalledTimes(2);
+    expect(gateway.closeSession).not.toHaveBeenCalled();
+    expect(gateway.resumeSession).not.toHaveBeenCalled();
+    expect(gateway.submitPrompt).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1816,6 +1901,51 @@ describe("native Hermes Gateway executor", () => {
     );
   });
 
+  it.each([
+    {
+      clarifyId: "88888888-8888-4888-8888-888888888888",
+      answerSha256: "not-a-sha256",
+    },
+    {
+      clarifyId: "99999999-9999-4999-8999-999999999999",
+      answerSha256: "a".repeat(64),
+    },
+  ])(
+    "omits invalid answered clarification marker %# from session CAS",
+    async (response) => {
+      const service = serviceDouble({
+        messages: [
+          message(turn.userMessageId, 1, "user", "completed", "hello"),
+        ],
+        gatewayState: reusableGatewayState({
+          pendingClarify: {
+            turnId: turn.turnId,
+            clarifyId: "88888888-8888-4888-8888-888888888888",
+            requestId: "88888888-8888-4888-8888-888888888888",
+            question: "Which project?",
+            choices: ["project"],
+            allowFreeText: false,
+            response,
+          },
+        }),
+      });
+      const gateway = gatewayDouble([
+        { type: "prompt.accepted" },
+        { type: "completed", sessionId: "session-reused" },
+      ]);
+
+      await runExecutor({ service, gateway });
+
+      expect(
+        service.compareAndSwapGatewayState.mock.calls[0]?.[3],
+      ).toMatchObject({
+        pendingClarify: expect.not.objectContaining({
+          response: expect.anything(),
+        }),
+      });
+    },
+  );
+
   it("resumes a valid session with a fresh capability on every turn and submits once", async () => {
     const reusableState = {
       generation: 7,
@@ -1919,7 +2049,7 @@ describe("native Hermes Gateway executor", () => {
         reusableGatewayState({ generation: 1, sessionId: "session-winner" }),
       );
     service.compareAndSwapGatewayState.mockRejectedValueOnce(
-      new Error("gateway_state_conflict"),
+      new HermesStateRepositoryError("state_conflict"),
     );
     const gateway = gatewayDouble([
       { type: "prompt.accepted" },
@@ -1960,6 +2090,43 @@ describe("native Hermes Gateway executor", () => {
     expect(gateway.recoverSession).toHaveBeenCalledTimes(1);
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(2);
   });
+
+  it.each([
+    {
+      name: "recovery proves the prompt was not accepted",
+      recoveryStatus: "idle",
+      expectedSubmitCount: 2,
+      expectedTerminalType: "response.completed",
+    },
+    {
+      name: "recovery proves the prompt was accepted",
+      recoveryStatus: "accepted",
+      expectedSubmitCount: 1,
+      expectedTerminalType: "response.completed",
+    },
+    {
+      name: "Gateway rejects authentication",
+      rejectionCode: "hermes_gateway_unauthorized",
+      expectedSubmitCount: 1,
+      expectedTerminalType: "response.failed",
+    },
+    {
+      name: "Gateway rejects the protocol",
+      rejectionCode: "hermes_gateway_protocol_rejected",
+      expectedSubmitCount: 1,
+      expectedTerminalType: "response.failed",
+    },
+  ])(
+    "preserves submit-once semantics through real client recovery when $name",
+    async (scenario) => {
+      const result = await runRealGatewayCompositionScenario(scenario);
+
+      expect(result.submitCount).toBe(scenario.expectedSubmitCount);
+      expect(result.events.at(-1)).toMatchObject({
+        type: scenario.expectedTerminalType,
+      });
+    },
+  );
 
   it.each([
     [
@@ -2072,7 +2239,7 @@ describe("native Hermes Gateway executor", () => {
         reusableGatewayState({ generation: 1, sessionId: "session-winner" }),
       );
     service.compareAndSwapGatewayState.mockRejectedValueOnce(
-      new Error("gateway_state_conflict"),
+      new HermesStateRepositoryError("state_conflict"),
     );
     const gateway = gatewayDouble([]);
     gateway.resumeSession.mockRejectedValueOnce(new Error("resume failed"));
@@ -2449,6 +2616,7 @@ function gatewayDouble(events: unknown[]) {
     recoverSession: vi.fn().mockImplementation(async function* () {
       for (const event of events) yield event;
     }),
+    closeSession: vi.fn(),
   };
 }
 
@@ -2473,7 +2641,7 @@ async function runExecutor({
   inputTurn = turn,
 }: {
   service: ReturnType<typeof serviceDouble>;
-  gateway: ReturnType<typeof gatewayDouble>;
+  gateway: Parameters<typeof createGatewayTurnExecutor>[0]["gateway"];
   inputTurn?: typeof turn;
 }) {
   const executor = createGatewayTurnExecutor({
@@ -2493,6 +2661,155 @@ async function runExecutor({
       service: {} as never,
     }),
   );
+}
+
+async function runRealGatewayCompositionScenario(scenario: {
+  recoveryStatus?: string;
+  rejectionCode?: string;
+}) {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  const commands: Array<{ method: string }> = [];
+  let actorFingerprint = "";
+
+  server.on("connection", (socket) => {
+    socket.send(JSON.stringify(realGatewayReadyEvent()));
+    socket.on("message", (raw) => {
+      const command = JSON.parse(raw.toString()) as {
+        id: string;
+        method: string;
+      };
+      if (command.method === "ping") return;
+      commands.push(command);
+      if (command.method === "session.create") {
+        sendGatewayRpcResult(socket, command.id, {
+          sessionId: "session-official",
+        });
+        return;
+      }
+      if (command.method === "session.resume") {
+        sendGatewayRpcResult(socket, command.id, {
+          sessionId: "session-official",
+          invocationId: turn.turnId,
+          actorFingerprint,
+        });
+        return;
+      }
+      if (command.method === "session.info") {
+        sendGatewayRpcResult(socket, command.id, {
+          sessionId: "session-official",
+          invocationId: turn.turnId,
+          actorFingerprint,
+          status: scenario.recoveryStatus,
+        });
+        if (scenario.recoveryStatus === "accepted") {
+          socket.send(JSON.stringify(realGatewayTerminalEvent()));
+        }
+        return;
+      }
+      if (command.method !== "prompt.submit") return;
+      if (scenario.rejectionCode) {
+        socket.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: command.id,
+            error: { code: scenario.rejectionCode },
+          }),
+        );
+        return;
+      }
+      const submitCount = commands.filter(
+        (item) => item.method === "prompt.submit",
+      ).length;
+      if (submitCount === 1) {
+        socket.close();
+        return;
+      }
+      sendGatewayRpcResult(socket, command.id, {
+        accepted: true,
+        invocationId: turn.turnId,
+      });
+      socket.send(JSON.stringify(realGatewayTerminalEvent()));
+    });
+  });
+
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("test server");
+  const gateway = createHermesGatewayClient({
+    config: {
+      url: `ws://127.0.0.1:${address.port}`,
+      serviceToken: "gateway-service-token-that-is-long-enough",
+      timeouts: {
+        connectMs: 1_000,
+        readyMs: 1_000,
+        rpcMs: 1_000,
+        idleMs: 1_000,
+        heartbeatMs: 1_000,
+      },
+    },
+    actorAssertionConfig: {
+      baseUrl: "http://127.0.0.1:8788",
+      serviceToken: "runtime-service-token-that-is-long-enough",
+      privateKeyPem: "unused-by-test",
+      keyId: "test-key",
+    },
+    openSession: createHermesGatewaySession,
+    createActorAssertion: vi.fn().mockImplementation(async ({ actor }) => {
+      actorFingerprint = createHermesActorFingerprint(actor);
+      return "actor.assertion";
+    }),
+  });
+
+  try {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    const events = await runExecutor({ service, gateway });
+    return {
+      events,
+      submitCount: commands.filter((item) => item.method === "prompt.submit")
+        .length,
+    };
+  } finally {
+    gateway.closeSession?.({ sessionId: "session-official" });
+    for (const client of server.clients) client.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+function sendGatewayRpcResult(
+  socket: WebSocket,
+  id: string,
+  result: Record<string, unknown>,
+) {
+  socket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
+}
+
+function realGatewayReadyEvent() {
+  return {
+    jsonrpc: "2.0",
+    method: "event",
+    params: {
+      type: "gateway.ready",
+      payload: {
+        status: "ready",
+        upstreamTag: HERMES_UPSTREAM_TAG,
+        upstreamCommit: HERMES_UPSTREAM_COMMIT,
+        forkCommit: "a9c8ea249494075ab7180c7a9df4b07b478d4708",
+        protocolVersion: HERMES_PROTOCOL_VERSION,
+        profileVersion: HERMES_PROFILE_VERSION,
+        capabilityManifestSha256: HERMES_CAPABILITY_MANIFEST_SHA256,
+      },
+    },
+  };
+}
+
+function realGatewayTerminalEvent() {
+  return officialEvent("turn.terminal", {
+    outcome: "complete",
+    message: "done",
+    metadata: gatewayMetadata(),
+  });
 }
 
 function message(

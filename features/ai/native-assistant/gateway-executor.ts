@@ -16,6 +16,7 @@ import type { HermesActorProfile } from "../hermes/contracts";
 import {
   attachHermesGatewayBytes,
   createHermesGatewaySession as openHermesGatewaySession,
+  HermesGatewayError,
   isAmbiguousHermesGatewayTransportError,
   resolveHermesGatewayConfig as resolveOfficialHermesGatewayConfig,
   type HermesGatewayByteAttachment,
@@ -28,6 +29,7 @@ import {
   type HermesToolResultMetadata,
 } from "../hermes/gateway-contracts";
 import { activeHermesRunRegistry } from "../hermes/active-run-registry";
+import { HermesStateRepositoryError } from "../hermes/hermes-state-repository";
 import { HERMES_READ_ENDPOINTS } from "../hermes/read-api";
 import {
   createHermesActorAssertionForRun,
@@ -88,7 +90,7 @@ type GatewayService = {
       allowFreeText: boolean;
       response?: {
         clarifyId: string;
-        answerSha256?: string;
+        answerSha256: string;
       };
     };
   } | null>;
@@ -654,10 +656,17 @@ async function persistPreparedGatewaySession({
       generation: nextState.generation,
       state: { ...state, ...nextState },
     };
-  } catch {
+  } catch (error) {
+    if (
+      !(error instanceof HermesStateRepositoryError) ||
+      error.code !== "state_conflict"
+    ) {
+      throw new GatewayExecutionError("gateway_state_persist_failed");
+    }
     const winner = await service.getGatewayState?.(actor, conversationId);
     if (
       !winner ||
+      winner.generation <= state.generation ||
       !isReusableGatewaySessionState(winner, options, now()) ||
       !resumeInput
     ) {
@@ -702,15 +711,13 @@ function copyGatewayTransientControls(state: GatewayConversationState) {
             question: pendingClarify.question,
             choices: [...pendingClarify.choices],
             allowFreeText: pendingClarify.allowFreeText,
-            ...(pendingClarify.response
+            ...(pendingClarify.response?.clarifyId ===
+              pendingClarify.clarifyId &&
+            isSha256(pendingClarify.response.answerSha256)
               ? {
                   response: {
                     clarifyId: pendingClarify.response.clarifyId,
-                    ...(pendingClarify.response.answerSha256
-                      ? {
-                          answerSha256: pendingClarify.response.answerSha256,
-                        }
-                      : {}),
+                    answerSha256: pendingClarify.response.answerSha256,
                   },
                 }
               : {}),
@@ -1566,6 +1573,7 @@ export function createHermesGatewayClient({
         ) => Promise<unknown>;
       })
     | null = null;
+  let ambiguousPromptSubmitError: HermesGatewayError | null = null;
   return {
     async createSession(input) {
       session = await openOfficialGatewaySession({
@@ -1638,16 +1646,28 @@ export function createHermesGatewayClient({
       if (!session.rpc) {
         throw new GatewayExecutionError("gateway_protocol_failed");
       }
-      const acknowledgement = await session.rpc("prompt.submit", {
-        conversationId:
-          stringValue(input.conversationId) ??
-          gatewayActor(input).conversationId,
-        text: stringValue(input.prompt) ?? "",
-        mode: input.mode === "deep" ? "deep" : "fast",
-      });
+      let acknowledgement: unknown;
+      try {
+        acknowledgement = await session.rpc("prompt.submit", {
+          conversationId:
+            stringValue(input.conversationId) ??
+            gatewayActor(input).conversationId,
+          text: stringValue(input.prompt) ?? "",
+          mode: input.mode === "deep" ? "deep" : "fast",
+        });
+      } catch (error) {
+        ambiguousPromptSubmitError = isAmbiguousHermesGatewayTransportError(
+          error,
+        )
+          ? error
+          : null;
+        throw error;
+      }
       if (!isRecord(acknowledgement) || acknowledgement.accepted !== true) {
+        ambiguousPromptSubmitError = null;
         throw new GatewayExecutionError("gateway_prompt_not_accepted");
       }
+      ambiguousPromptSubmitError = null;
       yield { type: "prompt.accepted" };
       yield* session.events;
     },
@@ -1656,8 +1676,23 @@ export function createHermesGatewayClient({
       if (!sessionId || !session || session.sessionId !== sessionId) {
         throw new GatewayExecutionError("gateway_checkpoint_invalid");
       }
-      await session.recover();
-      await session.waitForAccepted();
+      try {
+        await session.recover();
+        await session.waitForAccepted();
+      } catch (error) {
+        if (
+          ambiguousPromptSubmitError &&
+          error instanceof HermesGatewayError &&
+          error.code === "hermes_gateway_prompt_not_accepted"
+        ) {
+          const transportError = ambiguousPromptSubmitError;
+          ambiguousPromptSubmitError = null;
+          throw transportError;
+        }
+        ambiguousPromptSubmitError = null;
+        throw error;
+      }
+      ambiguousPromptSubmitError = null;
       yield { type: "prompt.accepted" };
       yield* session.events;
     },
@@ -2284,6 +2319,10 @@ function unique(values: string[]): string[] {
 
 function isString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
