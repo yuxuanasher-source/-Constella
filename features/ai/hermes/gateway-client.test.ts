@@ -25,6 +25,43 @@ import {
   resolveHermesGatewayConfig,
   type HermesGatewayClientConfig,
 } from "./gateway-client";
+import * as gatewayClientModule from "./gateway-client";
+
+it("classifies only typed ambiguous Gateway transport errors as retryable before acknowledgement", () => {
+  const moduleExports = gatewayClientModule as Record<string, unknown>;
+  const ErrorType = moduleExports.HermesGatewayError;
+  const classify = moduleExports.isAmbiguousHermesGatewayTransportError;
+
+  expect(ErrorType).toBeTypeOf("function");
+  expect(classify).toBeTypeOf("function");
+  if (typeof ErrorType !== "function" || typeof classify !== "function") return;
+
+  const GatewayError = ErrorType as new (code: string) => Error & {
+    code: string;
+  };
+  const isAmbiguous = classify as (error: unknown) => boolean;
+  for (const code of [
+    "hermes_gateway_connection_closed",
+    "hermes_gateway_rpc_timeout",
+    "hermes_gateway_send_failed",
+  ]) {
+    const error = new GatewayError(code);
+    expect(error.code).toBe(code);
+    expect(isAmbiguous(error)).toBe(true);
+  }
+  for (const code of [
+    "hermes_gateway_prompt_not_accepted",
+    "hermes_gateway_unauthorized",
+    "hermes_gateway_capability_invalid",
+    "hermes_gateway_protocol_rejected",
+    "hermes_gateway_server_rejected",
+  ]) {
+    expect(isAmbiguous(new GatewayError(code))).toBe(false);
+  }
+  expect(isAmbiguous(new Error("hermes_gateway_connection_closed"))).toBe(
+    false,
+  );
+});
 
 describe("Hermes Gateway JSON-RPC client", () => {
   const servers: WebSocketServer[] = [];

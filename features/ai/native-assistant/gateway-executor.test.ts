@@ -8,9 +8,10 @@ import {
   type ConversationPersistence,
 } from "../conversation-service";
 import { verifyHermesActorAssertion } from "../hermes/actor-assertion";
-import type {
-  HermesGatewaySession,
-  HermesGatewaySessionOptions,
+import {
+  HermesGatewayError,
+  type HermesGatewaySession,
+  type HermesGatewaySessionOptions,
 } from "../hermes/gateway-client";
 import {
   createGatewayTurnExecutor,
@@ -1119,6 +1120,67 @@ describe("native Hermes Gateway executor", () => {
     });
   });
 
+  it("reloads and resumes the CAS winner after a retry branch conflict before submitting once", async () => {
+    const service = serviceDouble({
+      messages: [
+        message(turn.userMessageId, 1, "user", "completed", "retry this"),
+      ],
+      gatewayGeneration: 2,
+    });
+    service.getGatewayState
+      .mockResolvedValueOnce({ generation: 2 })
+      .mockResolvedValueOnce(
+        reusableGatewayState({ generation: 3, sessionId: "session-winner" }),
+      );
+    service.compareAndSwapGatewayState.mockRejectedValueOnce(
+      new Error("gateway_state_conflict"),
+    );
+    service.getSourceGatewayCheckpoint.mockResolvedValue({
+      sessionId: "session-source",
+      checkpointId: "checkpoint-source",
+      turnId: "source-turn",
+      conversationId: turn.conversationId,
+      ownerUserId: actor.userId,
+      organizationId: actor.organizationId,
+    });
+    const gateway = gatewayDouble([
+      { type: "prompt.accepted" },
+      { type: "completed", sessionId: "session-winner" },
+    ]);
+    gateway.branchSession.mockResolvedValue({ sessionId: "session-branch" });
+    const retryTurn = { ...turn, attempt: 2, retryOfTurnId: "source-turn" };
+
+    const events = await runExecutor({
+      service,
+      gateway,
+      inputTurn: retryTurn,
+    });
+
+    expect(gateway.branchSession).toHaveBeenCalledTimes(1);
+    expect(service.getGatewayState).toHaveBeenCalledTimes(2);
+    expect(gateway.resumeSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-winner",
+        conversationId: turn.conversationId,
+        invocationCapability: "root-capability-secret",
+        actor: expect.objectContaining({
+          userId: actor.userId,
+          organizationId: actor.organizationId,
+        }),
+        transcript: expect.any(Array),
+        attachments: [],
+      }),
+    );
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(gateway.submitPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-winner" }),
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "response.completed",
+      outcome: "complete",
+    });
+  });
+
   it.each([
     {
       name: "missing branch session id",
@@ -1654,6 +1716,76 @@ describe("native Hermes Gateway executor", () => {
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves only allowlisted transient controls when persisting a reusable session", async () => {
+    const pendingClarify = {
+      turnId: "66666666-6666-4666-8666-666666666666",
+      clarifyId: "88888888-8888-4888-8888-888888888888",
+      requestId: "99999999-9999-4999-8999-999999999999",
+      question: "Which project?",
+      choices: ["project", "streamer"],
+      allowFreeText: false,
+    };
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+      gatewayState: {
+        ...reusableGatewayState(),
+        childSessions: ["session-child-1", "session-child-2"],
+        pendingClarify,
+        summary: { sensitive: "must not be copied" },
+        summaryVersion: 9,
+        organizationId: actor.organizationId,
+        invocationCapability: "must-not-persist",
+        arbitraryMixedProviderState: true,
+      },
+    });
+    const gateway = gatewayDouble([
+      { type: "prompt.accepted" },
+      { type: "completed", sessionId: "session-reused" },
+    ]);
+
+    await runExecutor({ service, gateway });
+
+    expect(service.compareAndSwapGatewayState).toHaveBeenCalledWith(
+      actor,
+      turn.conversationId,
+      4,
+      {
+        generation: 5,
+        sessionId: "session-reused",
+        checkpointId: "checkpoint-4",
+        provider: "hermes",
+        model: "hermes-official-gateway",
+        lastUsedAt: "2026-08-03T16:00:00.000Z",
+        childSessions: ["session-child-1", "session-child-2"],
+        pendingClarify,
+      },
+    );
+    const persisted = service.compareAndSwapGatewayState.mock.calls[0]?.[3];
+    expect(persisted).not.toHaveProperty("summary");
+    expect(persisted).not.toHaveProperty("summaryVersion");
+    expect(persisted).not.toHaveProperty("organizationId");
+    expect(persisted).not.toHaveProperty("invocationCapability");
+    expect(persisted).not.toHaveProperty("arbitraryMixedProviderState");
+    expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an existing empty child-session control list", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+      gatewayState: reusableGatewayState({ childSessions: [] }),
+    });
+    const gateway = gatewayDouble([
+      { type: "prompt.accepted" },
+      { type: "completed", sessionId: "session-reused" },
+    ]);
+
+    await runExecutor({ service, gateway });
+
+    expect(service.compareAndSwapGatewayState.mock.calls[0]?.[3]).toEqual(
+      expect.objectContaining({ childSessions: [] }),
+    );
+  });
+
   it("resumes a valid session with a fresh capability on every turn and submits once", async () => {
     const reusableState = {
       generation: 7,
@@ -1709,6 +1841,7 @@ describe("native Hermes Gateway executor", () => {
       provider: "hermes",
       model: "hermes-official-gateway",
       lastUsedAt: "2026-08-03T16:00:00.000Z",
+      childSessions: [],
     });
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(2);
   });
@@ -1740,6 +1873,7 @@ describe("native Hermes Gateway executor", () => {
         provider: "hermes",
         model: "hermes-official-gateway",
         lastUsedAt: "2026-08-03T16:00:00.000Z",
+        childSessions: [],
       },
     );
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
@@ -1783,7 +1917,9 @@ describe("native Hermes Gateway executor", () => {
     const gateway = gatewayDouble([]);
     gateway.submitPrompt.mockImplementation(async function* () {
       attempts += 1;
-      if (attempts === 1) throw new Error("transport lost before ack");
+      if (attempts === 1) {
+        throw new HermesGatewayError("hermes_gateway_connection_closed");
+      }
       yield { type: "prompt.accepted" };
       yield { type: "completed", sessionId: "session-rebuilt" };
     });
@@ -1794,6 +1930,41 @@ describe("native Hermes Gateway executor", () => {
     expect(gateway.recoverSession).toHaveBeenCalledTimes(1);
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(2);
   });
+
+  it.each([
+    [
+      "negative acknowledgement",
+      new HermesGatewayError("hermes_gateway_prompt_not_accepted"),
+    ],
+    ["authentication", new HermesGatewayError("hermes_gateway_unauthorized")],
+    ["capability", new HermesGatewayError("hermes_gateway_capability_invalid")],
+    ["protocol", new HermesGatewayError("hermes_gateway_protocol_rejected")],
+    ["server", new HermesGatewayError("hermes_gateway_server_rejected")],
+    ["untyped", new Error("definitive submit failure")],
+  ])(
+    "does not retry prompt submission for a definitive %s failure before acknowledgement",
+    async (_name, submitError) => {
+      const service = serviceDouble({
+        messages: [
+          message(turn.userMessageId, 1, "user", "completed", "hello"),
+        ],
+      });
+      const gateway = gatewayDouble([]);
+      gateway.submitPrompt.mockImplementation(async function* () {
+        throw submitError;
+      });
+
+      const events = await runExecutor({ service, gateway });
+
+      expect(events.at(-1)).toMatchObject({
+        type: "response.failed",
+        code: "gateway_stream_failed",
+      });
+      expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(gateway.recoverSession).not.toHaveBeenCalled();
+      expect(gateway.createSession).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("recovers events without resubmitting after Gateway acknowledgement", async () => {
     const service = serviceDouble({
@@ -1843,7 +2014,9 @@ describe("native Hermes Gateway executor", () => {
     const gateway = gatewayDouble([]);
     gateway.submitPrompt.mockImplementation(async function* () {
       attempts += 1;
-      if (attempts === 1) throw new Error("transport lost before ack");
+      if (attempts === 1) {
+        throw new HermesGatewayError("hermes_gateway_connection_closed");
+      }
       yield { type: "prompt.accepted" };
       yield { type: "completed", sessionId: "session-rebuilt" };
     });

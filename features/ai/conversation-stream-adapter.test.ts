@@ -37,6 +37,7 @@ describe("conversation stream adapter", () => {
 
   it("streams events from a typed ConversationTurnExecutor source", async () => {
     const service = serviceDouble({ callOrder: [] });
+    const executeLegacyChat = vi.fn();
     const executor = {
       execute: vi.fn().mockImplementation(async function* () {
         yield {
@@ -62,6 +63,7 @@ describe("conversation stream adapter", () => {
       attachments: [],
       service,
       executor,
+      executeLegacyChat,
     });
 
     const events = parseSseEvents(await response.text());
@@ -75,6 +77,7 @@ describe("conversation stream adapter", () => {
         service,
       }),
     );
+    expect(executeLegacyChat).not.toHaveBeenCalled();
   });
 
   it("maps legacy chat events to typed events and commits before completion", async () => {

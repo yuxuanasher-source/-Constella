@@ -39,6 +39,24 @@ describe("Hermes Gateway v2 runtime contracts", () => {
       }),
     ).toBeNull();
     expect(
+      parseHermesGatewayProviderState({
+        ...state,
+        childSessions: ["session-child"],
+      }),
+    ).toBeNull();
+    expect(
+      parseHermesGatewayProviderState({
+        ...state,
+        pendingClarify: {
+          turnId: "turn-1",
+          clarifyId: "clarify-1",
+          question: "Which project?",
+          choices: ["project"],
+          allowFreeText: false,
+        },
+      }),
+    ).toBeNull();
+    expect(
       parseHermesGatewayProviderState({ ...state, lastUsedAt: "not-a-date" }),
     ).toBeNull();
   });

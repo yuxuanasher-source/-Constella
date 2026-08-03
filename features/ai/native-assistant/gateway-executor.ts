@@ -16,6 +16,7 @@ import type { HermesActorProfile } from "../hermes/contracts";
 import {
   attachHermesGatewayBytes,
   createHermesGatewaySession as openHermesGatewaySession,
+  isAmbiguousHermesGatewayTransportError,
   resolveHermesGatewayConfig as resolveOfficialHermesGatewayConfig,
   type HermesGatewayByteAttachment,
   type HermesGatewayClientConfig,
@@ -77,6 +78,7 @@ type GatewayService = {
     lastUsedAt?: string;
     summary?: Record<string, unknown>;
     summaryVersion?: number;
+    childSessions?: string[];
     pendingClarify?: {
       turnId: string;
       clarifyId: string;
@@ -632,6 +634,7 @@ async function persistPreparedGatewaySession({
     provider: options.provider,
     model: options.model,
     lastUsedAt: now().toISOString(),
+    ...copyGatewayTransientControls(state),
   };
   try {
     await service.compareAndSwapGatewayState(
@@ -677,6 +680,29 @@ async function persistPreparedGatewaySession({
       state: winner,
     };
   }
+}
+
+function copyGatewayTransientControls(state: GatewayConversationState) {
+  const childSessions = state.childSessions;
+  const pendingClarify = state.pendingClarify;
+
+  return {
+    ...(childSessions ? { childSessions: [...childSessions] } : {}),
+    ...(pendingClarify
+      ? {
+          pendingClarify: {
+            turnId: pendingClarify.turnId,
+            clarifyId: pendingClarify.clarifyId,
+            ...(pendingClarify.requestId
+              ? { requestId: pendingClarify.requestId }
+              : {}),
+            question: pendingClarify.question,
+            choices: [...pendingClarify.choices],
+            allowFreeText: pendingClarify.allowFreeText,
+          },
+        }
+      : {}),
+  };
 }
 
 async function createGatewaySession(
@@ -757,6 +783,9 @@ async function* streamGatewayPrompt({
       return;
     } catch (submitError) {
       if (promptAccepted) throw submitError;
+      if (!isAmbiguousHermesGatewayTransportError(submitError)) {
+        throw submitError;
+      }
       if (!gateway.recoverSession) {
         if (submitAttempts >= MAX_PROMPT_SUBMIT_ATTEMPTS) throw submitError;
         continue;
@@ -777,6 +806,9 @@ async function* streamGatewayPrompt({
         if (promptAccepted) return;
       } catch (recoveryError) {
         if (promptAccepted) throw recoveryError;
+        if (!isAmbiguousHermesGatewayTransportError(recoveryError)) {
+          throw recoveryError;
+        }
         if (submitAttempts >= MAX_PROMPT_SUBMIT_ATTEMPTS) throw submitError;
       }
     }
@@ -995,6 +1027,15 @@ async function buildAndCaptureFreshGatewayContext({
     sourceCheckpoint !== null && input.turn.attempt > 1
       ? gateway.branchSession
       : undefined;
+  const sessionInput = {
+    actor: context.actor,
+    conversationId: input.turn.conversationId,
+    invocationCapability: capability.invocationCapability,
+    budget: context.budget,
+    personalMemoryRevision: context.personalMemoryRevision,
+    transcript: context.ledgerTranscript,
+    attachments: normalizeAttachmentUpload(input.attachments),
+  };
   try {
     if (sourceCheckpoint && branchSession) {
       const branched = await branchSession({
@@ -1025,6 +1066,7 @@ async function buildAndCaptureFreshGatewayContext({
         state,
         session: branched,
         action: "rebuilt",
+        resumeInput: sessionInput,
         now,
       });
     } else {
@@ -1036,15 +1078,7 @@ async function buildAndCaptureFreshGatewayContext({
         options,
         capability,
         state,
-        createInput: {
-          actor: context.actor,
-          conversationId: input.turn.conversationId,
-          invocationCapability: capability.invocationCapability,
-          budget: context.budget,
-          personalMemoryRevision: context.personalMemoryRevision,
-          transcript: context.ledgerTranscript,
-          attachments: normalizeAttachmentUpload(input.attachments),
-        },
+        createInput: sessionInput,
         now,
       });
     }

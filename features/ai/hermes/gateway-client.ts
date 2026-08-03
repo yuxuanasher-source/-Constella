@@ -82,8 +82,45 @@ const DEFAULT_TIMEOUTS: HermesGatewayTimeouts = {
 };
 const XINGYAO_GATEWAY_WS_PATH = "/api/xingyao/ws";
 const MAX_EVENT_RECOVERY_ATTEMPTS = 2;
+const AMBIGUOUS_TRANSPORT_ERROR_CODES = new Set([
+  "hermes_gateway_connection_closed",
+  "hermes_gateway_connection_failed",
+  "hermes_gateway_connect_failed",
+  "hermes_gateway_connect_timeout",
+  "hermes_gateway_idle_timeout",
+  "hermes_gateway_not_connected",
+  "hermes_gateway_ready_timeout",
+  "hermes_gateway_rpc_timeout",
+  "hermes_gateway_send_failed",
+]);
+const RECOVERABLE_CONNECTION_ERROR_CODES = new Set([
+  "hermes_gateway_connection_closed",
+  "hermes_gateway_connection_failed",
+  "hermes_gateway_connect_failed",
+  "hermes_gateway_connect_timeout",
+  "hermes_gateway_ready_timeout",
+]);
 const XINGYAO_LOOPBACK_WS_URL =
   /^ws:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?(?:\/|\/api\/xingyao\/ws)?$/i;
+
+export class HermesGatewayError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(code);
+    this.name = "HermesGatewayError";
+    this.code = code;
+  }
+}
+
+export function isAmbiguousHermesGatewayTransportError(
+  error: unknown,
+): error is HermesGatewayError {
+  return (
+    error instanceof HermesGatewayError &&
+    AMBIGUOUS_TRANSPORT_ERROR_CODES.has(error.code)
+  );
+}
 
 export function resolveHermesGatewayConfig(
   env: Record<string, string | undefined> = process.env,
@@ -790,16 +827,17 @@ class HermesGatewayClient implements HermesGatewaySession {
     this.idleTimer = null;
   }
 
-  private error(code: string): Error {
-    return new Error(redactText(code, this.sensitiveValues()));
+  private error(code: string): HermesGatewayError {
+    return new HermesGatewayError(redactText(code, this.sensitiveValues()));
   }
 
-  private redactError(error: unknown, fallbackCode: string): Error {
-    if (!(error instanceof Error)) {
-      return this.error(fallbackCode);
-    }
-    const redacted = redactText(error.message, this.sensitiveValues());
-    return this.error(redacted === error.message ? fallbackCode : redacted);
+  private redactError(
+    error: unknown,
+    fallbackCode: string,
+  ): HermesGatewayError {
+    return error instanceof HermesGatewayError
+      ? error
+      : this.error(fallbackCode);
   }
 
   private sensitiveValues(): string[] {
@@ -877,8 +915,8 @@ function resultSessionId(value: unknown): string | null {
     : null;
 }
 
-function gatewayError(code: string): Error {
-  return new Error(redactText(code));
+function gatewayError(code: string): HermesGatewayError {
+  return new HermesGatewayError(redactText(code));
 }
 
 function safeRpcErrorCode(error: { code?: string; message?: string }): string {
@@ -915,12 +953,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isRecoverableConnectionError(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    [
-      "hermes_gateway_connection_closed",
-      "hermes_gateway_connect_failed",
-      "hermes_gateway_connect_timeout",
-      "hermes_gateway_ready_timeout",
-    ].includes(error.message)
+    error instanceof HermesGatewayError &&
+    RECOVERABLE_CONNECTION_ERROR_CODES.has(error.code)
   );
 }
