@@ -43,12 +43,15 @@ describe("CI workflow contracts", () => {
     );
   });
 
-  it.each(["verify", "database-regression"])(
-    "runs %s on a hosted Ubuntu runner with a 30 minute timeout",
-    (jobName) => {
+  it.each([
+    ["verify", 45],
+    ["database-regression", 30],
+  ] as const)(
+    "runs %s on a hosted Ubuntu runner with a %i minute timeout",
+    (jobName, timeoutMinutes) => {
       const job = extractJob(ciWorkflow, jobName);
       expect(job).toContain("runs-on: ubuntu-latest");
-      expect(job).toContain("timeout-minutes: 30");
+      expect(job).toContain(`timeout-minutes: ${timeoutMinutes}`);
       expect(job).not.toContain("self-hosted");
     },
   );
