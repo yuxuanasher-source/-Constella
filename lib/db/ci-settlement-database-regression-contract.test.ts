@@ -31,6 +31,7 @@ describe("settlement database regression CI contract", () => {
       "run: docker stop supabase_realtime_jingying-cabin",
       "run: pnpm supabase:migrate",
       "run: docker start supabase_realtime_jingying-cabin",
+      "run: pnpm exec vitest run lib/db/organization-brand-postgres-regression.test.ts",
       "run: pnpm exec vitest run lib/db/schema-contract.test.ts",
       "run: docker stop supabase_realtime_jingying-cabin",
       "run: pnpm exec vitest run lib/db/custom-settlement-runtime-upgrade.test.ts",
@@ -65,6 +66,9 @@ describe("settlement database regression CI contract", () => {
     );
     expect(job).toContain(
       "SETTLEMENT_AI_DB_LOCK_REGRESSION_CONTAINER: supabase_db_jingying-cabin",
+    );
+    expect(job).toContain(
+      "ORGANIZATION_BRAND_DB_REGRESSION_CONTAINER: supabase_db_jingying-cabin",
     );
     expect(job).toContain(
       "CUSTOM_SETTLEMENT_RUNTIME_UPGRADE_REGRESSION_CONTAINER: supabase_db_jingying-cabin",

@@ -155,6 +155,11 @@ jobs:
       - name: Restart Realtime
         run: docker start supabase_realtime_jingying-cabin
 
+      - name: Run organization brand database regression
+        env:
+          ORGANIZATION_BRAND_DB_REGRESSION_CONTAINER: supabase_db_jingying-cabin
+        run: pnpm exec vitest run lib/db/organization-brand-postgres-regression.test.ts
+
       - name: Run settlement database regressions
         env:
           CUSTOM_SETTLEMENT_RUNTIME_DB_REGRESSION_CONTAINER: supabase_db_jingying-cabin

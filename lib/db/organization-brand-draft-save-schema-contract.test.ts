@@ -117,6 +117,13 @@ describe("organization brand atomic draft save schema", () => {
     expect(fn).toContain("draft_revision = v_next_draft_revision");
     expect(fn).toContain("updated_by = v_actor_user_id");
     expect(fn).toContain(
+      "update public.organization_brand_drafts as draft_to_update",
+    );
+    expect(fn).toContain(
+      "where draft_to_update.organization_id = p_organization_id",
+    );
+    expect(fn).not.toMatch(/where organization_id = p_organization_id/u);
+    expect(fn).toContain(
       "return query select p_organization_id, v_organization.branding_version, v_next_draft_revision, v_canonical_content, v_updated_at;",
     );
   });

@@ -159,14 +159,14 @@ begin
   );
 
   if v_has_draft then
-    update public.organization_brand_drafts
+    update public.organization_brand_drafts as draft_to_update
     set
       base_version = v_organization.branding_version,
       draft_revision = v_next_draft_revision,
       content = v_canonical_content,
       updated_by = v_actor_user_id,
       updated_at = v_updated_at
-    where organization_id = p_organization_id;
+    where draft_to_update.organization_id = p_organization_id;
   else
     insert into public.organization_brand_drafts (
       organization_id,
