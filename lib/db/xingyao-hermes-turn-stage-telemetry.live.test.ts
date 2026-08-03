@@ -101,32 +101,59 @@ describe.runIf(Boolean(container))(
           beforeAcceptedFallback.updatedAt,
         );
 
+        expect(
+          Number(
+            runSqlText(
+              dbContainer,
+              `select pg_column_size(context_snapshot)
+               from public.ai_chat_turns
+               where id = '${ids.ordinaryUpdate}'::uuid;`,
+            ),
+          ),
+        ).toBeGreaterThan(4 * 1024 * 1024);
         const ordinaryBefore = rowVersion(dbContainer, ids.ordinaryUpdate);
+        runRpc(dbContainer, ids.ordinaryUpdate, "context_ready", 1);
+        const telemetryOnlyAfter = rowVersion(dbContainer, ids.ordinaryUpdate);
+        expect(telemetryOnlyAfter.updatedAt).toBe(ordinaryBefore.updatedAt);
         runSql(
           dbContainer,
           `update public.ai_chat_turns
-           set error_code = 'ordinary-update'
+           set error_code = 'mixed-update',
+               session_ready_at = '${base}'::timestamptz + interval '2 minutes'
            where id = '${ids.ordinaryUpdate}'::uuid;`,
         );
         const ordinaryAfter = rowVersion(dbContainer, ids.ordinaryUpdate);
-        expect(ordinaryAfter.updatedAt).not.toBe(ordinaryBefore.updatedAt);
+        expect(ordinaryAfter.updatedAt).not.toBe(telemetryOnlyAfter.updatedAt);
         expect(
           runSqlText(
             dbContainer,
             `select error_code from public.ai_chat_turns where id = '${ids.ordinaryUpdate}'::uuid;`,
           ),
-        ).toBe("ordinary-update");
+        ).toBe("mixed-update");
+        const touchTrigger = runSqlText(
+          dbContainer,
+          `select lower(pg_get_triggerdef(trigger.oid)) || '|' ||
+                  lower(pg_get_functiondef(trigger.tgfoid))
+           from pg_trigger trigger
+           where trigger.tgrelid = 'public.ai_chat_turns'::regclass
+             and trigger.tgname = 'ai_chat_turns_touch_updated_at';`,
+        );
+        expect(touchTrigger).toContain("before update of");
+        expect(touchTrigger).toContain("context_snapshot");
+        expect(touchTrigger).toContain("error_code");
+        expect(touchTrigger).not.toContain("accepted_at");
+        expect(touchTrigger).not.toContain("session_ready_at");
+        expect(touchTrigger).not.toContain("to_jsonb");
         expect(
           runSqlText(
             dbContainer,
-            `select lower(pg_get_triggerdef(trigger.oid))
-             from pg_trigger trigger
-             where trigger.tgrelid = 'public.ai_chat_turns'::regclass
-               and trigger.tgname = 'zz_ai_chat_turns_preserve_updated_at_for_telemetry';`,
+            `select count(*)
+             from pg_proc procedure
+             join pg_namespace namespace on namespace.oid = procedure.pronamespace
+             where namespace.nspname = 'public'
+               and procedure.proname = 'preserve_ai_chat_turn_updated_at_for_telemetry';`,
           ),
-        ).toContain(
-          "update of accepted_at, context_ready_at, session_ready_at, agent_ready_at, first_delta_at, terminal_at, persisted_at, session_action",
-        );
+        ).toBe("0");
 
         const exact = runRpc(
           dbContainer,
@@ -367,6 +394,15 @@ function seedTurns(containerName: string) {
      from unnest(array[${explicitTurns
        .map((id) => `'${id}'::uuid`)
        .join(", ")}]) as turn_id;
+     update public.ai_chat_turns
+     set context_snapshot = jsonb_build_object(
+       'payload',
+       (
+         select string_agg(md5(value::text), '' order by value)
+         from generate_series(1, 131072) value
+       )
+     )
+     where id = '${ids.ordinaryUpdate}'::uuid;
      insert into public.ai_chat_turns (
        id, organization_id, owner_user_id, conversation_id,
        user_message_id, assistant_message_id, idempotency_key,

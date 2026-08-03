@@ -268,14 +268,21 @@ export function isConversationSessionAction(
   return value === "resumed" || value === "rebuilt";
 }
 
-export function parseCreateTurnCommand(value: unknown): CreateTurnCommand | null {
+export function parseCreateTurnCommand(
+  value: unknown,
+): CreateTurnCommand | null {
   if (!isRecord(value)) {
     return null;
   }
 
   const content = normalizedString(value.content, 12_000);
   const clientRequestId = parseClientRequestId(value.clientRequestId);
-  const mode = value.mode === "deep" ? "deep" : value.mode === "fast" || value.mode == null ? "fast" : null;
+  const mode =
+    value.mode === "deep"
+      ? "deep"
+      : value.mode === "fast" || value.mode == null
+        ? "fast"
+        : null;
   const attachmentResult = sanitizeAiAttachments(value.attachments);
   const attachments = attachmentResult.ok ? attachmentResult.attachments : null;
   if (!content || !clientRequestId || !mode || !attachments) {
@@ -346,7 +353,8 @@ export function isConversationStreamEvent(
         nonEmptyString(value.clarifyId) &&
         nonEmptyString(value.question) &&
         (value.choices == null || isStringArray(value.choices)) &&
-        (value.allowFreeText == null || typeof value.allowFreeText === "boolean")
+        (value.allowFreeText == null ||
+          typeof value.allowFreeText === "boolean")
       );
     case "todo.updated":
       return (

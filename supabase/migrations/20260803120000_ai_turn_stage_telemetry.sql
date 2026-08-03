@@ -16,14 +16,24 @@ alter table public.ai_chat_turns
     session_action is null or session_action in ('resumed', 'rebuilt')
   ) not valid;
 
-create or replace function public.preserve_ai_chat_turn_updated_at_for_telemetry()
-returns trigger
-language plpgsql
-set search_path = pg_catalog, public
-as $$
+drop trigger if exists ai_chat_turns_touch_updated_at
+  on public.ai_chat_turns;
+
+do $ai_chat_turn_touch_trigger$
+declare
+  v_business_columns text;
 begin
-  if (
-    to_jsonb(new) - array[
+  select string_agg(
+    format('%I', attribute.attname),
+    ', ' order by attribute.attnum
+  )
+  into v_business_columns
+  from pg_catalog.pg_attribute attribute
+  where attribute.attrelid = 'public.ai_chat_turns'::pg_catalog.regclass
+    and attribute.attnum > 0
+    and not attribute.attisdropped
+    and attribute.attgenerated = ''
+    and attribute.attname not in (
       'accepted_at',
       'context_ready_at',
       'session_ready_at',
@@ -33,41 +43,18 @@ begin
       'persisted_at',
       'session_action',
       'updated_at'
-    ]
-  ) is not distinct from (
-    to_jsonb(old) - array[
-      'accepted_at',
-      'context_ready_at',
-      'session_ready_at',
-      'agent_ready_at',
-      'first_delta_at',
-      'terminal_at',
-      'persisted_at',
-      'session_action',
-      'updated_at'
-    ]
-  ) then
-    new.updated_at := old.updated_at;
+    );
+
+  if v_business_columns is null then
+    raise exception 'ai_chat_turns_business_columns_required';
   end if;
-  return new;
+
+  execute format(
+    'create trigger ai_chat_turns_touch_updated_at before update of %s on public.ai_chat_turns for each row execute function public.touch_updated_at()',
+    v_business_columns
+  );
 end
-$$;
-
-create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry
-before update of
-  accepted_at,
-  context_ready_at,
-  session_ready_at,
-  agent_ready_at,
-  first_delta_at,
-  terminal_at,
-  persisted_at,
-  session_action
-on public.ai_chat_turns
-for each row execute function public.preserve_ai_chat_turn_updated_at_for_telemetry();
-
-revoke all on function public.preserve_ai_chat_turn_updated_at_for_telemetry()
-  from public, anon, authenticated, service_role;
+$ai_chat_turn_touch_trigger$;
 
 create or replace function public.record_ai_chat_turn_stage(
   p_organization_id uuid,

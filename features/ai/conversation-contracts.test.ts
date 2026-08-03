@@ -62,7 +62,13 @@ describe("Xingyao conversation protocol contracts", () => {
     expect(
       parseCreateTurnCommand({
         ...base,
-        attachments: [{ name: "payload.exe", mimeType: "application/x-msdownload", text: "x" }],
+        attachments: [
+          {
+            name: "payload.exe",
+            mimeType: "application/x-msdownload",
+            text: "x",
+          },
+        ],
       }),
     ).toBeNull();
     expect(
@@ -132,10 +138,14 @@ describe("Xingyao conversation protocol contracts", () => {
   it("allows only forward state-machine transitions", () => {
     expect(canTransitionConversationTurn("accepted", "grounding")).toBe(true);
     expect(canTransitionConversationTurn("grounding", "generating")).toBe(true);
-    expect(canTransitionConversationTurn("generating", "validating")).toBe(true);
+    expect(canTransitionConversationTurn("generating", "validating")).toBe(
+      true,
+    );
     expect(canTransitionConversationTurn("validating", "completed")).toBe(true);
     expect(canTransitionConversationTurn("validating", "failed")).toBe(true);
-    expect(canTransitionConversationTurn("completed", "generating")).toBe(false);
+    expect(canTransitionConversationTurn("completed", "generating")).toBe(
+      false,
+    );
     expect(canTransitionConversationTurn("failed", "completed")).toBe(false);
   });
 
@@ -197,8 +207,19 @@ describe("Xingyao conversation protocol contracts", () => {
     ).toBe(false);
     for (const event of [
       { type: "activity.updated", label: "Reading", status: "running" },
-      { type: "tool.started", toolCallId: "tool-1", toolName: "projects.search", label: "Project search" },
-      { type: "tool.completed", toolCallId: "tool-1", toolName: "projects.search", status: "completed", label: "Project search" },
+      {
+        type: "tool.started",
+        toolCallId: "tool-1",
+        toolName: "projects.search",
+        label: "Project search",
+      },
+      {
+        type: "tool.completed",
+        toolCallId: "tool-1",
+        toolName: "projects.search",
+        status: "completed",
+        label: "Project search",
+      },
       {
         type: "clarify.requested",
         clarifyId: "55555555-5555-4555-8555-555555555555",
@@ -206,8 +227,16 @@ describe("Xingyao conversation protocol contracts", () => {
         choices: ["A", "B"],
         allowFreeText: false,
       },
-      { type: "todo.updated", items: [{ id: "todo-1", label: "Check", status: "done" }] },
-      { type: "subagent.updated", subagentId: "subagent-1", label: "Research", status: "running" },
+      {
+        type: "todo.updated",
+        items: [{ id: "todo-1", label: "Check", status: "done" }],
+      },
+      {
+        type: "subagent.updated",
+        subagentId: "subagent-1",
+        label: "Research",
+        status: "running",
+      },
       { type: "response.cancelled", messageId: "message-1" },
       { type: "heartbeat" },
     ]) {

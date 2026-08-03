@@ -216,7 +216,8 @@ export function createSupabaseConversationPersistence(
       claimAiConversationClarifyResponse(client, input),
     verifyTerminalState: (input) =>
       verifyAiConversationTerminalState(client, input),
-    syncConversationSummary: (input) => syncAiConversationSummary(client, input),
+    syncConversationSummary: (input) =>
+      syncAiConversationSummary(client, input),
     issueRunCapability: (actorSnapshot, turn, binding, expiresAt) =>
       createHermesStateRepository(client).issueRunCapability(
         actorSnapshot,
@@ -855,8 +856,7 @@ export function createConversationService(
         aiStateWritesAllowed: input.aiStateWritesAllowed,
         assertionExpiresAt: new Date(now().getTime() + 300_000),
         runDeadline: new Date(
-          now().getTime() +
-            (input.mode === "deep" ? 300_000 : 90_000),
+          now().getTime() + (input.mode === "deep" ? 300_000 : 90_000),
         ),
         now: now(),
       });
@@ -953,7 +953,13 @@ function parseGatewayCheckpoint(value: unknown): {
   const organizationId = nonEmptyString(value.organizationId);
   const ownerUserId = nonEmptyString(value.ownerUserId);
   const checkpointId = nonEmptyString(value.checkpointId);
-  if (!sessionId || !turnId || !conversationId || !organizationId || !ownerUserId) {
+  if (
+    !sessionId ||
+    !turnId ||
+    !conversationId ||
+    !organizationId ||
+    !ownerUserId
+  ) {
     return null;
   }
   return {

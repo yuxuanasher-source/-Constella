@@ -254,7 +254,9 @@ export async function getAiConversationGatewayState(
     .maybeSingle();
 
   if (error || !isRecord(data)) return null;
-  const providerState = isRecord(data.provider_state) ? data.provider_state : {};
+  const providerState = isRecord(data.provider_state)
+    ? data.provider_state
+    : {};
   const hermesGateway = isRecord(providerState.hermesGateway)
     ? providerState.hermesGateway
     : {};
@@ -885,7 +887,10 @@ function parsePendingClarify(
   const requestId = stringValue(value.requestId) ?? clarifyId;
   const question = stringValue(value.question);
   const choices = Array.isArray(value.choices)
-    ? value.choices.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    ? value.choices.filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0,
+      )
     : [];
   if (!turnId || !clarifyId || !requestId || !question) return null;
   const response = isRecord(value.response)

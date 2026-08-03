@@ -437,7 +437,7 @@ function schemaCacheGeneration(metrics) {
     }
   }, 45_000);
 
-  it("commits telemetry backfill batches separately and resumes after interruption", () => {
+  it("commits telemetry backfill batches separately and resumes after interruption", async () => {
     const suffix = `${process.pid}_${Date.now()}`;
     const database = `codex_telemetry_backfill_${suffix}`;
     let created = false;
@@ -486,19 +486,9 @@ function schemaCacheGeneration(metrics) {
             return new;
           end
           $$;
-          create function public.preserve_telemetry_updated_at()
-          returns trigger language plpgsql as $$
-          begin
-            new.updated_at := old.updated_at;
-            return new;
-          end
-          $$;
           create trigger ai_chat_turns_touch_updated_at
-          before update on public.ai_chat_turns
+          before update of id, created_at on public.ai_chat_turns
           for each row execute function public.touch_updated_at();
-          create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry
-          before update of accepted_at on public.ai_chat_turns
-          for each row execute function public.preserve_telemetry_updated_at();
           insert into public.ai_chat_turns (
             id, created_at, updated_at, accepted_at
           )
@@ -635,6 +625,176 @@ function schemaCacheGeneration(metrics) {
       );
       expect(afterRepeat.status, afterRepeat.stderr).toBe(0);
       expect(afterRepeat.stdout.trim()).toBe(beforeRepeat.stdout.trim());
+
+      const lockedTurnId = "00000000-0000-4000-8000-000000000001";
+      const resetForLockedRestart = psql(
+        database,
+        `update public.ai_chat_turns
+         set accepted_at = null
+         where id = '${lockedTurnId}'::uuid;
+         update deploy_internal.backfill_progress
+         set cursor_uuid = (
+               select id
+               from public.ai_chat_turns
+               order by id desc
+               limit 1
+             ),
+             completed_at = null
+         where task_name = 'ai_turn_stage_telemetry_accepted_at_v1';`,
+      );
+      expect(resetForLockedRestart.status, resetForLockedRestart.stderr).toBe(
+        0,
+      );
+      const advisoryKey = 710000 + (process.pid % 10000);
+      const rowLock = runAsync("docker", [
+        "exec",
+        container,
+        "psql",
+        "-X",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        "postgres",
+        "-d",
+        database,
+        "-Atq",
+        "-c",
+        `begin;
+         select id from public.ai_chat_turns
+         where id = '${lockedTurnId}'::uuid for update;
+         select pg_advisory_xact_lock(${advisoryKey});
+         select pg_sleep(3);
+         commit;`,
+      ]);
+      let rowLockReady = false;
+      for (let attempt = 0; attempt < 20 && !rowLockReady; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const probe = psql(
+          database,
+          `select pg_try_advisory_lock(${advisoryKey});`,
+        );
+        expect(probe.status, probe.stderr).toBe(0);
+        rowLockReady = probe.stdout.trim() === "f";
+      }
+      expect(rowLockReady).toBe(true);
+      const skippedLocked = run(bashBin, [
+        "-c",
+        [
+          "set -Eeuo pipefail",
+          `export DB_CONTAINER=${shellQuote(container)}`,
+          `export DB_NAME=${shellQuote(database)}`,
+          `source ${shellQuote(shellPath(deployScript))}`,
+          "DB_LEASE_ACTIVE=1",
+          "assert_database_deploy_lease() { :; }",
+          "run_ai_turn_stage_telemetry_backfill",
+        ].join("\n"),
+      ]);
+      expect(skippedLocked.status).not.toBe(0);
+      expect(skippedLocked.stderr).toMatch(/made no progress/i);
+      const rowLockResult = await rowLock;
+      expect(rowLockResult.status, rowLockResult.stderr).toBe(0);
+
+      const boundedRestart = run(bashBin, [
+        "-c",
+        [
+          "set -Eeuo pipefail",
+          `export DB_CONTAINER=${shellQuote(container)}`,
+          `export DB_NAME=${shellQuote(database)}`,
+          `source ${shellQuote(shellPath(deployScript))}`,
+          "DB_LEASE_ACTIVE=1",
+          "assert_database_deploy_lease() { :; }",
+          "run_ai_turn_stage_telemetry_backfill",
+        ].join("\n"),
+      ]);
+      expect(boundedRestart.status, boundedRestart.stderr).toBe(0);
+      const caughtLockedRow = psql(
+        database,
+        `select
+           accepted_at = created_at,
+           (
+             select completed_at is not null
+             from deploy_internal.backfill_progress
+             where task_name = 'ai_turn_stage_telemetry_accepted_at_v1'
+           )
+         from public.ai_chat_turns
+         where id = '${lockedTurnId}'::uuid;`,
+      );
+      expect(caughtLockedRow.status, caughtLockedRow.stderr).toBe(0);
+      expect(caughtLockedRow.stdout.trim()).toBe("t|t");
+
+      const resetForValidationLeaseLoss = psql(
+        database,
+        `alter table public.ai_chat_turns
+           drop constraint ai_chat_turns_session_action_check;
+         alter table public.ai_chat_turns
+           add constraint ai_chat_turns_session_action_check check (
+             session_action is null
+             or session_action in ('resumed', 'rebuilt')
+           ) not valid;
+         update deploy_internal.backfill_progress
+         set cursor_uuid = null,
+             completed_at = null
+         where task_name = 'ai_turn_stage_telemetry_accepted_at_v1';`,
+      );
+      expect(
+        resetForValidationLeaseLoss.status,
+        resetForValidationLeaseLoss.stderr,
+      ).toBe(0);
+      const leaseLostBeforeCompletion = run(bashBin, [
+        "-c",
+        [
+          "set -Eeuo pipefail",
+          `export DB_CONTAINER=${shellQuote(container)}`,
+          `export DB_NAME=${shellQuote(database)}`,
+          `source ${shellQuote(shellPath(deployScript))}`,
+          "DB_LEASE_ACTIVE=1",
+          "lease_checks=0",
+          "assert_database_deploy_lease() {",
+          "  lease_checks=$((lease_checks + 1))",
+          "  (( lease_checks < 4 ))",
+          "}",
+          "run_ai_turn_stage_telemetry_backfill",
+        ].join("\n"),
+      ]);
+      expect(leaseLostBeforeCompletion.status).not.toBe(0);
+      expect(leaseLostBeforeCompletion.stderr).toMatch(
+        /lease.*after telemetry validation/i,
+      );
+      const validatedButIncomplete = psql(
+        database,
+        `select
+           (
+             select convalidated
+             from pg_constraint
+             where conrelid = 'public.ai_chat_turns'::regclass
+               and conname = 'ai_chat_turns_session_action_check'
+           ),
+           (
+             select completed_at is null
+             from deploy_internal.backfill_progress
+             where task_name = 'ai_turn_stage_telemetry_accepted_at_v1'
+           );`,
+      );
+      expect(validatedButIncomplete.status, validatedButIncomplete.stderr).toBe(
+        0,
+      );
+      expect(validatedButIncomplete.stdout.trim()).toBe("t|t");
+      const resumeAfterValidationLeaseLoss = run(bashBin, [
+        "-c",
+        [
+          "set -Eeuo pipefail",
+          `export DB_CONTAINER=${shellQuote(container)}`,
+          `export DB_NAME=${shellQuote(database)}`,
+          `source ${shellQuote(shellPath(deployScript))}`,
+          "DB_LEASE_ACTIVE=1",
+          "assert_database_deploy_lease() { :; }",
+          "run_ai_turn_stage_telemetry_backfill",
+        ].join("\n"),
+      ]);
+      expect(
+        resumeAfterValidationLeaseLoss.status,
+        resumeAfterValidationLeaseLoss.stderr,
+      ).toBe(0);
     } finally {
       if (created) {
         expect(database).toMatch(/^codex_telemetry_backfill_[0-9_]+$/);
@@ -703,6 +863,16 @@ function schemaCacheGeneration(metrics) {
             return new;
           end
           $$;
+          create function public.touch_updated_at()
+          returns trigger language plpgsql as $$
+          begin
+            new.updated_at := statement_timestamp();
+            return new;
+          end
+          $$;
+          create trigger ai_chat_turns_touch_updated_at
+          before update on public.ai_chat_turns
+          for each row execute function public.touch_updated_at();
           create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry
           before update on public.ai_chat_turns
           for each row execute function public.preserve_ai_chat_turn_updated_at_for_telemetry();
@@ -733,13 +903,21 @@ function schemaCacheGeneration(metrics) {
           `select
              (select count(*) from supabase_migrations.schema_migrations),
              to_regclass('public.candidate_activation_probe') is null,
-             lower(pg_get_triggerdef(trigger.oid)) like '%before update on public.ai_chat_turns%'
-           from pg_trigger trigger
-           where trigger.tgrelid = 'public.ai_chat_turns'::regclass
-             and trigger.tgname = 'zz_ai_chat_turns_preserve_updated_at_for_telemetry';`,
+             (
+               select lower(pg_get_triggerdef(trigger.oid)) like '%before update on public.ai_chat_turns%'
+               from pg_trigger trigger
+               where trigger.tgrelid = 'public.ai_chat_turns'::regclass
+                 and trigger.tgname = 'ai_chat_turns_touch_updated_at'
+             ),
+             exists (
+               select 1
+               from pg_trigger trigger
+               where trigger.tgrelid = 'public.ai_chat_turns'::regclass
+                 and trigger.tgname = 'zz_ai_chat_turns_preserve_updated_at_for_telemetry'
+             );`,
         );
         expect(rejectedState.status, rejectedState.stderr).toBe(0);
-        expect(rejectedState.stdout.trim()).toBe("0|t|t");
+        expect(rejectedState.stdout.trim()).toBe("0|t|t|t");
       }
 
       const accepted = psql(
@@ -759,13 +937,22 @@ function schemaCacheGeneration(metrics) {
         `select
            (select count(*) from supabase_migrations.schema_migrations),
            to_regclass('public.candidate_activation_probe') is not null,
-           lower(pg_get_triggerdef(trigger.oid)) like '%before update of accepted_at%'
-         from pg_trigger trigger
-         where trigger.tgrelid = 'public.ai_chat_turns'::regclass
-           and trigger.tgname = 'zz_ai_chat_turns_preserve_updated_at_for_telemetry';`,
+           (
+             select lower(pg_get_triggerdef(trigger.oid)) like '%before update of id%'
+             from pg_trigger trigger
+             where trigger.tgrelid = 'public.ai_chat_turns'::regclass
+               and trigger.tgname = 'ai_chat_turns_touch_updated_at'
+           ),
+           not exists (
+             select 1
+             from pg_trigger trigger
+             where trigger.tgrelid = 'public.ai_chat_turns'::regclass
+               and trigger.tgname = 'zz_ai_chat_turns_preserve_updated_at_for_telemetry'
+           ),
+           to_regprocedure('public.preserve_ai_chat_turn_updated_at_for_telemetry()') is null;`,
       );
       expect(acceptedState.status, acceptedState.stderr).toBe(0);
-      expect(acceptedState.stdout.trim()).toBe("1|t|t");
+      expect(acceptedState.stdout.trim()).toBe("1|t|t|t|t");
     } finally {
       if (created) {
         expect(database).toMatch(/^codex_control_gate_[0-9_]+$/);

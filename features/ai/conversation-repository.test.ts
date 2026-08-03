@@ -727,7 +727,11 @@ describe("Xingyao conversation repository", () => {
       },
       error: null,
     });
-    const select = vi.fn(() => ({ eq: vi.fn(() => ({ eq: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle })) })) })) }));
+    const select = vi.fn(() => ({
+      eq: vi.fn(() => ({
+        eq: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle })) })),
+      })),
+    }));
     const fromForGet = vi.fn(() => ({ select }));
 
     await expect(
@@ -755,8 +759,12 @@ describe("Xingyao conversation repository", () => {
       },
     });
 
-    const returns = vi.fn().mockResolvedValue({ data: [{ id: "conversation-1" }], error: null });
-    const syncEqSummaryVersion = vi.fn(() => ({ select: vi.fn(() => ({ returns })) }));
+    const returns = vi
+      .fn()
+      .mockResolvedValue({ data: [{ id: "conversation-1" }], error: null });
+    const syncEqSummaryVersion = vi.fn(() => ({
+      select: vi.fn(() => ({ returns })),
+    }));
     const syncEqOwner = vi.fn(() => ({ eq: syncEqSummaryVersion }));
     const syncEqOrganization = vi.fn(() => ({ eq: syncEqOwner }));
     const syncEqId = vi.fn(() => ({ eq: syncEqOrganization }));

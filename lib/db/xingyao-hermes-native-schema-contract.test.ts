@@ -224,14 +224,32 @@ describe("Xingyao Hermes native state schema contract", () => {
     }
   });
 
-  it("preserves product updated_at for telemetry-only row updates", () => {
-    const preserveUpdatedAt = telemetryFunctionSql(
-      "preserve_ai_chat_turn_updated_at_for_telemetry",
-    );
+  it("keeps telemetry updates off the business updated_at trigger", () => {
+    const telemetrySql = `${telemetryMigration}\n${telemetryBackfillMigration}`;
 
-    expect(preserveUpdatedAt).toContain("returns trigger");
-    expect(preserveUpdatedAt).toContain("to_jsonb(new)");
-    expect(preserveUpdatedAt).toContain("to_jsonb(old)");
+    expect(telemetrySql).not.toContain("to_jsonb(new)");
+    expect(telemetrySql).not.toContain("to_jsonb(old)");
+    expect(telemetrySql).not.toContain(
+      "create or replace function public.preserve_ai_chat_turn_updated_at_for_telemetry",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "drop function if exists public.preserve_ai_chat_turn_updated_at_for_telemetry()",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "drop trigger if exists ai_chat_turns_touch_updated_at",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "from pg_catalog.pg_attribute",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "format('%i', attribute.attname)",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "and not attribute.attisdropped",
+    );
+    expect(telemetryBackfillMigration).toMatch(
+      /create trigger ai_chat_turns_touch_updated_at before update of %s on public\.ai_chat_turns/,
+    );
     for (const column of [
       "accepted_at",
       "context_ready_at",
@@ -243,17 +261,11 @@ describe("Xingyao Hermes native state schema contract", () => {
       "session_action",
       "updated_at",
     ]) {
-      expect(preserveUpdatedAt).toContain(`'${column}'`);
+      expect(telemetryBackfillMigration).toContain(`'${column}'`);
     }
-    expect(preserveUpdatedAt).toContain("new.updated_at := old.updated_at");
-    expect(telemetryMigration).toMatch(
-      /create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry[\s\S]*before update of\s+accepted_at,\s+context_ready_at,\s+session_ready_at,\s+agent_ready_at,\s+first_delta_at,\s+terminal_at,\s+persisted_at,\s+session_action\s+on public\.ai_chat_turns[\s\S]*preserve_ai_chat_turn_updated_at_for_telemetry\(\)/,
-    );
-    expect(telemetryMigration).not.toContain(
-      "before update on public.ai_chat_turns",
-    );
-    expect(telemetryBackfillMigration).toMatch(
-      /create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry[\s\S]*before update of\s+accepted_at,\s+context_ready_at,\s+session_ready_at,\s+agent_ready_at,\s+first_delta_at,\s+terminal_at,\s+persisted_at,\s+session_action\s+on public\.ai_chat_turns/,
+    expect(telemetryBackfillMigration).toContain("v_business_columns is null");
+    expect(telemetryBackfillMigration).not.toContain(
+      "create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry",
     );
   });
 
