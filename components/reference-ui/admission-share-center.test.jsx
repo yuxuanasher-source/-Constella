@@ -612,6 +612,12 @@ describe("AdmissionShareCenter", () => {
   });
 
   it("selects an approved historical version and removes only blocked items", async () => {
+    let finishCandidates;
+    actions.listAdmissionShareCandidates.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishCandidates = resolve;
+      }),
+    );
     actions.preflightAdmissionShareBoard.mockResolvedValueOnce({
       summary: { ready: 1, warning: 0, blocked: 1 },
       items: [
@@ -634,9 +640,11 @@ describe("AdmissionShareCenter", () => {
     expect(
       await screen.findByRole("tab", { name: "录屏库" }),
     ).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: "展开 主播甲 历史版本" }),
-    );
+    const expandHistoricalVersions = screen.findByRole("button", {
+      name: "展开 主播甲 历史版本",
+    });
+    finishCandidates(candidates);
+    fireEvent.click(await expandHistoricalVersions);
     fireEvent.click(screen.getByLabelText("选择 主播甲 V1"));
     fireEvent.click(screen.getByLabelText("选择 主播乙 V2"));
     fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
