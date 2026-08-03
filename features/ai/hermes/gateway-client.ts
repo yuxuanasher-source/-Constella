@@ -452,23 +452,31 @@ class HermesGatewayClient implements HermesGatewaySession {
       { ok: true } | { ok: false; error: Error }
     >((resolve) => {
       const timer = this.timeout("connect", () => {
+        cleanup();
         socket.terminate();
         resolve({
           ok: false,
           error: this.error("hermes_gateway_connect_timeout"),
         });
       });
-      socket.once("open", () => {
+      const cleanup = () => {
         this.clearTrackedTimer(timer);
+        socket.off("open", onOpen);
+        socket.off("error", onError);
+      };
+      const onOpen = () => {
+        cleanup();
         resolve({ ok: true });
-      });
-      socket.once("error", (error) => {
-        this.clearTrackedTimer(timer);
+      };
+      const onError = (error: Error) => {
+        cleanup();
         resolve({
           ok: false,
           error: this.redactError(error, "hermes_gateway_connect_failed"),
         });
-      });
+      };
+      socket.once("open", onOpen);
+      socket.once("error", onError);
     });
     if (!openResult.ok) {
       socket.terminate();
@@ -532,10 +540,7 @@ class HermesGatewayClient implements HermesGatewaySession {
   private attachSocket(socket: WebSocket): void {
     this.messageHandler = (data) => this.handleMessage(data);
     this.closeHandler = () => this.handleSocketClose(socket);
-    this.errorHandler = (error) =>
-      this.fatalProtocolFailure(
-        this.redactError(error, "hermes_gateway_connection_failed"),
-      );
+    this.errorHandler = (error) => this.handleSocketError(socket, error);
     socket.on("message", this.messageHandler);
     socket.on("close", this.closeHandler);
     socket.on("error", this.errorHandler);
@@ -543,9 +548,32 @@ class HermesGatewayClient implements HermesGatewaySession {
 
   private handleSocketClose(socket: WebSocket): void {
     if (this.socket !== socket || this.closed || this.fatalError) return;
-    const error = this.error("hermes_gateway_connection_closed");
+    this.recoverableTransportTeardown(
+      socket,
+      this.error("hermes_gateway_connection_closed"),
+    );
+  }
+
+  private handleSocketError(socket: WebSocket, error: Error): void {
+    if (this.socket !== socket || this.closed || this.fatalError) return;
+    const gatewayError = this.redactError(
+      error,
+      "hermes_gateway_connection_failed",
+    );
+    if (isWebSocketProtocolError(error)) {
+      this.fatalProtocolFailure(gatewayError);
+      return;
+    }
+    this.recoverableTransportTeardown(socket, gatewayError);
+  }
+
+  private recoverableTransportTeardown(
+    socket: WebSocket,
+    error: HermesGatewayError,
+  ): void {
     this.detachSocket();
     this.socket = null;
+    socket.terminate();
     this.clearConnectionTimers();
     this.rejectPendingError(error);
     this.failEvents(error);
@@ -955,5 +983,13 @@ function isRecoverableConnectionError(error: unknown): boolean {
   return (
     error instanceof HermesGatewayError &&
     RECOVERABLE_CONNECTION_ERROR_CODES.has(error.code)
+  );
+}
+
+function isWebSocketProtocolError(error: unknown): boolean {
+  return (
+    isRecord(error) &&
+    typeof error.code === "string" &&
+    error.code.startsWith("WS_ERR_")
   );
 }

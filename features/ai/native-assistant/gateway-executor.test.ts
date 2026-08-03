@@ -2125,6 +2125,10 @@ describe("native Hermes Gateway executor", () => {
       expect(result.events.at(-1)).toMatchObject({
         type: scenario.expectedTerminalType,
       });
+      if (scenario.recoveryStatus) {
+        expect(result.connectionCount).toBe(2);
+        expect(result.listenerCount).toBe(3);
+      }
     },
   );
 
@@ -2670,8 +2674,12 @@ async function runRealGatewayCompositionScenario(scenario: {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   const commands: Array<{ method: string }> = [];
   let actorFingerprint = "";
+  let connectionCount = 0;
+  let realSession: HermesGatewaySession | null = null;
+  let reconnectListenerCount = 0;
 
   server.on("connection", (socket) => {
+    connectionCount += 1;
     socket.send(JSON.stringify(realGatewayReadyEvent()));
     socket.on("message", (raw) => {
       const command = JSON.parse(raw.toString()) as {
@@ -2695,6 +2703,7 @@ async function runRealGatewayCompositionScenario(scenario: {
         return;
       }
       if (command.method === "session.info") {
+        reconnectListenerCount = gatewaySocketListenerCount(realSession);
         sendGatewayRpcResult(socket, command.id, {
           sessionId: "session-official",
           invocationId: turn.turnId,
@@ -2721,7 +2730,7 @@ async function runRealGatewayCompositionScenario(scenario: {
         (item) => item.method === "prompt.submit",
       ).length;
       if (submitCount === 1) {
-        socket.close();
+        errorEstablishedGatewayTransport(realSession);
         return;
       }
       sendGatewayRpcResult(socket, command.id, {
@@ -2753,7 +2762,10 @@ async function runRealGatewayCompositionScenario(scenario: {
       privateKeyPem: "unused-by-test",
       keyId: "test-key",
     },
-    openSession: createHermesGatewaySession,
+    openSession: async (options) => {
+      realSession = await createHermesGatewaySession(options);
+      return realSession;
+    },
     createActorAssertion: vi.fn().mockImplementation(async ({ actor }) => {
       actorFingerprint = createHermesActorFingerprint(actor);
       return "actor.assertion";
@@ -2767,6 +2779,8 @@ async function runRealGatewayCompositionScenario(scenario: {
     const events = await runExecutor({ service, gateway });
     return {
       events,
+      connectionCount,
+      listenerCount: reconnectListenerCount,
       submitCount: commands.filter((item) => item.method === "prompt.submit")
         .length,
     };
@@ -2775,6 +2789,33 @@ async function runRealGatewayCompositionScenario(scenario: {
     for (const client of server.clients) client.terminate();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+}
+
+function gatewaySocketListenerCount(session: HermesGatewaySession | null) {
+  const socket = (
+    session as HermesGatewaySession & {
+      socket?: WebSocket;
+    }
+  )?.socket;
+  return socket
+    ? socket.listenerCount("message") +
+        socket.listenerCount("close") +
+        socket.listenerCount("error")
+    : 0;
+}
+
+function errorEstablishedGatewayTransport(
+  session: HermesGatewaySession | null,
+) {
+  const clientSocket = (
+    session as HermesGatewaySession & {
+      socket?: WebSocket;
+    }
+  )?.socket;
+  const error = Object.assign(new Error("read ECONNRESET"), {
+    code: "ECONNRESET",
+  });
+  clientSocket?.emit("error", error);
 }
 
 function sendGatewayRpcResult(
