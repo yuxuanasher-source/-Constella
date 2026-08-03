@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -41,6 +42,17 @@ const capabilityVerificationMigration = existsSync(
 )
   ? readFileSync(capabilityVerificationMigrationPath, "utf8").toLowerCase()
   : "";
+const structuredMemoryMigrationPath = join(
+  process.cwd(),
+  "supabase",
+  "migrations",
+  "20260803130000_ai_conversation_structured_memory.sql",
+);
+const structuredMemoryMigration = existsSync(structuredMemoryMigrationPath)
+  ? readFileSync(structuredMemoryMigrationPath, "utf8").toLowerCase()
+  : "";
+const structuredMemoryDbContainer =
+  process.env.HERMES_STRUCTURED_MEMORY_DB_REGRESSION_CONTAINER;
 
 function tableSql(tableName: string) {
   const marker = `create table public.${tableName} (`;
@@ -78,6 +90,16 @@ function capabilityVerificationFunctionSql(functionName: string) {
     : capabilityVerificationMigration.slice(start, end + 4);
 }
 
+function structuredMemoryFunctionSql(functionName: string) {
+  const marker = `create or replace function public.${functionName}(`;
+  const start = structuredMemoryMigration.indexOf(marker);
+  if (start < 0) return "";
+  const end = structuredMemoryMigration.indexOf("\n$$;", start);
+  return end < 0
+    ? structuredMemoryMigration.slice(start)
+    : structuredMemoryMigration.slice(start, end + 4);
+}
+
 function expectSqlOrder(sql: string, markers: string[]) {
   const positions = markers.map((marker) => sql.indexOf(marker));
   expect(positions).not.toContain(-1);
@@ -103,6 +125,76 @@ const serviceOnlyFunctions = [
 ] as const;
 
 describe("Xingyao Hermes native state schema contract", () => {
+  it("adds bounded structured-memory state and one pending job per conversation version", () => {
+    expect(existsSync(structuredMemoryMigrationPath)).toBe(true);
+    expect(structuredMemoryMigration.split(/\r?\n/)[0]).toBe(
+      "-- deploy: expand",
+    );
+    expect(structuredMemoryMigration).toContain(
+      "add column if not exists memory_status text not null default 'ready'",
+    );
+    expect(structuredMemoryMigration).toContain(
+      "add column if not exists memory_degraded_at timestamptz",
+    );
+    expect(structuredMemoryMigration).toContain(
+      "create table if not exists public.ai_conversation_memory_jobs",
+    );
+    expect(structuredMemoryMigration).toContain(
+      "check (status in ('pending', 'completed'))",
+    );
+    expect(structuredMemoryMigration).toMatch(
+      /create unique index[^;]+on public\.ai_conversation_memory_jobs \(conversation_id, target_summary_version\)[\s\S]+where status = 'pending'/,
+    );
+    expect(structuredMemoryMigration).toContain(
+      "check (memory_status in ('ready', 'degraded'))",
+    );
+  });
+
+  it("finishes the response atomically and degrades only the memory savepoint", () => {
+    const finishV3 = structuredMemoryFunctionSql("finish_ai_chat_turn_v3");
+
+    expect(finishV3).toContain("security definer");
+    expect(finishV3).toContain("set search_path = pg_catalog, public");
+    expect(finishV3).toContain("public.finish_ai_chat_turn_v2(");
+    expect(finishV3).toContain("if not v_terminal_completed then");
+    expect(finishV3).toContain("jsonb_object_keys(p_memory_delta)");
+    expect(finishV3).toContain("jsonb_array_length");
+    expect(finishV3).toContain(
+      "source_message.conversation_id = v_conversation_id",
+    );
+    expect(finishV3).toContain("source_message.status = 'completed'");
+    expect(finishV3).toContain(
+      "source_message.sequence_no <= v_through_sequence",
+    );
+    expect(finishV3).toContain("summary_version = p_expected_summary_version");
+    expect(finishV3).toContain("summary_version = summary_version + 1");
+    expect(finishV3).toContain("exception when others then");
+    expectSqlOrder(finishV3, [
+      "public.finish_ai_chat_turn_v2(",
+      "begin\n    if p_memory_delta is null",
+      "summary_version = summary_version + 1",
+      "exception when others then",
+      "memory_status = 'degraded'",
+      "insert into public.ai_conversation_memory_jobs",
+    ]);
+    expect(finishV3).toContain(
+      "on conflict (conversation_id, target_summary_version)",
+    );
+    expect(finishV3).toContain("return jsonb_build_object(");
+  });
+
+  it("keeps v3 terminal persistence service-only", () => {
+    expect(structuredMemoryMigration).toMatch(
+      /revoke all on function public\.finish_ai_chat_turn_v3\([\s\S]*?from public, anon, authenticated;/,
+    );
+    expect(structuredMemoryMigration).toMatch(
+      /grant execute on function public\.finish_ai_chat_turn_v3\([\s\S]*?to service_role;/,
+    );
+    expect(structuredMemoryMigration).not.toMatch(
+      /grant execute on function public\.finish_ai_chat_turn_v3\([\s\S]*?to (anon|authenticated);/,
+    );
+  });
+
   it("verifies invocation capabilities atomically under the canonical lock order", () => {
     expect(existsSync(capabilityVerificationMigrationPath)).toBe(true);
     expect(capabilityVerificationMigration.split(/\r?\n/)[0]).toBe(
@@ -1699,3 +1791,311 @@ describe("Xingyao Hermes native state schema contract", () => {
     }
   });
 });
+
+describe.runIf(Boolean(structuredMemoryDbContainer))(
+  "Xingyao Hermes structured-memory PostgreSQL behavior",
+  () => {
+    it("commits valid memory atomically, degrades invalid memory, deduplicates jobs, and rejects identity drift", () => {
+      const container = structuredMemoryDbContainer ?? "";
+      expect(container).toMatch(/^supabase_db_[A-Za-z0-9_.-]+$/u);
+
+      const organizationId = "8f100000-0000-4000-8000-000000000001";
+      const ownerId = "8f100000-0000-4000-8000-000000000002";
+      const otherOwnerId = "8f100000-0000-4000-8000-000000000003";
+      const conversationIds = {
+        valid: "8f100000-0000-4000-8000-000000000101",
+        degraded: "8f100000-0000-4000-8000-000000000102",
+        drift: "8f100000-0000-4000-8000-000000000103",
+      } as const;
+      const turnIds = {
+        valid: "8f100000-0000-4000-8000-000000000201",
+        degraded: "8f100000-0000-4000-8000-000000000202",
+        drift: "8f100000-0000-4000-8000-000000000203",
+      } as const;
+      const userMessageIds = {
+        valid: "8f100000-0000-4000-8000-000000000301",
+        degraded: "8f100000-0000-4000-8000-000000000303",
+        drift: "8f100000-0000-4000-8000-000000000305",
+      } as const;
+      const assistantMessageIds = {
+        valid: "8f100000-0000-4000-8000-000000000302",
+        degraded: "8f100000-0000-4000-8000-000000000304",
+        drift: "8f100000-0000-4000-8000-000000000306",
+      } as const;
+      const cleanup = `
+        delete from public.organizations
+        where id = '${organizationId}'::uuid;
+        delete from public.profiles
+        where id = '${ownerId}'::uuid;
+        delete from auth.users
+        where id = '${ownerId}'::uuid;
+      `;
+
+      try {
+        runStructuredMemorySql(container, cleanup);
+        const result = JSON.parse(
+          runStructuredMemorySql(
+            container,
+            `
+              insert into auth.users (id, email) values
+                ('${ownerId}'::uuid, 'task5-memory@example.test');
+              insert into public.profiles (id, email, full_name) values
+                ('${ownerId}'::uuid, 'task5-memory@example.test', 'Task 5 Memory');
+              insert into public.organizations (id, name, code) values
+                ('${organizationId}'::uuid, 'Task 5 Memory', 'task5-memory');
+              insert into public.organization_members (
+                organization_id, user_id, role, status
+              ) values (
+                '${organizationId}'::uuid, '${ownerId}'::uuid, 'owner', 'active'
+              );
+
+              insert into public.ai_conversations (
+                id, organization_id, owner_user_id, title
+              ) values
+                ('${conversationIds.valid}', '${organizationId}', '${ownerId}', 'Valid memory'),
+                ('${conversationIds.degraded}', '${organizationId}', '${ownerId}', 'Degraded memory'),
+                ('${conversationIds.drift}', '${organizationId}', '${ownerId}', 'Identity drift');
+
+              insert into public.ai_chat_messages (
+                id, organization_id, owner_user_id, conversation_id,
+                sequence_no, role, status, content
+              ) values
+                ('${userMessageIds.valid}', '${organizationId}', '${ownerId}', '${conversationIds.valid}', 1, 'user', 'completed', 'Remember the corrected target.'),
+                ('${assistantMessageIds.valid}', '${organizationId}', '${ownerId}', '${conversationIds.valid}', 2, 'assistant', 'pending', ''),
+                ('${userMessageIds.degraded}', '${organizationId}', '${ownerId}', '${conversationIds.degraded}', 1, 'user', 'completed', 'Keep the response even if memory fails.'),
+                ('${assistantMessageIds.degraded}', '${organizationId}', '${ownerId}', '${conversationIds.degraded}', 2, 'assistant', 'pending', ''),
+                ('${userMessageIds.drift}', '${organizationId}', '${ownerId}', '${conversationIds.drift}', 1, 'user', 'completed', 'Reject identity drift.'),
+                ('${assistantMessageIds.drift}', '${organizationId}', '${ownerId}', '${conversationIds.drift}', 2, 'assistant', 'pending', '');
+
+              insert into public.ai_chat_turns (
+                id, organization_id, owner_user_id, conversation_id,
+                user_message_id, assistant_message_id, status,
+                idempotency_key, lease_expires_at
+              ) values
+                ('${turnIds.valid}', '${organizationId}', '${ownerId}', '${conversationIds.valid}', '${userMessageIds.valid}', '${assistantMessageIds.valid}', 'generating', 'task5-valid', now() + interval '5 minutes'),
+                ('${turnIds.degraded}', '${organizationId}', '${ownerId}', '${conversationIds.degraded}', '${userMessageIds.degraded}', '${assistantMessageIds.degraded}', 'generating', 'task5-degraded', now() + interval '5 minutes'),
+                ('${turnIds.drift}', '${organizationId}', '${ownerId}', '${conversationIds.drift}', '${userMessageIds.drift}', '${assistantMessageIds.drift}', 'generating', 'task5-drift', now() + interval '5 minutes');
+
+              do $task5$
+              begin
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('1', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${conversationIds.valid}', '${turnIds.valid}', '${turnIds.valid}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('2', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${conversationIds.degraded}', '${turnIds.degraded}', '${turnIds.degraded}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('3', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${conversationIds.drift}', '${turnIds.drift}', '${turnIds.drift}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+              end;
+              $task5$;
+
+              create temporary table task5_results (
+                name text primary key,
+                payload jsonb not null
+              );
+
+              insert into task5_results values (
+                'valid',
+                public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${turnIds.valid}',
+                  'complete', 'Valid assistant response', 'hermes', '${turnIds.valid}',
+                  null, null, false, '{}'::jsonb, 0,
+                  jsonb_build_object(
+                    'goals', '[]'::jsonb,
+                    'confirmedFacts', jsonb_build_array(jsonb_build_object(
+                      'text', 'The conversion target is 25%',
+                      'sourceMessageIds', jsonb_build_array('${userMessageIds.valid}')
+                    )),
+                    'decisions', '[]'::jsonb,
+                    'unresolvedQuestions', '[]'::jsonb,
+                    'throughSequence', 1
+                  )
+                )
+              );
+
+              insert into task5_results values (
+                'degraded-first',
+                public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${turnIds.degraded}',
+                  'complete', 'Preserved assistant response', 'hermes', '${turnIds.degraded}',
+                  null, null, false, '{}'::jsonb, 0, null
+                )
+              );
+              insert into task5_results values (
+                'degraded-retry',
+                public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${turnIds.degraded}',
+                  'complete', 'Preserved assistant response', 'hermes', '${turnIds.degraded}',
+                  null, null, false, '{}'::jsonb, 0, null
+                )
+              );
+              insert into task5_results values (
+                'identity-drift',
+                public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${otherOwnerId}', '${turnIds.drift}',
+                  'complete', 'Must not persist', 'hermes', '${turnIds.drift}',
+                  null, null, false, '{}'::jsonb, 0, null
+                )
+              );
+
+              select jsonb_build_object(
+                'validResult', (select payload from task5_results where name = 'valid'),
+                'validConversation', (select jsonb_build_object(
+                  'summary', summary,
+                  'summaryVersion', summary_version,
+                  'memoryStatus', memory_status
+                ) from public.ai_conversations where id = '${conversationIds.valid}'),
+                'validMessage', (select jsonb_build_object(
+                  'status', status,
+                  'content', content
+                ) from public.ai_chat_messages where id = '${assistantMessageIds.valid}'),
+                'validTurn', (select jsonb_build_object(
+                  'status', status,
+                  'outcome', outcome
+                ) from public.ai_chat_turns where id = '${turnIds.valid}'),
+                'validInvocationStatus', (select status from public.ai_invocations where id = '${turnIds.valid}'),
+                'validCapabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${turnIds.valid}'),
+                'degradedFirst', (select payload from task5_results where name = 'degraded-first'),
+                'degradedRetry', (select payload from task5_results where name = 'degraded-retry'),
+                'degradedConversation', (select jsonb_build_object(
+                  'summaryVersion', summary_version,
+                  'memoryStatus', memory_status,
+                  'memoryDegraded', memory_degraded_at is not null
+                ) from public.ai_conversations where id = '${conversationIds.degraded}'),
+                'degradedMessage', (select jsonb_build_object(
+                  'status', status,
+                  'content', content
+                ) from public.ai_chat_messages where id = '${assistantMessageIds.degraded}'),
+                'degradedTurnStatus', (select status from public.ai_chat_turns where id = '${turnIds.degraded}'),
+                'degradedInvocationStatus', (select status from public.ai_invocations where id = '${turnIds.degraded}'),
+                'degradedCapabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${turnIds.degraded}'),
+                'pendingJobs', (select count(*) from public.ai_conversation_memory_jobs where conversation_id = '${conversationIds.degraded}' and status = 'pending'),
+                'identityResult', (select payload from task5_results where name = 'identity-drift'),
+                'identityTurnStatus', (select status from public.ai_chat_turns where id = '${turnIds.drift}'),
+                'identityMessageStatus', (select status from public.ai_chat_messages where id = '${assistantMessageIds.drift}'),
+                'identityInvocationStatus', (select status from public.ai_invocations where id = '${turnIds.drift}'),
+                'identityCapabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${turnIds.drift}')
+              );
+            `,
+          ),
+        ) as Record<string, unknown>;
+
+        expect(result).toMatchObject({
+          validResult: {
+            completed: true,
+            memory_status: "ready",
+            summary_version: 1,
+          },
+          validConversation: {
+            summaryVersion: 1,
+            memoryStatus: "ready",
+            summary: {
+              schemaVersion: 1,
+              confirmedFacts: [
+                {
+                  text: "The conversion target is 25%",
+                  sourceMessageIds: [userMessageIds.valid],
+                },
+              ],
+              lastCompactedSequence: 1,
+            },
+          },
+          validMessage: {
+            status: "completed",
+            content: "Valid assistant response",
+          },
+          validTurn: { status: "completed", outcome: "complete" },
+          validInvocationStatus: "succeeded",
+          validCapabilityRevoked: true,
+          degradedFirst: {
+            completed: true,
+            memory_status: "degraded",
+            summary_version: 0,
+          },
+          degradedRetry: {
+            completed: true,
+            memory_status: "degraded",
+            summary_version: 0,
+          },
+          degradedConversation: {
+            summaryVersion: 0,
+            memoryStatus: "degraded",
+            memoryDegraded: true,
+          },
+          degradedMessage: {
+            status: "completed",
+            content: "Preserved assistant response",
+          },
+          degradedTurnStatus: "completed",
+          degradedInvocationStatus: "succeeded",
+          degradedCapabilityRevoked: true,
+          pendingJobs: 1,
+          identityResult: { completed: false },
+          identityTurnStatus: "generating",
+          identityMessageStatus: "pending",
+          identityInvocationStatus: "started",
+          identityCapabilityRevoked: false,
+        });
+      } finally {
+        runStructuredMemorySql(container, cleanup);
+      }
+    });
+  },
+);
+
+function runStructuredMemorySql(container: string, sql: string): string {
+  const result = spawnSync(
+    "docker",
+    [
+      "exec",
+      "-i",
+      container,
+      "psql",
+      "-X",
+      "-qAt",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-U",
+      "postgres",
+      "-d",
+      "postgres",
+    ],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      input: sql,
+      timeout: 30_000,
+      windowsHide: true,
+    },
+  );
+
+  expect(
+    result.status,
+    `${result.stdout ?? ""}\n${result.stderr ?? result.error?.message ?? ""}`.slice(
+      -4_000,
+    ),
+  ).toBe(0);
+  return (result.stdout ?? "").trim();
+}

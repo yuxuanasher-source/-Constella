@@ -69,6 +69,11 @@ function persistence(
     failTurn: vi.fn().mockResolvedValue(true),
     renewLease: vi.fn().mockResolvedValue(true),
     finishTurnV2: vi.fn().mockResolvedValue(undefined),
+    finishTurnV3: vi.fn().mockResolvedValue({
+      completed: true,
+      memoryStatus: "ready",
+      summaryVersion: 1,
+    }),
     cancelTurnV2: vi.fn().mockResolvedValue({
       turnId: "turn-1",
       status: "cancelled",
@@ -1502,6 +1507,46 @@ describe("Xingyao conversation service", () => {
       conversationId: "conversation-1",
       expectedGeneration: 1,
       nextState: { generation: 2, sessionId: "session-1" },
+    });
+  });
+
+  it("injects ownership and validated memory into the atomic v3 finish", async () => {
+    const store = persistence();
+    const service = createConversationService(store);
+    const memoryDelta = {
+      goals: [],
+      confirmedFacts: [],
+      decisions: [],
+      unresolvedQuestions: [],
+      throughSequence: 4,
+    };
+
+    await expect(
+      service.finishTurnV3(actor, "turn-1", {
+        invocationId: "invocation-1",
+        outcome: "complete",
+        content: "Completed answer",
+        providerName: "deepseek",
+        retryable: false,
+        metadata: {},
+        expectedSummaryVersion: 3,
+        memoryDelta,
+      }),
+    ).resolves.toMatchObject({ memoryStatus: "ready", summaryVersion: 1 });
+    expect(store.finishTurnV3).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      turnId: "turn-1",
+      invocationId: "invocation-1",
+      outcome: "complete",
+      content: "Completed answer",
+      providerName: "deepseek",
+      errorCode: undefined,
+      errorSummary: undefined,
+      retryable: false,
+      metadata: {},
+      expectedSummaryVersion: 3,
+      memoryDelta,
     });
   });
 

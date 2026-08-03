@@ -33,9 +33,41 @@ export type ConversationTurnStage =
   | "persisted";
 export type ConversationSessionAction = "resumed" | "rebuilt";
 
+export const CONVERSATION_MEMORY_LIMITS = {
+  itemsPerSection: 24,
+  textCharacters: 512,
+  sourceMessageIdsPerItem: 8,
+} as const;
+
+export type ConversationMemoryItem = {
+  text: string;
+  sourceMessageIds: string[];
+};
+
+export type ConversationMemorySummary = {
+  schemaVersion: 1;
+  goals: ConversationMemoryItem[];
+  confirmedFacts: ConversationMemoryItem[];
+  decisions: ConversationMemoryItem[];
+  unresolvedQuestions: ConversationMemoryItem[];
+  lastCompactedSequence: number;
+};
+
+export type ConversationMemoryDelta = Omit<
+  ConversationMemorySummary,
+  "schemaVersion" | "lastCompactedSequence"
+> & { throughSequence: number };
+
+export type ConversationMemorySourceMessage = {
+  id: string;
+  conversationId: string;
+  sequence: number;
+};
+
 export type ConversationContextSnapshot = {
   version: number;
   summaryVersion: number;
+  lastCompactedSequence?: number;
   messageIds: string[];
   groundingRefs: string[];
   assembledAt: string;
@@ -300,6 +332,89 @@ export function parseRetryTurnCommand(value: unknown): RetryTurnCommand | null {
   return clientRequestId ? { clientRequestId } : null;
 }
 
+export function parseConversationMemorySummary(
+  value: unknown,
+): ConversationMemorySummary | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "schemaVersion",
+      "goals",
+      "confirmedFacts",
+      "decisions",
+      "unresolvedQuestions",
+      "lastCompactedSequence",
+    ]) ||
+    value.schemaVersion !== 1 ||
+    !isNonNegativeInteger(value.lastCompactedSequence)
+  ) {
+    return null;
+  }
+  const sections = parseMemorySections(value);
+  return sections
+    ? {
+        schemaVersion: 1,
+        ...sections,
+        lastCompactedSequence: value.lastCompactedSequence,
+      }
+    : null;
+}
+
+export function parseConversationMemoryDelta(
+  value: unknown,
+  provenance: {
+    conversationId: string;
+    sourceMessages: readonly ConversationMemorySourceMessage[];
+    previousSummary: ConversationMemorySummary;
+  },
+): ConversationMemoryDelta | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "goals",
+      "confirmedFacts",
+      "decisions",
+      "unresolvedQuestions",
+      "throughSequence",
+    ]) ||
+    !isNonNegativeInteger(value.throughSequence) ||
+    value.throughSequence < provenance.previousSummary.lastCompactedSequence
+  ) {
+    return null;
+  }
+  const throughSequence = value.throughSequence;
+
+  const sections = parseMemorySections(value);
+  if (!sections) return null;
+
+  const sourceSequences = new Map(
+    provenance.sourceMessages
+      .filter((message) => message.conversationId === provenance.conversationId)
+      .map((message) => [message.id, message.sequence] as const),
+  );
+  const items = Object.values(sections).flat();
+  if (
+    items.some((item) =>
+      item.sourceMessageIds.some((id) => {
+        const sequence = sourceSequences.get(id);
+        return sequence == null || sequence > throughSequence;
+      }),
+    )
+  ) {
+    return null;
+  }
+
+  const maximumSequence = Math.max(
+    provenance.previousSummary.lastCompactedSequence,
+    ...provenance.sourceMessages
+      .filter((message) => message.conversationId === provenance.conversationId)
+      .map((message) => message.sequence),
+  );
+  if (throughSequence > maximumSequence) return null;
+
+  return { ...sections, throughSequence };
+}
+
 export function isConversationStreamEvent(
   value: unknown,
 ): value is ConversationStreamEvent {
@@ -425,6 +540,91 @@ function parseClientRequestId(value: unknown): string | null {
     /^[A-Za-z0-9._:-]+$/.test(normalized)
     ? normalized
     : null;
+}
+
+function parseMemorySections(
+  value: Record<string, unknown>,
+): Omit<
+  ConversationMemorySummary,
+  "schemaVersion" | "lastCompactedSequence"
+> | null {
+  const goals = parseMemoryItems(value.goals);
+  const confirmedFacts = parseMemoryItems(value.confirmedFacts);
+  const decisions = parseMemoryItems(value.decisions);
+  const unresolvedQuestions = parseMemoryItems(value.unresolvedQuestions);
+  return goals && confirmedFacts && decisions && unresolvedQuestions
+    ? { goals, confirmedFacts, decisions, unresolvedQuestions }
+    : null;
+}
+
+function parseMemoryItems(value: unknown): ConversationMemoryItem[] | null {
+  if (
+    !Array.isArray(value) ||
+    value.length > CONVERSATION_MEMORY_LIMITS.itemsPerSection
+  ) {
+    return null;
+  }
+  const items: ConversationMemoryItem[] = [];
+  for (const candidate of value) {
+    if (
+      !isRecord(candidate) ||
+      !hasExactKeys(candidate, ["text", "sourceMessageIds"]) ||
+      !isMemoryText(candidate.text) ||
+      !Array.isArray(candidate.sourceMessageIds) ||
+      candidate.sourceMessageIds.length === 0 ||
+      candidate.sourceMessageIds.length >
+        CONVERSATION_MEMORY_LIMITS.sourceMessageIdsPerItem ||
+      !candidate.sourceMessageIds.every(isUuidString) ||
+      new Set(candidate.sourceMessageIds).size !==
+        candidate.sourceMessageIds.length
+    ) {
+      return null;
+    }
+    items.push({
+      text: candidate.text.trim(),
+      sourceMessageIds: [...candidate.sourceMessageIds],
+    });
+  }
+  return items;
+}
+
+function isMemoryText(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  return (
+    text.length > 0 &&
+    text.length <= CONVERSATION_MEMORY_LIMITS.textCharacters &&
+    !/[\r\n]/.test(text) &&
+    !/^(?:user|assistant|system|tool)\s*:/i.test(text) &&
+    !/<\/?(?:conversation_context|current_request|recent_messages|summary)>/i.test(
+      text,
+    )
+  );
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return (
+    keys.length === sortedExpected.length &&
+    keys.every((key, index) => key === sortedExpected[index])
+  );
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isUuidString(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  );
 }
 
 function normalizedString(value: unknown, maxLength: number): string | null {

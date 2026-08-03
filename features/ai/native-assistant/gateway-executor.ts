@@ -1,9 +1,16 @@
 import type {
   ConversationGatewayContext,
+  ConversationContextSnapshot,
+  ConversationMemoryDelta,
+  ConversationMemorySummary,
   ConversationResponseOutcome,
   ConversationSessionAction,
   ConversationStreamEvent,
   ConversationTurnStage,
+} from "../conversation-contracts";
+import {
+  parseConversationMemoryDelta,
+  parseConversationMemorySummary,
 } from "../conversation-contracts";
 import type { AiAttachment, AiProviderName } from "../contracts";
 import type {
@@ -41,7 +48,14 @@ import {
   HERMES_MEMORY_TOOL_NAMES,
   HERMES_SKILL_TOOL_NAMES,
 } from "../hermes/tool-broker-contracts";
-import { buildGatewayNativeAssistantContext } from "./context-engine";
+import {
+  buildGatewayNativeAssistantContext,
+  type GatewayLedgerTranscriptMessage,
+} from "./context-engine";
+import {
+  resolveConversationTokenBudget,
+  selectConversationContext,
+} from "./token-budget";
 
 type GatewayService = {
   prepareTurn(
@@ -81,6 +95,8 @@ type GatewayService = {
     lastUsedAt?: string;
     summary?: Record<string, unknown>;
     summaryVersion?: number;
+    memoryStatus?: "ready" | "degraded";
+    memoryDegradedAt?: string | null;
     childSessions?: string[];
     pendingClarify?: {
       turnId: string;
@@ -106,6 +122,26 @@ type GatewayService = {
     conversationId: string,
     input: { expectedSummaryVersion: number; summary: Record<string, unknown> },
   ): Promise<void>;
+  finishTurnV3(
+    actor: ConversationActor,
+    turnId: string,
+    input: {
+      invocationId: string;
+      outcome: "complete" | "partial" | "blocked" | "failed" | "cancelled";
+      content?: string;
+      providerName?: AiProviderName | null;
+      errorCode?: string | null;
+      errorSummary?: string | null;
+      retryable: boolean;
+      metadata?: Record<string, unknown>;
+      expectedSummaryVersion: number;
+      memoryDelta: ConversationMemoryDelta | null;
+    },
+  ): Promise<{
+    completed: true;
+    memoryStatus: "ready" | "degraded";
+    summaryVersion: number;
+  }>;
   finishTurnV2(
     actor: ConversationActor,
     turnId: string,
@@ -133,13 +169,7 @@ type GatewayService = {
   captureGatewayContext?(
     actor: ConversationActor,
     turnId: string,
-    snapshot: {
-      version: number;
-      summaryVersion: number;
-      messageIds?: string[];
-      groundingRefs?: string[];
-      assembledAt?: string;
-    },
+    snapshot: ConversationContextSnapshot,
     gatewayContext: ConversationGatewayContext,
   ): Promise<unknown>;
   getSourceGatewayCheckpoint?(
@@ -279,8 +309,10 @@ export function createGatewayTurnExecutor(
           input.turn.conversationId,
         )) ?? {
           generation: 0,
-          summary: {},
+          summary: emptyConversationMemorySummary(),
           summaryVersion: prepared.snapshot.summaryVersion,
+          memoryStatus: "ready",
+          memoryDegradedAt: null,
         };
         const frozen = frozenGatewayContext(prepared.snapshot.gatewayContext);
         const sessionSetup = frozen
@@ -351,6 +383,7 @@ export function createGatewayTurnExecutor(
           prompt: buildGatewayPrompt({
             context: sessionSetup.context,
             summary: state.summary ?? {},
+            model: options.model,
           }),
           actor:
             recordValue(sessionSetup.context.invocationMetadata, "actor") ??
@@ -422,9 +455,10 @@ export function createGatewayTurnExecutor(
                 provider: options.provider,
                 model: options.model,
                 observations,
-                summary: terminal.summary,
+                memoryDelta: terminal.memoryDelta,
                 forcedOutcome: terminal.outcome,
                 state,
+                gatewayContext: sessionSetup.context,
                 telemetry,
               });
               if (completed.type === "failed") {
@@ -935,60 +969,109 @@ function createBestEffortStageRecorder({
   };
 }
 
-const GATEWAY_CONTEXT_PROMPT_LIMIT = 24_000;
-const GATEWAY_SUMMARY_PROMPT_LIMIT = 6_000;
-
 function buildGatewayPrompt({
   context,
   summary,
+  model,
 }: {
   context: ConversationGatewayContext;
   summary: Record<string, unknown>;
+  model: string;
 }): string {
   const currentRequest = context.lastUserMessage.trim();
-  const messages = context.messages.slice();
-  const lastMessage = messages.at(-1);
-  if (
-    lastMessage?.role === "user" &&
-    lastMessage.content.trim() === currentRequest
-  ) {
-    messages.pop();
-  }
-
-  const summaryText = Object.keys(summary).length
-    ? JSON.stringify(summary).slice(0, GATEWAY_SUMMARY_PROMPT_LIMIT)
-    : "";
-  const historyLines = messages.map(
-    (message) => `${message.role.toUpperCase()}: ${message.content.trim()}`,
+  const memorySummary =
+    parseConversationMemorySummary(summary) ?? emptyConversationMemorySummary();
+  const frozenTranscript = gatewayLedgerTranscript(context);
+  const currentMessage = {
+    role: "user" as const,
+    content: currentRequest,
+    metadata: { messageId: "current-request" },
+  };
+  const pinnedFacts = frozenTranscript.filter(
+    (message) => message.metadata?.pinned === true,
   );
-  const fixedLength = currentRequest.length + summaryText.length + 256;
-  let remaining = Math.max(0, GATEWAY_CONTEXT_PROMPT_LIMIT - fixedLength);
-  const recentHistory: string[] = [];
-  for (
-    let index = historyLines.length - 1;
-    index >= 0 && remaining > 0;
-    index -= 1
-  ) {
-    const line = historyLines[index];
-    if (!line) continue;
-    const kept = line.slice(Math.max(0, line.length - remaining));
-    recentHistory.unshift(kept);
-    remaining -= kept.length + 1;
-  }
+  const recentMessages = frozenTranscript.filter(
+    (message) =>
+      !(message.role === "user" && message.content.trim() === currentRequest),
+  );
+  const selected = selectConversationContext({
+    currentRequest: currentMessage,
+    pinnedFacts,
+    summary: memorySummary,
+    recentMessages,
+    budget: resolveConversationTokenBudget(model),
+  });
+  const summaryMessage = selected.find(
+    (message) => message.metadata?.kind === "conversation.memory.summary",
+  );
+  const historyLines = selected
+    .filter(
+      (message) =>
+        message !== currentMessage &&
+        message !== summaryMessage &&
+        !pinnedFacts.includes(message),
+    )
+    .map(
+      (message) => `${message.role.toUpperCase()}: ${message.content.trim()}`,
+    );
+  const pinnedLines = selected
+    .filter((message) => pinnedFacts.includes(message))
+    .map((message) => message.content.trim());
+  const summaryText = summaryMessage?.content ?? "";
 
-  if (!summaryText && recentHistory.length === 0) return currentRequest;
+  if (!summaryText && historyLines.length === 0 && pinnedLines.length === 0) {
+    return currentRequest;
+  }
 
   return [
     "<conversation_context>",
     ...(summaryText ? ["<summary>", summaryText, "</summary>"] : []),
-    ...(recentHistory.length
-      ? ["<recent_messages>", ...recentHistory, "</recent_messages>"]
+    ...(pinnedLines.length
+      ? ["<pinned_facts>", ...pinnedLines, "</pinned_facts>"]
+      : []),
+    ...(historyLines.length
+      ? ["<recent_messages>", ...historyLines, "</recent_messages>"]
       : []),
     "</conversation_context>",
     "<current_request>",
     currentRequest,
     "</current_request>",
   ].join("\n");
+}
+
+function gatewayLedgerTranscript(
+  context: ConversationGatewayContext,
+): GatewayLedgerTranscriptMessage[] {
+  const frozen = recordValue(context.invocationMetadata, "ledgerTranscript");
+  if (Array.isArray(frozen)) {
+    return frozen.filter(isGatewayLedgerTranscriptMessage);
+  }
+  return context.messages
+    .filter(
+      (message) =>
+        message.role === "user" ||
+        message.role === "assistant" ||
+        message.role === "tool",
+    )
+    .map((message) => ({
+      role: message.role as "user" | "assistant" | "tool",
+      content: message.content,
+    }));
+}
+
+function isGatewayLedgerTranscriptMessage(value: unknown): value is {
+  role: "user" | "assistant" | "tool";
+  content: string;
+  metadata?: Record<string, unknown>;
+} {
+  return (
+    isRecord(value) &&
+    (value.role === "user" ||
+      value.role === "assistant" ||
+      value.role === "tool") &&
+    typeof value.content === "string" &&
+    (value.metadata == null || isRecord(value.metadata))
+  );
 }
 
 async function buildAndCaptureFreshGatewayContext({
@@ -1026,6 +1109,13 @@ async function buildAndCaptureFreshGatewayContext({
         .filter(isString),
     },
     personalMemoryRevision: options.personalMemoryRevision ?? 0,
+    conversationMemory: {
+      status: state.memoryStatus === "degraded" ? "degraded" : "ready",
+      summaryVersion: state.summaryVersion ?? prepared.snapshot.summaryVersion,
+      summary:
+        parseConversationMemorySummary(state.summary) ??
+        emptyConversationMemorySummary(),
+    },
     messages,
   });
   if (!context) {
@@ -1166,6 +1256,13 @@ async function buildAndCaptureFreshGatewayContext({
       actor: context.actor,
       budget: context.budget,
       personalMemoryRevision: context.personalMemoryRevision,
+      conversationMemory: context.conversationMemory,
+      ledgerTranscript: context.ledgerTranscript,
+      memorySourceMessages: messages.map((message) => ({
+        id: message.id,
+        conversationId: message.conversationId,
+        sequence: message.sequence,
+      })),
       skillGrantsHash: context.actor.skillGrantsHash,
       capabilityId: capability.capabilityId,
       capabilityExpiresAt: capability.expiresAt,
@@ -1183,8 +1280,11 @@ async function buildAndCaptureFreshGatewayContext({
     input.turn.turnId,
     {
       version: prepared.snapshot.version,
-      summaryVersion: prepared.snapshot.summaryVersion,
-      messageIds: prepared.snapshot.messageIds ?? [],
+      summaryVersion: context.conversationMemory.summaryVersion,
+      lastCompactedSequence: context.conversationMemory.lastCompactedSequence,
+      messageIds: context.ledgerTranscript
+        .map((message) => message.metadata?.messageId)
+        .filter(isString),
       groundingRefs: prepared.snapshot.groundingRefs ?? [],
       assembledAt: prepared.snapshot.assembledAt ?? now().toISOString(),
     },
@@ -1269,9 +1369,10 @@ async function completeWithCoherentSummary({
   provider,
   model,
   observations,
-  summary,
+  memoryDelta,
   forcedOutcome,
   state,
+  gatewayContext,
   telemetry,
 }: {
   service: GatewayService;
@@ -1281,11 +1382,12 @@ async function completeWithCoherentSummary({
   provider: AiProviderName;
   model: string;
   observations: ToolObservation[];
-  summary: unknown;
+  memoryDelta: unknown;
   forcedOutcome?: ConversationResponseOutcome;
   state: Awaited<
     ReturnType<NonNullable<GatewayService["getGatewayState"]>>
   > | null;
+  gatewayContext: ConversationGatewayContext;
   telemetry: BestEffortStageRecorder;
 }): Promise<
   | { type: "completed"; event: ConversationStreamEvent }
@@ -1294,9 +1396,17 @@ async function completeWithCoherentSummary({
   const outcome = forcedOutcome ?? classifyOutcome(observations);
   const metadata = completionMetadata({ observations, provider, model });
   const expectedSummaryVersion = state?.summaryVersion ?? 0;
+  const previousSummary =
+    parseConversationMemorySummary(state?.summary) ??
+    emptyConversationMemorySummary();
+  const parsedMemoryDelta = parseConversationMemoryDelta(memoryDelta, {
+    conversationId: turn.conversationId,
+    sourceMessages: memorySourceMessages(gatewayContext),
+    previousSummary,
+  });
   telemetry.record("terminal");
   try {
-    await service.finishTurnV2(actor, turn.turnId, {
+    const finish = await service.finishTurnV3(actor, turn.turnId, {
       invocationId: turn.turnId,
       outcome,
       content,
@@ -1305,7 +1415,11 @@ async function completeWithCoherentSummary({
       errorSummary: null,
       retryable: false,
       metadata,
+      expectedSummaryVersion,
+      memoryDelta: parsedMemoryDelta,
     });
+    metadata.memoryStatus = finish.memoryStatus;
+    metadata.summaryVersion = finish.summaryVersion;
     telemetry.record("persisted");
   } catch {
     await persistTerminalFailure({
@@ -1320,17 +1434,6 @@ async function completeWithCoherentSummary({
       telemetry,
     });
     return { type: "failed", code: "gateway_terminal_persist_failed" };
-  }
-  if (isRecord(summary) && service.syncConversationSummary) {
-    try {
-      await service.syncConversationSummary(actor, turn.conversationId, {
-        expectedSummaryVersion,
-        summary,
-      });
-    } catch {
-      // Terminal persistence already succeeded. Summary synchronization is
-      // retried by later turns; do not mutate the product-visible terminal state.
-    }
   }
   return {
     type: "completed",
@@ -1348,6 +1451,29 @@ async function completeWithCoherentSummary({
       invocationId: turn.turnId,
     },
   };
+}
+
+function memorySourceMessages(context: ConversationGatewayContext) {
+  const value = recordValue(context.invocationMetadata, "memorySourceMessages");
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (
+      !isRecord(candidate) ||
+      !isString(candidate.id) ||
+      !isString(candidate.conversationId) ||
+      !Number.isInteger(candidate.sequence) ||
+      Number(candidate.sequence) < 0
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: candidate.id,
+        conversationId: candidate.conversationId,
+        sequence: Number(candidate.sequence),
+      },
+    ];
+  });
 }
 
 async function persistTerminalFailure({
@@ -1392,7 +1518,7 @@ async function persistTerminalFailure({
 function terminalGatewayEvent(event: unknown):
   | {
       status: "completed";
-      summary?: unknown;
+      memoryDelta?: unknown;
       code?: string;
       outcome?: ConversationResponseOutcome;
       message?: string;
@@ -1400,7 +1526,7 @@ function terminalGatewayEvent(event: unknown):
     }
   | {
       status: "failed";
-      summary?: unknown;
+      memoryDelta?: unknown;
       code?: string;
       outcome?: ConversationResponseOutcome;
       message?: string;
@@ -1408,14 +1534,17 @@ function terminalGatewayEvent(event: unknown):
     }
   | {
       status: "cancelled";
-      summary?: unknown;
+      memoryDelta?: unknown;
       code?: string;
       outcome?: ConversationResponseOutcome;
       message?: string;
       observation?: ToolObservation;
     }
   | null {
-  const official = parseHermesGatewayEvent(event);
+  const memoryDelta = terminalMemoryDelta(event);
+  const official = parseHermesGatewayEvent(
+    memoryDelta === undefined ? event : withoutTerminalMemoryDelta(event),
+  );
   if (official?.params.type === "turn.terminal") {
     const payload = official.params.payload;
     const status =
@@ -1435,11 +1564,15 @@ function terminalGatewayEvent(event: unknown):
         : undefined,
       message: payload.message,
       observation: observationFromGatewayMetadata(payload.metadata),
+      ...(memoryDelta === undefined ? {} : { memoryDelta }),
     };
   }
   if (!isRecord(event)) return null;
   if (event.type === "completed") {
-    return { status: "completed", summary: event.summary };
+    return {
+      status: "completed",
+      ...(memoryDelta === undefined ? {} : { memoryDelta }),
+    };
   }
   if (event.type === "failed") {
     return {
@@ -1458,10 +1591,47 @@ function terminalGatewayEvent(event: unknown):
     return {
       status,
       code: sanitizeTraceCode(event.code) ?? undefined,
-      summary: event.summary,
+      ...(memoryDelta === undefined ? {} : { memoryDelta }),
     };
   }
   return null;
+}
+
+function terminalMemoryDelta(event: unknown): unknown {
+  if (!isRecord(event)) return undefined;
+  if (isRecord(event.metadata) && "memoryDelta" in event.metadata) {
+    return event.metadata.memoryDelta;
+  }
+  const params = recordValue(event, "params");
+  const payload = recordValue(params, "payload");
+  const metadata = recordValue(payload, "metadata");
+  return isRecord(metadata) && "memoryDelta" in metadata
+    ? metadata.memoryDelta
+    : undefined;
+}
+
+function withoutTerminalMemoryDelta(event: unknown): unknown {
+  if (!isRecord(event)) return event;
+  const params = recordValue(event, "params");
+  const payload = recordValue(params, "payload");
+  const metadata = recordValue(payload, "metadata");
+  if (
+    !isRecord(params) ||
+    !isRecord(payload) ||
+    !isRecord(metadata) ||
+    !("memoryDelta" in metadata)
+  ) {
+    return event;
+  }
+  const sanitizedMetadata = { ...metadata };
+  delete sanitizedMetadata.memoryDelta;
+  return {
+    ...event,
+    params: {
+      ...params,
+      payload: { ...payload, metadata: sanitizedMetadata },
+    },
+  };
 }
 
 class GatewayExecutionError extends Error {
@@ -1894,7 +2064,8 @@ function completionMetadata({
   };
   provider: AiProviderName;
   model: string;
-  summarySync?: { status: "synced" | "failed"; expectedSummaryVersion: number };
+  memoryStatus?: "ready" | "degraded";
+  summaryVersion?: number;
 } {
   const evidence = unique(
     observations.flatMap((observation) => observation.evidence),
@@ -2347,6 +2518,17 @@ function isString(value: unknown): value is string {
 
 function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function emptyConversationMemorySummary(): ConversationMemorySummary {
+  return {
+    schemaVersion: 1,
+    goals: [],
+    confirmedFacts: [],
+    decisions: [],
+    unresolvedQuestions: [],
+    lastCompactedSequence: 0,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

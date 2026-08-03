@@ -8,6 +8,7 @@ import {
   createAiConversation,
   createAiConversationTurn,
   finishAiConversationTurnV2,
+  finishAiConversationTurnV3,
   getAiConversationGatewayState,
   verifyAiConversationTerminalState,
   listAiConversationMessages,
@@ -623,6 +624,70 @@ describe("Xingyao conversation repository", () => {
     });
   });
 
+  it("finishes a Hermes turn and structured memory through one v3 RPC", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        completed: true,
+        memory_status: "ready",
+        summary_version: 5,
+      },
+      error: null,
+    });
+    const memoryDelta = {
+      goals: [],
+      confirmedFacts: [
+        {
+          text: "The target is 25%",
+          sourceMessageIds: ["00000000-0000-4000-8000-000000000006"],
+        },
+      ],
+      decisions: [],
+      unresolvedQuestions: [],
+      throughSequence: 9,
+    };
+
+    await expect(
+      finishAiConversationTurnV3(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          turnId: v2Ids.turnId,
+          invocationId: v2Ids.invocationId,
+          outcome: "complete",
+          content: "The target is 25%.",
+          providerName: "deepseek",
+          errorCode: null,
+          errorSummary: null,
+          retryable: false,
+          metadata: { evidence: [] },
+          expectedSummaryVersion: 4,
+          memoryDelta,
+        },
+      ),
+    ).resolves.toEqual({
+      completed: true,
+      memoryStatus: "ready",
+      summaryVersion: 5,
+    });
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith("finish_ai_chat_turn_v3", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_turn_id: v2Ids.turnId,
+      p_outcome: "complete",
+      p_content: "The target is 25%.",
+      p_provider_name: "deepseek",
+      p_ai_invocation_id: v2Ids.invocationId,
+      p_error_code: null,
+      p_error_summary: null,
+      p_retryable: false,
+      p_metadata: { evidence: [] },
+      p_expected_summary_version: 4,
+      p_memory_delta: memoryDelta,
+    });
+  });
+
   it("exposes actor-scoped cancel, v2 lease, and provider-state wrappers", async () => {
     const cancelRpc = vi.fn().mockResolvedValue({
       data: {
@@ -733,8 +798,22 @@ describe("Xingyao conversation repository", () => {
             },
           },
         },
-        summary: { text: "old" },
+        summary: {
+          schemaVersion: 1,
+          goals: [],
+          confirmedFacts: [
+            {
+              text: "The target is 25%",
+              sourceMessageIds: ["00000000-0000-4000-8000-000000000006"],
+            },
+          ],
+          decisions: [],
+          unresolvedQuestions: [],
+          lastCompactedSequence: 9,
+        },
         summary_version: 2,
+        memory_status: "degraded",
+        memory_degraded_at: "2026-08-03T16:01:00.000Z",
       },
       error: null,
     });
@@ -762,8 +841,22 @@ describe("Xingyao conversation repository", () => {
       model: "hermes-official-gateway",
       lastUsedAt: "2026-08-03T16:00:00.000Z",
       childSessions: ["child-1", "child-2"],
-      summary: { text: "old" },
+      summary: {
+        schemaVersion: 1,
+        goals: [],
+        confirmedFacts: [
+          {
+            text: "The target is 25%",
+            sourceMessageIds: ["00000000-0000-4000-8000-000000000006"],
+          },
+        ],
+        decisions: [],
+        unresolvedQuestions: [],
+        lastCompactedSequence: 9,
+      },
       summaryVersion: 2,
+      memoryStatus: "degraded",
+      memoryDegradedAt: "2026-08-03T16:01:00.000Z",
       pendingClarify: {
         turnId: v2Ids.turnId,
         clarifyId: "00000000-0000-4000-8000-000000000007",
@@ -788,6 +881,9 @@ describe("Xingyao conversation repository", () => {
     );
     expect(loaded).not.toHaveProperty("organizationId");
     expect(loaded).not.toHaveProperty("invocationCapability");
+    expect(select).toHaveBeenCalledWith(
+      "provider_state, summary, summary_version, memory_status, memory_degraded_at",
+    );
 
     const returns = vi
       .fn()

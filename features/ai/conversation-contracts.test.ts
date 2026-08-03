@@ -5,13 +5,107 @@ import {
   isConversationSessionAction,
   isConversationStreamEvent,
   isConversationTurnStage,
+  parseConversationMemoryDelta,
+  parseConversationMemorySummary,
   parseCreateTurnCommand,
   parseRetryTurnCommand,
+  CONVERSATION_MEMORY_LIMITS,
   type ConversationStreamEvent,
 } from "./conversation-contracts";
 import { hasMeaningfulAiContent } from "./response-quality";
 
 describe("Xingyao conversation protocol contracts", () => {
+  it("parses the exact bounded structured-memory schema", () => {
+    const summary = memorySummary({
+      confirmedFacts: [memoryItem("The target is 20%", [MESSAGE_1])],
+      lastCompactedSequence: 9,
+    });
+
+    expect(parseConversationMemorySummary(summary)).toEqual(summary);
+    expect(
+      parseConversationMemorySummary({
+        ...summary,
+        rawTranscript: "USER: secret",
+      }),
+    ).toBeNull();
+    expect(
+      parseConversationMemorySummary({
+        ...summary,
+        goals: [memoryItem("   ", [MESSAGE_1])],
+      }),
+    ).toBeNull();
+    expect(
+      parseConversationMemorySummary({
+        ...summary,
+        decisions: Array.from(
+          { length: CONVERSATION_MEMORY_LIMITS.itemsPerSection + 1 },
+          (_, index) => memoryItem(`decision ${index}`, [MESSAGE_1]),
+        ),
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects duplicate, cross-conversation, and non-monotonic memory provenance", () => {
+    const previous = memorySummary({ lastCompactedSequence: 8 });
+    const sourceMessages = [
+      { id: MESSAGE_1, conversationId: CONVERSATION_ID, sequence: 9 },
+      { id: MESSAGE_2, conversationId: CONVERSATION_ID, sequence: 10 },
+      { id: MESSAGE_3, conversationId: OTHER_CONVERSATION_ID, sequence: 11 },
+    ];
+    const valid = {
+      goals: [],
+      confirmedFacts: [memoryItem("The corrected target is 25%", [MESSAGE_2])],
+      decisions: [],
+      unresolvedQuestions: [],
+      throughSequence: 10,
+    };
+
+    expect(
+      parseConversationMemoryDelta(valid, {
+        conversationId: CONVERSATION_ID,
+        sourceMessages,
+        previousSummary: previous,
+      }),
+    ).toEqual(valid);
+    expect(
+      parseConversationMemoryDelta(
+        {
+          ...valid,
+          confirmedFacts: [memoryItem("duplicate", [MESSAGE_2, MESSAGE_2])],
+        },
+        {
+          conversationId: CONVERSATION_ID,
+          sourceMessages,
+          previousSummary: previous,
+        },
+      ),
+    ).toBeNull();
+    expect(
+      parseConversationMemoryDelta(
+        {
+          ...valid,
+          confirmedFacts: [memoryItem("foreign", [MESSAGE_3])],
+          throughSequence: 11,
+        },
+        {
+          conversationId: CONVERSATION_ID,
+          sourceMessages,
+          previousSummary: previous,
+        },
+      ),
+    ).toBeNull();
+    expect(
+      parseConversationMemoryDelta(
+        { ...valid, throughSequence: 7 },
+        {
+          conversationId: CONVERSATION_ID,
+          sourceMessages,
+          previousSummary: previous,
+        },
+      ),
+    ).toBeNull();
+  });
+
   it("recognizes only durable turn stages and session actions", () => {
     for (const stage of [
       "accepted",
@@ -269,3 +363,34 @@ describe("Xingyao conversation protocol contracts", () => {
     expect(hasMeaningfulAiContent("风险数为 0")).toBe(true);
   });
 });
+
+const CONVERSATION_ID = "11111111-1111-4111-8111-111111111111";
+const OTHER_CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
+const MESSAGE_1 = "33333333-3333-4333-8333-333333333333";
+const MESSAGE_2 = "44444444-4444-4444-8444-444444444444";
+const MESSAGE_3 = "55555555-5555-4555-8555-555555555555";
+
+function memoryItem(text: string, sourceMessageIds: string[]) {
+  return { text, sourceMessageIds };
+}
+
+function memorySummary(
+  overrides: Partial<{
+    schemaVersion: 1;
+    goals: ReturnType<typeof memoryItem>[];
+    confirmedFacts: ReturnType<typeof memoryItem>[];
+    decisions: ReturnType<typeof memoryItem>[];
+    unresolvedQuestions: ReturnType<typeof memoryItem>[];
+    lastCompactedSequence: number;
+  }> = {},
+) {
+  return {
+    schemaVersion: 1 as const,
+    goals: [],
+    confirmedFacts: [],
+    decisions: [],
+    unresolvedQuestions: [],
+    lastCompactedSequence: 0,
+    ...overrides,
+  };
+}

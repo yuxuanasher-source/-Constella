@@ -2,6 +2,8 @@ import type {
   AiConversationDto,
   AiConversationMessageDto,
   ConversationContextSnapshot,
+  ConversationMemoryDelta,
+  ConversationMemorySummary,
   ConversationStreamEvent,
   ConversationMessageRole,
   ConversationMessageStatus,
@@ -12,10 +14,13 @@ import type {
 import {
   isConversationSessionAction,
   isConversationTurnStage,
+  parseConversationMemorySummary,
 } from "./conversation-contracts";
 import type { AiChatMode, AiProviderName } from "./contracts";
 import {
   createHermesStateRepository,
+  HermesStateRepositoryError,
+  mapHermesStateRepositoryError,
   type HermesTurnCancellation,
 } from "./hermes/hermes-state-repository";
 import { isHermesOutcome, type HermesOutcome } from "./hermes/contracts";
@@ -140,8 +145,10 @@ export type ConversationGatewayState = {
   model?: string;
   lastUsedAt?: string;
   childSessions: string[];
-  summary: Record<string, unknown>;
+  summary: ConversationMemorySummary;
   summaryVersion: number;
+  memoryStatus: "ready" | "degraded";
+  memoryDegradedAt: string | null;
   pendingClarify?: ConversationGatewayPendingClarify;
 };
 
@@ -252,7 +259,9 @@ export async function getAiConversationGatewayState(
 ): Promise<ConversationGatewayState | null> {
   const { data, error } = await client
     .from("ai_conversations")
-    .select("provider_state, summary, summary_version")
+    .select(
+      "provider_state, summary, summary_version, memory_status, memory_degraded_at",
+    )
     .eq("id", input.conversationId)
     .eq("organization_id", input.organizationId)
     .eq("owner_user_id", input.ownerUserId)
@@ -289,8 +298,13 @@ export async function getAiConversationGatewayState(
     ]),
   ];
   const pendingClarify = parsePendingClarify(hermesGateway.pendingClarify);
-  const summary = isRecord(data.summary) ? data.summary : {};
+  const parsedSummary = parseConversationMemorySummary(data.summary);
+  const summary = parsedSummary ?? emptyConversationMemorySummary();
   const summaryVersion = numberValue(data.summary_version) ?? 0;
+  const persistedMemoryStatus = stringValue(data.memory_status);
+  const memoryStatus =
+    parsedSummary && persistedMemoryStatus === "ready" ? "ready" : "degraded";
+  const memoryDegradedAt = stringValue(data.memory_degraded_at);
   return {
     generation,
     ...(sessionId ? { sessionId } : {}),
@@ -308,6 +322,8 @@ export async function getAiConversationGatewayState(
     ...(pendingClarify ? { pendingClarify } : {}),
     summary,
     summaryVersion,
+    memoryStatus,
+    memoryDegradedAt,
   };
 }
 
@@ -587,6 +603,67 @@ export async function finishAiConversationTurnV2(
   );
 }
 
+export type ConversationMemoryFinishResult = {
+  completed: true;
+  memoryStatus: "ready" | "degraded";
+  summaryVersion: number;
+};
+
+export async function finishAiConversationTurnV3(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    turnId: string;
+    invocationId: string;
+    outcome: HermesOutcome;
+    content?: string;
+    providerName?: AiProviderName | null;
+    errorCode?: string | null;
+    errorSummary?: string | null;
+    retryable: boolean;
+    metadata?: Record<string, unknown>;
+    expectedSummaryVersion: number;
+    memoryDelta: ConversationMemoryDelta | null;
+  },
+): Promise<ConversationMemoryFinishResult> {
+  let result: QueryResult<unknown>;
+  try {
+    result = await client.rpc("finish_ai_chat_turn_v3", {
+      p_organization_id: input.organizationId,
+      p_owner_user_id: input.ownerUserId,
+      p_turn_id: input.turnId,
+      p_outcome: input.outcome,
+      p_content: input.content ?? "",
+      p_provider_name: input.providerName ?? null,
+      p_ai_invocation_id: input.invocationId,
+      p_error_code: input.errorCode ?? null,
+      p_error_summary: input.errorSummary ?? null,
+      p_retryable: input.retryable,
+      p_metadata: input.metadata ?? {},
+      p_expected_summary_version: input.expectedSummaryVersion,
+      p_memory_delta: input.memoryDelta,
+    });
+  } catch (error) {
+    throw mapHermesStateRepositoryError(error);
+  }
+  if (result.error) throw mapHermesStateRepositoryError(result.error);
+  if (!isRecord(result.data) || result.data.completed !== true) {
+    throw new HermesStateRepositoryError("state_conflict");
+  }
+  const memoryStatus = result.data.memory_status;
+  const summaryVersion = numberValue(result.data.summary_version);
+  if (
+    (memoryStatus !== "ready" && memoryStatus !== "degraded") ||
+    summaryVersion == null ||
+    !Number.isInteger(summaryVersion) ||
+    summaryVersion < 0
+  ) {
+    throw new HermesStateRepositoryError("state_conflict");
+  }
+  return { completed: true, memoryStatus, summaryVersion };
+}
+
 export async function cancelAiConversationTurnV2(
   client: ConversationRepositoryClient,
   input: {
@@ -749,6 +826,17 @@ function toConversationDto(row: ConversationRow): AiConversationDto {
     lastMessageAt: row.last_message_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function emptyConversationMemorySummary(): ConversationMemorySummary {
+  return {
+    schemaVersion: 1,
+    goals: [],
+    confirmedFacts: [],
+    decisions: [],
+    unresolvedQuestions: [],
+    lastCompactedSequence: 0,
   };
 }
 

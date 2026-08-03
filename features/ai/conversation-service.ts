@@ -7,6 +7,7 @@ import type {
   AiConversationMessageDto,
   ConversationContextSnapshot,
   ConversationGatewayContext,
+  ConversationMemoryDelta,
   ConversationRuntimeSelection,
   ConversationSessionAction,
   ConversationStreamEvent,
@@ -25,6 +26,7 @@ import {
   createAiConversationTurn,
   failAiConversationTurn,
   finishAiConversationTurnV2,
+  finishAiConversationTurnV3,
   getAiConversationGatewayState,
   getAiConversation,
   getAiConversationTurn,
@@ -40,6 +42,7 @@ import {
   type ConversationRepositoryClient,
   type ConversationClarifyClaim,
   type ConversationGatewayState,
+  type ConversationMemoryFinishResult,
   ConversationTurnStagePersistenceError,
   type CreatedConversationTurn,
   type StoredConversationTurn,
@@ -126,6 +129,9 @@ export type ConversationPersistence = {
   finishTurnV2?(
     input: Parameters<typeof finishAiConversationTurnV2>[1],
   ): Promise<void>;
+  finishTurnV3?(
+    input: Parameters<typeof finishAiConversationTurnV3>[1],
+  ): Promise<ConversationMemoryFinishResult>;
   recordTurnStage?(
     input: Parameters<typeof recordAiConversationTurnStage>[1],
   ): ReturnType<typeof recordAiConversationTurnStage>;
@@ -206,6 +212,7 @@ export function createSupabaseConversationPersistence(
     failTurn: (input) => failAiConversationTurn(client, input),
     renewLease: (input) => renewAiConversationTurnLease(client, input),
     finishTurnV2: (input) => finishAiConversationTurnV2(client, input),
+    finishTurnV3: (input) => finishAiConversationTurnV3(client, input),
     recordTurnStage: (input) => recordAiConversationTurnStage(client, input),
     cancelTurnV2: (input) => cancelAiConversationTurnV2(client, input),
     renewLeaseV2: (input) => renewAiConversationTurnLeaseV2(client, input),
@@ -668,6 +675,52 @@ export function createConversationService(
       }
     },
 
+    async finishTurnV3(
+      actor: ConversationActor,
+      turnId: string,
+      input: {
+        invocationId: string;
+        outcome: HermesOutcome;
+        content?: string;
+        providerName?: AiProviderName | null;
+        errorCode?: string | null;
+        errorSummary?: string | null;
+        retryable: boolean;
+        metadata?: Record<string, unknown>;
+        expectedSummaryVersion: number;
+        memoryDelta: ConversationMemoryDelta | null;
+      },
+    ) {
+      if (
+        ["complete", "partial", "blocked"].includes(input.outcome) &&
+        !hasMeaningfulAiContent(input.content ?? "")
+      ) {
+        throw new HermesStateRepositoryError("invalid_input");
+      }
+      if (!persistence.finishTurnV3) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      try {
+        return await persistence.finishTurnV3({
+          organizationId: actor.organizationId,
+          ownerUserId: actor.userId,
+          turnId,
+          invocationId: input.invocationId,
+          outcome: input.outcome,
+          content: input.content,
+          providerName: input.providerName,
+          errorCode: input.errorCode,
+          errorSummary: input.errorSummary,
+          retryable: input.retryable,
+          metadata: input.metadata,
+          expectedSummaryVersion: input.expectedSummaryVersion,
+          memoryDelta: input.memoryDelta,
+        });
+      } catch (error) {
+        throw mapHermesStateRepositoryError(error);
+      }
+    },
+
     async recordTurnStage(
       actor: ConversationActor,
       conversationId: string,
@@ -1056,6 +1109,9 @@ function isConversationSnapshot(
     value.version <= MAX_SNAPSHOT_VERSION &&
     Number.isInteger(value.summaryVersion) &&
     Number(value.summaryVersion) >= 0 &&
+    (value.lastCompactedSequence === undefined ||
+      (Number.isInteger(value.lastCompactedSequence) &&
+        Number(value.lastCompactedSequence) >= 0)) &&
     isStringArray(value.messageIds) &&
     isStringArray(value.groundingRefs) &&
     typeof value.assembledAt === "string" &&

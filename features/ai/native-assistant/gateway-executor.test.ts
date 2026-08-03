@@ -189,7 +189,7 @@ describe("native Hermes Gateway executor", () => {
 
     expect(failed.events).toEqual(control.events);
     expect(failed.gateway.submitPrompt).toHaveBeenCalledTimes(1);
-    expect(failed.service.finishTurnV2).toHaveBeenCalledTimes(1);
+    expect(failed.service.finishTurnV3).toHaveBeenCalledTimes(1);
     expect(failed.telemetryLogger.warn).toHaveBeenCalledWith(
       expect.objectContaining({
         code: "conversation_turn_stage_persist_failed",
@@ -235,7 +235,7 @@ describe("native Hermes Gateway executor", () => {
     );
 
     expect(events.at(-1)).toMatchObject({ type: "response.completed" });
-    expect(service.finishTurnV2).toHaveBeenCalledTimes(1);
+    expect(service.finishTurnV3).toHaveBeenCalledTimes(1);
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
   });
 
@@ -257,8 +257,9 @@ describe("native Hermes Gateway executor", () => {
         return new Promise(() => {});
       },
     );
-    service.finishTurnV2.mockImplementation(async () => {
+    service.finishTurnV3.mockImplementation(async () => {
       trace.push("finish");
+      return { completed: true, memoryStatus: "degraded", summaryVersion: 0 };
     });
     const telemetryLogger = { warn: vi.fn() };
     const gateway = gatewayDouble([
@@ -301,7 +302,7 @@ describe("native Hermes Gateway executor", () => {
       "response.completed",
     ]);
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
-    expect(service.finishTurnV2).toHaveBeenCalledTimes(1);
+    expect(service.finishTurnV3).toHaveBeenCalledTimes(1);
     expect(service.recordTurnStage).toHaveBeenCalledTimes(7);
     expect(timestamps).toEqual([]);
     expect(trace.indexOf("sample:2026-08-03T16:00:03.000Z")).toBeLessThan(
@@ -360,7 +361,7 @@ describe("native Hermes Gateway executor", () => {
 
     expect(events.at(-1)).toMatchObject({ type: "response.completed" });
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
-    expect(service.finishTurnV2).toHaveBeenCalledTimes(1);
+    expect(service.finishTurnV3).toHaveBeenCalledTimes(1);
     expect(pending).toHaveLength(7);
     for (const deferred of pending) {
       deferred.reject(new Error("secret delayed telemetry failure"));
@@ -565,16 +566,19 @@ describe("native Hermes Gateway executor", () => {
         budget: expect.objectContaining({ maxIterations: 90 }),
         personalMemoryRevision: 7,
         transcript: [
-          { role: "user", content: "first question" },
-          {
+          expect.objectContaining({ role: "user", content: "first question" }),
+          expect.objectContaining({
             role: "tool",
             content: "tool transcript",
             metadata: expect.objectContaining({
               historical: true,
               updatedAt: "2026-07-20T08:00:00.000Z",
             }),
-          },
-          { role: "user", content: "current question" },
+          }),
+          expect.objectContaining({
+            role: "user",
+            content: "current question",
+          }),
         ],
       }),
     );
@@ -610,7 +614,7 @@ describe("native Hermes Gateway executor", () => {
         lastObservedAt: "2026-07-22T09:00:01.000Z",
       },
     });
-    expect(service.finishTurnV2).toHaveBeenCalledWith(
+    expect(service.finishTurnV3).toHaveBeenCalledWith(
       actor,
       turn.turnId,
       expect.objectContaining({
@@ -986,9 +990,13 @@ describe("native Hermes Gateway executor", () => {
       summaryVersion: 3,
       summary: { text: "previous" },
     });
-    service.finishTurnV2
+    service.finishTurnV3
       .mockRejectedValueOnce(new Error("finish failed"))
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce({
+        completed: true,
+        memoryStatus: "degraded",
+        summaryVersion: 3,
+      });
     const gateway = gatewayDouble([
       { type: "response.output_text.delta", delta: "answer" },
       { type: "turn.terminal", status: "completed", summary: { text: "next" } },
@@ -1018,18 +1026,141 @@ describe("native Hermes Gateway executor", () => {
     });
   });
 
-  it("emits the same terminal result that finishTurnV2 persisted when summary sync fails", async () => {
+  it("persists a valid terminal memory delta in the single v3 terminal call", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    service.getGatewayState.mockResolvedValue({
+      generation: 0,
+      summaryVersion: 0,
+      summary: emptyMemorySummary(),
+      memoryStatus: "ready",
+      memoryDegradedAt: null,
+    });
+    service.finishTurnV3 = vi.fn().mockResolvedValue({
+      completed: true,
+      memoryStatus: "ready",
+      summaryVersion: 1,
+    });
+    const memoryDelta = {
+      goals: [],
+      confirmedFacts: [
+        {
+          text: "The greeting is hello",
+          sourceMessageIds: [turn.userMessageId],
+        },
+      ],
+      decisions: [],
+      unresolvedQuestions: [],
+      throughSequence: 1,
+    };
+    const gateway = gatewayDouble([
+      { type: "text.delta", delta: "done" },
+      { type: "completed", metadata: { memoryDelta } },
+    ]);
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+    });
+
+    const events = await collect(
+      executor.execute({
+        request: jsonRequest({ message: "hello", mode: "fast" }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      }),
+    );
+
+    expect(events.at(-1)).toMatchObject({
+      type: "response.completed",
+      content: "done",
+    });
+    expect(service.finishTurnV3).toHaveBeenCalledTimes(1);
+    expect(service.finishTurnV3).toHaveBeenCalledWith(
+      actor,
+      turn.turnId,
+      expect.objectContaining({ expectedSummaryVersion: 0, memoryDelta }),
+    );
+    expect(service.finishTurnV2).not.toHaveBeenCalled();
+    expect(service.syncConversationSummary).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["malformed", { goals: [{ text: "", sourceMessageIds: [] }] }],
+  ])(
+    "completes the answer with degraded memory when the delta is %s",
+    async (_name, memoryDelta) => {
+      const service = serviceDouble({
+        messages: [
+          message(turn.userMessageId, 1, "user", "completed", "hello"),
+        ],
+      });
+      service.getGatewayState.mockResolvedValue({
+        generation: 0,
+        summaryVersion: 0,
+        summary: emptyMemorySummary(),
+        memoryStatus: "ready",
+        memoryDegradedAt: null,
+      });
+      service.finishTurnV3 = vi.fn().mockResolvedValue({
+        completed: true,
+        memoryStatus: "degraded",
+        summaryVersion: 0,
+      });
+      const gateway = gatewayDouble([
+        { type: "text.delta", delta: "answer survives" },
+        {
+          type: "completed",
+          metadata: memoryDelta === undefined ? {} : { memoryDelta },
+        },
+      ]);
+      const executor = createGatewayTurnExecutor({
+        service,
+        gateway,
+        auth: { ...actor, role: "finance" },
+        provider: "hermes",
+        model: "hermes-official-gateway",
+      });
+
+      const events = await collect(
+        executor.execute({
+          request: jsonRequest({ message: "hello", mode: "fast" }),
+          actor,
+          turn,
+          attachments: [],
+          service: {} as never,
+        }),
+      );
+
+      expect(events.at(-1)).toMatchObject({
+        type: "response.completed",
+        content: "answer survives",
+        meta: expect.objectContaining({ memoryStatus: "degraded" }),
+      });
+      expect(service.finishTurnV3).toHaveBeenCalledWith(
+        actor,
+        turn.turnId,
+        expect.objectContaining({ memoryDelta: null }),
+      );
+      expect(service.finishTurnV2).not.toHaveBeenCalled();
+    },
+  );
+
+  it("emits the v3 terminal result without legacy best-effort summary sync", async () => {
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
     });
     service.getGatewayState.mockResolvedValue({
       generation: 0,
       summaryVersion: 3,
-      summary: { text: "previous" },
+      summary: emptyMemorySummary(),
     });
-    service.syncConversationSummary.mockRejectedValue(
-      new Error("version conflict"),
-    );
     const gateway = gatewayDouble([
       { type: "text.delta", delta: "done" },
       {
@@ -1056,11 +1187,10 @@ describe("native Hermes Gateway executor", () => {
       }),
     );
 
-    expect(service.finishTurnV2.mock.invocationCallOrder[0]).toBeLessThan(
-      service.syncConversationSummary.mock.invocationCallOrder[0],
-    );
+    expect(service.finishTurnV3).toHaveBeenCalledTimes(1);
+    expect(service.syncConversationSummary).not.toHaveBeenCalled();
     const finalEvent = events.at(-1);
-    const persisted = service.finishTurnV2.mock.calls[0]?.[2];
+    const persisted = service.finishTurnV3.mock.calls[0]?.[2];
     expect(finalEvent).toMatchObject({
       type: "response.completed",
       outcome: persisted?.outcome,
@@ -1597,7 +1727,7 @@ describe("native Hermes Gateway executor", () => {
     await collectIterator(iterator);
 
     expect(interruptSession).not.toHaveBeenCalled();
-    expect(service.finishTurnV2).toHaveBeenCalledWith(
+    expect(service.finishTurnV3).toHaveBeenCalledWith(
       actor,
       turn.turnId,
       expect.objectContaining({ outcome: "complete" }),
@@ -1622,7 +1752,16 @@ describe("native Hermes Gateway executor", () => {
       generation: 2,
       sessionId: "previous-session",
       summaryVersion: 4,
-      summary: { text: "The user is tracking a 20% conversion target." },
+      summary: {
+        ...emptyMemorySummary(),
+        confirmedFacts: [
+          {
+            text: "The user is tracking a 20% conversion target.",
+            sourceMessageIds: [turn.userMessageId],
+          },
+        ],
+        lastCompactedSequence: 0,
+      },
     });
     const gateway = gatewayDouble([
       { type: "completed", sessionId: "session-rebuilt", summary: {} },
@@ -2632,7 +2771,23 @@ function serviceDouble({
     getSourceGatewayCheckpoint: vi.fn().mockResolvedValue(null),
     recordTurnStage: vi.fn().mockResolvedValue(null),
     finishTurnV2: vi.fn().mockResolvedValue(undefined),
+    finishTurnV3: vi.fn().mockResolvedValue({
+      completed: true,
+      memoryStatus: "ready",
+      summaryVersion: 1,
+    }),
     renewLeaseV2: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function emptyMemorySummary() {
+  return {
+    schemaVersion: 1 as const,
+    goals: [],
+    confirmedFacts: [],
+    decisions: [],
+    unresolvedQuestions: [],
+    lastCompactedSequence: 0,
   };
 }
 
