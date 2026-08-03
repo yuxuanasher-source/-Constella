@@ -95,6 +95,94 @@ describe("native Hermes Gateway executor", () => {
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
   });
 
+  it("coalesces durable partial snapshots by UTF-8 growth or elapsed time", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    const gateway = gatewayDouble([
+      { type: "text.delta", delta: "x".repeat(1_024) },
+      { type: "text.delta", delta: "y".repeat(1_024) },
+      { type: "text.delta", delta: "z" },
+      { type: "completed" },
+    ]);
+    const ticks = [0, 100, 200, 1_300];
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      recoveryNow: () => ticks.shift() ?? 1_300,
+    });
+
+    const events = await collect(
+      executor.execute({
+        request: jsonRequest({ message: "hello", mode: "fast" }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      }),
+    );
+
+    const recoveryCalls = service.appendRecoveryEvent.mock.calls;
+    expect(recoveryCalls.map((call) => call[3].eventName)).toEqual([
+      "accepted",
+      "context_ready",
+      "session_ready",
+      "response_partial",
+      "response_partial",
+      "terminal",
+    ]);
+    expect(
+      recoveryCalls
+        .filter((call) => call[3].eventName === "response_partial")
+        .map((call) => call[3].partialContent.length),
+    ).toEqual([2_048, 2_049]);
+    expect(recoveryCalls.at(-1)?.[3]).toMatchObject({
+      eventName: "terminal",
+      partialContent: expect.stringMatching(/^x{1024}y{1024}z$/),
+      terminalEvent: expect.objectContaining({
+        type: "response.completed",
+        content: expect.stringMatching(/^x{1024}y{1024}z$/),
+      }),
+    });
+    expect(events.at(-1)).toMatchObject({ type: "response.completed" });
+  });
+
+  it("does not fail a successful answer when recovery snapshots are temporarily unavailable", async () => {
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    service.appendRecoveryEvent.mockRejectedValue(
+      new Error("recovery storage unavailable"),
+    );
+    const gateway = gatewayDouble([
+      { type: "text.delta", delta: "answer" },
+      { type: "completed" },
+    ]);
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+    });
+
+    const events = await collect(
+      executor.execute({
+        request: jsonRequest({ message: "hello", mode: "fast" }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      }),
+    );
+
+    expect(events.at(-1)).toMatchObject({ type: "response.completed" });
+    expect(service.finishTurnV3).toHaveBeenCalledTimes(1);
+  });
+
   it("loads and freezes every post-compaction page plus compacted pinned facts", async () => {
     const compactedSummarySourceId = "91000000-0000-4000-8000-000000000001";
     const compactedPinned = message(
@@ -1775,7 +1863,7 @@ describe("native Hermes Gateway executor", () => {
     });
   });
 
-  it("persists official Gateway clarify requests before emitting answerable SSE", async () => {
+  it("persists official Gateway clarify requests in turn recovery before emitting answerable SSE", async () => {
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
       gatewayGeneration: 6,
@@ -1830,32 +1918,86 @@ describe("native Hermes Gateway executor", () => {
         allowFreeText: false,
       }),
     );
-    expect(service.compareAndSwapGatewayState.mock.calls[1]).toEqual([
+    expect(service.appendRecoveryEvent).toHaveBeenCalledWith(
       actor,
       turn.conversationId,
-      7,
-      {
-        generation: 8,
-        sessionId: "session-rebuilt",
-        provider: "hermes",
-        model: "hermes-official-gateway",
-        lastUsedAt: "2026-08-03T16:00:00.000Z",
-        childSessions: ["session-child-1"],
-        pendingClarify: {
-          turnId: turn.turnId,
-          clarifyId,
-          requestId: clarifyId,
-          question: "Which project?",
-          choices: ["project", "streamer"],
-          allowFreeText: false,
+      turn.turnId,
+      expect.objectContaining({
+        eventName: "clarify_requested",
+        controlState: {
+          childSessionIds: ["session-child-1"],
+          pendingClarify: {
+            turnId: turn.turnId,
+            clarifyId,
+            requestId: clarifyId,
+            question: "Which project?",
+            choices: ["project", "streamer"],
+            allowFreeText: false,
+          },
         },
-      },
+      }),
+    );
+    expect(service.compareAndSwapGatewayState).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed and reports recovery persistence failure before exposing clarify", async () => {
+    const appendRecoveryEvent = vi
+      .fn()
+      .mockImplementation(async (_actor, _conversationId, _turnId, event) => {
+        if (
+          event.eventName === "clarify_requested" ||
+          event.eventName === "terminal"
+        ) {
+          throw new Error("recovery unavailable");
+        }
+        return { eventSequence: 1 };
+      });
+    const recoveryLogger = { warn: vi.fn() };
+    const service = serviceDouble({
+      messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
+    });
+    service.appendRecoveryEvent = appendRecoveryEvent;
+    const clarifyId = "55555555-5555-4555-8555-555555555555";
+    const gateway = gatewayDouble([
+      officialEvent("clarify.request", {
+        requestId: clarifyId,
+        question: "Which project?",
+        choices: ["project"],
+      }),
     ]);
-    const clarifyState = service.compareAndSwapGatewayState.mock.calls[1]?.[3];
-    expect(clarifyState).not.toHaveProperty("summary");
-    expect(clarifyState).not.toHaveProperty("summaryVersion");
-    expect(clarifyState).not.toHaveProperty("organizationId");
-    expect(clarifyState).not.toHaveProperty("arbitraryMixedProviderState");
+    const executor = createGatewayTurnExecutor({
+      service,
+      gateway,
+      auth: { ...actor, role: "finance" },
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      recoveryLogger,
+    });
+
+    const events = await collect(
+      executor.execute({
+        request: jsonRequest({ message: "hello", mode: "fast" }),
+        actor,
+        turn,
+        attachments: [],
+        service: {} as never,
+      }),
+    );
+
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: "clarify.requested" }),
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: "response.failed",
+      code: "gateway_recovery_persist_failed",
+    });
+    expect(appendRecoveryEvent).toHaveBeenCalledTimes(9);
+    expect(recoveryLogger.warn).toHaveBeenCalledWith({
+      code: "conversation_turn_recovery_persist_failed",
+      eventName: "clarify_requested",
+      turnId: turn.turnId,
+      attempts: 3,
+    });
   });
 
   it("does not interrupt the live Gateway session when only the POST transport aborts", async () => {
@@ -2164,7 +2306,7 @@ describe("native Hermes Gateway executor", () => {
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves only allowlisted transient controls when persisting a reusable session", async () => {
+  it("removes transient turn controls from reusable session persistence", async () => {
     const answerSha256 = "a".repeat(64);
     const pendingClarify = {
       turnId: "66666666-6666-4666-8666-666666666666",
@@ -2215,8 +2357,6 @@ describe("native Hermes Gateway executor", () => {
         provider: "hermes",
         model: "hermes-official-gateway",
         lastUsedAt: "2026-08-03T16:00:00.000Z",
-        childSessions: ["session-child-1", "session-child-2"],
-        pendingClarify,
       },
     );
     const persisted = service.compareAndSwapGatewayState.mock.calls[0]?.[3];
@@ -2225,10 +2365,12 @@ describe("native Hermes Gateway executor", () => {
     expect(persisted).not.toHaveProperty("organizationId");
     expect(persisted).not.toHaveProperty("invocationCapability");
     expect(persisted).not.toHaveProperty("arbitraryMixedProviderState");
+    expect(persisted).not.toHaveProperty("childSessions");
+    expect(persisted).not.toHaveProperty("pendingClarify");
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves an existing empty child-session control list", async () => {
+  it("does not persist an existing empty child-session control list", async () => {
     const service = serviceDouble({
       messages: [message(turn.userMessageId, 1, "user", "completed", "hello")],
       gatewayState: reusableGatewayState({ childSessions: [] }),
@@ -2240,9 +2382,9 @@ describe("native Hermes Gateway executor", () => {
 
     await runExecutor({ service, gateway });
 
-    expect(service.compareAndSwapGatewayState.mock.calls[0]?.[3]).toEqual(
-      expect.objectContaining({ childSessions: [] }),
-    );
+    expect(
+      service.compareAndSwapGatewayState.mock.calls[0]?.[3],
+    ).not.toHaveProperty("childSessions");
   });
 
   it.each([
@@ -2282,11 +2424,7 @@ describe("native Hermes Gateway executor", () => {
 
       expect(
         service.compareAndSwapGatewayState.mock.calls[0]?.[3],
-      ).toMatchObject({
-        pendingClarify: expect.not.objectContaining({
-          response: expect.anything(),
-        }),
-      });
+      ).not.toHaveProperty("pendingClarify");
     },
   );
 
@@ -2345,7 +2483,6 @@ describe("native Hermes Gateway executor", () => {
       provider: "hermes",
       model: "hermes-official-gateway",
       lastUsedAt: "2026-08-03T16:00:00.000Z",
-      childSessions: [],
     });
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(2);
   });
@@ -2439,7 +2576,6 @@ describe("native Hermes Gateway executor", () => {
         provider: "hermes",
         model: "hermes-official-gateway",
         lastUsedAt: "2026-08-03T16:00:00.000Z",
-        childSessions: [],
       },
     );
     expect(gateway.submitPrompt).toHaveBeenCalledTimes(1);
@@ -2974,6 +3110,14 @@ function serviceDouble({
     }),
     getSourceGatewayCheckpoint: vi.fn().mockResolvedValue(null),
     recordTurnStage: vi.fn().mockResolvedValue(null),
+    appendRecoveryEvent: vi.fn().mockResolvedValue({
+      turnId: turn.turnId,
+      status: "generating",
+      eventSequence: 1,
+      partialContent: "",
+      controlState: { childSessionIds: [] },
+      updatedAt: "2026-08-03T16:00:00.000Z",
+    }),
     finishTurnV2: vi.fn().mockResolvedValue(undefined),
     finishTurnV3: vi.fn().mockResolvedValue({
       completed: true,

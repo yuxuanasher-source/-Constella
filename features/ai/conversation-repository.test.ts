@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  appendAiConversationTurnRecoveryEvent,
   cancelAiConversationTurnV2,
   claimAiConversationClarifyResponse,
   compareAndSwapAiConversationGatewayState,
@@ -10,6 +11,7 @@ import {
   finishAiConversationTurnV2,
   finishAiConversationTurnV3,
   getAiConversationGatewayState,
+  getAiConversationTurnRecoverySnapshot,
   listAiConversationContextMessages,
   verifyAiConversationTerminalState,
   listAiConversationMessages,
@@ -72,6 +74,168 @@ function repositoryMessageRow(
 }
 
 describe("Xingyao conversation repository", () => {
+  it("appends recovery events with exact actor and turn RPC bindings", async () => {
+    const updatedAt = "2026-08-03T16:02:00.000Z";
+    const terminalEvent = {
+      type: "response.failed" as const,
+      conversationId: v2Ids.conversationId,
+      turnId: v2Ids.turnId,
+      code: "gateway_timeout",
+      retryable: true,
+      message: "Gateway timed out",
+    };
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        turnId: v2Ids.turnId,
+        status: "failed",
+        eventSequence: 9,
+        partialContent: "partial answer",
+        terminalEvent,
+        controlState: { childSessionIds: ["session-child-1"] },
+        operationStatus: "appended",
+        updatedAt,
+      },
+      error: null,
+    });
+
+    const result = await appendAiConversationTurnRecoveryEvent(
+      { rpc } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: v2Ids.organizationId,
+        ownerUserId: v2Ids.ownerUserId,
+        conversationId: v2Ids.conversationId,
+        turnId: v2Ids.turnId,
+        eventName: "terminal",
+        payload: { reason: "timeout" },
+        partialContent: "partial answer",
+        terminalEvent,
+        controlState: { childSessionIds: ["session-child-1"] },
+      },
+    );
+
+    expect(rpc).toHaveBeenCalledWith("append_ai_chat_turn_recovery_event", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_conversation_id: v2Ids.conversationId,
+      p_turn_id: v2Ids.turnId,
+      p_event_name: "terminal",
+      p_payload: { reason: "timeout" },
+      p_partial_content: "partial answer",
+      p_terminal_event: terminalEvent,
+      p_control_state: { childSessionIds: ["session-child-1"] },
+    });
+    expect(result).toEqual({
+      turnId: v2Ids.turnId,
+      status: "failed",
+      eventSequence: 9,
+      partialContent: "partial answer",
+      terminalEvent,
+      controlState: { childSessionIds: ["session-child-1"] },
+      operationStatus: "appended",
+      updatedAt,
+    });
+  });
+
+  it("loads owner-scoped recovery snapshots and normalizes an absent record", async () => {
+    const rpc = vi
+      .fn()
+      .mockResolvedValueOnce({ data: null, error: null })
+      .mockResolvedValueOnce({
+        data: {
+          turnId: v2Ids.turnId,
+          status: "generating",
+          eventSequence: 4,
+          partialContent: "working",
+          terminalEvent: null,
+          controlState: { childSessionIds: [] },
+          updatedAt: "2026-08-03T16:03:00.000Z",
+        },
+        error: null,
+      });
+    const client = { rpc } as unknown as ConversationRepositoryClient;
+    const input = {
+      organizationId: v2Ids.organizationId,
+      ownerUserId: v2Ids.ownerUserId,
+      conversationId: v2Ids.conversationId,
+      turnId: v2Ids.turnId,
+    };
+
+    await expect(
+      getAiConversationTurnRecoverySnapshot(client, input),
+    ).resolves.toBeNull();
+    await expect(
+      getAiConversationTurnRecoverySnapshot(client, input),
+    ).resolves.toMatchObject({
+      turnId: v2Ids.turnId,
+      status: "generating",
+      eventSequence: 4,
+      partialContent: "working",
+    });
+
+    expect(rpc).toHaveBeenLastCalledWith("get_ai_chat_turn_recovery_snapshot", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_conversation_id: v2Ids.conversationId,
+      p_turn_id: v2Ids.turnId,
+    });
+  });
+
+  it("rejects oversized recovery payloads before calling PostgREST", async () => {
+    const rpc = vi.fn();
+
+    await expect(
+      appendAiConversationTurnRecoveryEvent(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          turnId: v2Ids.turnId,
+          eventName: "response_partial",
+          payload: { oversized: "x".repeat(16_385) },
+        },
+      ),
+    ).rejects.toThrow("conversation_turn_recovery_event_invalid");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects sensitive payload keys and cross-turn terminal identities locally", async () => {
+    const rpc = vi.fn();
+    const base = {
+      organizationId: v2Ids.organizationId,
+      ownerUserId: v2Ids.ownerUserId,
+      conversationId: v2Ids.conversationId,
+      turnId: v2Ids.turnId,
+    };
+
+    await expect(
+      appendAiConversationTurnRecoveryEvent(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          ...base,
+          eventName: "tool_started",
+          payload: { nested: { authorization: "Bearer secret" } },
+        },
+      ),
+    ).rejects.toThrow("conversation_turn_recovery_event_invalid");
+    await expect(
+      appendAiConversationTurnRecoveryEvent(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          ...base,
+          eventName: "terminal",
+          terminalEvent: {
+            type: "response.cancelled",
+            conversationId: v2Ids.conversationId,
+            turnId: "00000000-0000-4000-8000-000000000099",
+            messageId: "message-1",
+          },
+        },
+      ),
+    ).rejects.toThrow("conversation_turn_recovery_event_invalid");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it("records a turn stage with exact actor and conversation RPC bindings", async () => {
     const observedAt = "2026-08-03T16:00:00.000Z";
     const rpc = vi.fn().mockResolvedValue({

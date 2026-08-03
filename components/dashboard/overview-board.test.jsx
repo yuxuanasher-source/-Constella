@@ -1284,6 +1284,29 @@ describe("OverviewBoard AI panel", () => {
             }),
         });
       }
+      if (
+        url ===
+        "/api/ai/conversations/conversation-malformed/turns/turn-malformed/status?after=0"
+      ) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              turnId: "turn-malformed",
+              status: "completed",
+              eventSequence: 1,
+              partialContent: "Recovered protocol result",
+              terminalEvent: {
+                type: "response.completed",
+                conversationId: "conversation-malformed",
+                turnId: "turn-malformed",
+                messageId: "message-assistant-malformed",
+                content: "Recovered protocol result",
+              },
+            }),
+        });
+      }
       return protocolFetch(url, options) || defaultFetchResponse(url);
     });
 
@@ -1590,6 +1613,7 @@ describe("OverviewBoard AI panel", () => {
 
   it("polls an active restored turn until its persisted assistant response completes", async () => {
     let historyCalls = 0;
+    let statusCalls = 0;
     fetch.mockImplementation((url) => {
       if (url === "/api/ai/conversations") {
         return Promise.resolve({
@@ -1632,6 +1656,30 @@ describe("OverviewBoard AI panel", () => {
             }),
         });
       }
+      if (
+        url ===
+        "/api/ai/conversations/conversation-background/turns/turn-background/status?after=0"
+      ) {
+        statusCalls += 1;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              turnId: "turn-background",
+              status: "completed",
+              eventSequence: 3,
+              partialContent: "Recovered background answer",
+              terminalEvent: {
+                type: "response.completed",
+                conversationId: "conversation-background",
+                turnId: "turn-background",
+                messageId: "message-assistant-background",
+                content: "Recovered background answer",
+              },
+            }),
+        });
+      }
       return defaultFetchResponse(url);
     });
     localStorage.setItem(
@@ -1658,10 +1706,323 @@ describe("OverviewBoard AI panel", () => {
         timeout: 2500,
       }),
     ).toBeInTheDocument();
-    expect(historyCalls).toBeGreaterThanOrEqual(2);
+    expect(historyCalls).toBe(2);
+    expect(statusCalls).toBe(1);
     expect(
       screen.queryByText("AI response unavailable"),
     ).not.toBeInTheDocument();
+  });
+
+  it("switches away from an active turn and reattaches on return without cancelling", async () => {
+    let aHistoryCalls = 0;
+    const urls = [];
+    fetch.mockImplementation((url) => {
+      urls.push(url);
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversations: [
+                { id: "conversation-a", title: "Conversation A" },
+                { id: "conversation-b", title: "Conversation B" },
+              ],
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-a") {
+        aHistoryCalls += 1;
+        const completed = aHistoryCalls >= 3;
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-a" },
+              messages: [
+                { id: "a-user", role: "user", content: "Active A request" },
+                {
+                  id: "a-assistant",
+                  role: "assistant",
+                  status: completed ? "completed" : "streaming",
+                  content: completed ? "A completed in background" : "",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-a",
+                  assistantMessageId: "a-assistant",
+                  status: completed ? "completed" : "generating",
+                },
+              ],
+            }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-b") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-b" },
+              messages: [
+                {
+                  id: "b-user",
+                  role: "user",
+                  content: "Conversation B history",
+                },
+              ],
+              turns: [],
+            }),
+        });
+      }
+      if (
+        url ===
+        "/api/ai/conversations/conversation-a/turns/turn-a/status?after=0"
+      ) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              turnId: "turn-a",
+              status: "completed",
+              eventSequence: 2,
+              partialContent: "A completed in background",
+              terminalEvent: {
+                type: "response.completed",
+                conversationId: "conversation-a",
+                turnId: "turn-a",
+                messageId: "a-assistant",
+                content: "A completed in background",
+              },
+            }),
+        });
+      }
+      return defaultFetchResponse(url);
+    });
+    localStorage.setItem(
+      "jingying-cabin.dashboard.ai.conversation.v1.user-switch-active",
+      "conversation-a",
+    );
+
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-switch-active", name: "123", role: "owner" }}
+      />,
+    );
+
+    await screen.findByText("Active A request");
+    fireEvent.click(screen.getByRole("tab", { name: "Conversation B" }));
+    await screen.findByText("Conversation B history");
+    fireEvent.click(screen.getByRole("tab", { name: "Conversation A" }));
+
+    expect(
+      await screen.findByText("A completed in background", undefined, {
+        timeout: 2500,
+      }),
+    ).toBeInTheDocument();
+    expect(urls.some((url) => String(url).endsWith("/cancel"))).toBe(false);
+  });
+
+  it("reattaches after remount and tolerates two recovery network failures", async () => {
+    vi.useFakeTimers();
+    try {
+      let statusCalls = 0;
+      let historyCalls = 0;
+      let terminalObserved = false;
+      fetch.mockImplementation((url) => {
+        if (url === "/api/ai/conversations") {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversations: [{ id: "conversation-remount" }],
+              }),
+          });
+        }
+        if (url === "/api/ai/conversations/conversation-remount") {
+          historyCalls += 1;
+          const completed = terminalObserved;
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                conversation: { id: "conversation-remount" },
+                messages: [
+                  { id: "r-user", role: "user", content: "Remount request" },
+                  {
+                    id: "r-assistant",
+                    role: "assistant",
+                    status: completed ? "completed" : "streaming",
+                    content: completed ? "Recovered after remount" : "",
+                  },
+                ],
+                turns: [
+                  {
+                    id: "turn-remount",
+                    assistantMessageId: "r-assistant",
+                    status: completed ? "completed" : "generating",
+                  },
+                ],
+              }),
+          });
+        }
+        if (
+          url ===
+          "/api/ai/conversations/conversation-remount/turns/turn-remount/status?after=0"
+        ) {
+          statusCalls += 1;
+          if (statusCalls <= 2) return Promise.reject(new Error("offline"));
+          terminalObserved = true;
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({
+                turnId: "turn-remount",
+                status: "completed",
+                eventSequence: 4,
+                partialContent: "Recovered after remount",
+                terminalEvent: {
+                  type: "response.completed",
+                  conversationId: "conversation-remount",
+                  turnId: "turn-remount",
+                  messageId: "r-assistant",
+                  content: "Recovered after remount",
+                },
+              }),
+          });
+        }
+        return defaultFetchResponse(url);
+      });
+      localStorage.setItem(
+        "jingying-cabin.dashboard.ai.conversation.v1.user-remount",
+        "conversation-remount",
+      );
+
+      const rendered = render(
+        <OverviewBoard
+          dashboard={dashboard}
+          projects={[]}
+          tasks={[]}
+          reports={[]}
+          batches={[]}
+          currentUser={{ id: "user-remount", name: "123", role: "owner" }}
+        />,
+      );
+      await act(async () => Promise.resolve());
+      rendered.unmount();
+      render(
+        <OverviewBoard
+          dashboard={dashboard}
+          projects={[]}
+          tasks={[]}
+          reports={[]}
+          batches={[]}
+          currentUser={{ id: "user-remount", name: "123", role: "owner" }}
+        />,
+      );
+      await act(async () => Promise.resolve());
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      await act(async () => vi.advanceTimersByTimeAsync(2_000));
+      await act(async () => vi.advanceTimersByTimeAsync(4_000));
+
+      expect(screen.getByText("Recovered after remount")).toBeInTheDocument();
+      expect(statusCalls).toBe(3);
+      expect(historyCalls).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not force-scroll readers who moved away from the latest response", async () => {
+    fetch.mockImplementation((url) => {
+      if (url === "/api/ai/conversations") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({ conversations: [{ id: "conversation-scroll" }] }),
+        });
+      }
+      if (url === "/api/ai/conversations/conversation-scroll") {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              conversation: { id: "conversation-scroll" },
+              messages: [
+                { id: "s-user", role: "user", content: "Long history" },
+                {
+                  id: "s-assistant",
+                  role: "assistant",
+                  status: "streaming",
+                  content: "",
+                },
+              ],
+              turns: [
+                {
+                  id: "turn-scroll",
+                  assistantMessageId: "s-assistant",
+                  status: "generating",
+                },
+              ],
+            }),
+        });
+      }
+      if (
+        url ===
+        "/api/ai/conversations/conversation-scroll/turns/turn-scroll/status?after=0"
+      ) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              turnId: "turn-scroll",
+              status: "generating",
+              eventSequence: 1,
+              partialContent: "New text while reading older messages",
+            }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 204, json: () => null });
+    });
+    localStorage.setItem(
+      "jingying-cabin.dashboard.ai.conversation.v1.user-scroll",
+      "conversation-scroll",
+    );
+
+    render(
+      <OverviewBoard
+        dashboard={dashboard}
+        projects={[]}
+        tasks={[]}
+        reports={[]}
+        batches={[]}
+        currentUser={{ id: "user-scroll", name: "123", role: "owner" }}
+      />,
+    );
+    await screen.findByText("Long history");
+    const body = screen.getByTestId("ai-conversation-body");
+    Object.defineProperties(body, {
+      scrollHeight: { configurable: true, value: 2_000 },
+      clientHeight: { configurable: true, value: 500 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+    });
+    fireEvent.scroll(body);
+
+    expect(
+      await screen.findByText(
+        "New text while reading older messages",
+        undefined,
+        { timeout: 2500 },
+      ),
+    ).toBeInTheDocument();
+    expect(body.scrollTop).toBe(100);
   });
 
   it("redacts unsafe restored assistant content and failed turn summaries", async () => {

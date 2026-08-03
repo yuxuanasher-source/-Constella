@@ -38,9 +38,8 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
     getRouteContextMock.mockReset();
     createSessionMock.mockReset();
     issueAssertionMock.mockReset().mockResolvedValue("actor-jws");
-    const { activeHermesRunRegistry } = await import(
-      "@/features/ai/hermes/active-run-registry"
-    );
+    const { activeHermesRunRegistry } =
+      await import("@/features/ai/hermes/active-run-registry");
     activeHermesRunRegistry.clear();
   });
 
@@ -92,6 +91,15 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
       "persist-cancel",
       "interrupt",
     ]);
+    expect(service.appendRecoveryEvent).toHaveBeenCalledWith(
+      ACTOR,
+      CONVERSATION_ID,
+      TURN_ID,
+      expect.objectContaining({
+        eventName: "cancel_requested",
+        payload: { requested: true },
+      }),
+    );
   });
 
   it("closes the pre-authenticated session without interrupting when cancellation races with a terminal turn", async () => {
@@ -115,7 +123,9 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
     const response = await POST(request(), params());
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ alreadyTerminal: true });
+    await expect(response.json()).resolves.toMatchObject({
+      alreadyTerminal: true,
+    });
     expect(createSessionMock).toHaveBeenCalledTimes(1);
     expect(session.interrupt).not.toHaveBeenCalled();
     expect(session.close).toHaveBeenCalledTimes(1);
@@ -148,9 +158,68 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
     expect(session.interrupt).toHaveBeenCalledTimes(1);
   });
 
-  it("marks provider recovery deterministically when the stored Gateway session is gone", async () => {
-    const service = serviceDouble();
-    createSessionMock.mockRejectedValue(new Error("hermes_gateway_session_mismatch"));
+  it("prefers turn recovery child sessions after product restart", async () => {
+    const interrupts: string[] = [];
+    const service = serviceDouble({
+      getGatewayState: vi
+        .fn()
+        .mockResolvedValue(gatewayState(["legacy-child-session"])),
+      getRecoverySnapshot: vi.fn().mockResolvedValue({
+        turnId: TURN_ID,
+        controlState: {
+          childSessionIds: ["snapshot-child-session"],
+        },
+      }),
+      cancelTurn: vi.fn().mockResolvedValue({
+        ...cancelResult(),
+        childSessions: ["legacy-result-child-session"],
+      }),
+    });
+    createSessionMock.mockImplementation(async ({ sessionId }) => ({
+      interrupt: vi.fn(async () => interrupts.push(sessionId)),
+      close: vi.fn(),
+    }));
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(200);
+    expect(service.getRecoverySnapshot).toHaveBeenCalledWith(
+      ACTOR,
+      CONVERSATION_ID,
+      TURN_ID,
+    );
+    expect(interrupts).toEqual(["snapshot-child-session", "session-owned"]);
+  });
+
+  it("falls back to legacy provider child sessions during rollout", async () => {
+    const interrupts: string[] = [];
+    const service = serviceDouble({
+      getGatewayState: vi
+        .fn()
+        .mockResolvedValue(gatewayState(["legacy-child-session"])),
+    });
+    createSessionMock.mockImplementation(async ({ sessionId }) => ({
+      interrupt: vi.fn(async () => interrupts.push(sessionId)),
+      close: vi.fn(),
+    }));
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(request(), params());
+
+    expect(response.status).toBe(200);
+    expect(interrupts).toEqual(["legacy-child-session", "session-owned"]);
+  });
+
+  it("appends turn recovery without mutating reusable Gateway state when the stored session is gone", async () => {
+    const service = serviceDouble({
+      appendRecoveryEvent: vi.fn().mockResolvedValue({ eventSequence: 9 }),
+    });
+    createSessionMock.mockRejectedValue(
+      new Error("hermes_gateway_session_mismatch"),
+    );
     getRouteContextMock.mockResolvedValue(routeContext(service));
     const { POST } = await import("./route");
 
@@ -158,18 +227,18 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
 
     expect(response.status).toBe(202);
     expect(service.cancelTurn).toHaveBeenCalledTimes(1);
-    expect(service.compareAndSwapGatewayState).toHaveBeenCalledWith(
+    expect(service.appendRecoveryEvent).toHaveBeenNthCalledWith(
+      1,
       ACTOR,
       CONVERSATION_ID,
-      7,
+      TURN_ID,
       expect.objectContaining({
-        generation: 8,
-        recovery: expect.objectContaining({
-          status: "rebuild_required",
-          reason: "gateway_session_missing",
-        }),
+        eventName: "cancel_requested",
+        payload: { requested: true },
+        controlState: { childSessionIds: ["session-owned"] },
       }),
     );
+    expect(service.compareAndSwapGatewayState).not.toHaveBeenCalled();
   });
 
   it("returns recovery after cancellation persists when the durable control session cannot be opened", async () => {
@@ -188,7 +257,7 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
       recoveryRequired: true,
     });
     expect(service.cancelTurn).toHaveBeenCalledTimes(1);
-    expect(service.compareAndSwapGatewayState).toHaveBeenCalledTimes(1);
+    expect(service.compareAndSwapGatewayState).not.toHaveBeenCalled();
   });
 
   it("returns recovery without a state write when cancellation reveals an unprepared child session", async () => {
@@ -216,9 +285,9 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
   it("interrupts child sessions and reports revoked capabilities from the authoritative cancellation result", async () => {
     const interrupts: string[] = [];
     const service = serviceDouble({
-      getGatewayState: vi.fn().mockResolvedValue(
-        gatewayState(["child-session"]),
-      ),
+      getGatewayState: vi
+        .fn()
+        .mockResolvedValue(gatewayState(["child-session"])),
       cancelTurn: vi.fn().mockResolvedValue({
         ...cancelResult(),
         childSessions: ["child-session"],
@@ -245,9 +314,11 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
   it("does not interrupt the parent session twice when child control data repeats it", async () => {
     const interrupts: string[] = [];
     const service = serviceDouble({
-      getGatewayState: vi.fn().mockResolvedValue(
-        gatewayState(["session-owned", "child-session", "session-owned"]),
-      ),
+      getGatewayState: vi
+        .fn()
+        .mockResolvedValue(
+          gatewayState(["session-owned", "child-session", "session-owned"]),
+        ),
       cancelTurn: vi.fn().mockResolvedValue({
         ...cancelResult(),
         childSessions: ["session-owned", "child-session", "session-owned"],
@@ -268,9 +339,8 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
   });
 
   it("skips durable parent interrupt when the live registry parent was already interrupted", async () => {
-    const { activeHermesRunRegistry } = await import(
-      "@/features/ai/hermes/active-run-registry"
-    );
+    const { activeHermesRunRegistry } =
+      await import("@/features/ai/hermes/active-run-registry");
     const parentInterrupt = vi.fn().mockResolvedValue({ interrupted: true });
     activeHermesRunRegistry.register({
       actor: ACTOR,
@@ -295,9 +365,8 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
   });
 
   it("returns recovery when a local session interrupt fails after cancellation persists", async () => {
-    const { activeHermesRunRegistry } = await import(
-      "@/features/ai/hermes/active-run-registry"
-    );
+    const { activeHermesRunRegistry } =
+      await import("@/features/ai/hermes/active-run-registry");
     activeHermesRunRegistry.register({
       actor: ACTOR,
       conversationId: CONVERSATION_ID,
@@ -349,9 +418,9 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/cancel", () =
     expect(service.issueGatewayRootCapability).not.toHaveBeenCalled();
   });
 
-  it("preserves the cancellation response when the recovery state write fails", async () => {
+  it("preserves the cancellation response when the recovery event write fails", async () => {
     const service = serviceDouble({
-      compareAndSwapGatewayState: vi
+      appendRecoveryEvent: vi
         .fn()
         .mockRejectedValue(new Error("recovery_write_failed")),
     });
@@ -422,7 +491,12 @@ function request() {
 }
 
 function params() {
-  return { params: Promise.resolve({ conversationId: CONVERSATION_ID, turnId: TURN_ID }) };
+  return {
+    params: Promise.resolve({
+      conversationId: CONVERSATION_ID,
+      turnId: TURN_ID,
+    }),
+  };
 }
 
 function routeContext(service: ReturnType<typeof serviceDouble>) {
@@ -445,6 +519,7 @@ function serviceDouble(overrides: Record<string, unknown> = {}) {
       turns: [{ id: TURN_ID, status: "generating", mode: "deep" }],
     }),
     getGatewayState: vi.fn().mockResolvedValue(gatewayState()),
+    getRecoverySnapshot: vi.fn().mockResolvedValue(null),
     cancelTurn: vi.fn().mockResolvedValue(cancelResult()),
     issueGatewayRootCapability: vi.fn().mockResolvedValue({
       capabilityId: CAPABILITY_ID,
@@ -452,6 +527,7 @@ function serviceDouble(overrides: Record<string, unknown> = {}) {
       expiresAt: "2026-07-22T09:05:00.000Z",
     }),
     compareAndSwapGatewayState: vi.fn().mockResolvedValue(8),
+    appendRecoveryEvent: vi.fn().mockResolvedValue({ eventSequence: 8 }),
     ...overrides,
   };
 }

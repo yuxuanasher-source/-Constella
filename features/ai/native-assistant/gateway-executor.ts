@@ -7,6 +7,8 @@ import type {
   ConversationSessionAction,
   ConversationStreamEvent,
   ConversationTurnStage,
+  TurnRecoveryControlState,
+  TurnRecoveryEventName,
 } from "../conversation-contracts";
 import {
   parseConversationMemoryDelta,
@@ -183,6 +185,18 @@ type GatewayService = {
       sessionAction?: ConversationSessionAction;
     },
   ): Promise<unknown>;
+  appendRecoveryEvent?(
+    actor: ConversationActor,
+    conversationId: string,
+    turnId: string,
+    input: {
+      eventName: TurnRecoveryEventName;
+      payload?: Record<string, unknown>;
+      partialContent?: string;
+      terminalEvent?: ConversationStreamEvent;
+      controlState?: TurnRecoveryControlState;
+    },
+  ): Promise<unknown>;
   captureGatewayContext?(
     actor: ConversationActor,
     turnId: string,
@@ -271,6 +285,7 @@ type GatewayExecutorOptions = {
   personalMemoryRevision?: number;
   sourceTurnId?: string;
   now?: () => Date;
+  recoveryNow?: () => number;
   telemetryTimeoutMs?: number;
   telemetryLogger?: {
     warn(input: {
@@ -279,10 +294,126 @@ type GatewayExecutorOptions = {
       turnId: string;
     }): void;
   };
+  recoveryLogger?: {
+    warn(input: {
+      code: "conversation_turn_recovery_persist_failed";
+      eventName: TurnRecoveryEventName;
+      turnId: string;
+      attempts: number;
+    }): void;
+  };
 };
 
 const GATEWAY_SESSION_IDLE_TTL_MS = 15 * 60 * 1_000;
 const MAX_PROMPT_SUBMIT_ATTEMPTS = 2;
+const RECOVERY_PARTIAL_INTERVAL_MS = 1_000;
+const RECOVERY_PARTIAL_BYTES = 2_048;
+
+type TurnRecoveryRecorder = {
+  record(
+    eventName: TurnRecoveryEventName,
+    input?: {
+      payload?: Record<string, unknown>;
+      partialContent?: string;
+      terminalEvent?: ConversationStreamEvent;
+      controlState?: TurnRecoveryControlState;
+    },
+  ): Promise<boolean>;
+  partial(content: string): Promise<void>;
+  terminal(content: string, event: ConversationStreamEvent): Promise<void>;
+};
+
+function createTurnRecoveryRecorder({
+  service,
+  actor,
+  turn,
+  now = Date.now,
+  logger,
+}: {
+  service: GatewayService;
+  actor: ConversationActor;
+  turn: CreatedConversationTurn;
+  now?: () => number;
+  logger?: GatewayExecutorOptions["recoveryLogger"];
+}): TurnRecoveryRecorder {
+  if (!service.appendRecoveryEvent) {
+    return {
+      record: async () => false,
+      partial: async () => undefined,
+      terminal: async () => undefined,
+    };
+  }
+
+  const append = service.appendRecoveryEvent.bind(service);
+  const recoveryLogger =
+    logger ??
+    ({
+      warn: (input) =>
+        console.warn("AI turn recovery persistence failed", input),
+    } satisfies NonNullable<GatewayExecutorOptions["recoveryLogger"]>);
+  const encoder = new TextEncoder();
+  let lastPartialBytes = 0;
+  let lastPartialAt = now();
+
+  async function record(
+    eventName: TurnRecoveryEventName,
+    input: {
+      payload?: Record<string, unknown>;
+      partialContent?: string;
+      terminalEvent?: ConversationStreamEvent;
+      controlState?: TurnRecoveryControlState;
+    } = {},
+  ): Promise<boolean> {
+    const attempts = ["clarify_requested", "terminal"].includes(eventName)
+      ? 3
+      : 1;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        await append(actor, turn.conversationId, turn.turnId, {
+          eventName,
+          ...input,
+        });
+        return true;
+      } catch {
+        if (attempt === attempts) {
+          recoveryLogger.warn({
+            code: "conversation_turn_recovery_persist_failed",
+            eventName,
+            turnId: turn.turnId,
+            attempts,
+          });
+        }
+      }
+    }
+    return false;
+  }
+
+  return {
+    async record(eventName, input) {
+      return record(eventName, input);
+    },
+    async partial(content) {
+      const currentBytes = encoder.encode(content).byteLength;
+      const observedAt = now();
+      if (
+        currentBytes - lastPartialBytes < RECOVERY_PARTIAL_BYTES &&
+        observedAt - lastPartialAt < RECOVERY_PARTIAL_INTERVAL_MS
+      ) {
+        return;
+      }
+      if (await record("response_partial", { partialContent: content })) {
+        lastPartialBytes = currentBytes;
+        lastPartialAt = observedAt;
+      }
+    },
+    async terminal(content, event) {
+      await record("terminal", {
+        partialContent: content,
+        terminalEvent: event,
+      });
+    },
+  };
+}
 
 export function createGatewayTurnExecutor(
   options: GatewayExecutorOptions,
@@ -310,8 +441,16 @@ export function createGatewayTurnExecutor(
         logger: options.telemetryLogger,
         timeoutMs: options.telemetryTimeoutMs,
       });
+      const recovery = createTurnRecoveryRecorder({
+        service,
+        actor: input.actor,
+        turn: input.turn,
+        now: options.recoveryNow,
+        logger: options.recoveryLogger,
+      });
 
       telemetry.record("accepted");
+      await recovery.record("accepted");
       yield started(input.turn);
 
       try {
@@ -321,6 +460,7 @@ export function createGatewayTurnExecutor(
           [],
         );
         telemetry.record("context_ready");
+        await recovery.record("context_ready");
         state = (await service.getGatewayState?.(
           input.actor,
           input.turn.conversationId,
@@ -355,6 +495,11 @@ export function createGatewayTurnExecutor(
         state = sessionSetup.state;
         telemetry.record("session_ready", sessionSetup.action);
         const sessionId = sessionSetup.session.sessionId;
+        const childSessionIds = new Set(stringList(state.childSessions));
+        await recovery.record("session_ready", {
+          payload: { sessionAction: sessionSetup.action },
+          controlState: { childSessionIds: [...childSessionIds] },
+        });
         activeSessionId = sessionId;
         unregisterActiveRun = activeHermesRunRegistry.register({
           actor: input.actor,
@@ -419,12 +564,31 @@ export function createGatewayTurnExecutor(
               promptAccepted = true;
             },
           })) {
+            const observedSessionId = gatewayEventSessionId(gatewayEvent);
+            if (
+              observedSessionId &&
+              observedSessionId !== sessionId &&
+              !childSessionIds.has(observedSessionId)
+            ) {
+              childSessionIds.add(observedSessionId);
+              await recovery.record("session_ready", {
+                payload: { sessionAction: "child_observed" },
+                controlState: { childSessionIds: [...childSessionIds] },
+              });
+            }
             const terminal = terminalGatewayEvent(gatewayEvent);
             if (terminal) {
               telemetry.record("agent_ready");
               if (terminal.message && !content) content = terminal.message;
               if (terminal.observation) observations.push(terminal.observation);
               if (terminal.status === "cancelled") {
+                const cancelledEvent: ConversationStreamEvent = {
+                  type: "response.cancelled",
+                  conversationId: input.turn.conversationId,
+                  turnId: input.turn.turnId,
+                  messageId: input.turn.assistantMessageId,
+                  invocationId: input.turn.turnId,
+                };
                 await persistTerminalFailure({
                   service,
                   actor: input.actor,
@@ -436,13 +600,8 @@ export function createGatewayTurnExecutor(
                   retryable: false,
                   telemetry,
                 });
-                yield {
-                  type: "response.cancelled",
-                  conversationId: input.turn.conversationId,
-                  turnId: input.turn.turnId,
-                  messageId: input.turn.assistantMessageId,
-                  invocationId: input.turn.turnId,
-                };
+                await recovery.terminal(content, cancelledEvent);
+                yield cancelledEvent;
                 return;
               }
               if (terminal.status === "failed") {
@@ -460,7 +619,9 @@ export function createGatewayTurnExecutor(
                   retryable: true,
                   telemetry,
                 });
-                yield failedEvent(input.turn, code, true);
+                const event = failedEvent(input.turn, code, true);
+                await recovery.terminal(content, event);
+                yield event;
                 return;
               }
 
@@ -479,9 +640,12 @@ export function createGatewayTurnExecutor(
                 telemetry,
               });
               if (completed.type === "failed") {
-                yield failedEvent(input.turn, completed.code, true);
+                const event = failedEvent(input.turn, completed.code, true);
+                await recovery.terminal(content, event);
+                yield event;
                 return;
               }
+              await recovery.terminal(content, completed.event);
               yield completed.event;
               return;
             }
@@ -491,16 +655,27 @@ export function createGatewayTurnExecutor(
             telemetry.record("agent_ready");
             if (event.type === "clarify.requested") {
               state = await persistGatewayClarifyRequest({
-                service,
                 actor: input.actor,
                 turn: input.turn,
                 state,
                 event,
+                recovery,
+                childSessionIds: [...childSessionIds],
               });
             }
             if (event.type === "response.delta") {
               telemetry.record("first_delta");
               content += event.delta;
+              await recovery.partial(content);
+            }
+            if (event.type === "tool.started") {
+              await recovery.record("tool_started", {
+                payload: {
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                },
+                controlState: { childSessionIds: [...childSessionIds] },
+              });
             }
             if (event.type === "tool.completed") {
               observations.push({
@@ -509,6 +684,14 @@ export function createGatewayTurnExecutor(
                 missing: event.missing ?? [],
                 observedAt: event.observedAt,
                 critical: isCriticalToolFailure(gatewayEvent),
+              });
+              await recovery.record("tool_completed", {
+                payload: {
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                  status: event.status,
+                },
+                controlState: { childSessionIds: [...childSessionIds] },
               });
             }
             yield event;
@@ -543,7 +726,9 @@ export function createGatewayTurnExecutor(
         } catch {
           throw new Error("AI terminal state could not be persisted");
         }
-        yield failedEvent(input.turn, code, true);
+        const event = failedEvent(input.turn, code, true);
+        await recovery.terminal(content, event);
+        yield event;
       } finally {
         unregisterActiveRun?.();
         try {
@@ -703,7 +888,6 @@ async function persistPreparedGatewaySession({
     provider: options.provider,
     model: options.model,
     lastUsedAt: now().toISOString(),
-    ...copyGatewayTransientControls(state),
   };
   try {
     await service.compareAndSwapGatewayState(
@@ -758,7 +942,6 @@ async function persistPreparedGatewaySession({
         provider: options.provider,
         model: options.model,
         lastUsedAt: now().toISOString(),
-        ...copyGatewayTransientControls(winner),
       };
       try {
         await service.compareAndSwapGatewayState(
@@ -780,56 +963,6 @@ async function persistPreparedGatewaySession({
       state: resolvedWinner,
     };
   }
-}
-
-function copyGatewayTransientControls(state: GatewayConversationState) {
-  const pendingClarify = state.pendingClarify;
-
-  return {
-    ...copyGatewayChildSessionControl(state),
-    ...(pendingClarify
-      ? {
-          pendingClarify: {
-            turnId: pendingClarify.turnId,
-            clarifyId: pendingClarify.clarifyId,
-            ...(pendingClarify.requestId
-              ? { requestId: pendingClarify.requestId }
-              : {}),
-            question: pendingClarify.question,
-            choices: [...pendingClarify.choices],
-            allowFreeText: pendingClarify.allowFreeText,
-            ...(pendingClarify.response?.clarifyId ===
-              pendingClarify.clarifyId &&
-            isSha256(pendingClarify.response.answerSha256)
-              ? {
-                  response: {
-                    clarifyId: pendingClarify.response.clarifyId,
-                    answerSha256: pendingClarify.response.answerSha256,
-                  },
-                }
-              : {}),
-          },
-        }
-      : {}),
-  };
-}
-
-function copyGatewayChildSessionControl(state: GatewayConversationState) {
-  return state.childSessions ? { childSessions: [...state.childSessions] } : {};
-}
-
-function copyGatewayReusableSessionEnvelope(
-  state: GatewayConversationState,
-  generation: number,
-) {
-  return {
-    generation,
-    ...(state.sessionId ? { sessionId: state.sessionId } : {}),
-    ...(state.checkpointId ? { checkpointId: state.checkpointId } : {}),
-    ...(state.provider ? { provider: state.provider } : {}),
-    ...(state.model ? { model: state.model } : {}),
-    ...(state.lastUsedAt ? { lastUsedAt: state.lastUsedAt } : {}),
-  };
 }
 
 async function createGatewaySession(
@@ -2295,22 +2428,31 @@ function normalizeGatewayEvent(
   return null;
 }
 
+function gatewayEventSessionId(event: unknown): string | null {
+  const parsed = parseHermesGatewayEvent(event);
+  if (!parsed || parsed.params.type === "gateway.ready") return null;
+  return parsed.params.type.startsWith("subagent.")
+    ? parsed.params.sessionId
+    : null;
+}
+
 async function persistGatewayClarifyRequest({
-  service,
   actor,
   turn,
   state,
   event,
+  recovery,
+  childSessionIds,
 }: {
-  service: GatewayService;
   actor: ConversationActor;
   turn: CreatedConversationTurn;
   state: Awaited<
     ReturnType<NonNullable<GatewayService["getGatewayState"]>>
   > | null;
   event: Extract<ConversationStreamEvent, { type: "clarify.requested" }>;
+  recovery: TurnRecoveryRecorder;
+  childSessionIds: string[];
 }) {
-  if (!state) throw new GatewayExecutionError("gateway_state_conflict");
   const pendingClarify = {
     turnId: turn.turnId,
     clarifyId: event.clarifyId,
@@ -2319,21 +2461,12 @@ async function persistGatewayClarifyRequest({
     choices: event.choices ?? [],
     allowFreeText: event.allowFreeText === true,
   };
-  const nextGeneration = state.generation + 1;
-  const nextState = {
-    ...copyGatewayReusableSessionEnvelope(state, nextGeneration),
-    ...copyGatewayChildSessionControl(state),
-    pendingClarify,
-  };
-  try {
-    await service.compareAndSwapGatewayState(
-      actor,
-      turn.conversationId,
-      state.generation,
-      nextState,
-    );
-  } catch {
-    throw new GatewayExecutionError("gateway_state_conflict");
+  const persisted = await recovery.record("clarify_requested", {
+    payload: { clarifyId: event.clarifyId },
+    controlState: { childSessionIds, pendingClarify },
+  });
+  if (!persisted) {
+    throw new GatewayExecutionError("gateway_recovery_persist_failed");
   }
   activeHermesRunRegistry.setPendingClarify({
     actor,
@@ -2343,11 +2476,7 @@ async function persistGatewayClarifyRequest({
     choices: pendingClarify.choices,
     allowFreeText: pendingClarify.allowFreeText,
   });
-  return {
-    ...state,
-    generation: nextGeneration,
-    pendingClarify,
-  };
+  return state;
 }
 
 function normalizeOfficialGatewayEvent(
@@ -2608,10 +2737,6 @@ function unique(values: string[]): string[] {
 
 function isString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function isSha256(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
 function emptyConversationMemorySummary(): ConversationMemorySummary {

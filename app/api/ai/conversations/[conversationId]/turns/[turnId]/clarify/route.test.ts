@@ -60,11 +60,142 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/clarify", () 
     expect(createSessionMock).not.toHaveBeenCalled();
   });
 
+  it("prefers pending clarify from the turn recovery snapshot after restart", async () => {
+    const session = { respondToClarify: vi.fn(), close: vi.fn() };
+    const service = serviceDouble({
+      getRecoverySnapshot: vi.fn().mockResolvedValue({
+        turnId: TURN_ID,
+        controlState: {
+          childSessionIds: ["snapshot-child-session"],
+          pendingClarify: {
+            clarifyId: CLARIFY_ID,
+            question: "Which scope?",
+            choices: ["snapshot-choice"],
+            allowFreeText: false,
+          },
+        },
+      }),
+      appendRecoveryEvent: vi.fn().mockResolvedValue({
+        operationStatus: "claimed",
+        eventSequence: 12,
+      }),
+    });
+    createSessionMock.mockResolvedValue(session);
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      request({ clarifyId: CLARIFY_ID, answer: "snapshot-choice" }),
+      params(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.getRecoverySnapshot).toHaveBeenCalledWith(
+      ACTOR,
+      CONVERSATION_ID,
+      TURN_ID,
+    );
+    expect(service.appendRecoveryEvent).toHaveBeenCalledWith(
+      ACTOR,
+      CONVERSATION_ID,
+      TURN_ID,
+      expect.objectContaining({
+        eventName: "clarify_answered",
+        payload: expect.objectContaining({
+          clarifyId: CLARIFY_ID,
+          answerSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        }),
+        controlState: {
+          childSessionIds: ["snapshot-child-session"],
+          pendingClarify: expect.objectContaining({
+            turnId: TURN_ID,
+            clarifyId: CLARIFY_ID,
+            question: "Which scope?",
+            response: expect.objectContaining({
+              clarifyId: CLARIFY_ID,
+              answerSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+            }),
+          }),
+        },
+      }),
+    );
+    expect(service.claimClarifyResponse).not.toHaveBeenCalled();
+    expect(session.respondToClarify).toHaveBeenCalledWith({
+      requestId: CLARIFY_ID,
+      answer: "snapshot-choice",
+    });
+  });
+
+  it("falls back to legacy provider pending clarify during rollout", async () => {
+    const session = { respondToClarify: vi.fn(), close: vi.fn() };
+    const service = serviceDouble();
+    createSessionMock.mockResolvedValue(session);
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      request({ clarifyId: CLARIFY_ID, answer: "project" }),
+      params(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.appendRecoveryEvent).toHaveBeenCalledTimes(2);
+    expect(service.claimClarifyResponse).not.toHaveBeenCalled();
+    expect(session.respondToClarify).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back for a migrated active turn whose recovery snapshot is still empty", async () => {
+    const session = { respondToClarify: vi.fn(), close: vi.fn() };
+    const service = serviceDouble({
+      getRecoverySnapshot: vi.fn().mockResolvedValue({
+        turnId: TURN_ID,
+        eventSequence: 0,
+        controlState: {},
+      }),
+    });
+    createSessionMock.mockResolvedValue(session);
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      request({ clarifyId: CLARIFY_ID, answer: "project" }),
+      params(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(session.respondToClarify).toHaveBeenCalledWith({
+      requestId: CLARIFY_ID,
+      answer: "project",
+    });
+  });
+
+  it("fails closed instead of writing clarify control into legacy provider state", async () => {
+    const service = serviceDouble({
+      appendRecoveryEvent: undefined,
+    });
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      request({ clarifyId: CLARIFY_ID, answer: "project" }),
+      params(),
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "turn_recovery_unavailable",
+    });
+    expect(service.claimClarifyResponse).not.toHaveBeenCalled();
+    expect(createSessionMock).not.toHaveBeenCalled();
+  });
+
   it("rejects durable pending clarify state owned by a different turn", async () => {
     const service = serviceDouble({
-      getGatewayState: vi.fn().mockResolvedValue(
-        gatewayState({ turnId: "99999999-9999-4999-8999-999999999999" }),
-      ),
+      getGatewayState: vi
+        .fn()
+        .mockResolvedValue(
+          gatewayState({ turnId: "99999999-9999-4999-8999-999999999999" }),
+        ),
     });
     getRouteContextMock.mockResolvedValue(routeContext(service));
     const { POST } = await import("./route");
@@ -83,7 +214,10 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/clarify", () 
     const session = { respondToClarify: vi.fn(), close: vi.fn() };
     const service = serviceDouble({
       getGatewayState: vi.fn().mockResolvedValue(
-        gatewayState({ allowFreeText: true, choices: ["project", "streamer"] }),
+        gatewayState({
+          allowFreeText: true,
+          choices: ["project", "streamer"],
+        }),
       ),
     });
     createSessionMock.mockResolvedValue(session);
@@ -105,7 +239,9 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/clarify", () 
   it("treats duplicate clarify responses as idempotent and changed responses as conflicts", async () => {
     const service = serviceDouble({
       getGatewayState: vi.fn().mockResolvedValue(
-        gatewayState({ response: { clarifyId: CLARIFY_ID, answer: "project" } }),
+        gatewayState({
+          response: { clarifyId: CLARIFY_ID, answer: "project" },
+        }),
       ),
     });
     getRouteContextMock.mockResolvedValue(routeContext(service));
@@ -128,7 +264,9 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/clarify", () 
 
   it("claims the clarify answer before Gateway RPC and suppresses conflicting races", async () => {
     const service = serviceDouble({
-      claimClarifyResponse: vi.fn().mockResolvedValue({ status: "conflict" }),
+      appendRecoveryEvent: vi
+        .fn()
+        .mockResolvedValue({ operationStatus: "conflict" }),
     });
     getRouteContextMock.mockResolvedValue(routeContext(service));
     const { POST } = await import("./route");
@@ -139,16 +277,66 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/clarify", () 
     );
 
     expect(response.status).toBe(409);
-    expect(service.claimClarifyResponse).toHaveBeenCalledWith(
+    expect(service.appendRecoveryEvent).toHaveBeenCalledWith(
       ACTOR,
       CONVERSATION_ID,
       TURN_ID,
-      {
-        clarifyId: CLARIFY_ID,
-        answerSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-      },
+      expect.objectContaining({
+        eventName: "clarify_answered",
+        payload: expect.objectContaining({
+          clarifyId: CLARIFY_ID,
+          answerSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        }),
+        controlState: {
+          childSessionIds: [],
+          pendingClarify: expect.objectContaining({
+            clarifyId: CLARIFY_ID,
+            response: expect.objectContaining({
+              clarifyId: CLARIFY_ID,
+              answerSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+            }),
+          }),
+        },
+      }),
     );
+    expect(service.claimClarifyResponse).not.toHaveBeenCalled();
     expect(createSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("retries delivery for the same claimed answer after a Gateway failure", async () => {
+    const session = { respondToClarify: vi.fn(), close: vi.fn() };
+    const service = serviceDouble({
+      appendRecoveryEvent: vi
+        .fn()
+        .mockResolvedValue({ operationStatus: "claimed" }),
+    });
+    createSessionMock
+      .mockRejectedValueOnce(new Error("gateway_transport_failed"))
+      .mockResolvedValue(session);
+    getRouteContextMock.mockResolvedValue(routeContext(service));
+    const { POST } = await import("./route");
+
+    const first = await POST(
+      request({ clarifyId: CLARIFY_ID, answer: "project" }),
+      params(),
+    );
+    const retry = await POST(
+      request({ clarifyId: CLARIFY_ID, answer: "project" }),
+      params(),
+    );
+
+    expect(first.status).toBe(500);
+    expect(retry.status).toBe(200);
+    expect(session.respondToClarify).toHaveBeenCalledOnce();
+    expect(service.appendRecoveryEvent).toHaveBeenCalledTimes(3);
+    expect(service.appendRecoveryEvent).toHaveBeenLastCalledWith(
+      ACTOR,
+      CONVERSATION_ID,
+      TURN_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({ status: "delivered" }),
+      }),
+    );
   });
 
   it("opens a fresh authenticated control WebSocket from provider_state after product restart", async () => {
@@ -186,9 +374,13 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/clarify", () 
     });
   });
 
-  it("marks provider recovery deterministically when the stored Gateway session is gone", async () => {
-    const service = serviceDouble();
-    createSessionMock.mockRejectedValue(new Error("hermes_gateway_session_mismatch"));
+  it("appends turn recovery without mutating reusable Gateway state when the stored session is gone", async () => {
+    const service = serviceDouble({
+      appendRecoveryEvent: vi.fn().mockResolvedValue({ eventSequence: 13 }),
+    });
+    createSessionMock.mockRejectedValue(
+      new Error("hermes_gateway_session_mismatch"),
+    );
     getRouteContextMock.mockResolvedValue(routeContext(service));
     const { POST } = await import("./route");
 
@@ -198,18 +390,19 @@ describe("POST /api/ai/conversations/:conversationId/turns/:turnId/clarify", () 
     );
 
     expect(response.status).toBe(202);
-    expect(service.compareAndSwapGatewayState).toHaveBeenCalledWith(
+    expect(service.appendRecoveryEvent).toHaveBeenCalledWith(
       ACTOR,
       CONVERSATION_ID,
-      7,
+      TURN_ID,
       expect.objectContaining({
-        generation: 8,
-        recovery: expect.objectContaining({
-          status: "rebuild_required",
+        eventName: "session_ready",
+        payload: expect.objectContaining({
+          recovery: "rebuild_required",
           reason: "gateway_session_missing",
         }),
       }),
     );
+    expect(service.compareAndSwapGatewayState).not.toHaveBeenCalled();
   });
 });
 
@@ -231,7 +424,12 @@ function request(body: Record<string, unknown>) {
 }
 
 function params() {
-  return { params: Promise.resolve({ conversationId: CONVERSATION_ID, turnId: TURN_ID }) };
+  return {
+    params: Promise.resolve({
+      conversationId: CONVERSATION_ID,
+      turnId: TURN_ID,
+    }),
+  };
 }
 
 function routeContext(service: ReturnType<typeof serviceDouble>) {
@@ -244,12 +442,17 @@ function serviceDouble(overrides: Record<string, unknown> = {}) {
       turns: [{ id: TURN_ID, status: "generating", mode: "deep" }],
     }),
     getGatewayState: vi.fn().mockResolvedValue(gatewayState()),
+    getRecoverySnapshot: vi.fn().mockResolvedValue(null),
     issueGatewayRootCapability: vi.fn().mockResolvedValue({
       capabilityId: CAPABILITY_ID,
       invocationCapability: "fresh-capability",
       expiresAt: "2026-07-22T09:05:00.000Z",
     }),
     claimClarifyResponse: vi.fn().mockResolvedValue({ status: "claimed" }),
+    appendRecoveryEvent: vi.fn().mockResolvedValue({
+      operationStatus: "claimed",
+      eventSequence: 8,
+    }),
     compareAndSwapGatewayState: vi.fn().mockResolvedValue(8),
     ...overrides,
   };
@@ -264,6 +467,7 @@ function gatewayState(pending: Record<string, unknown> = {}) {
     pendingClarify: {
       turnId: TURN_ID,
       clarifyId: CLARIFY_ID,
+      question: "Which scope?",
       choices: ["project", "streamer"],
       allowFreeText: false,
       ...pending,

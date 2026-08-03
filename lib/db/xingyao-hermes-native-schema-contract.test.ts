@@ -51,8 +51,21 @@ const structuredMemoryMigrationPath = join(
 const structuredMemoryMigration = existsSync(structuredMemoryMigrationPath)
   ? readFileSync(structuredMemoryMigrationPath, "utf8").toLowerCase()
   : "";
+const turnRecoveryMigrationPath = join(
+  process.cwd(),
+  "supabase",
+  "migrations",
+  "20260803140000_ai_turn_recovery_snapshots.sql",
+);
+const turnRecoveryMigrationSource = existsSync(turnRecoveryMigrationPath)
+  ? readFileSync(turnRecoveryMigrationPath, "utf8")
+  : "";
+const turnRecoveryMigration = turnRecoveryMigrationSource.toLowerCase();
 const structuredMemoryDbContainer =
   process.env.HERMES_STRUCTURED_MEMORY_DB_REGRESSION_CONTAINER;
+const turnRecoveryDbContainer =
+  process.env.HERMES_TURN_RECOVERY_DB_REGRESSION_CONTAINER ??
+  structuredMemoryDbContainer;
 
 function tableSql(tableName: string) {
   const marker = `create table public.${tableName} (`;
@@ -100,6 +113,16 @@ function structuredMemoryFunctionSql(functionName: string) {
     : structuredMemoryMigration.slice(start, end + 4);
 }
 
+function turnRecoveryFunctionSql(functionName: string) {
+  const marker = `create or replace function public.${functionName}(`;
+  const start = turnRecoveryMigration.indexOf(marker);
+  if (start < 0) return "";
+  const end = turnRecoveryMigration.indexOf("\n$$;", start);
+  return end < 0
+    ? turnRecoveryMigration.slice(start)
+    : turnRecoveryMigration.slice(start, end + 4);
+}
+
 function expectSqlOrder(sql: string, markers: string[]) {
   const positions = markers.map((marker) => sql.indexOf(marker));
   expect(positions).not.toContain(-1);
@@ -125,6 +148,188 @@ const serviceOnlyFunctions = [
 ] as const;
 
 describe("Xingyao Hermes native state schema contract", () => {
+  it("adds a tenant-bound event ledger and bounded turn recovery snapshot", () => {
+    expect(existsSync(turnRecoveryMigrationPath)).toBe(true);
+    expect(turnRecoveryMigration.split(/\r?\n/)[0]).toBe("-- deploy: expand");
+
+    for (const column of [
+      "recovery_event_sequence bigint not null default 0",
+      "recovery_partial_content text not null default ''",
+      "recovery_partial_updated_at timestamptz",
+      "recovery_terminal_event jsonb",
+      "recovery_control_state jsonb not null default '{}'::jsonb",
+    ]) {
+      expect(turnRecoveryMigration).toContain(
+        `add column if not exists ${column}`,
+      );
+    }
+
+    expect(turnRecoveryMigration).toContain(
+      "create table if not exists public.ai_chat_turn_events",
+    );
+    expectSqlOrder(turnRecoveryMigration, [
+      "create unique index if not exists ai_chat_turns_recovery_identity_key",
+      "create table if not exists public.ai_chat_turn_events",
+    ]);
+    expect(turnRecoveryMigration).toMatch(
+      /primary key \(turn_id, event_sequence\)/,
+    );
+    expect(turnRecoveryMigration).toMatch(
+      /foreign key \(turn_id, conversation_id, organization_id, owner_user_id\)[\s\S]*?references public\.ai_chat_turns\(id, conversation_id, organization_id, owner_user_id\)/,
+    );
+    expect(turnRecoveryMigration).toContain(
+      "alter table public.ai_chat_turn_events enable row level security",
+    );
+  });
+
+  it("appends bounded recovery milestones atomically under the turn lock", () => {
+    const appendRecovery = turnRecoveryFunctionSql(
+      "append_ai_chat_turn_recovery_event",
+    );
+
+    expect(appendRecovery).toMatch(
+      /p_organization_id uuid,\s*p_owner_user_id uuid,\s*p_conversation_id uuid,\s*p_turn_id uuid,\s*p_event_name text,\s*p_payload jsonb,\s*p_partial_content text,\s*p_terminal_event jsonb,\s*p_control_state jsonb/,
+    );
+    expect(appendRecovery).toContain("security definer");
+    expect(appendRecovery).toContain("set search_path = pg_catalog, public");
+    for (const identity of [
+      "locked_turn.organization_id = p_organization_id",
+      "locked_turn.owner_user_id = p_owner_user_id",
+      "locked_turn.conversation_id = p_conversation_id",
+      "locked_turn.id = p_turn_id",
+    ]) {
+      expect(appendRecovery).toContain(identity);
+    }
+    expect(appendRecovery).toMatch(
+      /from public\.ai_chat_turns locked_turn[\s\S]*?for update/,
+    );
+    expect(appendRecovery).toContain(
+      "v_event_sequence := v_locked_turn.recovery_event_sequence + 1",
+    );
+    expect(appendRecovery).toMatch(
+      /p_event_name not in \(\s*'accepted',[\s\S]*?'terminal'\s*\)/,
+    );
+    for (const eventName of [
+      "accepted",
+      "context_ready",
+      "session_ready",
+      "tool_started",
+      "tool_completed",
+      "clarify_requested",
+      "clarify_answered",
+      "cancel_requested",
+      "response_partial",
+      "terminal",
+    ]) {
+      expect(appendRecovery).toContain(`'${eventName}'`);
+    }
+    for (const obsoleteEventName of [
+      "session_resumed",
+      "session_rebuilt",
+      "clarify_resolved",
+      "first_delta",
+      "progress",
+    ]) {
+      expect(appendRecovery).not.toContain(`'${obsoleteEventName}'`);
+    }
+    expect(appendRecovery).toContain("octet_length(p_payload::text) > 16384");
+    expect(appendRecovery).toContain("access[_-]?token");
+    expect(appendRecovery).toContain("private[_-]?key");
+    expect(appendRecovery).toContain(
+      "octet_length(p_partial_content) > 400000",
+    );
+    expect(appendRecovery).toContain(
+      "octet_length(p_terminal_event::text) > 524288",
+    );
+    expect(appendRecovery).toContain(
+      "octet_length(p_control_state::text) > 16384",
+    );
+    expect(appendRecovery).toContain("jsonb_object_keys(p_control_state)");
+    expect(appendRecovery).toContain("'pendingclarify'");
+    expect(appendRecovery).toContain("'childsessionids'");
+    expectSqlOrder(appendRecovery, [
+      "from public.ai_chat_turns locked_turn",
+      "v_event_sequence := v_locked_turn.recovery_event_sequence + 1",
+      "insert into public.ai_chat_turn_events",
+      "update public.ai_chat_turns",
+    ]);
+    expect(appendRecovery).toContain("'operationstatus', v_operation_status");
+    expect(appendRecovery).toContain("v_operation_status := 'conflict'");
+    expect(appendRecovery).toContain("v_operation_status := 'duplicate'");
+  });
+
+  it("returns only the bounded recovery snapshot across the full identity boundary", () => {
+    const getRecovery = turnRecoveryFunctionSql(
+      "get_ai_chat_turn_recovery_snapshot",
+    );
+
+    expect(getRecovery).toMatch(
+      /p_organization_id uuid,\s*p_owner_user_id uuid,\s*p_conversation_id uuid,\s*p_turn_id uuid/,
+    );
+    expect(getRecovery).toContain("security definer");
+    expect(getRecovery).toContain("set search_path = pg_catalog, public");
+    for (const identity of [
+      "turn_record.organization_id = p_organization_id",
+      "turn_record.owner_user_id = p_owner_user_id",
+      "turn_record.conversation_id = p_conversation_id",
+      "turn_record.id = p_turn_id",
+    ]) {
+      expect(getRecovery).toContain(identity);
+    }
+    for (const key of [
+      "'turnid'",
+      "'status'",
+      "'eventsequence'",
+      "'partialcontent'",
+      "'terminalevent'",
+      "'controlstate'",
+      "'updatedat'",
+    ]) {
+      expect(getRecovery).toContain(key);
+    }
+    for (const forbidden of [
+      "context_snapshot",
+      "provider_state",
+      "idempotency_key",
+      "error_summary",
+    ]) {
+      expect(getRecovery).not.toContain(forbidden);
+    }
+    expect(getRecovery).toContain("if not found then return null; end if");
+  });
+
+  it("keeps recovery tables and RPCs server-only", () => {
+    for (const role of ["public", "anon", "authenticated"]) {
+      expect(turnRecoveryMigration).toContain(
+        `revoke all on table public.ai_chat_turn_events from ${role}`,
+      );
+    }
+    expect(turnRecoveryMigration).toContain(
+      "grant all on table public.ai_chat_turn_events to service_role",
+    );
+
+    for (const functionName of [
+      "append_ai_chat_turn_recovery_event",
+      "get_ai_chat_turn_recovery_snapshot",
+    ]) {
+      expect(turnRecoveryMigration).toMatch(
+        new RegExp(
+          `revoke all on function public\\.${functionName}\\([\\s\\S]*?\\) from public, anon, authenticated;`,
+        ),
+      );
+      expect(turnRecoveryMigration).toMatch(
+        new RegExp(
+          `grant execute on function public\\.${functionName}\\([\\s\\S]*?\\) to service_role;`,
+        ),
+      );
+      expect(turnRecoveryMigration).not.toMatch(
+        new RegExp(
+          `grant execute on function public\\.${functionName}\\([\\s\\S]*?\\) to (anon|authenticated);`,
+        ),
+      );
+    }
+  });
+
   it("adds bounded structured-memory state and one pending job per conversation version", () => {
     expect(existsSync(structuredMemoryMigrationPath)).toBe(true);
     expect(structuredMemoryMigration.split(/\r?\n/)[0]).toBe(
@@ -1791,6 +1996,460 @@ describe("Xingyao Hermes native state schema contract", () => {
     }
   });
 });
+
+describe.runIf(Boolean(turnRecoveryDbContainer))(
+  "Xingyao Hermes turn recovery PostgreSQL behavior",
+  () => {
+    it("isolates identities, assigns monotonic sequences, bounds inputs, and rolls back failed appends", () => {
+      const container = turnRecoveryDbContainer ?? "";
+      expect(container).toMatch(/^supabase_db_[A-Za-z0-9_.-]+$/u);
+
+      const organizationId = "8f120000-0000-4000-8000-000000000001";
+      const ownerId = "8f120000-0000-4000-8000-000000000002";
+      const otherOwnerId = "8f120000-0000-4000-8000-000000000003";
+      const conversationId = "8f120000-0000-4000-8000-000000000101";
+      const turnId = "8f120000-0000-4000-8000-000000000201";
+      const userMessageId = "8f120000-0000-4000-8000-000000000301";
+      const assistantMessageId = "8f120000-0000-4000-8000-000000000302";
+      const clarifyId = "8f120000-0000-4000-8000-000000000401";
+      const clarifyRequestId = "8f120000-0000-4000-8000-000000000402";
+
+      const result = JSON.parse(
+        runStructuredMemorySql(
+          container,
+          `
+            begin;
+
+            ${turnRecoveryMigrationSource}
+
+            insert into auth.users (id, email) values
+              ('${ownerId}'::uuid, 'task6-recovery@example.test');
+            insert into public.profiles (id, email, full_name) values
+              ('${ownerId}'::uuid, 'task6-recovery@example.test', 'Task 6 Recovery');
+            insert into public.organizations (id, name, code) values
+              ('${organizationId}'::uuid, 'Task 6 Recovery', 'task6-recovery');
+            insert into public.organization_members (
+              organization_id, user_id, role, status
+            ) values (
+              '${organizationId}'::uuid, '${ownerId}'::uuid, 'owner', 'active'
+            );
+            insert into public.ai_conversations (
+              id, organization_id, owner_user_id, title
+            ) values (
+              '${conversationId}', '${organizationId}', '${ownerId}', 'Recovery snapshot'
+            );
+            insert into public.ai_chat_messages (
+              id, organization_id, owner_user_id, conversation_id,
+              sequence_no, role, status, content
+            ) values
+              ('${userMessageId}', '${organizationId}', '${ownerId}', '${conversationId}', 1, 'user', 'completed', 'Keep this turn running.'),
+              ('${assistantMessageId}', '${organizationId}', '${ownerId}', '${conversationId}', 2, 'assistant', 'pending', '');
+            insert into public.ai_chat_turns (
+              id, organization_id, owner_user_id, conversation_id,
+              user_message_id, assistant_message_id, status,
+              idempotency_key, lease_expires_at
+            ) values (
+              '${turnId}', '${organizationId}', '${ownerId}', '${conversationId}',
+              '${userMessageId}', '${assistantMessageId}', 'generating',
+              'task6-recovery', now() + interval '5 minutes'
+            );
+
+            create temporary table task6_results (
+              name text primary key,
+              payload jsonb not null
+            );
+            create temporary table task6_errors (
+              name text primary key,
+              message text not null
+            );
+
+            insert into task6_results values (
+              'first',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'accepted', '{"stage":"accepted"}'::jsonb, 'First', null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "requestId": "${clarifyRequestId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+            insert into task6_results values (
+              'second',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'context_ready', '{"stage":"context_ready"}'::jsonb,
+                'First second', null, null
+              )
+            );
+
+            do $task6_identity$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${otherOwnerId}', '${conversationId}', '${turnId}',
+                  'tool_started', '{}'::jsonb, null, null, null
+                );
+                raise exception 'task6_identity_not_rejected';
+              exception when others then
+                insert into task6_errors values ('identity', sqlerrm);
+              end;
+            end;
+            $task6_identity$;
+
+            insert into task6_results values (
+              'unauthorizedSnapshot',
+              coalesce(
+                public.get_ai_chat_turn_recovery_snapshot(
+                  '${organizationId}', '${otherOwnerId}', '${conversationId}', '${turnId}'
+                ),
+                'null'::jsonb
+              )
+            );
+
+            do $task6_event$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                  'token', '{}'::jsonb, null, null, null
+                );
+                raise exception 'task6_event_not_rejected';
+              exception when others then
+                insert into task6_errors values ('event', sqlerrm);
+              end;
+            end;
+            $task6_event$;
+
+            do $task6_payload$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                  'tool_started', jsonb_build_object('detail', repeat('x', 16385)),
+                  null, null, null
+                );
+                raise exception 'task6_payload_not_rejected';
+              exception when others then
+                insert into task6_errors values ('payload', sqlerrm);
+              end;
+            end;
+            $task6_payload$;
+
+            do $task6_sanitized_payload$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                  'tool_started', '{"authorization":"Bearer secret"}'::jsonb,
+                  null, null, null
+                );
+                raise exception 'task6_sanitized_payload_not_rejected';
+              exception when others then
+                insert into task6_errors values ('sanitizedPayload', sqlerrm);
+              end;
+            end;
+            $task6_sanitized_payload$;
+
+            do $task6_control$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                  'clarify_requested', '{}'::jsonb, null, null,
+                  '{"accessToken":"must-not-persist"}'::jsonb
+                );
+                raise exception 'task6_control_not_rejected';
+              exception when others then
+                insert into task6_errors values ('control', sqlerrm);
+              end;
+            end;
+            $task6_control$;
+
+            create function pg_temp.fail_task6_snapshot_write()
+            returns trigger language plpgsql as $trigger$
+            begin
+              raise exception 'task6_snapshot_write_failure';
+            end;
+            $trigger$;
+            create trigger task6_fail_snapshot_write
+            before update of recovery_event_sequence on public.ai_chat_turns
+            for each row
+            when (old.id = '${turnId}'::uuid)
+            execute function pg_temp.fail_task6_snapshot_write();
+
+            do $task6_rollback$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                  'tool_started', '{"toolName":"read_only"}'::jsonb,
+                  'Must roll back', null, null
+                );
+                raise exception 'task6_rollback_not_rejected';
+              exception when others then
+                insert into task6_errors values ('rollback', sqlerrm);
+              end;
+            end;
+            $task6_rollback$;
+            drop trigger task6_fail_snapshot_write on public.ai_chat_turns;
+
+            insert into task6_results values (
+              'clarifyClaim',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'clarify_answered', '{"status":"claimed"}'::jsonb, null, null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "requestId": "${clarifyRequestId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false,
+                    "response": {
+                      "clarifyId": "${clarifyId}",
+                      "answerSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "status": "claimed"
+                    }
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+            insert into task6_results values (
+              'clarifySameClaim',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'clarify_answered', '{"status":"claimed"}'::jsonb, null, null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false,
+                    "response": {
+                      "clarifyId": "${clarifyId}",
+                      "answerSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "status": "claimed"
+                    }
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+            insert into task6_results values (
+              'clarifyConflict',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'clarify_answered', '{"status":"claimed"}'::jsonb, null, null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false,
+                    "response": {
+                      "clarifyId": "${clarifyId}",
+                      "answerSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                      "status": "claimed"
+                    }
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+            insert into task6_results values (
+              'clarifyDelivered',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'clarify_answered', '{"status":"delivered"}'::jsonb, null, null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false,
+                    "response": {
+                      "clarifyId": "${clarifyId}",
+                      "answerSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "status": "delivered"
+                    }
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+            insert into task6_results values (
+              'clarifyDuplicate',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'clarify_answered', '{"status":"delivered"}'::jsonb, null, null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false,
+                    "response": {
+                      "clarifyId": "${clarifyId}",
+                      "answerSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "status": "delivered"
+                    }
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+
+            insert into task6_results values (
+              'terminal',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'terminal', '{"outcome":"complete"}'::jsonb, null,
+                '{"type":"response.completed","conversationId":"${conversationId}","turnId":"${turnId}","content":"First second"}'::jsonb,
+                null
+              )
+            );
+            insert into task6_results values (
+              'snapshot',
+              public.get_ai_chat_turn_recovery_snapshot(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}'
+              )
+            );
+
+            select jsonb_build_object(
+              'first', (select payload from task6_results where name = 'first'),
+              'second', (select payload from task6_results where name = 'second'),
+              'clarifyClaim', (select payload from task6_results where name = 'clarifyClaim'),
+              'clarifySameClaim', (select payload from task6_results where name = 'clarifySameClaim'),
+              'clarifyConflict', (select payload from task6_results where name = 'clarifyConflict'),
+              'clarifyDelivered', (select payload from task6_results where name = 'clarifyDelivered'),
+              'clarifyDuplicate', (select payload from task6_results where name = 'clarifyDuplicate'),
+              'terminal', (select payload from task6_results where name = 'terminal'),
+              'snapshot', (select payload from task6_results where name = 'snapshot'),
+              'unauthorizedSnapshot', (select payload from task6_results where name = 'unauthorizedSnapshot'),
+              'events', (
+                select jsonb_agg(jsonb_build_object(
+                  'sequence', event_sequence,
+                  'name', event_name
+                ) order by event_sequence)
+                from public.ai_chat_turn_events
+                where turn_id = '${turnId}'
+              ),
+              'errors', (select jsonb_object_agg(name, message) from task6_errors),
+              'eventCount', (
+                select count(*) from public.ai_chat_turn_events
+                where turn_id = '${turnId}'
+              ),
+              'snapshotSequence', (
+                select recovery_event_sequence from public.ai_chat_turns
+                where id = '${turnId}'
+              )
+            );
+
+            rollback;
+          `,
+        ),
+      ) as Record<string, unknown>;
+
+      expect(result).toMatchObject({
+        first: {
+          turnId,
+          status: "generating",
+          eventSequence: 1,
+          partialContent: "First",
+          terminalEvent: null,
+        },
+        second: {
+          turnId,
+          eventSequence: 2,
+          partialContent: "First second",
+        },
+        clarifyClaim: { operationStatus: "claimed", eventSequence: 3 },
+        clarifySameClaim: { operationStatus: "claimed", eventSequence: 3 },
+        clarifyConflict: { operationStatus: "conflict", eventSequence: 3 },
+        clarifyDelivered: { operationStatus: "appended", eventSequence: 4 },
+        clarifyDuplicate: { operationStatus: "duplicate", eventSequence: 4 },
+        terminal: {
+          turnId,
+          eventSequence: 5,
+          partialContent: "First second",
+          terminalEvent: {
+            type: "response.completed",
+            conversationId,
+            turnId,
+            content: "First second",
+          },
+        },
+        snapshot: {
+          turnId,
+          status: "generating",
+          eventSequence: 5,
+          partialContent: "First second",
+          terminalEvent: {
+            type: "response.completed",
+            content: "First second",
+          },
+          controlState: {
+            pendingClarify: {
+              turnId,
+              clarifyId,
+              response: {
+                clarifyId,
+                answerSha256:
+                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status: "delivered",
+              },
+            },
+            childSessionIds: ["child-1", "child-2"],
+          },
+        },
+        events: [
+          { sequence: 1, name: "accepted" },
+          { sequence: 2, name: "context_ready" },
+          { sequence: 3, name: "clarify_answered" },
+          { sequence: 4, name: "clarify_answered" },
+          { sequence: 5, name: "terminal" },
+        ],
+        eventCount: 5,
+        snapshotSequence: 5,
+        unauthorizedSnapshot: null,
+        errors: {
+          identity: "ai_chat_turn_recovery_not_found",
+          event: "ai_chat_turn_recovery_event_invalid",
+          payload: "ai_chat_turn_recovery_payload_invalid",
+          sanitizedPayload: "ai_chat_turn_recovery_payload_invalid",
+          control: "ai_chat_turn_recovery_control_state_invalid",
+          rollback: "task6_snapshot_write_failure",
+        },
+      });
+
+      const snapshot = result.snapshot as Record<string, unknown>;
+      expect(Object.keys(snapshot).sort()).toEqual([
+        "controlState",
+        "eventSequence",
+        "partialContent",
+        "status",
+        "terminalEvent",
+        "turnId",
+        "updatedAt",
+      ]);
+      expect(Date.parse(String(snapshot.updatedAt))).not.toBeNaN();
+    });
+  },
+);
 
 describe.runIf(Boolean(structuredMemoryDbContainer))(
   "Xingyao Hermes structured-memory PostgreSQL behavior",

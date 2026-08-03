@@ -14,10 +14,14 @@ import type {
   ConversationTurnStage,
   CreateTurnCommand,
   RetryTurnCommand,
+  TurnRecoveryControlState,
+  TurnRecoveryEventName,
+  TurnRecoveryRecord,
 } from "./conversation-contracts";
 import type { AiMessage, AiProviderName } from "./contracts";
 import { createHermesActorFingerprint } from "./hermes/actor-fingerprint";
 import {
+  appendAiConversationTurnRecoveryEvent,
   cancelAiConversationTurnV2,
   claimAiConversationClarifyResponse,
   compareAndSwapAiConversationGatewayState,
@@ -30,6 +34,7 @@ import {
   getAiConversationGatewayState,
   getAiConversation,
   getAiConversationTurn,
+  getAiConversationTurnRecoverySnapshot,
   listAiConversationMessages,
   listAiConversationContextMessages,
   listAiConversationTurns,
@@ -142,6 +147,12 @@ export type ConversationPersistence = {
   recordTurnStage?(
     input: Parameters<typeof recordAiConversationTurnStage>[1],
   ): ReturnType<typeof recordAiConversationTurnStage>;
+  appendRecoveryEvent?(
+    input: Parameters<typeof appendAiConversationTurnRecoveryEvent>[1],
+  ): Promise<TurnRecoveryRecord>;
+  getRecoverySnapshot?(
+    input: Parameters<typeof getAiConversationTurnRecoverySnapshot>[1],
+  ): Promise<TurnRecoveryRecord | null>;
   cancelTurnV2?(
     input: Parameters<typeof cancelAiConversationTurnV2>[1],
   ): ReturnType<typeof cancelAiConversationTurnV2>;
@@ -223,6 +234,10 @@ export function createSupabaseConversationPersistence(
     finishTurnV2: (input) => finishAiConversationTurnV2(client, input),
     finishTurnV3: (input) => finishAiConversationTurnV3(client, input),
     recordTurnStage: (input) => recordAiConversationTurnStage(client, input),
+    appendRecoveryEvent: (input) =>
+      appendAiConversationTurnRecoveryEvent(client, input),
+    getRecoverySnapshot: (input) =>
+      getAiConversationTurnRecoverySnapshot(client, input),
     cancelTurnV2: (input) => cancelAiConversationTurnV2(client, input),
     renewLeaseV2: (input) => renewAiConversationTurnLeaseV2(client, input),
     compareAndSwapGatewayState: (input) =>
@@ -790,6 +805,44 @@ export function createConversationService(
           ? error
           : new ConversationTurnStagePersistenceError();
       }
+    },
+
+    async appendRecoveryEvent(
+      actor: ConversationActor,
+      conversationId: string,
+      turnId: string,
+      input: {
+        eventName: TurnRecoveryEventName;
+        payload?: Record<string, unknown>;
+        partialContent?: string;
+        terminalEvent?: ConversationStreamEvent;
+        controlState?: TurnRecoveryControlState;
+      },
+    ) {
+      if (!persistence.appendRecoveryEvent) {
+        throw new HermesStateRepositoryError("state_conflict");
+      }
+      return persistence.appendRecoveryEvent({
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        conversationId,
+        turnId,
+        ...input,
+      });
+    },
+
+    async getRecoverySnapshot(
+      actor: ConversationActor,
+      conversationId: string,
+      turnId: string,
+    ) {
+      if (!persistence.getRecoverySnapshot) return null;
+      return persistence.getRecoverySnapshot({
+        organizationId: actor.organizationId,
+        ownerUserId: actor.userId,
+        conversationId,
+        turnId,
+      });
     },
 
     async cancelTurn(

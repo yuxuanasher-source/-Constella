@@ -27,14 +27,31 @@ export async function POST(
     const context = await getAiConversationRouteContext();
     if (context instanceof Response) return context;
     const { conversationId, turnId } = await params;
-    const turn = await requireOwnedTurn(context.service, context.actor, conversationId, turnId);
+    const turn = await requireOwnedTurn(
+      context.service,
+      context.actor,
+      conversationId,
+      turnId,
+    );
     const turnIsActive = [
       "accepted",
       "grounding",
       "generating",
       "validating",
     ].includes(String(turn.status));
-    const state = await context.service.getGatewayState(context.actor, conversationId);
+    const state = await context.service.getGatewayState(
+      context.actor,
+      conversationId,
+    );
+    const recoveryControl = await getRecoveryControlState(
+      context.service,
+      context.actor,
+      conversationId,
+      turnId,
+    );
+    const recoveryChildSessionIds = recoveryControl.available
+      ? stringList(recoveryControl.controlState?.childSessionIds)
+      : null;
     const runIdentity = {
       actor: context.actor,
       conversationId,
@@ -44,7 +61,8 @@ export async function POST(
       activeHermesRunRegistry.treeSessionIds(runIdentity),
     );
     const durableSessionIds = [
-      ...childControlSessions([state], state?.sessionId),
+      ...(recoveryChildSessionIds ??
+        childControlSessions([state], state?.sessionId)),
       ...(state?.sessionId ? [state.sessionId] : []),
     ].filter((sessionId) => !localSessionIds.has(sessionId));
     const preparedSessions = turnIsActive
@@ -66,15 +84,21 @@ export async function POST(
       if (cancelled.alreadyTerminal && cancelled.status !== "cancelled") {
         return NextResponse.json({ ...cancelled, interrupted: false });
       }
+      const cancelRecoveryPersisted = await persistCancelMilestone(
+        context.service,
+        context.actor,
+        conversationId,
+        turnId,
+        durableSessionIds,
+      );
 
       const local = await activeHermesRunRegistry.interruptTree(runIdentity);
       const interruptedLocalSessionIds = new Set([
         ...local.interruptedSessionIds,
       ]);
-      const childSessions = childControlSessions(
-        [state, cancelled],
-        state?.sessionId,
-      );
+      const childSessions =
+        recoveryChildSessionIds ??
+        childControlSessions([state, cancelled], state?.sessionId);
       let interrupted = local.interrupted;
       let recoveryRequired = (local.failedSessionIds?.length ?? 0) > 0;
       for (const childSessionId of childSessions) {
@@ -104,9 +128,11 @@ export async function POST(
           context.service,
           context.actor,
           conversationId,
-          state,
+          turnId,
           cancelled,
           interrupted > 0,
+          childSessions,
+          cancelRecoveryPersisted,
         );
       }
 
@@ -116,6 +142,7 @@ export async function POST(
         revokedCapabilityIds: stringList(
           recordValue(cancelled, "revokedCapabilityIds"),
         ),
+        recoveryStatePersisted: cancelRecoveryPersisted,
       });
     } finally {
       closePreparedSessions(preparedSessions);
@@ -275,36 +302,22 @@ async function recoveryResponse(
   service: AiConversationRouteContext["service"],
   actor: AiConversationRouteContext["actor"],
   conversationId: string,
-  state: {
-    generation: number;
-    summary?: Record<string, unknown>;
-    summaryVersion?: number;
-  } | null,
+  turnId: string,
   cancelled: Record<string, unknown>,
   interrupted: boolean,
+  childSessionIds: string[],
+  recoveryAlreadyPersisted: boolean,
 ) {
-  let recoveryStatePersisted = false;
-  if (state) {
-    try {
-      await service.compareAndSwapGatewayState(
-        actor,
-        conversationId,
-        state.generation,
-        {
-          generation: state.generation + 1,
-          summary: state.summary ?? {},
-          summaryVersion: state.summaryVersion ?? 0,
-          recovery: {
-            status: "rebuild_required",
-            reason: "gateway_session_missing",
-          },
-        },
-      );
-      recoveryStatePersisted = true;
-    } catch {
-      recoveryStatePersisted = false;
-    }
-  }
+  const recoveryStatePersisted =
+    recoveryAlreadyPersisted ||
+    (await persistCancelMilestone(
+      service,
+      actor,
+      conversationId,
+      turnId,
+      childSessionIds,
+      { recoveryRequired: true },
+    ));
   return NextResponse.json(
     {
       ...cancelled,
@@ -317,12 +330,46 @@ async function recoveryResponse(
   );
 }
 
+async function persistCancelMilestone(
+  service: AiConversationRouteContext["service"],
+  actor: AiConversationRouteContext["actor"],
+  conversationId: string,
+  turnId: string,
+  childSessionIds: string[],
+  options: { recoveryRequired?: boolean } = {},
+) {
+  const appendRecoveryEvent = recoveryService(service).appendRecoveryEvent;
+  if (!appendRecoveryEvent) return false;
+  try {
+    await appendRecoveryEvent.call(service, actor, conversationId, turnId, {
+      eventName: "cancel_requested",
+      payload: options.recoveryRequired
+        ? {
+            recovery: "rebuild_required",
+            reason: "gateway_session_missing",
+          }
+        : { requested: true },
+      controlState: { childSessionIds },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function recordValue(value: unknown, key: string): unknown {
-  return typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
 }
 
 function stringList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0,
+      )
+    : [];
 }
 
 function childControlSessions(
@@ -338,4 +385,63 @@ function childControlSessions(
       ),
     ),
   ];
+}
+
+type RecoveryControlState = {
+  childSessionIds?: unknown;
+};
+
+type RecoveryCompatibleService = {
+  getRecoverySnapshot?: (
+    actor: AiConversationRouteContext["actor"],
+    conversationId: string,
+    turnId: string,
+  ) => Promise<unknown>;
+  appendRecoveryEvent?: (
+    actor: AiConversationRouteContext["actor"],
+    conversationId: string,
+    turnId: string,
+    event: Record<string, unknown>,
+  ) => Promise<unknown>;
+};
+
+async function getRecoveryControlState(
+  service: AiConversationRouteContext["service"],
+  actor: AiConversationRouteContext["actor"],
+  conversationId: string,
+  turnId: string,
+): Promise<
+  | { available: true; controlState: RecoveryControlState | null }
+  | { available: false; controlState: null }
+> {
+  const getRecoverySnapshot = recoveryService(service).getRecoverySnapshot;
+  if (!getRecoverySnapshot) return { available: false, controlState: null };
+  const snapshot = await getRecoverySnapshot.call(
+    service,
+    actor,
+    conversationId,
+    turnId,
+  );
+  if (
+    !isRecord(snapshot) ||
+    !isRecord(snapshot.controlState) ||
+    (snapshot.eventSequence === 0 &&
+      Object.keys(snapshot.controlState).length === 0)
+  ) {
+    return { available: false, controlState: null };
+  }
+  return {
+    available: true,
+    controlState: snapshot.controlState,
+  };
+}
+
+function recoveryService(
+  service: AiConversationRouteContext["service"],
+): RecoveryCompatibleService {
+  return service as unknown as RecoveryCompatibleService;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

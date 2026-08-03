@@ -6,10 +6,13 @@ import {
   isConversationSessionAction,
   isConversationStreamEvent,
   isConversationTurnStage,
+  isTurnRecoveryEventName,
   parseConversationMemoryDelta,
   parseConversationMemorySummary,
   parseCreateTurnCommand,
   parseRetryTurnCommand,
+  parseTurnRecoveryRecord,
+  toPublicTurnRecoverySnapshot,
   CONVERSATION_MEMORY_LIMITS,
   type ConversationStreamEvent,
 } from "./conversation-contracts";
@@ -389,6 +392,89 @@ describe("Xingyao conversation protocol contracts", () => {
         choices: ["A", "B"],
       }),
     ).toBe(false);
+  });
+
+  it("parses bounded recovery snapshots without exposing control state publicly", () => {
+    const record = {
+      turnId: "66666666-6666-4666-8666-666666666666",
+      status: "generating",
+      eventSequence: 7,
+      partialContent: "partial answer",
+      updatedAt: "2026-08-03T18:00:00.000Z",
+      controlState: {
+        childSessionIds: ["child-session-1"],
+        pendingClarify: {
+          turnId: "66666666-6666-4666-8666-666666666666",
+          clarifyId: "77777777-7777-4777-8777-777777777777",
+          requestId: "88888888-8888-4888-8888-888888888888",
+          question: "Which project?",
+          choices: ["A", "B"],
+          allowFreeText: false,
+        },
+      },
+    };
+
+    const parsed = parseTurnRecoveryRecord(record);
+
+    expect(parsed).toEqual(record);
+    expect(toPublicTurnRecoverySnapshot(parsed!)).toEqual({
+      turnId: record.turnId,
+      status: "generating",
+      eventSequence: 7,
+      partialContent: "partial answer",
+      updatedAt: record.updatedAt,
+    });
+  });
+
+  it("rejects malformed recovery snapshots and unknown event names", () => {
+    expect(isTurnRecoveryEventName("tool_completed")).toBe(true);
+    expect(isTurnRecoveryEventName("token_delta")).toBe(false);
+    expect(
+      parseTurnRecoveryRecord({
+        turnId: "turn-1",
+        status: "generating",
+        eventSequence: -1,
+        partialContent: "answer",
+        updatedAt: "not-a-date",
+        controlState: { childSessionIds: [] },
+      }),
+    ).toBeNull();
+    expect(
+      parseTurnRecoveryRecord({
+        turnId: "turn-1",
+        status: "completed",
+        eventSequence: 1,
+        partialContent: "answer",
+        terminalEvent: {
+          type: "response.delta",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          messageId: "message-1",
+          delta: "answer",
+        },
+        updatedAt: "2026-08-03T18:00:00.000Z",
+        controlState: { childSessionIds: [] },
+      }),
+    ).toBeNull();
+    expect(
+      parseTurnRecoveryRecord({
+        turnId: "66666666-6666-4666-8666-666666666666",
+        status: "generating",
+        eventSequence: 2,
+        partialContent: "answer",
+        updatedAt: "2026-08-03T18:00:00.000Z",
+        controlState: {
+          childSessionIds: [],
+          pendingClarify: {
+            turnId: "99999999-9999-4999-8999-999999999999",
+            clarifyId: "77777777-7777-4777-8777-777777777777",
+            question: "Which project?",
+            choices: [],
+            allowFreeText: true,
+          },
+        },
+      }),
+    ).toBeNull();
   });
 
   it("does not accept punctuation-only output as meaningful content", () => {

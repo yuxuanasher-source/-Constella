@@ -10,11 +10,17 @@ import type {
   ConversationSessionAction,
   ConversationTurnStage,
   ConversationTurnStatus,
+  TurnRecoveryControlState,
+  TurnRecoveryEventName,
+  TurnRecoveryRecord,
 } from "./conversation-contracts";
 import {
+  isConversationStreamEvent,
   isConversationSessionAction,
   isConversationTurnStage,
+  isTurnRecoveryEventName,
   parseConversationMemorySummary,
+  parseTurnRecoveryRecord,
 } from "./conversation-contracts";
 import type { AiChatMode, AiProviderName } from "./contracts";
 import {
@@ -136,6 +142,15 @@ export class ConversationTurnStagePersistenceError extends Error {
   constructor() {
     super("Conversation turn stage could not be persisted");
     this.name = "ConversationTurnStagePersistenceError";
+  }
+}
+
+export class ConversationTurnRecoveryPersistenceError extends Error {
+  readonly code = "conversation_turn_recovery_persist_failed";
+
+  constructor() {
+    super("Conversation turn recovery state could not be persisted");
+    this.name = "ConversationTurnRecoveryPersistenceError";
   }
 }
 
@@ -751,6 +766,90 @@ export async function finishAiConversationTurnV3(
   return { completed: true, memoryStatus, summaryVersion };
 }
 
+export async function appendAiConversationTurnRecoveryEvent(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+    eventName: TurnRecoveryEventName;
+    payload?: Record<string, unknown>;
+    partialContent?: string;
+    terminalEvent?: ConversationStreamEvent;
+    controlState?: TurnRecoveryControlState;
+  },
+): Promise<TurnRecoveryRecord> {
+  const payload = input.payload ?? {};
+  if (
+    !isTurnRecoveryEventName(input.eventName) ||
+    !isRecord(payload) ||
+    postgresJsonbTextBytes(payload) > 16_384 ||
+    containsRecoverySensitiveKey(payload) ||
+    (input.partialContent != null &&
+      (typeof input.partialContent !== "string" ||
+        new TextEncoder().encode(input.partialContent).byteLength > 400_000)) ||
+    (input.terminalEvent != null &&
+      (!isConversationStreamEvent(input.terminalEvent) ||
+        postgresJsonbTextBytes(input.terminalEvent) > 524_288 ||
+        containsRecoverySensitiveKey(input.terminalEvent) ||
+        input.terminalEvent.conversationId !== input.conversationId ||
+        input.terminalEvent.turnId !== input.turnId ||
+        ![
+          "response.completed",
+          "response.failed",
+          "response.cancelled",
+        ].includes(input.terminalEvent.type))) ||
+    (input.controlState != null &&
+      postgresJsonbTextBytes(input.controlState) > 16_384)
+  ) {
+    throw new RangeError("conversation_turn_recovery_event_invalid");
+  }
+  const { data, error } = await client.rpc(
+    "append_ai_chat_turn_recovery_event",
+    {
+      p_organization_id: input.organizationId,
+      p_owner_user_id: input.ownerUserId,
+      p_conversation_id: input.conversationId,
+      p_turn_id: input.turnId,
+      p_event_name: input.eventName,
+      p_payload: payload,
+      p_partial_content: input.partialContent ?? null,
+      p_terminal_event: input.terminalEvent ?? null,
+      p_control_state: input.controlState ?? null,
+    },
+  );
+  if (error) throw new ConversationTurnRecoveryPersistenceError();
+  const parsed = parseRecoveryRpcRecord(data);
+  if (!parsed) throw new ConversationTurnRecoveryPersistenceError();
+  return parsed;
+}
+
+export async function getAiConversationTurnRecoverySnapshot(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+  },
+): Promise<TurnRecoveryRecord | null> {
+  const { data, error } = await client.rpc(
+    "get_ai_chat_turn_recovery_snapshot",
+    {
+      p_organization_id: input.organizationId,
+      p_owner_user_id: input.ownerUserId,
+      p_conversation_id: input.conversationId,
+      p_turn_id: input.turnId,
+    },
+  );
+  if (error) throw new ConversationTurnRecoveryPersistenceError();
+  if (data == null) return null;
+  const parsed = parseRecoveryRpcRecord(data);
+  if (!parsed) throw new ConversationTurnRecoveryPersistenceError();
+  return parsed;
+}
+
 export async function cancelAiConversationTurnV2(
   client: ConversationRepositoryClient,
   input: {
@@ -914,6 +1013,67 @@ function toConversationDto(row: ConversationRow): AiConversationDto {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function parseRecoveryRpcRecord(value: unknown): TurnRecoveryRecord | null {
+  if (!isRecord(value)) return null;
+  return parseTurnRecoveryRecord({
+    turnId: value.turnId ?? value.turn_id,
+    status: value.status,
+    eventSequence: value.eventSequence ?? value.event_sequence,
+    partialContent: value.partialContent ?? value.partial_content ?? "",
+    terminalEvent: value.terminalEvent ?? value.terminal_event,
+    controlState: value.controlState ??
+      value.control_state ?? {
+        childSessionIds: [],
+      },
+    updatedAt: value.updatedAt ?? value.updated_at,
+    operationStatus: value.operationStatus ?? value.operation_status,
+  });
+}
+
+function jsonBytes(value: unknown): number {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function postgresJsonbTextBytes(value: unknown): number {
+  const compactBytes = jsonBytes(value);
+  if (!Number.isFinite(compactBytes)) return compactBytes;
+  return compactBytes + jsonbStructuralWhitespace(value);
+}
+
+function jsonbStructuralWhitespace(value: unknown): number {
+  if (Array.isArray(value)) {
+    return (
+      Math.max(0, value.length - 1) +
+      value.reduce((total, item) => total + jsonbStructuralWhitespace(item), 0)
+    );
+  }
+  if (!isRecord(value)) return 0;
+  const entries = Object.entries(value);
+  return (
+    entries.length +
+    Math.max(0, entries.length - 1) +
+    entries.reduce(
+      (total, [, item]) => total + jsonbStructuralWhitespace(item),
+      0,
+    )
+  );
+}
+
+function containsRecoverySensitiveKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsRecoverySensitiveKey);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(
+    ([key, item]) =>
+      /^(authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|service[_-]?role|secret|password|private[_-]?key|prompt|context_snapshot)$/i.test(
+        key,
+      ) || containsRecoverySensitiveKey(item),
+  );
 }
 
 function emptyConversationMemorySummary(): ConversationMemorySummary {

@@ -91,6 +91,66 @@ function persistence(
 }
 
 describe("Xingyao conversation service", () => {
+  it("scopes recovery event writes to the current actor and turn", async () => {
+    const appendRecoveryEvent = vi.fn().mockResolvedValue({
+      turnId: "turn-1",
+      status: "generating",
+      eventSequence: 2,
+      partialContent: "partial",
+      controlState: { childSessionIds: [] },
+      updatedAt: "2026-08-03T16:04:00.000Z",
+    });
+    const service = createConversationService(
+      persistence({ appendRecoveryEvent }),
+    );
+
+    await service.appendRecoveryEvent(actor, "conversation-1", "turn-1", {
+      eventName: "response_partial",
+      partialContent: "partial",
+    });
+
+    expect(appendRecoveryEvent).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+      eventName: "response_partial",
+      partialContent: "partial",
+    });
+  });
+
+  it("loads recovery snapshots without loading conversation history", async () => {
+    const getRecoverySnapshot = vi.fn().mockResolvedValue({
+      turnId: "turn-1",
+      status: "generating",
+      eventSequence: 3,
+      partialContent: "still working",
+      controlState: { childSessionIds: [] },
+      updatedAt: "2026-08-03T16:05:00.000Z",
+    });
+    const listMessages = vi.fn();
+    const listTurns = vi.fn();
+    const service = createConversationService(
+      persistence({ getRecoverySnapshot, listMessages, listTurns }),
+    );
+
+    await expect(
+      service.getRecoverySnapshot(actor, "conversation-1", "turn-1"),
+    ).resolves.toMatchObject({
+      eventSequence: 3,
+      partialContent: "still working",
+    });
+
+    expect(getRecoverySnapshot).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+    });
+    expect(listMessages).not.toHaveBeenCalled();
+    expect(listTurns).not.toHaveBeenCalled();
+  });
+
   it("loads Gateway context messages through actor scope and a sequence cursor", async () => {
     const listContextMessages = vi.fn().mockResolvedValue([]);
     const service = createConversationService(

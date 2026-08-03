@@ -33,6 +33,54 @@ export type ConversationTurnStage =
   | "persisted";
 export type ConversationSessionAction = "resumed" | "rebuilt";
 
+export const TURN_RECOVERY_EVENT_NAMES = [
+  "accepted",
+  "context_ready",
+  "session_ready",
+  "tool_started",
+  "tool_completed",
+  "clarify_requested",
+  "clarify_answered",
+  "cancel_requested",
+  "response_partial",
+  "terminal",
+] as const;
+
+export type TurnRecoveryEventName = (typeof TURN_RECOVERY_EVENT_NAMES)[number];
+
+export type TurnRecoveryPendingClarify = {
+  turnId: string;
+  clarifyId: string;
+  requestId?: string;
+  question: string;
+  choices: string[];
+  allowFreeText: boolean;
+  response?: {
+    clarifyId: string;
+    answerSha256: string;
+    status: "claimed" | "delivered";
+  };
+};
+
+export type TurnRecoveryControlState = {
+  childSessionIds: string[];
+  pendingClarify?: TurnRecoveryPendingClarify;
+};
+
+export type TurnRecoverySnapshot = {
+  turnId: string;
+  status: ConversationTurnStatus;
+  eventSequence: number;
+  partialContent: string;
+  terminalEvent?: ConversationStreamEvent;
+  updatedAt: string;
+};
+
+export type TurnRecoveryRecord = TurnRecoverySnapshot & {
+  controlState: TurnRecoveryControlState;
+  operationStatus?: "appended" | "claimed" | "duplicate" | "conflict";
+};
+
 export const CONVERSATION_MEMORY_LIMITS = {
   itemsPerSection: 24,
   textCharacters: 512,
@@ -298,6 +346,73 @@ export function isConversationSessionAction(
   value: unknown,
 ): value is ConversationSessionAction {
   return value === "resumed" || value === "rebuilt";
+}
+
+export function isTurnRecoveryEventName(
+  value: unknown,
+): value is TurnRecoveryEventName {
+  return (
+    typeof value === "string" &&
+    (TURN_RECOVERY_EVENT_NAMES as readonly string[]).includes(value)
+  );
+}
+
+export function parseTurnRecoveryRecord(
+  value: unknown,
+): TurnRecoveryRecord | null {
+  if (!isRecord(value)) return null;
+  const turnId = nonEmptyString(value.turnId) ? value.turnId : null;
+  const status = isConversationTurnStatus(value.status) ? value.status : null;
+  const eventSequence = value.eventSequence;
+  const partialContent = value.partialContent;
+  const updatedAt = value.updatedAt;
+  const terminalEvent = value.terminalEvent;
+  const controlState = turnId
+    ? parseTurnRecoveryControlState(value.controlState, turnId)
+    : null;
+  if (
+    !turnId ||
+    !status ||
+    !isNonNegativeInteger(eventSequence) ||
+    typeof partialContent !== "string" ||
+    new TextEncoder().encode(partialContent).byteLength > 400_000 ||
+    !isDateString(updatedAt) ||
+    !controlState ||
+    (terminalEvent != null &&
+      (!isConversationStreamEvent(terminalEvent) ||
+        ![
+          "response.completed",
+          "response.failed",
+          "response.cancelled",
+        ].includes(terminalEvent.type)))
+  ) {
+    return null;
+  }
+  return {
+    turnId,
+    status,
+    eventSequence,
+    partialContent,
+    ...(terminalEvent ? { terminalEvent } : {}),
+    updatedAt,
+    controlState,
+    ...(isTurnRecoveryOperationStatus(value.operationStatus)
+      ? { operationStatus: value.operationStatus }
+      : {}),
+  };
+}
+
+export function toPublicTurnRecoverySnapshot(
+  record: TurnRecoveryRecord,
+): TurnRecoverySnapshot {
+  return {
+    turnId: record.turnId,
+    status: record.status,
+    eventSequence: record.eventSequence,
+    partialContent: record.partialContent,
+    ...(record.terminalEvent ? { terminalEvent: record.terminalEvent } : {}),
+    updatedAt: record.updatedAt,
+  };
 }
 
 export function parseCreateTurnCommand(
@@ -633,6 +748,95 @@ function hasExactKeys(
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isConversationTurnStatus(
+  value: unknown,
+): value is ConversationTurnStatus {
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(TURN_TRANSITIONS, value)
+  );
+}
+
+function isTurnRecoveryOperationStatus(
+  value: unknown,
+): value is NonNullable<TurnRecoveryRecord["operationStatus"]> {
+  return ["appended", "claimed", "duplicate", "conflict"].includes(
+    String(value),
+  );
+}
+
+function parseTurnRecoveryControlState(
+  value: unknown,
+  turnId: string,
+): TurnRecoveryControlState | null {
+  if (!isRecord(value)) return null;
+  const childSessionIds = value.childSessionIds ?? [];
+  if (
+    !Array.isArray(childSessionIds) ||
+    childSessionIds.length > 64 ||
+    !childSessionIds.every(
+      (item) =>
+        typeof item === "string" && item.length > 0 && item.length <= 256,
+    ) ||
+    new Set(childSessionIds).size !== childSessionIds.length
+  ) {
+    return null;
+  }
+  const pending = value.pendingClarify;
+  if (pending == null) return { childSessionIds: [...childSessionIds] };
+  if (
+    !isRecord(pending) ||
+    pending.turnId !== turnId ||
+    !isUuidString(pending.clarifyId) ||
+    (pending.requestId != null && !isUuidString(pending.requestId)) ||
+    typeof pending.question !== "string" ||
+    pending.question.trim().length === 0 ||
+    pending.question.length > 2_000 ||
+    !Array.isArray(pending.choices) ||
+    pending.choices.length > 12 ||
+    !pending.choices.every(
+      (choice) =>
+        typeof choice === "string" &&
+        choice.trim().length > 0 &&
+        choice.length <= 256,
+    ) ||
+    typeof pending.allowFreeText !== "boolean"
+  ) {
+    return null;
+  }
+  const response = pending.response;
+  if (
+    response != null &&
+    (!isRecord(response) ||
+      response.clarifyId !== pending.clarifyId ||
+      typeof response.answerSha256 !== "string" ||
+      !/^[0-9a-f]{64}$/i.test(response.answerSha256) ||
+      (response.status !== "claimed" && response.status !== "delivered"))
+  ) {
+    return null;
+  }
+  return {
+    childSessionIds: [...childSessionIds],
+    pendingClarify: {
+      turnId,
+      clarifyId: pending.clarifyId,
+      ...(pending.requestId ? { requestId: pending.requestId } : {}),
+      question: pending.question.trim(),
+      choices: [...pending.choices],
+      allowFreeText: pending.allowFreeText,
+      ...(response
+        ? {
+            response: {
+              clarifyId: response.clarifyId as string,
+              answerSha256: response.answerSha256 as string,
+              status: response.status as "claimed" | "delivered",
+            },
+          }
+        : {}),
+    },
+  };
 }
 
 function isUuidString(value: unknown): value is string {
