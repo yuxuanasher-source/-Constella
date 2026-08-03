@@ -134,6 +134,12 @@ immutable release pipeline. Hermes changes must first be reviewed and merged int
 `codex/full-project-ui`; deploy only the successful push artifact for that default
 branch and use that merged commit as `EXPECTED_SHA`:
 
+For the first release containing migration `20260803120500`, complete the
+**protected control upgrade** in section 7 of
+`docs/runbooks/atomic-release-bootstrap.md` before running this command. Record
+and verify `EXPECTED_DEPLOY_CONTROL_SHA256` from the same reviewed CI run. An old
+or mismatched protected control will fail closed before applying that migration.
+
 ```sh
 SOURCE_REPO=/var/www/jingying-cabin \
 RELEASE_ROOT=/var/cache/jingying-cabin-releases \

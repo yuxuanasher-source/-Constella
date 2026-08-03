@@ -1,5 +1,17 @@
 -- deploy: expand
 
+do $deploy_control_guard$
+begin
+  if to_regclass('deploy_internal.schema_migrations') is not null
+    and current_setting('jingying.deploy_control_capability', true)
+      is distinct from 'ai-turn-telemetry-batched-backfill-v1'
+  then
+    raise exception
+      'deploy_control_upgrade_required: install reviewed protected control before 20260803120500';
+  end if;
+end
+$deploy_control_guard$;
+
 drop trigger if exists zz_ai_chat_turns_preserve_updated_at_for_telemetry
   on public.ai_chat_turns;
 

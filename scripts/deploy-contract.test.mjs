@@ -680,6 +680,70 @@ test("telemetry backfill is runner-owned, bounded, and precedes activation", () 
     telemetryBackfillMigration,
     /validate constraint ai_chat_turns_session_action_check/i,
   );
+  assert.match(deploy, /DEPLOY_CONTROL_CAPABILITY/);
+  assert.match(
+    deploy,
+    /set local jingying\.deploy_control_capability = '\$DEPLOY_CONTROL_CAPABILITY'/,
+  );
+  assert.match(
+    telemetryBackfillMigration,
+    /current_setting\('jingying\.deploy_control_capability', true\)/,
+  );
+  assert.match(
+    telemetryBackfillMigration,
+    /deploy_control_upgrade_required: install reviewed protected control before 20260803120500/,
+  );
+  assert.ok(
+    position(telemetryBackfillMigration, "current_setting(") <
+      position(
+        telemetryBackfillMigration,
+        "drop trigger if exists zz_ai_chat_turns_preserve_updated_at_for_telemetry",
+      ),
+  );
+});
+
+test("first telemetry rollout upgrades the protected control from reviewed provenance", () => {
+  const upgradeStart = position(
+    bootstrapRunbook,
+    "## 7. Upgrade the protected control for telemetry rollout",
+  );
+  const upgradeEnd = position(
+    bootstrapRunbook,
+    "## 8. Normal releases after bootstrap",
+  );
+  const upgradeRunbook = bootstrapRunbook.slice(upgradeStart, upgradeEnd);
+  for (const marker of [
+    "EXPECTED_DEPLOY_CONTROL_SHA256",
+    "TRUSTED_CURRENT_DEPLOY_CONTROL_SHA256",
+    'node "$TRUSTED_RELEASE_INTEGRITY" verify',
+    "deploy-control-backups",
+    "install -o root",
+    "deploy.sh.next",
+    "sha256sum --check --strict",
+    "restore_protected_deploy_control",
+  ]) {
+    assert.ok(upgradeRunbook.includes(marker), `missing ${marker}`);
+  }
+  const verifyCandidate = position(
+    upgradeRunbook,
+    'node "$TRUSTED_RELEASE_INTEGRITY" verify',
+  );
+  const backup = position(upgradeRunbook, "CONTROL_BACKUP=");
+  const install = position(
+    upgradeRunbook,
+    '"$CONTROL_STAGE/scripts/deploy.sh" "$PROTECTED_DEPLOY_CONTROL_NEXT"',
+  );
+  const invoke = position(
+    bootstrapRunbook,
+    "bash /etc/jingying-cabin/release-controls/deploy.sh",
+  );
+  assert.ok(verifyCandidate < backup);
+  assert.ok(backup < install);
+  assert.ok(install < invoke);
+  assert.match(hermesRunbook, /EXPECTED_DEPLOY_CONTROL_SHA256/);
+  assert.match(hermesRunbook, /protected control upgrade/i);
+  assert.match(ciWorkflow, /Deploy control SHA-256/);
+  assert.match(ciWorkflow, /deploy_control_sha256/);
 });
 
 test("a second deployment fails immediately while the host lock is held", async (t) => {

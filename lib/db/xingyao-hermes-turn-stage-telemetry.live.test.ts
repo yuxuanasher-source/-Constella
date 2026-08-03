@@ -393,7 +393,14 @@ function applyTelemetryBackfill(containerName: string) {
     ),
     "utf8",
   );
-  runSql(containerName, migration);
+  runSql(
+    containerName,
+    `begin;
+     set local jingying.deploy_control_capability =
+       'ai-turn-telemetry-batched-backfill-v1';
+     ${migration}
+     commit;`,
+  );
   runSql(
     containerName,
     `alter table public.ai_chat_turns

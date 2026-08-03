@@ -42,6 +42,7 @@ MIGRATION_LEASE_KEY="jingying-cabin:deploy-lease:v2"
 readonly AI_TURN_TELEMETRY_BACKFILL_VERSION="20260803120500"
 readonly AI_TURN_TELEMETRY_BACKFILL_BATCH_SIZE=500
 readonly AI_TURN_TELEMETRY_BACKFILL_TASK="ai_turn_stage_telemetry_accepted_at_v1"
+readonly DEPLOY_CONTROL_CAPABILITY="ai-turn-telemetry-batched-backfill-v1"
 
 TARGET_SHA=""
 release_dir=""
@@ -1090,6 +1091,7 @@ apply_migrations() {
     printf 'begin;\n'
     printf "set local lock_timeout = '%sms';\n" "$DB_LOCK_TIMEOUT_MILLISECONDS"
     printf "set local statement_timeout = '%sms';\n" "$DB_STATEMENT_TIMEOUT_MILLISECONDS"
+    printf "set local jingying.deploy_control_capability = '$DEPLOY_CONTROL_CAPABILITY';\n"
     printf "select pg_advisory_xact_lock(hashtextextended('%s', 0));\n" "$MIGRATION_LOCK_KEY"
     printf 'lock table supabase_migrations.schema_migrations in share row exclusive mode;\n'
     printf 'create temporary table expected_deploy_migrations (version text primary key, filename text not null unique, name text not null, content_sha256 text not null) on commit drop;\n'

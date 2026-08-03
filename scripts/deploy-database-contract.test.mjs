@@ -18,6 +18,15 @@ const postgrestContainer =
   process.env.DEPLOY_POSTGREST_TEST_CONTAINER ?? "supabase_rest_jingying-cabin";
 const repoRoot = process.cwd();
 const deployScript = join(repoRoot, "scripts/deploy.sh");
+const telemetryBackfillMigration = readFileSync(
+  join(
+    repoRoot,
+    "supabase",
+    "migrations",
+    "20260803120500_ai_turn_stage_telemetry_backfill.sql",
+  ),
+  "utf8",
+);
 const bashBin = [
   "C:\\Program Files\\Git\\bin\\bash.exe",
   "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
@@ -641,4 +650,135 @@ function schemaCacheGeneration(metrics) {
       }
     }
   }, 45_000);
+
+  it("gates the telemetry migration on the reviewed protected control", () => {
+    const suffix = `${process.pid}_${Date.now()}`;
+    const database = `codex_control_gate_${suffix}`;
+    let created = false;
+
+    expect(database).toMatch(/^codex_control_gate_[0-9_]+$/);
+    try {
+      const create = docker([
+        "exec",
+        container,
+        "createdb",
+        "-U",
+        "postgres",
+        "--template=template0",
+        database,
+      ]);
+      expect(create.status, create.stderr).toBe(0);
+      created = true;
+
+      const initialized = psql(
+        database,
+        `
+          create schema supabase_migrations authorization postgres;
+          create table supabase_migrations.schema_migrations (
+            version text primary key,
+            statements text[],
+            name text
+          );
+          create schema deploy_internal authorization postgres;
+          create table deploy_internal.schema_migrations (
+            filename text primary key,
+            version text not null unique,
+            content_sha256 text not null
+          );
+          create table public.ai_chat_turns (
+            id uuid primary key,
+            accepted_at timestamptz,
+            context_ready_at timestamptz,
+            session_ready_at timestamptz,
+            agent_ready_at timestamptz,
+            first_delta_at timestamptz,
+            terminal_at timestamptz,
+            persisted_at timestamptz,
+            session_action text,
+            updated_at timestamptz not null default now()
+          );
+          create function public.preserve_ai_chat_turn_updated_at_for_telemetry()
+          returns trigger language plpgsql as $$
+          begin
+            return new;
+          end
+          $$;
+          create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry
+          before update on public.ai_chat_turns
+          for each row execute function public.preserve_ai_chat_turn_updated_at_for_telemetry();
+        `,
+      );
+      expect(initialized.status, initialized.stderr).toBe(0);
+
+      for (const capabilitySql of [
+        "",
+        "set local jingying.deploy_control_capability = 'mismatched-control';",
+      ]) {
+        const rejected = psql(
+          database,
+          `begin;
+           ${capabilitySql}
+           ${telemetryBackfillMigration}
+           insert into supabase_migrations.schema_migrations(version, name)
+           values ('20260803120500', 'ai_turn_stage_telemetry_backfill');
+           create table public.candidate_activation_probe(id integer);
+           commit;`,
+        );
+        expect(rejected.status).not.toBe(0);
+        expect(rejected.stderr).toContain(
+          "deploy_control_upgrade_required: install reviewed protected control before 20260803120500",
+        );
+        const rejectedState = psql(
+          database,
+          `select
+             (select count(*) from supabase_migrations.schema_migrations),
+             to_regclass('public.candidate_activation_probe') is null,
+             lower(pg_get_triggerdef(trigger.oid)) like '%before update on public.ai_chat_turns%'
+           from pg_trigger trigger
+           where trigger.tgrelid = 'public.ai_chat_turns'::regclass
+             and trigger.tgname = 'zz_ai_chat_turns_preserve_updated_at_for_telemetry';`,
+        );
+        expect(rejectedState.status, rejectedState.stderr).toBe(0);
+        expect(rejectedState.stdout.trim()).toBe("0|t|t");
+      }
+
+      const accepted = psql(
+        database,
+        `begin;
+         set local jingying.deploy_control_capability =
+           'ai-turn-telemetry-batched-backfill-v1';
+         ${telemetryBackfillMigration}
+         insert into supabase_migrations.schema_migrations(version, name)
+         values ('20260803120500', 'ai_turn_stage_telemetry_backfill');
+         create table public.candidate_activation_probe(id integer);
+         commit;`,
+      );
+      expect(accepted.status, accepted.stderr).toBe(0);
+      const acceptedState = psql(
+        database,
+        `select
+           (select count(*) from supabase_migrations.schema_migrations),
+           to_regclass('public.candidate_activation_probe') is not null,
+           lower(pg_get_triggerdef(trigger.oid)) like '%before update of accepted_at%'
+         from pg_trigger trigger
+         where trigger.tgrelid = 'public.ai_chat_turns'::regclass
+           and trigger.tgname = 'zz_ai_chat_turns_preserve_updated_at_for_telemetry';`,
+      );
+      expect(acceptedState.status, acceptedState.stderr).toBe(0);
+      expect(acceptedState.stdout.trim()).toBe("1|t|t");
+    } finally {
+      if (created) {
+        expect(database).toMatch(/^codex_control_gate_[0-9_]+$/);
+        docker([
+          "exec",
+          container,
+          "dropdb",
+          "-U",
+          "postgres",
+          "--force",
+          database,
+        ]);
+      }
+    }
+  }, 30_000);
 });
