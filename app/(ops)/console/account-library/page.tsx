@@ -5,15 +5,16 @@ import { toPlatformAccountDtos } from "@/features/account-library/account-librar
 import {
   currentUserFromAuth,
   loadConsoleDashboardHome,
-  organizationSettingsFromAuth,
+  organizationSettingsForClient,
   requireConsoleStaffAuth,
 } from "../console-auth";
 
 export default async function AccountLibraryPage() {
   const { supabase, auth } = await requireConsoleStaffAuth();
-  const [accounts, dashboardHome] = await Promise.all([
+  const [accounts, dashboardHome, organizationSettings] = await Promise.all([
     listPlatformAccounts(supabase),
     loadConsoleDashboardHome(supabase, auth),
+    organizationSettingsForClient(supabase, auth),
   ]);
   const dtos = toPlatformAccountDtos(accounts, auth.role);
 
@@ -24,7 +25,7 @@ export default async function AccountLibraryPage() {
       dashboardHome={dashboardHome}
       dashboardHomeError={dashboardHome ? null : "角色看板暂不可用"}
       currentUser={currentUserFromAuth(auth)}
-      organizationSettings={organizationSettingsFromAuth(auth)}
+      organizationSettings={organizationSettings}
     />
   );
 }

@@ -5,6 +5,8 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import AdmissionSharePageClient from "./admission-share-page-client";
@@ -19,7 +21,7 @@ import {
 } from "./admission-share-api";
 import type {
   AdmissionShareReviewDraftDto,
-  PublicAdmissionShareBoard,
+  BrandedPublicAdmissionShareBoard as PublicAdmissionShareBoard,
 } from "./admission-share-types";
 
 vi.mock("./admission-share-api", async (importOriginal) => {
@@ -46,6 +48,15 @@ const formalBoard = {
   expiresAt: "2026-08-06T00:00:00.000Z",
   canSubmit: true,
   allowExternalFallback: true,
+  brand: {
+    version: 4,
+    logoText: "STAR",
+    logoUrl: "/api/public/admission-share/public-token/brand-logo",
+    brandName: "Star Live",
+    brandTagline: "Professional live operations",
+    primaryColor: "#165DFF",
+  },
+  contactCard: null,
   progress: { completed: 1, total: 2 },
   latestSubmission: null,
   project: {
@@ -163,6 +174,141 @@ describe("AdmissionSharePageClient", () => {
     expect(container.textContent).not.toContain("tokenHash");
     expect(container.textContent).not.toContain("storagePath");
     expect(container.textContent).not.toContain("accessCode");
+  });
+
+  it("keeps the existing public header when the branded UI flag is disabled", async () => {
+    render(
+      <AdmissionSharePageClient token="public-token" brandUiEnabled={false} />,
+    );
+
+    expect(await screen.findByText("受控录屏复核")).toBeInTheDocument();
+    expect(screen.queryByText("组织官方分享")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(formalBoard.brand.brandName),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByLabelText("待判断主播 原始录屏播放器"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "播放录屏" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders a truthful branded share header without an empty contact block", async () => {
+    render(<AdmissionSharePageClient token="public-token" brandUiEnabled />);
+
+    expect(await screen.findByText("组织官方分享")).toBeInTheDocument();
+    expect(screen.getByText(formalBoard.brand.brandName)).toBeInTheDocument();
+    expect(
+      screen.getByText(formalBoard.brand.brandTagline),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `${formalBoard.project.code} · ${formalBoard.project.name}`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(formalBoard.title)).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: `${formalBoard.brand.brandName} LOGO` }),
+    ).toHaveAttribute("src", formalBoard.brand.logoUrl);
+    expect(screen.queryByText("商务对接")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("平台认证");
+    expect(document.body.textContent).not.toContain("官方认证");
+    expect(
+      screen.queryByLabelText("待判断主播 原始录屏播放器"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "播放录屏" }),
+    ).toBeInTheDocument();
+  });
+
+  it("preserves the current review draft and active recording after a media error", async () => {
+    render(<AdmissionSharePageClient token="public-token" brandUiEnabled />);
+
+    const remark = await screen.findByLabelText("当前录屏备注");
+    fireEvent.change(remark, { target: { value: "先保留这条未提交意见" } });
+    fireEvent.click(screen.getByRole("button", { name: "播放录屏" }));
+    fireEvent.error(screen.getByLabelText("待判断主播 原始录屏播放器"));
+
+    expect(screen.getByLabelText("当前录屏备注")).toHaveValue(
+      "先保留这条未提交意见",
+    );
+    expect(
+      screen.getByRole("alert", { name: "录屏播放失败" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("1 / 2")).toBeInTheDocument();
+  });
+
+  it("loads the public media stylesheet with a light, reduced-motion-safe contract", () => {
+    const pagePath = resolve(
+      process.cwd(),
+      "app/share/admission/[token]/page.tsx",
+    );
+    const cssPath = resolve(process.cwd(), "styles/public-share.css");
+
+    expect(existsSync(cssPath)).toBe(true);
+    const pageSource = readFileSync(pagePath, "utf8");
+    const css = readFileSync(cssPath, "utf8");
+    const stageRule =
+      css.match(/\.recording-media-stage\s*\{([^}]*)\}/u)?.[1] ?? "";
+
+    expect(pageSource).toContain('import "@/styles/public-share.css";');
+    expect(stageRule).toMatch(/background:\s*linear-gradient/u);
+    expect(stageRule).not.toMatch(/(?:#000(?:000)?|black|--ink-900)/iu);
+    expect(css).toMatch(
+      /\.recording-poster__play[\s\S]*?var\(--share-brand-action/u,
+    );
+    expect(css).not.toMatch(
+      /\.recording-poster__play[\s\S]*?background:\s*var\(--share-brand(?:,|\))/u,
+    );
+    expect(css).toMatch(
+      /\.recording-media-canvas\[data-orientation="portrait"\][\s\S]*?width:\s*min\(100%,\s*430px\)/u,
+    );
+    expect(css).toMatch(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?transition:\s*none/u,
+    );
+    expect(css).toMatch(
+      /@media\s*\(forced-colors:\s*active\)[\s\S]*?ButtonText[\s\S]*?outline/u,
+    );
+    expect(css).toMatch(
+      /@media\s*\(forced-colors:\s*active\)[\s\S]*?box-shadow:\s*none/u,
+    );
+  });
+
+  it("renders only the selected public contact fields and falls back to the wordmark", async () => {
+    vi.mocked(loadAdmissionShareBoard).mockResolvedValueOnce({
+      shareBoard: {
+        ...formalBoard,
+        contactCard: {
+          displayName: "Lin",
+          title: "Business lead",
+          phone: "13800000000",
+          email: "lin@example.com",
+          wechat: "lin-work",
+        },
+      },
+      vendorCheckpoints: [],
+      reviewDrafts: [...serverDrafts],
+    });
+
+    render(<AdmissionSharePageClient token="public-token" brandUiEnabled />);
+
+    const logo = await screen.findByRole("img", {
+      name: `${formalBoard.brand.brandName} LOGO`,
+    });
+    fireEvent.error(logo);
+
+    expect(screen.getByText("商务对接")).toBeInTheDocument();
+    expect(screen.getByText("Lin")).toBeInTheDocument();
+    expect(screen.getByText("Business lead")).toBeInTheDocument();
+    expect(screen.getByText("13800000000")).toBeInTheDocument();
+    expect(screen.getByText("lin@example.com")).toBeInTheDocument();
+    expect(screen.getByText(/lin-work/u)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("img", { name: /LOGO/u }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(formalBoard.brand.logoText)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("logoStoragePath");
   });
 
   it("uses drafts from the combined hydrate response without a second request", async () => {

@@ -7,139 +7,160 @@ import {
   createSupabaseAdminClient,
   createSupabaseServerClient,
 } from "@/lib/db/supabase-server";
-import { toHttpError } from "@/lib/http/http-error";
-import { parseJsonBody } from "@/lib/http/parse-json-body";
+import { ValidationError, parseJsonBody } from "@/lib/http/parse-json-body";
 import { canManageOrganizationSettings } from "@/lib/rbac/permissions";
 
-const trimmed = (max: number) =>
-  z
-    .string()
-    .trim()
-    .max(max)
-    .transform((value) => value);
+const legacyBrandFields = ["logoText", "brandName", "brandTagline"] as const;
 
-const settingsBodySchema = z.object({
-  name: trimmed(60).optional(),
-  logoText: trimmed(4).optional(),
-  brandName: trimmed(12).optional(),
-  brandTagline: trimmed(32).optional(),
+const settingsBodySchema = z.strictObject({
+  name: z.string().trim().min(1, "Organization name cannot be empty").max(60),
 });
 
 export async function PATCH(request: Request) {
   try {
     const supabase = await createSupabaseServerClient();
-    const auth = supabase ? await getAuthContext(supabase) : null;
-    if (!supabase || !auth) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!supabase) {
+      return safeError(
+        "Organization settings service is unavailable",
+        503,
+        "ORGANIZATION_SETTINGS_UNAVAILABLE",
+      );
     }
 
+    const auth = await getAuthContext(supabase);
+    if (!auth) {
+      return safeError("Unauthorized", 401, "UNAUTHORIZED");
+    }
     if (!canManageOrganizationSettings(auth.role)) {
-      return NextResponse.json(
-        { error: "Only owner can update organization settings" },
-        { status: 403 },
+      return safeError(
+        "Only owner can update organization settings",
+        403,
+        "ORGANIZATION_SETTINGS_FORBIDDEN",
+      );
+    }
+
+    const inspection = await readInspectionBody(request.clone());
+    if (
+      inspection &&
+      legacyBrandFields.some((field) =>
+        Object.prototype.hasOwnProperty.call(inspection, field),
+      )
+    ) {
+      return safeError(
+        "Brand settings have moved to Brand Studio",
+        409,
+        "BRAND_STUDIO_REQUIRED",
       );
     }
 
     const body = await parseJsonBody(request, settingsBodySchema);
-    const nextName = body.name;
-    if (nextName !== undefined && !nextName) {
-      return NextResponse.json(
-        { error: "Organization name cannot be empty" },
-        { status: 400 },
-      );
-    }
-
     const admin = createSupabaseAdminClient();
     if (!admin) {
-      return NextResponse.json(
-        { error: "Organization admin client is not configured" },
-        { status: 500 },
+      return safeError(
+        "Organization settings service is unavailable",
+        503,
+        "ORGANIZATION_SETTINGS_UNAVAILABLE",
       );
     }
 
     const current = await admin
       .from("organizations")
-      .select("name, branding")
+      .select("id, name")
       .eq("id", auth.organizationId)
-      .maybeSingle<{ name: string; branding: Record<string, unknown> | null }>();
-    if (current.error || !current.data) {
-      return NextResponse.json(
-        { error: "Organization not found" },
-        { status: 404 },
+      .maybeSingle<{ id: string; name: string }>();
+    if (current.error) {
+      return safeError(
+        "Organization settings service is unavailable",
+        503,
+        "ORGANIZATION_SETTINGS_UNAVAILABLE",
       );
     }
-
-    const currentBranding =
-      current.data.branding && typeof current.data.branding === "object"
-        ? current.data.branding
-        : {};
-    const nextBranding = {
-      ...currentBranding,
-      ...(body.logoText !== undefined ? { logoText: body.logoText } : {}),
-      ...(body.brandName !== undefined ? { brandName: body.brandName } : {}),
-      ...(body.brandTagline !== undefined
-        ? { brandTagline: body.brandTagline }
-        : {}),
-    };
+    if (!current.data) {
+      return safeError("Organization not found", 404, "ORGANIZATION_NOT_FOUND");
+    }
+    const currentName = current.data.name.trim();
+    if (currentName === body.name) {
+      return NextResponse.json({
+        organization: { id: current.data.id, name: currentName },
+      });
+    }
 
     const update = await admin
       .from("organizations")
-      .update({
-        ...(nextName !== undefined ? { name: nextName } : {}),
-        branding: nextBranding,
-      })
+      .update({ name: body.name })
       .eq("id", auth.organizationId)
-      .select("id, name, branding")
-      .maybeSingle<{
-        id: string;
-        name: string;
-        branding: Record<string, unknown> | null;
-      }>();
-    if (update.error || !update.data) {
-      return NextResponse.json(
-        { error: "Failed to update organization settings" },
-        { status: 500 },
+      .select("id, name")
+      .maybeSingle<{ id: string; name: string }>();
+    if (update.error) {
+      return safeError(
+        "Organization settings service is unavailable",
+        503,
+        "ORGANIZATION_SETTINGS_UNAVAILABLE",
+      );
+    }
+    if (!update.data) {
+      return safeError("Organization not found", 404, "ORGANIZATION_NOT_FOUND");
+    }
+
+    try {
+      await writeAuditLog(admin, {
+        organizationId: auth.organizationId,
+        actorUserId: auth.userId,
+        actorName: auth.name,
+        actorRole: auth.role,
+        action: "update",
+        module: "organization",
+        objectType: "organization_settings",
+        objectId: auth.organizationId,
+        objectName: update.data.name,
+        before: { name: current.data.name },
+        after: { name: update.data.name },
+        changedFields: ["name"],
+      });
+    } catch {
+      return safeError(
+        "Organization settings changed, but its audit record could not be written",
+        503,
+        "ORGANIZATION_SETTINGS_AUDIT_FAILED",
+        {
+          organization: { id: update.data.id, name: update.data.name },
+        },
       );
     }
 
-    await writeAuditLog(admin, {
-      organizationId: auth.organizationId,
-      actorUserId: auth.userId,
-      actorName: auth.name,
-      actorRole: auth.role,
-      action: "update",
-      module: "organization",
-      objectType: "organization_settings",
-      objectId: auth.organizationId,
-      objectName: update.data.name,
-      before: {
-        name: current.data.name,
-        branding: currentBranding,
-      },
-      after: {
-        name: update.data.name,
-        branding: update.data.branding ?? {},
-      },
-      changedFields: [
-        ...(nextName !== undefined ? ["name"] : []),
-        ...(body.logoText !== undefined ? ["branding.logoText"] : []),
-        ...(body.brandName !== undefined ? ["branding.brandName"] : []),
-        ...(body.brandTagline !== undefined ? ["branding.brandTagline"] : []),
-      ],
-    });
-
     return NextResponse.json({
-      organization: {
-        id: update.data.id,
-        name: update.data.name,
-        branding: update.data.branding ?? {},
-      },
+      organization: { id: update.data.id, name: update.data.name },
     });
   } catch (error) {
-    const httpError = toHttpError(error);
-    return NextResponse.json(
-      { error: httpError.message },
-      { status: httpError.status },
+    if (error instanceof ValidationError) {
+      return safeError(error.message, 400, "INVALID_REQUEST");
+    }
+    return safeError(
+      "Organization settings service is unavailable",
+      503,
+      "ORGANIZATION_SETTINGS_UNAVAILABLE",
     );
   }
+}
+
+async function readInspectionBody(
+  request: Request,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const body: unknown = await request.json();
+    return body !== null && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeError(
+  message: string,
+  status: number,
+  code: string,
+  details: Record<string, unknown> = {},
+) {
+  return NextResponse.json({ error: message, code, ...details }, { status });
 }

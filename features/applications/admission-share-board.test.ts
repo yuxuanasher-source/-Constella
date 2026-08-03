@@ -1,15 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import {
+  AdmissionShareContactCardError,
   authenticatePublicAdmissionShareAccess,
   createAdmissionShareBoard,
   ensurePublicAdmissionShareSession,
   extendAdmissionShareBoard,
   getPublicAdmissionShareBoard,
+  getPublicAdmissionShareBrandLogoPath,
   getPublicAdmissionShareBoardContextWithSession,
   getPublicAdmissionRecordingPlaybackSource,
+  getInternalAdmissionShareBoardDetail,
   hashAdmissionShareAccessCode,
   hashShareSecret,
+  listInternalAdmissionShareBoardTasks,
   listAdmissionSharePlaybackIssues,
   mapVendorDecisionToSyncPatch,
   listPublicAdmissionReviewDrafts,
@@ -21,8 +25,13 @@ import {
   savePublicAdmissionReviewDraft,
   submitVendorAdmissionReviews,
   SupabaseAdmissionShareBoardRepository,
+  toAdmissionSharePresentation,
+  toAdmissionShareIdentityPresentation,
+  toInternalAdmissionSharePresentation,
   verifyAdmissionShareAccessCode,
   type AdmissionShareBoardRepository,
+  type PublicAdmissionShareBrand,
+  type PublicAdmissionShareContactCard,
 } from "./admission-share-board";
 import type {
   AdmissionShareCandidateDto,
@@ -46,15 +55,29 @@ function createRepo(
     shareBoardInserts,
     createShareBoardWithItems: vi.fn().mockImplementation(async (input) => {
       shareBoardInserts.push(input);
-      return {
+      const shareBoard = {
         id: "share-1",
         ...input,
         status: "active",
         allowVendorSubmit: input.mode === "formal_review",
         reviewState: "not_started",
         roundNumber: input.mode === "formal_review" ? 1 : 0,
+        brandSnapshot: {
+          schemaVersion: 1,
+          version: 1,
+          logoText: "星河",
+          logoStoragePath: null,
+          brandName: "星河直播",
+          brandTagline: "专业直播运营",
+          primaryColor: "#165DFF",
+          publishedAt: "2026-06-01T00:00:00.000Z",
+        },
+        brandVersion: 1,
+        contactCardId: input.contactCardId ?? null,
+        contactCardSnapshot: null,
         createdAt: "2026-06-07T00:00:00.000Z",
       };
+      return { shareBoard, snapshot: publicSnapshot() };
     }),
     listShareBoards: vi.fn().mockResolvedValue([]),
     extendShareBoard: vi.fn(),
@@ -64,7 +87,10 @@ function createRepo(
     reportPlaybackIssue: vi.fn(),
     listPlaybackIssues: vi.fn().mockResolvedValue([]),
     resolvePlaybackIssue: vi.fn(),
-    getPublicShareBoardSnapshot: vi.fn(),
+    getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(publicSnapshot()),
+    getPublicShareBrandLogoAccess: vi
+      .fn()
+      .mockResolvedValue(publicBrandLogoAccess()),
     submitReview: vi.fn(),
     listReviewSubmissions: vi.fn().mockResolvedValue([]),
     upsertVendorReviews: vi.fn(),
@@ -75,6 +101,27 @@ function createRepo(
     listReviewDrafts: vi.fn().mockResolvedValue([]),
     saveReviewDraft: vi.fn(),
     ...overrides,
+  };
+}
+
+function admissionShareTask(id: string, roundNumber: number) {
+  return {
+    id,
+    title: `Review round ${roundNumber}`,
+    purpose: "Confirm recordings",
+    mode: "formal_review" as const,
+    status: "active" as const,
+    reviewState: "not_started" as const,
+    roundNumber,
+    expiresAt: "2026-08-06T00:00:00.000Z",
+    itemCount: 1,
+    draftCompletedCount: 0,
+    lastViewedAt: null,
+    lastDraftAt: null,
+    lastSubmittedAt: null,
+    lockedAt: null,
+    createdBy: "user-ops",
+    createdAt: "2026-07-30T00:00:00.000Z",
   };
 }
 
@@ -261,24 +308,493 @@ describe("admission share board service", () => {
     );
   });
 
+  it("passes only the selected contact-card id into persistence and ignores forged snapshots", async () => {
+    const repo = createRepo();
+    const forgedStoragePath = "other-org/brand-logos/forged.webp";
+
+    await createAdmissionShareBoard({
+      repo,
+      candidateRepo: createCandidateRepo(),
+      audit: vi.fn().mockResolvedValue(undefined),
+      actor,
+      projectId: "project-1",
+      input: {
+        mode: "preview",
+        contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+        brandSnapshot: { logoStoragePath: forgedStoragePath },
+        contactCardSnapshot: { displayName: "伪造联系人" },
+        items: [
+          {
+            applicationId: "app-2",
+            recordingSubmissionId: "recording-2-v1",
+            recordingVersion: 1,
+            sortOrder: 0,
+          },
+        ],
+      } as never,
+      now: "2026-07-30T00:00:00.000Z",
+      tokenFactory: () => "plain-token",
+    });
+
+    const persisted = repo.shareBoardInserts[0];
+    expect(persisted).toMatchObject({
+      contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+    });
+    expect(persisted).not.toHaveProperty("brandSnapshot");
+    expect(persisted).not.toHaveProperty("contactCardSnapshot");
+    expect(JSON.stringify(persisted)).not.toContain(forgedStoragePath);
+  });
+
+  it("returns the transactionally-created board with one complete internal presentation", async () => {
+    const snapshot = publicSnapshot({
+      brandVersion: 6,
+      contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+      contactCardSnapshot: {
+        displayName: "Lin",
+        title: "Account lead",
+        phone: "13800000000",
+      },
+    });
+    const getPublicShareBoardSnapshot = vi.fn().mockResolvedValue(snapshot);
+    const baseRepo = createRepo();
+    const originalCreate = baseRepo.createShareBoardWithItems;
+    const repo = createRepo({
+      getPublicShareBoardSnapshot,
+      createShareBoardWithItems: vi.fn().mockImplementation(async (input) => {
+        const result = await originalCreate(input);
+        return { ...result, snapshot };
+      }),
+    });
+
+    const result = await createAdmissionShareBoard({
+      repo,
+      candidateRepo: createCandidateRepo(),
+      actor,
+      projectId: "project-1",
+      input: {
+        mode: "preview",
+        items: [
+          {
+            applicationId: "app-2",
+            recordingSubmissionId: "recording-2-v1",
+            recordingVersion: 1,
+            sortOrder: 0,
+          },
+        ],
+      },
+      now: "2026-07-30T00:00:00.000Z",
+      tokenFactory: () => "plain-token",
+    });
+
+    expect(getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+    expect(result.presentation).toEqual(
+      toInternalAdmissionSharePresentation(snapshot),
+    );
+    expect(result.presentation.project).toEqual(snapshot.project);
+    expect(result.presentation.progress).toEqual(snapshot.progress);
+    expect(result.presentation.latestSubmission).toEqual(
+      snapshot.latestSubmission,
+    );
+    expect(result.presentation.items).toHaveLength(snapshot.items.length);
+    expect(JSON.stringify(result.presentation)).not.toContain(
+      "logoStoragePath",
+    );
+    expect(JSON.stringify(result.presentation)).not.toContain("storagePath");
+    expect(JSON.stringify(result.presentation)).not.toContain("tokenHash");
+  });
+
+  it("returns the one-time credentials with the creation RPC snapshot even if legacy hydration is unavailable", async () => {
+    const snapshot = publicSnapshot({ brandVersion: 9 });
+    const legacyHydration = vi
+      .fn()
+      .mockRejectedValue(new Error("post-commit read failed"));
+    const baseRepo = createRepo();
+    const originalCreate = baseRepo.createShareBoardWithItems;
+    const repo = createRepo({
+      createShareBoardWithItems: vi.fn().mockImplementation(async (input) => {
+        const result = await originalCreate(input);
+        return { ...result, snapshot };
+      }),
+      getPublicShareBoardSnapshot: legacyHydration,
+    } as never);
+
+    const result = await createAdmissionShareBoard({
+      repo,
+      candidateRepo: createCandidateRepo(),
+      actor,
+      projectId: "project-1",
+      input: {
+        mode: "preview",
+        items: [
+          {
+            applicationId: "app-2",
+            recordingSubmissionId: "recording-2-v1",
+            recordingVersion: 1,
+            sortOrder: 0,
+          },
+        ],
+      },
+      now: "2026-07-30T00:00:00.000Z",
+      tokenFactory: () => "one-time-token",
+    });
+
+    expect(result.token).toBe("one-time-token");
+    expect(result.presentation.brandVersion).toBe(9);
+    expect(legacyHydration).not.toHaveBeenCalled();
+  });
+
+  it("lists only bounded task summaries and loads one presentation by board id", async () => {
+    const snapshot = publicSnapshot({ id: "share-1", roundNumber: 1 });
+    const getPublicShareBoardSnapshot = vi.fn();
+    const listShareBoards = vi.fn();
+    const listInternalShareBoardTasks = vi.fn().mockResolvedValue({
+      tasks: [
+        admissionShareTask("share-1", 1),
+        admissionShareTask("share-2", 2),
+      ],
+      nextCursor: "next-page",
+    });
+    const getInternalShareBoardHydration = vi.fn().mockResolvedValue({
+      task: admissionShareTask("share-1", 1),
+      snapshot,
+    });
+    const repo = createRepo({
+      listShareBoards,
+      getPublicShareBoardSnapshot,
+      listInternalShareBoardTasks,
+      getInternalShareBoardHydration,
+    } as never);
+
+    const result = await listInternalAdmissionShareBoardTasks({
+      repo: repo as never,
+      actor,
+      projectId: "project-1",
+    });
+    const detail = await getInternalAdmissionShareBoardDetail({
+      repo: repo as never,
+      actor,
+      projectId: "project-1",
+      shareBoardId: "share-1",
+    });
+
+    expect(listInternalShareBoardTasks).toHaveBeenCalledTimes(1);
+    expect(listInternalShareBoardTasks).toHaveBeenCalledWith({
+      projectId: "project-1",
+      limit: 20,
+      beforeCreatedAt: undefined,
+      beforeId: undefined,
+    });
+    expect(listShareBoards).not.toHaveBeenCalled();
+    expect(getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+    expect(result.nextCursor).toBe("next-page");
+    expect(result.shareBoards.map((board) => board.id)).toEqual([
+      "share-1",
+      "share-2",
+    ]);
+    expect(
+      result.shareBoards.every((board) => !("presentation" in board)),
+    ).toBe(true);
+    expect(getInternalShareBoardHydration).toHaveBeenCalledWith({
+      projectId: "project-1",
+      shareBoardId: "share-1",
+    });
+    expect(detail.presentation).toEqual(
+      toInternalAdmissionSharePresentation(snapshot),
+    );
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("presentation");
+    expect(serialized).not.toContain('"items"');
+    expect(serialized).not.toContain("tokenHash");
+    expect(serialized).not.toContain("accessCodeHash");
+    expect(serialized).not.toContain("storagePath");
+    expect(serialized).not.toContain("logoStoragePath");
+  });
+
+  it("rejects a malformed internal share cursor before any repository call", async () => {
+    const listInternalShareBoardTasks = vi.fn();
+    const repo = createRepo({ listInternalShareBoardTasks } as never);
+
+    await expect(
+      listInternalAdmissionShareBoardTasks({
+        repo: repo as never,
+        actor,
+        projectId: "project-1",
+        cursor: "not-a-valid-keyset-cursor",
+        limit: 20,
+      }),
+    ).rejects.toMatchObject({
+      code: "SHARE_CURSOR_INVALID",
+      statusCode: 400,
+    });
+    expect(listInternalShareBoardTasks).not.toHaveBeenCalled();
+  });
+
+  const canonicalCursorPayload = {
+    createdAt: "2026-07-30T00:00:00.000Z",
+    id: "abcdef12-3456-4abc-8def-abcdef123456",
+  };
+  const canonicalCursor = Buffer.from(
+    JSON.stringify(canonicalCursorPayload),
+  ).toString("base64url");
+
+  it.each([
+    [
+      "non-canonical timestamp",
+      Buffer.from(
+        JSON.stringify({
+          ...canonicalCursorPayload,
+          createdAt: "2026-07-30T00:00:00Z",
+        }),
+      ).toString("base64url"),
+    ],
+    ["base64 padding", `${canonicalCursor}=`],
+    ["trailing newline", `${canonicalCursor}\n`],
+    [
+      "extra JSON field",
+      Buffer.from(
+        JSON.stringify({ ...canonicalCursorPayload, extra: true }),
+      ).toString("base64url"),
+    ],
+    [
+      "uppercase UUID",
+      Buffer.from(
+        JSON.stringify({
+          ...canonicalCursorPayload,
+          id: canonicalCursorPayload.id.toUpperCase(),
+        }),
+      ).toString("base64url"),
+    ],
+    [
+      "non-canonical property order",
+      Buffer.from(
+        JSON.stringify({
+          id: canonicalCursorPayload.id,
+          createdAt: canonicalCursorPayload.createdAt,
+        }),
+      ).toString("base64url"),
+    ],
+  ])("rejects a %s cursor before the task RPC", async (_case, cursor) => {
+    const listInternalShareBoardTasks = vi.fn();
+    const repo = createRepo({ listInternalShareBoardTasks } as never);
+
+    await expect(
+      listInternalAdmissionShareBoardTasks({
+        repo: repo as never,
+        actor,
+        projectId: "project-1",
+        cursor,
+      }),
+    ).rejects.toMatchObject({ code: "SHARE_CURSOR_INVALID" });
+    expect(listInternalShareBoardTasks).not.toHaveBeenCalled();
+  });
+
+  it("sends no client-authored snapshot parameters to the atomic creation RPC", async () => {
+    const row = {
+      id: "share-1",
+      organization_id: "org-1",
+      project_id: "project-1",
+      title: "Vendor review",
+      purpose: "",
+      mode: "preview",
+      token_hash: "hashed-token",
+      access_code_hash: null,
+      status: "active",
+      expires_at: "2026-08-06T00:00:00.000Z",
+      allow_vendor_submit: false,
+      allow_external_fallback: true,
+      review_state: "not_started",
+      round_number: 0,
+      created_by: "user-ops",
+      created_at: "2026-07-30T00:00:00.000Z",
+      brand_snapshot: {
+        schemaVersion: 1,
+        version: 4,
+        logoText: "星河",
+        logoStoragePath: "org-1/brand-logos/private.webp",
+        brandName: "星河直播",
+        brandTagline: "专业直播运营",
+        primaryColor: "#165DFF",
+        publishedAt: "2026-07-29T00:00:00.000Z",
+      },
+      brand_version: 4,
+      contact_card_id: null,
+      contact_card_snapshot: null,
+    };
+    const single = vi.fn().mockResolvedValue({
+      data: {
+        board: {
+          id: row.id,
+          organizationId: row.organization_id,
+          projectId: row.project_id,
+          title: row.title,
+          purpose: row.purpose,
+          mode: row.mode,
+          status: row.status,
+          expiresAt: row.expires_at,
+          allowVendorSubmit: row.allow_vendor_submit,
+          allowExternalFallback: row.allow_external_fallback,
+          reviewState: row.review_state,
+          roundNumber: row.round_number,
+          brandSnapshot: row.brand_snapshot,
+          brandVersion: row.brand_version,
+          contactCardId: row.contact_card_id,
+          contactCardSnapshot: row.contact_card_snapshot,
+          createdBy: row.created_by,
+          createdAt: row.created_at,
+        },
+        snapshot: publicSnapshot(),
+      },
+      error: null,
+    });
+    const rpc = vi.fn().mockReturnValue({ single });
+    const repo = new SupabaseAdmissionShareBoardRepository({ rpc } as never);
+
+    await repo.createShareBoardWithItems({
+      organizationId: "org-1",
+      projectId: "project-1",
+      title: "Vendor review",
+      purpose: "",
+      mode: "preview",
+      tokenHash: "hashed-token",
+      accessCodeHash: null,
+      expiresAt: "2026-08-06T00:00:00.000Z",
+      allowExternalFallback: true,
+      createdBy: "user-ops",
+      contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+      items: [
+        {
+          applicationId: "app-2",
+          recordingSubmissionId: "recording-2-v1",
+          recordingVersion: 1,
+          sortOrder: 0,
+        },
+      ],
+    } as never);
+
+    expect(rpc).toHaveBeenCalledWith("create_admission_share_board", {
+      p_organization_id: "org-1",
+      p_project_id: "project-1",
+      p_title: "Vendor review",
+      p_purpose: "",
+      p_mode: "preview",
+      p_token_hash: "hashed-token",
+      p_access_code_hash: null,
+      p_expires_at: "2026-08-06T00:00:00.000Z",
+      p_allow_external_fallback: true,
+      p_created_by: "user-ops",
+      p_items: [
+        {
+          application_id: "app-2",
+          recording_submission_id: "recording-2-v1",
+          recording_version: 1,
+          sort_order: 0,
+        },
+      ],
+      p_contact_card_id: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+    });
+    const rpcPayload = vi.mocked(rpc).mock.calls[0]?.[1];
+    expect(rpcPayload).not.toHaveProperty("p_brand_snapshot");
+    expect(rpcPayload).not.toHaveProperty("p_contact_card_snapshot");
+  });
+
+  it("maps a cross-organization or disabled contact card to one sanitized domain failure", async () => {
+    const single = vi.fn().mockResolvedValue({
+      data: null,
+      error: {
+        code: "P0001",
+        message: "invalid_organization_contact_card",
+        details: "private card lookup diagnostics",
+      },
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      rpc: vi.fn().mockReturnValue({ single }),
+    } as never);
+
+    const operation = repo.createShareBoardWithItems({
+      organizationId: "org-1",
+      projectId: "project-1",
+      title: "Vendor review",
+      purpose: "",
+      mode: "preview",
+      tokenHash: "hashed-token",
+      accessCodeHash: null,
+      expiresAt: "2026-08-06T00:00:00.000Z",
+      allowExternalFallback: true,
+      createdBy: "user-ops",
+      contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+      items: [
+        {
+          applicationId: "app-2",
+          recordingSubmissionId: "recording-2-v1",
+          recordingVersion: 1,
+          sortOrder: 0,
+        },
+      ],
+    });
+
+    await expect(operation).rejects.toBeInstanceOf(
+      AdmissionShareContactCardError,
+    );
+    await expect(operation).rejects.toMatchObject({
+      code: "INVALID_ORGANIZATION_CONTACT_CARD",
+      message: "Selected organization contact card is unavailable",
+      statusCode: 400,
+    });
+  });
+
+  it("maps the database item cap to one explicit 400 domain failure", async () => {
+    const single = vi.fn().mockResolvedValue({
+      data: null,
+      error: {
+        code: "P0001",
+        message: "admission_share_item_limit_exceeded",
+      },
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      rpc: vi.fn().mockReturnValue({ single }),
+    } as never);
+
+    await expect(
+      repo.createShareBoardWithItems({
+        organizationId: "org-1",
+        projectId: "project-1",
+        title: "Oversized",
+        purpose: "",
+        mode: "preview",
+        tokenHash: "hashed-token",
+        accessCodeHash: null,
+        expiresAt: "2026-08-06T00:00:00.000Z",
+        allowExternalFallback: true,
+        createdBy: "user-ops",
+        items: [],
+      }),
+    ).rejects.toMatchObject({
+      code: "SHARE_BOARD_TOO_LARGE",
+      statusCode: 400,
+    });
+  });
+
   it("creates only the explicitly selected recording versions", async () => {
     const repo = createRepo({
       createShareBoardWithItems: vi.fn().mockResolvedValue({
-        id: "share-1",
-        organizationId: "org-1",
-        projectId: "project-1",
-        title: "第一轮正式复核",
-        purpose: "品牌方首轮选人",
-        mode: "formal_review",
-        tokenHash: hashShareSecret("plain-token"),
-        accessCodeHash: hashAdmissionShareAccessCode("24681024"),
-        status: "active",
-        expiresAt: "2026-08-06T00:00:00.000Z",
-        allowVendorSubmit: true,
-        allowExternalFallback: true,
-        reviewState: "not_started",
-        roundNumber: 1,
-        createdBy: "user-ops",
+        shareBoard: {
+          id: "share-1",
+          organizationId: "org-1",
+          projectId: "project-1",
+          title: "第一轮正式复核",
+          purpose: "品牌方首轮选人",
+          mode: "formal_review",
+          tokenHash: hashShareSecret("plain-token"),
+          accessCodeHash: hashAdmissionShareAccessCode("24681024"),
+          status: "active",
+          expiresAt: "2026-08-06T00:00:00.000Z",
+          allowVendorSubmit: true,
+          allowExternalFallback: true,
+          reviewState: "not_started",
+          roundNumber: 1,
+          createdBy: "user-ops",
+        },
+        snapshot: publicSnapshot(),
       }),
     } as never);
     const candidateRepo = createCandidateRepo();
@@ -607,11 +1123,15 @@ describe("admission share board service", () => {
   it("generates one eight-digit access code by default for formal review", async () => {
     const repo = createRepo({
       createShareBoardWithItems: vi.fn().mockImplementation(async (input) => ({
-        id: "share-1",
-        ...input,
-        status: "active",
-        reviewState: "not_started",
-        roundNumber: 1,
+        shareBoard: {
+          id: "share-1",
+          ...input,
+          status: "active",
+          allowVendorSubmit: true,
+          reviewState: "not_started",
+          roundNumber: 1,
+        },
+        snapshot: publicSnapshot(),
       })),
     } as never);
 
@@ -1014,6 +1534,15 @@ describe("admission share board service", () => {
       expiresAt: "2026-06-14T00:00:00.000Z",
       canSubmit: false,
       allowExternalFallback: true,
+      brand: {
+        version: 1,
+        logoText: "星河",
+        logoUrl: null,
+        brandName: "星河直播",
+        brandTagline: "专业直播运营",
+        primaryColor: "#165DFF",
+      },
+      contactCard: null,
       project: {
         id: "project-1",
         code: "P-001",
@@ -1095,6 +1624,168 @@ describe("admission share board service", () => {
     );
   });
 
+  it("derives internal and public shared fields from one persisted presentation without leaking private paths", async () => {
+    const privateLogoPath =
+      "9d4ba455-c58a-4e31-a3e8-c42a760ea54c/brand-logos/8732c883-7ea9-4db0-9b29-4a77e1f8c79e.webp";
+    const snapshot = publicSnapshot({
+      organizationId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+      brandVersion: 7,
+      brandSnapshot: {
+        schemaVersion: 1,
+        version: 7,
+        logoText: "星河",
+        logoStoragePath: privateLogoPath,
+        brandName: "星河直播",
+        brandTagline: "专业直播运营",
+        primaryColor: "#4A63D8",
+        publishedAt: "2026-07-30T00:00:00.000Z",
+        internalNote: "never public",
+      },
+      contactCardId: "8732c883-7ea9-4db0-9b29-4a77e1f8c79e",
+      contactCardSnapshot: {
+        displayName: "林经理",
+        title: "商务负责人",
+        phone: "13800000000",
+        internalUserId: "private-user-id",
+      },
+    });
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(snapshot),
+    });
+
+    const presentation = toAdmissionSharePresentation(snapshot as never);
+    const internalDto = toInternalAdmissionSharePresentation(snapshot as never);
+    const publicDto = await getPublicAdmissionShareBoard({
+      repo,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+    const publicBrand: Record<string, unknown> = { ...publicDto.brand };
+    delete publicBrand.logoUrl;
+    delete publicBrand.version;
+    const publicShared = {
+      title: publicDto.title,
+      purpose: publicDto.purpose,
+      mode: publicDto.mode,
+      status: publicDto.status,
+      reviewState: publicDto.reviewState,
+      roundNumber: publicDto.roundNumber,
+      expiresAt: publicDto.expiresAt,
+      project: publicDto.project,
+      brand: publicBrand,
+      contactCard: publicDto.contactCard,
+      progress: publicDto.progress,
+      latestSubmission: publicDto.latestSubmission,
+      items: publicDto.items.map((item) => ({
+        applicationId: item.applicationId,
+        recordingSubmissionId: item.recordingSubmissionId,
+        recordingVersion: item.recordingVersion,
+        sourceHealth: item.sourceHealth,
+        streamer: item.streamer,
+        finalReview: item.finalReview,
+      })),
+    };
+    const internalShared: Record<string, unknown> = { ...internalDto };
+    for (const privateField of [
+      "id",
+      "brandVersion",
+      "contactCardId",
+      "sourceDiagnostics",
+    ]) {
+      delete internalShared[privateField];
+    }
+
+    expect(publicShared).toEqual(presentation);
+    expect(internalShared).toEqual(presentation);
+    expect(publicDto.brand).toEqual({
+      version: 7,
+      logoText: "星河",
+      logoUrl: "/api/public/admission-share/plain-token/brand-logo",
+      brandName: "星河直播",
+      brandTagline: "专业直播运营",
+      primaryColor: "#4A63D8",
+    });
+    expect(publicDto.contactCard).toEqual({
+      displayName: "林经理",
+      title: "商务负责人",
+      phone: "13800000000",
+    });
+    expect(Object.keys(publicDto.brand).sort()).toEqual(
+      [
+        "brandName",
+        "brandTagline",
+        "logoText",
+        "logoUrl",
+        "primaryColor",
+        "version",
+      ].sort(),
+    );
+    expect(Object.keys(publicDto.contactCard ?? {}).sort()).toEqual(
+      ["displayName", "phone", "title"].sort(),
+    );
+    const serialized = JSON.stringify({ presentation, publicDto });
+    expect(serialized).not.toContain(privateLogoPath);
+    expect(serialized).not.toContain("internalNote");
+    expect(serialized).not.toContain("internalUserId");
+  });
+
+  it("ignores every untrusted identity field from an unknown brand schema", () => {
+    const identity = toAdmissionShareIdentityPresentation({
+      organizationId: "org-1",
+      brandSnapshot: {
+        schemaVersion: 999,
+        version: 999,
+        logoText: "EVIL",
+        logoStoragePath: "other-org/private.webp",
+        brandName: "Forged Professional Brand",
+        brandTagline: "Trust this attacker",
+        primaryColor: "#000000",
+      },
+      contactCardSnapshot: null,
+    });
+
+    expect(identity.brand).toEqual({
+      logoText: "组织",
+      brandName: "组织",
+      brandTagline: "",
+      primaryColor: "#165DFF",
+    });
+    expect(JSON.stringify(identity)).not.toContain("Forged");
+    expect(JSON.stringify(identity)).not.toContain("EVIL");
+  });
+
+  it("does not publish a forged version or logo route from an unknown brand schema", async () => {
+    const repo = createRepo({
+      getPublicShareBoardSnapshot: vi.fn().mockResolvedValue(
+        publicSnapshot({
+          organizationId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+          brandVersion: 999,
+          brandSnapshot: {
+            schemaVersion: 999,
+            version: 999,
+            logoText: "EVIL",
+            logoStoragePath:
+              "9d4ba455-c58a-4e31-a3e8-c42a760ea54c/brand-logos/8732c883-7ea9-4db0-9b29-4a77e1f8c79e.webp",
+            brandName: "Forged Professional Brand",
+            brandTagline: "Trust this attacker",
+            primaryColor: "#000000",
+          },
+        }),
+      ),
+    });
+
+    const dto = await getPublicAdmissionShareBoard({
+      repo,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(dto.brand.version).toBe(0);
+    expect(dto.brand.logoUrl).toBeNull();
+    expect(JSON.stringify(dto.brand)).not.toContain("Forged");
+    expect(JSON.stringify(dto.brand)).not.toContain("EVIL");
+  });
+
   it.each([
     "javascript:alert(document.domain)",
     "data:text/html,<script>alert(1)</script>",
@@ -1142,6 +1833,269 @@ describe("admission share board service", () => {
       latestSubmission: null,
     });
     expect(dto.items.every((item) => !("draft" in item))).toBe(true);
+  });
+
+  it("returns a normalized private brand logo path only after a valid access session", async () => {
+    const organizationId = "9d4ba455-c58a-4e31-a3e8-c42a760ea54c";
+    const logoStoragePath = `${organizationId}/brand-logos/8732c883-7ea9-4db0-9b29-4a77e1f8c79e.webp`;
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+    const getPublicShareBrandLogoAccess = vi.fn().mockResolvedValue(
+      publicBrandLogoAccess({
+        organizationId,
+        accessCodeHash: hashAdmissionShareAccessCode("2468"),
+        brandSnapshot: {
+          schemaVersion: 1,
+          version: 4,
+          logoText: "星河",
+          logoStoragePath,
+          brandName: "星河直播",
+          brandTagline: "专业直播运营",
+          primaryColor: "#165DFF",
+        },
+      }),
+    );
+    const repo = createRepo({
+      getPublicShareBrandLogoAccess,
+    });
+
+    const path = await getPublicAdmissionShareBrandLogoPath({
+      repo,
+      accessStore,
+      token: "plain-token",
+      sessionToken: "opaque-session-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(path).toBe(logoStoragePath);
+    expect(accessStore.hasValidSession).toHaveBeenCalledWith({
+      shareBoardId: "share-1",
+      sessionToken: "opaque-session-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+    expect(getPublicShareBrandLogoAccess).toHaveBeenCalledWith(
+      hashShareSecret("plain-token"),
+    );
+    expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+    expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
+  });
+
+  it("returns no public logo path for a missing or cross-organization snapshot path", async () => {
+    const organizationId = "9d4ba455-c58a-4e31-a3e8-c42a760ea54c";
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(true),
+    };
+
+    for (const logoStoragePath of [
+      null,
+      "21c6fe42-0cb5-4309-a5f2-9b28bf867bac/brand-logos/8732c883-7ea9-4db0-9b29-4a77e1f8c79e.webp",
+    ]) {
+      const repo = createRepo({
+        getPublicShareBrandLogoAccess: vi.fn().mockResolvedValue(
+          publicBrandLogoAccess({
+            organizationId,
+            brandSnapshot: {
+              schemaVersion: 1,
+              version: 4,
+              logoText: "星河",
+              logoStoragePath,
+              brandName: "星河直播",
+              brandTagline: "专业直播运营",
+              primaryColor: "#165DFF",
+            },
+          }),
+        ),
+      });
+
+      await expect(
+        getPublicAdmissionShareBrandLogoPath({
+          repo,
+          accessStore,
+          token: "plain-token",
+          sessionToken: "opaque-session-token",
+          now: "2026-06-07T01:00:00.000Z",
+        }),
+      ).resolves.toBeNull();
+      expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+      expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not trust a logo path from an unknown brand schema", async () => {
+    const repo = createRepo({
+      getPublicShareBrandLogoAccess: vi.fn().mockResolvedValue(
+        publicBrandLogoAccess({
+          organizationId: "org-1",
+          brandSnapshot: {
+            schemaVersion: 999,
+            logoStoragePath: "org-1/brand-logos/untrusted.webp",
+          },
+        }),
+      ),
+    });
+
+    await expect(
+      getPublicAdmissionShareBrandLogoPath({
+        repo,
+        token: "plain-token",
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).resolves.toBeNull();
+    expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+    expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
+  });
+
+  it("uses only the lightweight access gate on both brand-logo stages", async () => {
+    const getPublicShareBrandLogoAccess = vi.fn().mockResolvedValue(
+      publicBrandLogoAccess({
+        organizationId: "org-1",
+        brandSnapshot: {
+          schemaVersion: 1,
+          logoStoragePath: "org-1/brand-logos/private.webp",
+        },
+      }),
+    );
+    const repo = createRepo({ getPublicShareBrandLogoAccess });
+
+    await getPublicAdmissionShareBrandLogoPath({
+      repo,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+    await getPublicAdmissionShareBrandLogoPath({
+      repo,
+      token: "plain-token",
+      now: "2026-06-07T01:00:00.000Z",
+    });
+
+    expect(getPublicShareBrandLogoAccess).toHaveBeenCalledTimes(2);
+    expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+    expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [null, "SHARE_NOT_AVAILABLE", 404],
+    [publicSnapshot({ status: "revoked" }), "SHARE_REVOKED", 410],
+    [
+      publicSnapshot({ expiresAt: "2026-06-06T00:00:00.000Z" }),
+      "SHARE_EXPIRED",
+      410,
+    ],
+  ] as const)(
+    "keeps logo reads behind the public share lifecycle gate: %s",
+    async (access, code, statusCode) => {
+      const repo = createRepo({
+        getPublicShareBrandLogoAccess: vi.fn().mockResolvedValue(
+          access
+            ? publicBrandLogoAccess({
+                status: access.status,
+                expiresAt: access.expiresAt,
+              })
+            : null,
+        ),
+      });
+
+      await expect(
+        getPublicAdmissionShareBrandLogoPath({
+          repo,
+          token: "plain-token",
+          now: "2026-06-07T01:00:00.000Z",
+        }),
+      ).rejects.toMatchObject({ code, statusCode });
+      expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+      expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects a brand logo read when the access-code session is absent", async () => {
+    const accessStore = {
+      consumeAttempt: vi.fn(),
+      createSession: vi.fn(),
+      hasValidSession: vi.fn().mockResolvedValue(false),
+    };
+    const repo = createRepo({
+      getPublicShareBrandLogoAccess: vi.fn().mockResolvedValue(
+        publicBrandLogoAccess({
+          accessCodeHash: hashAdmissionShareAccessCode("2468"),
+        }),
+      ),
+    });
+
+    await expect(
+      getPublicAdmissionShareBrandLogoPath({
+        repo,
+        accessStore,
+        token: "plain-token",
+        sessionToken: "expired-session",
+        now: "2026-06-07T01:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "ACCESS_CODE_REQUIRED",
+      statusCode: 401,
+    });
+    expect(repo.getPublicShareBoardSnapshot).not.toHaveBeenCalled();
+    expect(repo.markShareBoardViewed).not.toHaveBeenCalled();
+  });
+
+  it("selects only lifecycle, access, and brand fields for a logo read", async () => {
+    const row = {
+      id: "share-1",
+      organization_id: "org-1",
+      access_code_hash: hashAdmissionShareAccessCode("2468"),
+      status: "active",
+      expires_at: "2026-06-14T00:00:00.000Z",
+      brand_snapshot: {
+        schemaVersion: 1,
+        logoStoragePath: "org-1/brand-logos/private.webp",
+      },
+    };
+    const maybeSingle = vi.fn().mockResolvedValue({ data: row, error: null });
+    const eq = vi.fn().mockReturnValue({ maybeSingle });
+    const select = vi.fn().mockReturnValue({ eq });
+    const from = vi.fn().mockReturnValue({ select });
+    const repo = new SupabaseAdmissionShareBoardRepository({ from } as never);
+    const lightweightRepo = repo as unknown as {
+      getPublicShareBrandLogoAccess: (
+        tokenHash: string,
+      ) => Promise<Record<string, unknown> | null>;
+    };
+
+    expect(lightweightRepo.getPublicShareBrandLogoAccess).toBeTypeOf(
+      "function",
+    );
+    await expect(
+      lightweightRepo.getPublicShareBrandLogoAccess("hashed-token"),
+    ).resolves.toEqual({
+      id: "share-1",
+      organizationId: "org-1",
+      accessCodeHash: row.access_code_hash,
+      status: "active",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+      brandSnapshot: row.brand_snapshot,
+    });
+    expect(from).toHaveBeenCalledTimes(1);
+    expect(from).toHaveBeenCalledWith("project_recording_share_boards");
+    expect(select).toHaveBeenCalledWith(
+      "id, organization_id, access_code_hash, status, expires_at, brand_snapshot",
+    );
+    const selected = String(select.mock.calls[0]?.[0]);
+    for (const forbidden of [
+      "projects(",
+      "project_recording_share_items",
+      "recording_submissions",
+      "project_applications",
+      "review_state",
+      "contact_card",
+      "allow_vendor_submit",
+    ]) {
+      expect(selected).not.toContain(forbidden);
+    }
+    expect(eq).toHaveBeenCalledWith("token_hash", "hashed-token");
   });
 
   it("resolves private recording playback sources only after share gating", async () => {
@@ -1457,6 +2411,17 @@ describe("admission share board service", () => {
       mode: "formal_review",
       canSubmit: true,
     });
+    expectTypeOf(
+      passwordless.board.brand,
+    ).toEqualTypeOf<PublicAdmissionShareBrand>();
+    expectTypeOf(
+      passwordless.board.contactCard,
+    ).toEqualTypeOf<PublicAdmissionShareContactCard | null>();
+    expect(passwordless.board.brand).toMatchObject({
+      logoText: "星河",
+      logoUrl: null,
+    });
+    expect(passwordless.board).toHaveProperty("contactCard");
     expect(passwordless.allowVendorSubmit).toBe(true);
 
     const protectedRepo = createRepo({
@@ -2301,6 +3266,19 @@ describe("admission share board service", () => {
       round_number: 2,
       created_by: "user-ops",
       created_at: "2026-07-30T07:00:00.000Z",
+      brand_snapshot: {
+        schemaVersion: 1,
+        version: 4,
+        logoText: "星河",
+        logoStoragePath: null,
+        brandName: "星河直播",
+        brandTagline: "专业直播运营",
+        primaryColor: "#165DFF",
+        publishedAt: "2026-07-29T00:00:00.000Z",
+      },
+      brand_version: 4,
+      contact_card_id: null,
+      contact_card_snapshot: null,
       projects: {
         id: "project-1",
         code: "P-001",
@@ -2362,20 +3340,36 @@ describe("admission share board service", () => {
       submitted_at: "2026-07-30T10:00:00.000Z",
     };
     const queriedTables: string[] = [];
-    const itemSelect = vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue({
-        order: vi.fn().mockResolvedValue({ data: itemRows, error: null }),
-      }),
-    });
-    const rpc = vi.fn().mockResolvedValue({
-      data: [
-        {
-          share_board_id: "share-1",
-          item_count: 2,
-          draft_completed_count: 2,
-        },
-      ],
-      error: null,
+    const itemPage = pagedSelect(itemRows);
+    const draftPage = pagedSelect(
+      itemRows.map((item) => ({
+        recording_submission_id: item.recording_submission_id,
+        recording_version: item.recording_version,
+        decision: "selected",
+        remark: "",
+        reason_codes: [],
+        revision: 1,
+        updated_at: "2026-07-30T09:00:00.000Z",
+      })),
+    );
+    const receiptPage = pagedSelect([
+      {
+        id: "receipt-1",
+        recording_submission_id: "rec-1",
+        decision: "selected",
+        remark: "优先选择",
+        reason_codes: ["script_fit"],
+      },
+      {
+        id: "receipt-2",
+        recording_submission_id: "rec-2",
+        decision: "backup",
+        remark: "",
+        reason_codes: [],
+      },
+    ]);
+    const rpc = vi.fn(() => {
+      throw new Error("public hydration must not use project progress RPC");
     });
     const from = vi.fn().mockImplementation((table: string) => {
       queriedTables.push(table);
@@ -2391,43 +3385,27 @@ describe("admission share board service", () => {
         };
       }
       if (table === "project_recording_share_items") {
-        return { select: itemSelect };
+        return itemPage.source;
+      }
+      if (table === "project_recording_vendor_review_drafts") {
+        return draftPage.source;
       }
       if (table === "project_recording_vendor_review_submissions") {
+        const query = {
+          eq: vi.fn(),
+          order: vi.fn(),
+          limit: vi
+            .fn()
+            .mockResolvedValue({ data: [submissionRow], error: null }),
+        };
+        query.eq.mockReturnValue(query);
+        query.order.mockReturnValue(query);
         return {
-          select: vi.fn().mockReturnValue({
-            eq: vi.fn().mockReturnValue({
-              order: vi.fn().mockReturnValue({
-                limit: vi
-                  .fn()
-                  .mockResolvedValue({ data: [submissionRow], error: null }),
-              }),
-            }),
-          }),
+          select: vi.fn().mockReturnValue(query),
         };
       }
       if (table === "project_recording_vendor_review_submission_items") {
-        return {
-          select: vi.fn().mockReturnValue({
-            eq: vi.fn().mockResolvedValue({
-              data: [
-                {
-                  recording_submission_id: "rec-1",
-                  decision: "selected",
-                  remark: "优先选择",
-                  reason_codes: ["script_fit"],
-                },
-                {
-                  recording_submission_id: "rec-2",
-                  decision: "backup",
-                  remark: "",
-                  reason_codes: [],
-                },
-              ],
-              error: null,
-            }),
-          }),
-        };
+        return receiptPage.source;
       }
       throw new Error(`unexpected public snapshot table: ${table}`);
     });
@@ -2440,17 +3418,17 @@ describe("admission share board service", () => {
       hashShareSecret("plain-token"),
     );
 
-    expect(itemSelect).toHaveBeenCalledWith(
+    expect(itemPage.source.select).toHaveBeenCalledWith(
       expect.stringContaining("source_health"),
     );
     expect(queriedTables).not.toContain("project_recording_vendor_reviews");
-    expect(queriedTables).not.toContain(
-      "project_recording_vendor_review_drafts",
-    );
-    expect(rpc).toHaveBeenCalledWith("list_admission_share_board_progress", {
-      p_project_ids: ["project-1"],
-    });
+    expect(queriedTables).toContain("project_recording_vendor_review_drafts");
+    expect(rpc).not.toHaveBeenCalled();
     expect(snapshot).toMatchObject({
+      brandVersion: 4,
+      brandSnapshot: expect.objectContaining({ brandName: "星河直播" }),
+      contactCardId: null,
+      contactCardSnapshot: null,
       progress: { completed: 2, total: 2 },
       latestSubmission: {
         revision: 2,
@@ -2487,6 +3465,234 @@ describe("admission share board service", () => {
     });
   });
 
+  it("paginates 1001 public items, drafts, and final receipt rows without losing shared presentation fields", async () => {
+    const receiptRemark = "  \t\n\u00a0Precise review\u00a0\n\t  ";
+    const postgresTrimmedReceiptRemark = "\t\n\u00a0Precise review\u00a0\n\t";
+    const boardRow = publicBoardRow({ review_state: "in_progress" });
+    const itemRows = Array.from({ length: 1001 }, (_, index) =>
+      publicItemRow(index, {
+        ...(index === 0
+          ? {
+              project_applications: {
+                status: "recording_reviewing",
+                streamer_id: "streamer-0",
+                streamers: {
+                  id: "streamer-0",
+                  display_name: "Streamer 0",
+                  streamer_accounts: [
+                    {
+                      id: "account-non-primary",
+                      platform: "WeChat",
+                      account_handle: "old-non-primary",
+                      is_primary: false,
+                      created_at: "2025-01-01T00:00:00.000Z",
+                    },
+                    {
+                      id: "account-z",
+                      platform: "Kuaishou",
+                      account_handle: "early-primary-z",
+                      is_primary: true,
+                      created_at: "2026-07-01T00:00:00.000Z",
+                    },
+                    {
+                      id: "account-a",
+                      platform: "Douyin",
+                      account_handle: "early-primary",
+                      is_primary: true,
+                      created_at: "2026-07-01T00:00:00.000Z",
+                    },
+                    {
+                      id: "account-0",
+                      platform: "Xiaohongshu",
+                      account_handle: "late-primary",
+                      is_primary: true,
+                      created_at: "2026-07-02T00:00:00.000Z",
+                    },
+                  ],
+                },
+              },
+            }
+          : index === 1
+            ? {
+                project_applications: {
+                  status: "recording_reviewing",
+                  streamer_id: "streamer-1",
+                  streamers: {
+                    id: "streamer-1",
+                    display_name: "Streamer 1",
+                    streamer_accounts: [
+                      {
+                        id: "account-late",
+                        platform: "Kuaishou",
+                        account_handle: "late-account",
+                        is_primary: false,
+                        created_at: "2026-07-02T00:00:00.000Z",
+                      },
+                      {
+                        id: "account-early",
+                        platform: "Bilibili",
+                        account_handle: "early-account",
+                        is_primary: false,
+                        created_at: "2026-07-01T00:00:00.000Z",
+                      },
+                    ],
+                  },
+                },
+              }
+            : {}),
+      }),
+    );
+    const draftRows = itemRows.map((item, index) => ({
+      recording_submission_id: item.recording_submission_id,
+      decision:
+        index === 1
+          ? "backup"
+          : index === 2
+            ? "rejected"
+            : index === 3
+              ? "needs_changes"
+              : "selected",
+      remark: index === 2 ? "   " : index === 3 ? "\t" : "",
+    }));
+    const receiptRows = itemRows.map((item, index) => ({
+      id: `receipt-${index.toString().padStart(4, "0")}`,
+      recording_submission_id: item.recording_submission_id,
+      decision: "selected",
+      remark: index === 0 ? receiptRemark : "",
+      reason_codes: [],
+    }));
+    const itemPage = pagedSelect(itemRows);
+    const draftPage = pagedSelect(draftRows);
+    const receiptPage = pagedSelect(receiptRows);
+    const submission = {
+      id: "submission-latest",
+      revision: 2,
+      project_remark: "",
+      selected_count: 1001,
+      backup_count: 0,
+      rejected_count: 0,
+      needs_changes_count: 0,
+      submitted_at: "2026-07-30T10:00:00.000Z",
+    };
+    const from = vi.fn((table: string) => {
+      if (table === "project_recording_share_boards") {
+        return boardSelect(boardRow);
+      }
+      if (table === "project_recording_share_items") {
+        return itemPage.source;
+      }
+      if (table === "project_recording_vendor_review_drafts") {
+        return draftPage.source;
+      }
+      if (table === "project_recording_vendor_review_submissions") {
+        const query = {
+          eq: vi.fn(),
+          order: vi.fn(),
+          limit: vi.fn().mockResolvedValue({ data: [submission], error: null }),
+        };
+        query.eq.mockReturnValue(query);
+        query.order.mockReturnValue(query);
+        return { select: vi.fn().mockReturnValue(query) };
+      }
+      if (table === "project_recording_vendor_review_submission_items") {
+        return receiptPage.source;
+      }
+      throw new Error(`unexpected public paging table: ${table}`);
+    });
+    const rpc = vi.fn(() => {
+      throw new Error("public hydration must not use project progress RPC");
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      from,
+      rpc,
+    } as never);
+
+    const snapshot = await repo.getPublicShareBoardSnapshot("token-hash");
+
+    expect(snapshot?.items).toHaveLength(1001);
+    expect(snapshot?.progress).toEqual({ completed: 1000, total: 1001 });
+    expect(snapshot?.items.every((item) => item.finalReview !== null)).toBe(
+      true,
+    );
+    expect(snapshot?.items[0]?.streamer.accountLabel).toBe(
+      "Douyin / early-primary",
+    );
+    expect(snapshot?.items[1]?.streamer.accountLabel).toBe(
+      "Bilibili / early-account",
+    );
+    expect(snapshot?.items[0]?.finalReview?.remark).toBe(
+      postgresTrimmedReceiptRemark,
+    );
+    expect(itemPage.range.mock.calls).toEqual([
+      [0, 999],
+      [1000, 1999],
+    ]);
+    expect(draftPage.range.mock.calls).toEqual([
+      [0, 999],
+      [1000, 1999],
+    ]);
+    expect(receiptPage.range.mock.calls).toEqual([
+      [0, 999],
+      [1000, 1999],
+    ]);
+    expect(rpc).not.toHaveBeenCalled();
+
+    const safeInternalSnapshot = {
+      ...snapshot!,
+      tokenHash: undefined,
+      accessCodeHash: undefined,
+      items: snapshot!.items.map(({ storagePath, ...item }, index) => ({
+        ...item,
+        hasPrivateStorage: Boolean(storagePath),
+        finalReview:
+          index === 0 && item.finalReview
+            ? {
+                ...item.finalReview,
+                remark: postgresTrimmedReceiptRemark,
+              }
+            : item.finalReview,
+      })),
+    };
+    expect(toAdmissionSharePresentation(safeInternalSnapshot)).toEqual(
+      toAdmissionSharePresentation(snapshot!),
+    );
+  });
+
+  it.each([
+    [5000, false],
+    [5001, true],
+  ])(
+    "enforces the public item boundary at %i rows without truncation",
+    async (count, shouldReject) => {
+      const itemRows = Array.from({ length: count }, (_, index) =>
+        publicItemRow(index),
+      );
+      const itemPage = pagedSelect(itemRows);
+      const from = vi.fn((table: string) => {
+        if (table === "project_recording_share_boards") {
+          return boardSelect(publicBoardRow({ mode: "preview" }));
+        }
+        if (table === "project_recording_share_items") {
+          return itemPage.source;
+        }
+        throw new Error(`unexpected public boundary table: ${table}`);
+      });
+      const repo = new SupabaseAdmissionShareBoardRepository({ from } as never);
+      const operation = repo.getPublicShareBoardSnapshot("token-hash");
+
+      if (shouldReject) {
+        await expect(operation).rejects.toMatchObject({
+          code: "SHARE_BOARD_TOO_LARGE",
+          statusCode: 400,
+        });
+      } else {
+        const snapshot = await operation;
+        expect(snapshot?.progress).toEqual({ completed: 0, total: 5000 });
+        expect(snapshot?.items).toHaveLength(5000);
+      }
+    },
+  );
+
   it("persists and reads draft DTOs through the constrained repository methods", async () => {
     const draftRow = {
       recording_submission_id: "rec-1",
@@ -2499,10 +3705,8 @@ describe("admission share board service", () => {
     };
     const single = vi.fn().mockResolvedValue({ data: draftRow, error: null });
     const rpc = vi.fn().mockReturnValue({ single });
-    const order = vi.fn().mockResolvedValue({ data: [draftRow], error: null });
-    const eq = vi.fn().mockReturnValue({ order });
-    const select = vi.fn().mockReturnValue({ eq });
-    const from = vi.fn().mockReturnValue({ select });
+    const draftPage = pagedSelect([draftRow]);
+    const from = vi.fn().mockReturnValue(draftPage.source);
     const repo = new SupabaseAdmissionShareBoardRepository({
       rpc,
       from,
@@ -2529,7 +3733,7 @@ describe("admission share board service", () => {
       p_saved_at: "2026-07-30T08:30:00.000Z",
     });
     expect(from).toHaveBeenCalledWith("project_recording_vendor_review_drafts");
-    expect(eq).toHaveBeenCalledWith("share_board_id", "share-1");
+    expect(draftPage.eq).toHaveBeenCalledWith("share_board_id", "share-1");
     expect(saved).toEqual({
       recordingSubmissionId: "rec-1",
       recordingVersion: 2,
@@ -2655,9 +3859,94 @@ describe("admission share board service", () => {
     expect(selectedColumns).not.toContain("token_hash");
     expect(selectedColumns).not.toContain("access_code_hash");
   });
-});
 
-describe("admission share playback issue service", () => {
+  it("lists twenty 5000-item boards as bounded summaries without hydrating items", async () => {
+    const tasks = Array.from({ length: 21 }, (_, index) => ({
+      ...admissionShareTask(
+        `00000000-0000-4000-8000-${(index + 1).toString().padStart(12, "0")}`,
+        index + 1,
+      ),
+      itemCount: 5000,
+      draftCompletedCount: 4999,
+      createdAt: `2026-07-${(30 - index).toString().padStart(2, "0")}T00:00:00.000Z`,
+    }));
+    const rpc = vi.fn().mockResolvedValue({
+      data: tasks.map((task) => ({ task })),
+      error: null,
+    });
+    const from = vi.fn(() => {
+      throw new Error("internal task listing must use one bounded RPC");
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({
+      rpc,
+      from,
+    } as never);
+
+    const page = await repo.listInternalShareBoardTasks({
+      projectId: "project-1",
+      beforeCreatedAt: "2026-08-01T00:00:00.000Z",
+      beforeId: "00000000-0000-4000-8000-000000000099",
+      limit: 20,
+    });
+
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith(
+      "list_internal_admission_share_board_tasks",
+      {
+        p_project_id: "project-1",
+        p_before_created_at: "2026-08-01T00:00:00.000Z",
+        p_before_id: "00000000-0000-4000-8000-000000000099",
+        p_limit: 20,
+      },
+    );
+    expect(from).not.toHaveBeenCalled();
+    expect(page.tasks).toHaveLength(20);
+    expect(page.nextCursor).toEqual(expect.any(String));
+    expect(JSON.stringify(page)).not.toMatch(/presentation|snapshot|items/u);
+  });
+
+  it("loads exactly one authorized board detail and maps oversized hydration", async () => {
+    const snapshot = publicSnapshot({ id: "share-1" });
+    const task = admissionShareTask("share-1", 1);
+    const rpc = vi.fn().mockResolvedValue({
+      data: [{ hydration: { task, snapshot } }],
+      error: null,
+    });
+    const repo = new SupabaseAdmissionShareBoardRepository({ rpc } as never);
+
+    await expect(
+      repo.getInternalShareBoardHydration({
+        projectId: "project-1",
+        shareBoardId: "share-1",
+      }),
+    ).resolves.toEqual({ task, snapshot });
+    expect(rpc).toHaveBeenCalledWith(
+      "get_internal_admission_share_board_hydration",
+      {
+        p_project_id: "project-1",
+        p_share_board_id: "share-1",
+      },
+    );
+
+    rpc.mockResolvedValueOnce({
+      data: null,
+      error: {
+        code: "P0001",
+        message: "admission_share_hydration_item_limit_exceeded",
+      },
+    });
+
+    await expect(
+      repo.getInternalShareBoardHydration({
+        projectId: "project-1",
+        shareBoardId: "share-too-large",
+      }),
+    ).rejects.toMatchObject({
+      code: "SHARE_BOARD_TOO_LARGE",
+      statusCode: 400,
+    });
+  });
+
   const issue = {
     id: "issue-1",
     shareBoardId: "share-1",
@@ -3096,6 +4385,103 @@ describe("admission share playback issue service", () => {
   });
 });
 
+function pagedSelect(rows: unknown[]) {
+  const range = vi.fn((from: number, to: number) =>
+    Promise.resolve({ data: rows.slice(from, to + 1), error: null }),
+  );
+  const query = {
+    eq: vi.fn(),
+    order: vi.fn(),
+    range,
+  };
+  query.eq.mockReturnValue(query);
+  query.order.mockReturnValue(query);
+  return {
+    eq: query.eq,
+    range,
+    source: { select: vi.fn().mockReturnValue(query) },
+  };
+}
+
+function boardSelect(boardRow: Record<string, unknown>) {
+  return {
+    select: vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue({
+        maybeSingle: vi.fn().mockResolvedValue({ data: boardRow, error: null }),
+      }),
+    }),
+  };
+}
+
+function publicBoardRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "share-public",
+    organization_id: "org-1",
+    project_id: "project-1",
+    title: "Public review",
+    purpose: "Review recordings",
+    mode: "formal_review",
+    token_hash: "token-hash",
+    access_code_hash: null,
+    status: "active",
+    expires_at: "2026-08-06T00:00:00.000Z",
+    allow_vendor_submit: true,
+    allow_external_fallback: true,
+    review_state: "in_progress",
+    round_number: 1,
+    created_by: "user-ops",
+    created_at: "2026-07-30T07:00:00.000Z",
+    brand_snapshot: {
+      schemaVersion: 1,
+      version: 1,
+      logoText: "ORG",
+      logoStoragePath: null,
+      brandName: "Organization",
+      brandTagline: "Professional",
+      primaryColor: "#165DFF",
+      publishedAt: null,
+    },
+    brand_version: 1,
+    contact_card_id: null,
+    contact_card_snapshot: null,
+    projects: {
+      id: "project-1",
+      code: "P-001",
+      name: "Project",
+      vendor_name: "Vendor",
+      product_name: "Product",
+    },
+    ...overrides,
+  };
+}
+
+function publicItemRow(index: number, overrides: Record<string, unknown> = {}) {
+  const suffix = index.toString().padStart(4, "0");
+  return {
+    id: `item-${suffix}`,
+    sort_order: index,
+    application_id: `app-${suffix}`,
+    recording_submission_id: `recording-${suffix}`,
+    recording_version: 1,
+    source_health: "original_ready",
+    project_applications: {
+      status: "recording_reviewing",
+      streamer_id: `streamer-${suffix}`,
+      streamers: {
+        id: `streamer-${suffix}`,
+        display_name: `Streamer ${suffix}`,
+        streamer_accounts: [],
+      },
+    },
+    recording_submissions: {
+      status: "submitted",
+      external_url: null,
+      storage_path: `private/${suffix}.mp4`,
+    },
+    ...overrides,
+  };
+}
+
 function publicSnapshot(overrides: Record<string, unknown> = {}) {
   return {
     id: "share-1",
@@ -3110,8 +4496,23 @@ function publicSnapshot(overrides: Record<string, unknown> = {}) {
     expiresAt: "2026-06-14T00:00:00.000Z",
     allowVendorSubmit: true,
     allowExternalFallback: true,
+    brandSnapshot: {
+      schemaVersion: 1,
+      version: 1,
+      logoText: "星河",
+      logoStoragePath: null,
+      brandName: "星河直播",
+      brandTagline: "专业直播运营",
+      primaryColor: "#165DFF",
+      publishedAt: "2026-06-01T00:00:00.000Z",
+    },
+    brandVersion: 1,
+    contactCardId: null,
+    contactCardSnapshot: null,
     reviewState: "not_started" as const,
     roundNumber: 1,
+    createdBy: "user-ops",
+    createdAt: "2026-06-07T00:00:00.000Z",
     project: {
       id: "project-1",
       code: "P-001",
@@ -3163,6 +4564,21 @@ function publicSnapshot(overrides: Record<string, unknown> = {}) {
       total: 2,
     },
     latestSubmission: null,
+    ...overrides,
+  };
+}
+
+function publicBrandLogoAccess(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "share-1",
+    organizationId: "org-1",
+    accessCodeHash: null,
+    status: "active" as const,
+    expiresAt: "2026-06-14T00:00:00.000Z",
+    brandSnapshot: {
+      schemaVersion: 1,
+      logoStoragePath: null,
+    },
     ...overrides,
   };
 }

@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -90,9 +91,87 @@ const candidates = [
 
 const project = {
   id: "project-1",
+  code: "ALPHA-01",
   name: "Alpha Project",
   status: "active",
 };
+
+const publishedShareBrand = {
+  version: 4,
+  logoText: "星河",
+  brandName: "星河直播运营",
+  brandTagline: "专业协作，可信交付",
+  primaryColor: "#6B3F1D",
+};
+
+const activeContactCard = {
+  id: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+  displayName: "林商务",
+  title: "品牌合作负责人",
+  phone: "13800000000",
+  email: "lin@example.com",
+  wechat: "xinghe-lin",
+  status: "active",
+};
+
+const disabledContactCard = {
+  ...activeContactCard,
+  id: "8c3a9444-b47a-4b29-93d7-b31a650da43b",
+  displayName: "旧联系人",
+  status: "disabled",
+};
+
+function persistedPresentation(overrides = {}) {
+  return {
+    id: "share-1",
+    brandVersion: 4,
+    contactCardId: activeContactCard.id,
+    title: "服务端持久化复核",
+    purpose: "供品牌方确认本轮候选",
+    mode: "formal_review",
+    status: "active",
+    reviewState: "not_started",
+    roundNumber: 3,
+    expiresAt: "2099-08-01T00:00:00.000Z",
+    project: {
+      id: "project-1",
+      name: "持久化项目名称",
+      code: "PERSIST-01",
+    },
+    progress: { completed: 0, total: 2 },
+    latestSubmission: null,
+    brand: publishedShareBrand,
+    contactCard: activeContactCard,
+    items: [
+      {
+        applicationId: "app-1",
+        recordingSubmissionId: "recording-v1",
+        recordingVersion: 1,
+        sourceHealth: "original_ready",
+        streamer: {
+          id: "streamer-1",
+          displayName: "主播甲",
+          accountLabel: "dy_1",
+        },
+        finalReview: null,
+      },
+      {
+        applicationId: "app-3",
+        recordingSubmissionId: "recording-external",
+        recordingVersion: 1,
+        sourceHealth: "external_only",
+        streamer: {
+          id: "streamer-3",
+          displayName: "主播丙",
+          accountLabel: "ks_3",
+        },
+        finalReview: null,
+      },
+    ],
+    sourceDiagnostics: [],
+    ...overrides,
+  };
+}
 
 function readyResult(items) {
   return {
@@ -108,6 +187,12 @@ function readyResult(items) {
 
 function createActions() {
   return {
+    getAdmissionShareBrandPreview: vi
+      .fn()
+      .mockResolvedValue(publishedShareBrand),
+    listAdmissionShareContactCards: vi
+      .fn()
+      .mockResolvedValue([activeContactCard, disabledContactCard]),
     listAdmissionShareCandidates: vi.fn().mockResolvedValue(candidates),
     openAdmissionShareCandidatePlayback: vi.fn(),
     preflightAdmissionShareBoard: vi
@@ -115,12 +200,25 @@ function createActions() {
       .mockImplementation((_projectId, items) =>
         Promise.resolve(readyResult(items)),
       ),
-    listAdmissionShareBoards: vi.fn().mockResolvedValue([]),
+    listAdmissionShareBoards: vi.fn().mockResolvedValue({
+      shareBoards: [],
+      nextCursor: null,
+    }),
     createAdmissionShareBoard: vi.fn().mockResolvedValue({
-      shareBoard: { id: "share-1", mode: "formal_review" },
+      shareBoard: {
+        id: "share-1",
+        mode: "formal_review",
+        presentation: persistedPresentation(),
+      },
       shareUrl: "https://app.example/share/admission/plain-token",
       accessCode: "24681024",
     }),
+    getAdmissionShareBoardDetail: vi.fn().mockImplementation((_projectId, id) =>
+      Promise.resolve({
+        id,
+        presentation: persistedPresentation({ id }),
+      }),
+    ),
     extendAdmissionShareBoard: vi.fn().mockResolvedValue({ ok: true }),
     reopenAdmissionShareBoard: vi.fn().mockResolvedValue({ ok: true }),
     rotateAdmissionShareBoardToken: vi.fn().mockResolvedValue({
@@ -130,6 +228,27 @@ function createActions() {
     listAdmissionShareSubmissions: vi.fn().mockResolvedValue([]),
     listAdmissionSharePlaybackIssues: vi.fn().mockResolvedValue([]),
     resolveAdmissionSharePlaybackIssue: vi.fn().mockResolvedValue({ ok: true }),
+  };
+}
+
+function shareTask(id, title) {
+  return {
+    id,
+    title,
+    purpose: "Review",
+    mode: "preview",
+    status: "active",
+    reviewState: "not_started",
+    roundNumber: 1,
+    expiresAt: "2099-08-01T00:00:00.000Z",
+    itemCount: 5000,
+    draftCompletedCount: 0,
+    lastViewedAt: null,
+    lastDraftAt: null,
+    lastSubmittedAt: null,
+    lockedAt: null,
+    createdBy: "user-ops",
+    createdAt: "2026-07-30T00:00:00.000Z",
   };
 }
 
@@ -285,6 +404,213 @@ describe("AdmissionShareCenter", () => {
     expect(actions.listAdmissionShareCandidates).toHaveBeenCalledTimes(2);
   });
 
+  it("loads task pages explicitly, appends by id, and never requests every page automatically", async () => {
+    const firstPage = Array.from({ length: 20 }, (_, index) =>
+      shareTask(`share-${index + 1}`, `Task ${index + 1}`),
+    );
+    actions.listAdmissionShareBoards
+      .mockResolvedValueOnce({
+        shareBoards: firstPage,
+        nextCursor: "page-2/cursor",
+      })
+      .mockResolvedValueOnce({
+        shareBoards: [firstPage[19], shareTask("share-21", "Task 21")],
+        nextCursor: null,
+      });
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    expect(await screen.findByText("Task 1")).toBeInTheDocument();
+    expect(actions.listAdmissionShareBoards).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
+    expect(await screen.findByText("Task 21")).toBeInTheDocument();
+    expect(screen.getAllByText("Task 20")).toHaveLength(1);
+    expect(actions.listAdmissionShareBoards).toHaveBeenNthCalledWith(
+      2,
+      "project-1",
+      "page-2/cursor",
+    );
+    expect(
+      screen.queryByRole("button", { name: "加载更多分享任务" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps loaded tasks visible while a failed next page is retried", async () => {
+    actions.listAdmissionShareBoards
+      .mockResolvedValueOnce({
+        shareBoards: [shareTask("share-1", "First task")],
+        nextCursor: "next-page",
+      })
+      .mockRejectedValueOnce(new Error("next page unavailable"))
+      .mockResolvedValueOnce({
+        shareBoards: [shareTask("share-2", "Recovered task")],
+        nextCursor: null,
+      });
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    expect(await screen.findByText("First task")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "next page unavailable",
+    );
+    expect(screen.getByText("First task")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "重试加载更多分享任务" }),
+    );
+    expect(await screen.findByText("Recovered task")).toBeInTheDocument();
+    expect(actions.listAdmissionShareBoards).toHaveBeenCalledTimes(3);
+  });
+
+  it("clears stale load-more pending when a task action refreshes the first page", async () => {
+    let resolveStalePage;
+    const firstTask = shareTask("share-1", "First task");
+    actions.listAdmissionShareBoards
+      .mockResolvedValueOnce({
+        shareBoards: [firstTask],
+        nextCursor: "stale-cursor",
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStalePage = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        shareBoards: [firstTask],
+        nextCursor: "fresh-cursor",
+      })
+      .mockResolvedValueOnce({
+        shareBoards: [shareTask("share-2", "Fresh next page")],
+        nextCursor: null,
+      });
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
+    expect(
+      screen.getByRole("button", { name: "加载更多分享任务" }),
+    ).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("First task 延期至"), {
+      target: { value: "2099-09-01" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "延期 First task" }));
+    await waitFor(() =>
+      expect(actions.listAdmissionShareBoards).toHaveBeenCalledTimes(3),
+    );
+    expect(
+      screen.getByRole("button", { name: "加载更多分享任务" }),
+    ).toBeEnabled();
+
+    resolveStalePage({
+      shareBoards: [shareTask("share-stale", "Stale next page")],
+      nextCursor: null,
+    });
+    await Promise.resolve();
+    expect(screen.queryByText("Stale next page")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
+    expect(await screen.findByText("Fresh next page")).toBeInTheDocument();
+    expect(actions.listAdmissionShareBoards).toHaveBeenNthCalledWith(
+      4,
+      "project-1",
+      "fresh-cursor",
+    );
+  });
+
+  it("ignores stale task pages after a project switch", async () => {
+    let resolveFirstProject;
+    const firstProjectPage = new Promise((resolve) => {
+      resolveFirstProject = resolve;
+    });
+    actions.listAdmissionShareBoards.mockImplementation((projectId) =>
+      projectId === "project-1"
+        ? firstProjectPage
+        : Promise.resolve({
+            shareBoards: [shareTask("share-new", "New project task")],
+            nextCursor: null,
+          }),
+    );
+    const view = renderShareCenter(actions);
+    view.rerender(
+      <AdmissionShareCenter
+        project={{ ...project, id: "project-2", name: "Beta Project" }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    expect(await screen.findByText("New project task")).toBeInTheDocument();
+    resolveFirstProject({
+      shareBoards: [shareTask("share-old", "Stale project task")],
+      nextCursor: null,
+    });
+    await Promise.resolve();
+    expect(screen.queryByText("Stale project task")).not.toBeInTheDocument();
+  });
+
+  it("atomically clears project-bound candidates and a pending preflight on project switch", async () => {
+    let finishOldCandidates;
+    let finishOldPreflight;
+    const oldCandidates = new Promise((resolve) => {
+      finishOldCandidates = resolve;
+    });
+    const oldPreflight = new Promise((resolve) => {
+      finishOldPreflight = resolve;
+    });
+    actions.listAdmissionShareCandidates.mockImplementation((projectId) =>
+      projectId === "project-1"
+        ? oldCandidates
+        : Promise.resolve([warningCandidate]),
+    );
+    actions.preflightAdmissionShareBoard.mockReturnValueOnce(oldPreflight);
+    const view = renderShareCenter(actions);
+
+    finishOldCandidates([latestCandidate]);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    expect(
+      await screen.findByRole("dialog", { name: "创建录屏分享" }),
+    ).toBeInTheDocument();
+
+    view.rerender(
+      <AdmissionShareCenter
+        project={{
+          ...project,
+          id: "project-2",
+          name: "Beta Project",
+          code: "BETA-02",
+        }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "创建录屏分享" }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByText("主播丙")).toBeInTheDocument();
+    expect(screen.queryByText("主播甲")).not.toBeInTheDocument();
+
+    finishOldPreflight(
+      readyResult([
+        {
+          applicationId: latestCandidate.applicationId,
+          recordingSubmissionId: latestCandidate.recordingSubmissionId,
+          recordingVersion: latestCandidate.recordingVersion,
+          sortOrder: 0,
+        },
+      ]),
+    );
+    await Promise.resolve();
+    expect(
+      screen.queryByRole("dialog", { name: "创建录屏分享" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("selects an approved historical version and removes only blocked items", async () => {
     actions.preflightAdmissionShareBoard.mockResolvedValueOnce({
       summary: { ready: 1, warning: 0, blocked: 1 },
@@ -372,6 +698,692 @@ describe("AdmissionShareCenter", () => {
     expect(screen.queryByText("24681024")).not.toBeInTheDocument();
     expect(
       screen.queryByText("https://app.example/share/admission/plain-token"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("defaults to no contact, lists only active cards, and submits only the governed card id", async () => {
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+
+    const contactSelect = await screen.findByLabelText("对外联系名片");
+    expect(contactSelect).toHaveValue("");
+    expect(
+      within(contactSelect).getByText("不展示联系方式"),
+    ).toBeInTheDocument();
+    expect(within(contactSelect).getByText(/林商务/)).toBeInTheDocument();
+    expect(
+      within(contactSelect).queryByText(/旧联系人/),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(contactSelect, {
+      target: { value: activeContactCard.id },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    const preview = screen.getByRole("region", {
+      name: "将要创建的外部分享预览",
+    });
+    expect(within(preview).getByText("星河直播运营")).toBeInTheDocument();
+    expect(
+      within(preview).getByText(/项目 Alpha Project · ALPHA-01/),
+    ).toBeInTheDocument();
+    expect(within(preview).getByText("林商务")).toBeInTheDocument();
+    expect(
+      within(preview).getByText(/创建成功后以服务端快照为准/),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+    await waitFor(() =>
+      expect(actions.createAdmissionShareBoard).toHaveBeenCalledTimes(1),
+    );
+    const payload = actions.createAdmissionShareBoard.mock.calls[0][1];
+    expect(payload.contactCardId).toBe(activeContactCard.id);
+    expect(payload).not.toHaveProperty("brandSnapshot");
+    expect(payload).not.toHaveProperty("contactCardSnapshot");
+    expect(payload).not.toHaveProperty("brandVersion");
+    expect(JSON.stringify(payload)).not.toMatch(/logoStoragePath|storagePath/u);
+  });
+
+  it("requires an explicit contact-card choice for every newly created share", async () => {
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.change(await screen.findByLabelText("对外联系名片"), {
+      target: { value: activeContactCard.id },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "关闭交付信息" }),
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "录屏库" }));
+    fireEvent.click(screen.getByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    expect(await screen.findByLabelText("对外联系名片")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+
+    await waitFor(() =>
+      expect(actions.createAdmissionShareBoard).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      actions.createAdmissionShareBoard.mock.calls[0][1].contactCardId,
+    ).toBe(activeContactCard.id);
+    expect(
+      actions.createAdmissionShareBoard.mock.calls[1][1].contactCardId,
+    ).toBeNull();
+  });
+
+  it("keeps the no-contact path usable while cards fail and supports a safe retry", async () => {
+    actions.listAdmissionShareContactCards
+      .mockRejectedValueOnce(new Error("名片服务暂不可用"))
+      .mockResolvedValueOnce([activeContactCard]);
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+
+    expect(
+      await screen.findByRole("alert", { name: "联系名片加载失败" }),
+    ).toHaveTextContent("不影响选择不展示");
+    expect(screen.getByLabelText("对外联系名片")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "重试加载联系名片" }));
+    expect(
+      await screen.findByRole("option", { name: /林商务/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+    await waitFor(() =>
+      expect(actions.createAdmissionShareBoard).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      actions.createAdmissionShareBoard.mock.calls[0][1].contactCardId,
+    ).toBeNull();
+  });
+
+  it("replaces the unsaved preview with the POST persisted presentation in delivery", async () => {
+    let finishCreate;
+    actions.createAdmissionShareBoard.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishCreate = resolve;
+        }),
+    );
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.change(await screen.findByLabelText("分享名称"), {
+      target: { value: "浏览器临时标题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    expect(screen.getByText("浏览器临时标题")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+
+    finishCreate({
+      shareBoard: {
+        id: "share-1",
+        presentation: persistedPresentation(),
+      },
+      shareUrl: "https://app.example/share/admission/plain-token",
+      accessCode: "24681024",
+    });
+
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    const savedPreview = within(delivery).getByRole("region", {
+      name: "已保存的外部分享预览",
+    });
+    expect(
+      within(savedPreview).getByText("服务端持久化复核"),
+    ).toBeInTheDocument();
+    expect(
+      within(savedPreview).getByText(/持久化项目名称/),
+    ).toBeInTheDocument();
+    expect(within(savedPreview).getByText(/PERSIST-01/)).toBeInTheDocument();
+    expect(
+      within(savedPreview).queryByText("浏览器临时标题"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("locks every internal close path while create is pending and preserves one-time delivery", async () => {
+    let finishCreate;
+    const onClose = vi.fn();
+    actions.createAdmissionShareBoard.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishCreate = resolve;
+        }),
+    );
+    renderShareCenter(actions, onClose);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+
+    const wizard = screen.getByRole("dialog", { name: "创建录屏分享" });
+    expect(wizard).toHaveAttribute("aria-busy", "true");
+    expect(
+      within(wizard).getByRole("button", { name: "关闭创建向导" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", {
+        name: "关闭录屏分享中心",
+        hidden: true,
+      }),
+    ).toBeDisabled();
+    fireEvent.keyDown(wizard, { key: "Escape" });
+    fireEvent.click(wizard);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("dialog", { name: "创建录屏分享" }),
+    ).toBeInTheDocument();
+
+    finishCreate({
+      shareBoard: { id: "share-1", presentation: persistedPresentation() },
+      shareUrl: "https://app.example/share/admission/plain-token",
+      accessCode: "24681024",
+    });
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    expect(delivery).toHaveTextContent("24681024");
+    expect(delivery).toHaveTextContent("来源项目：Alpha Project");
+  });
+
+  it("keeps the wizard recoverable and hides raw infrastructure errors after create fails", async () => {
+    let failCreate;
+    const failure = new Error(
+      "postgres storagePath organizations/private/recording.mp4",
+    );
+    failure.status = 503;
+    actions.createAdmissionShareBoard.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          failCreate = () => reject(failure);
+        }),
+    );
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+    expect(screen.getByRole("button", { name: "关闭创建向导" })).toBeDisabled();
+
+    failCreate();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("分享任务创建失败，请稍后重试");
+    expect(alert).not.toHaveTextContent("postgres");
+    expect(alert).not.toHaveTextContent("organizations/private");
+    expect(screen.getByRole("button", { name: "关闭创建向导" })).toBeEnabled();
+  });
+
+  it("delivers a pending create from its source project without refreshing the next project", async () => {
+    let finishCreate;
+    actions.createAdmissionShareBoard.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishCreate = resolve;
+        }),
+    );
+    actions.listAdmissionShareBoards.mockImplementation((projectId) =>
+      Promise.resolve({
+        shareBoards:
+          projectId === "project-2"
+            ? [shareTask("share-beta", "Beta project task")]
+            : [],
+        nextCursor: null,
+      }),
+    );
+    const view = renderShareCenter(actions);
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    fireEvent.click(await screen.findByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认生成" }));
+
+    view.rerender(
+      <AdmissionShareCenter
+        project={{
+          ...project,
+          id: "project-2",
+          name: "Beta Project",
+          code: "BETA-02",
+        }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+    finishCreate({
+      shareBoard: { id: "share-1", presentation: persistedPresentation() },
+      shareUrl: "https://app.example/share/admission/plain-token",
+      accessCode: "24681024",
+    });
+
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    expect(delivery).toHaveTextContent("来源项目：Alpha Project");
+    expect(delivery).toHaveTextContent("24681024");
+    expect(
+      actions.listAdmissionShareBoards.mock.calls.filter(
+        ([projectId]) => projectId === "project-1",
+      ),
+    ).toHaveLength(1);
+    fireEvent.click(
+      within(delivery).getByRole("button", { name: "关闭交付信息" }),
+    );
+    expect(await screen.findByText("Beta project task")).toBeInTheDocument();
+  });
+
+  it("loads an existing persisted preview on demand and keeps a disabled card snapshot visible", async () => {
+    const detail = persistedPresentation({
+      id: "00000000-0000-4000-8000-000000000001",
+      contactCardId: disabledContactCard.id,
+      contactCard: {
+        displayName: "旧联系人",
+        title: "原品牌对接人",
+        phone: "13900000000",
+      },
+      logoStoragePath: "organizations/private/logo.webp",
+      tokenHash: "must-never-render",
+      items: [
+        {
+          ...persistedPresentation().items[0],
+          storagePath: "organizations/private/recording.mp4",
+        },
+      ],
+    });
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [
+        shareTask("00000000-0000-4000-8000-000000000001", "历史品牌复核"),
+      ],
+      nextCursor: null,
+    });
+    actions.getAdmissionShareBoardDetail.mockResolvedValue({
+      id: detail.id,
+      presentation: detail,
+      accessCodeHash: "must-never-render-either",
+    });
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "查看 历史品牌复核 分享预览" }),
+    );
+
+    expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledWith(
+      "project-1",
+      "00000000-0000-4000-8000-000000000001",
+    );
+    const preview = await screen.findByRole("region", {
+      name: "历史品牌复核 已保存分享预览",
+    });
+    expect(within(preview).getByText("旧联系人")).toBeInTheDocument();
+    expect(within(preview).getByText(/原品牌对接人/)).toBeInTheDocument();
+    expect(preview).toHaveTextContent("主播甲");
+    expect(preview).not.toHaveTextContent("must-never-render");
+    expect(preview).not.toHaveTextContent("organizations/private");
+    expect(preview.querySelectorAll("li")).toHaveLength(1);
+  });
+
+  it("deduplicates pending detail clicks, retries errors, and ignores a stale project response", async () => {
+    let finishOldDetail;
+    const oldDetail = new Promise((resolve) => {
+      finishOldDetail = resolve;
+    });
+    actions.listAdmissionShareBoards.mockImplementation((projectId) =>
+      Promise.resolve({
+        shareBoards: [
+          shareTask(
+            projectId === "project-1"
+              ? "00000000-0000-4000-8000-000000000001"
+              : "00000000-0000-4000-8000-000000000002",
+            projectId === "project-1" ? "旧项目任务" : "新项目任务",
+          ),
+        ],
+        nextCursor: null,
+      }),
+    );
+    actions.getAdmissionShareBoardDetail.mockReturnValueOnce(oldDetail);
+    const view = renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    const oldButton = await screen.findByRole("button", {
+      name: "查看 旧项目任务 分享预览",
+    });
+    fireEvent.click(oldButton);
+    fireEvent.click(oldButton);
+    expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <AdmissionShareCenter
+        project={{
+          ...project,
+          id: "project-2",
+          name: "Beta Project",
+          code: "BETA-02",
+        }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("新项目任务")).toBeInTheDocument();
+    finishOldDetail({
+      id: "00000000-0000-4000-8000-000000000001",
+      presentation: persistedPresentation({ title: "不应出现的旧详情" }),
+    });
+    await Promise.resolve();
+    expect(screen.queryByText("不应出现的旧详情")).not.toBeInTheDocument();
+  });
+
+  it("retries a failed persisted preview without falling back to current organization state", async () => {
+    const task = shareTask(
+      "00000000-0000-4000-8000-000000000001",
+      "可重试历史任务",
+    );
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.getAdmissionShareBoardDetail
+      .mockRejectedValueOnce(new Error("详情服务暂不可用"))
+      .mockResolvedValueOnce({
+        id: task.id,
+        presentation: persistedPresentation({
+          id: task.id,
+          brand: { ...publishedShareBrand, brandName: "历史快照品牌" },
+        }),
+      });
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "查看 可重试历史任务 分享预览",
+      }),
+    );
+    expect(
+      await screen.findByRole("alert", {
+        name: "可重试历史任务 分享预览加载失败",
+      }),
+    ).toHaveTextContent("详情服务暂不可用");
+    expect(screen.queryByText("星河直播运营")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "重试 可重试历史任务 分享预览",
+      }),
+    );
+    expect(await screen.findByText("历史快照品牌")).toBeInTheDocument();
+    expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("hides raw server detail errors behind a safe preview message", async () => {
+    const task = shareTask("share-safe-error", "安全错误任务");
+    const failure = new Error(
+      "postgres tokenHash organizations/private/recording.mp4",
+    );
+    failure.status = 503;
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.getAdmissionShareBoardDetail.mockRejectedValue(failure);
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "查看 安全错误任务 分享预览",
+      }),
+    );
+
+    const alert = await screen.findByRole("alert", {
+      name: "安全错误任务 分享预览加载失败",
+    });
+    expect(alert).toHaveTextContent("分享预览暂时无法加载，请稍后重试");
+    expect(alert).not.toHaveTextContent("postgres");
+    expect(alert).not.toHaveTextContent("organizations/private");
+  });
+
+  it("invalidates a pending preview during mutation and refetches persisted detail on success", async () => {
+    const task = shareTask("share-mutating", "待更新预览");
+    let finishOldDetail;
+    let finishExtend;
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.getAdmissionShareBoardDetail
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOldDetail = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        id: task.id,
+        presentation: persistedPresentation({
+          id: task.id,
+          title: "更新后的持久化预览",
+        }),
+      });
+    actions.extendAdmissionShareBoard.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishExtend = resolve;
+        }),
+    );
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "查看 待更新预览 分享预览" }),
+    );
+    fireEvent.change(screen.getByLabelText("待更新预览 延期至"), {
+      target: { value: "2099-08-20" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "延期 待更新预览" }));
+
+    finishOldDetail({
+      id: task.id,
+      presentation: persistedPresentation({ id: task.id, title: "过期的预览" }),
+    });
+    await Promise.resolve();
+    expect(screen.queryByText("过期的预览")).not.toBeInTheDocument();
+    finishExtend({ ok: true });
+    expect(await screen.findByText("更新后的持久化预览")).toBeInTheDocument();
+    expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears a ready preview during token rotation and labels reset delivery explicitly", async () => {
+    const task = shareTask("share-rotating", "链接轮换任务");
+    let finishRotate;
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.getAdmissionShareBoardDetail
+      .mockResolvedValueOnce({
+        id: task.id,
+        presentation: persistedPresentation({ id: task.id, title: "旧预览" }),
+      })
+      .mockResolvedValueOnce({
+        id: task.id,
+        presentation: persistedPresentation({
+          id: task.id,
+          title: "轮换后预览",
+        }),
+      });
+    actions.rotateAdmissionShareBoardToken.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishRotate = resolve;
+        }),
+    );
+    renderShareCenter(actions);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "查看 链接轮换任务 分享预览" }),
+    );
+    expect(await screen.findByText("旧预览")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重置分享链接" }));
+    expect(screen.queryByText("旧预览")).not.toBeInTheDocument();
+
+    finishRotate({
+      shareUrl: "https://app.example/share/admission/rotated-token",
+      accessCode: "86420000",
+    });
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    expect(delivery).toHaveTextContent("来源项目：Alpha Project");
+    expect(delivery).not.toHaveTextContent("创建接口未返回已保存预览");
+    fireEvent.click(
+      within(delivery).getByRole("button", { name: "关闭交付信息" }),
+    );
+    expect(await screen.findByText("轮换后预览")).toBeInTheDocument();
+    expect(actions.getAdmissionShareBoardDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("locks every center close path until a pending token rotation is delivered", async () => {
+    const task = shareTask("share-rotate-lock", "一次性轮换任务");
+    const onClose = vi.fn();
+    let finishRotate;
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.rotateAdmissionShareBoardToken.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishRotate = resolve;
+        }),
+    );
+    renderShareCenter(actions, onClose);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    const rotateButton = await screen.findByRole("button", {
+      name: "重置分享链接",
+    });
+    act(() => {
+      rotateButton.click();
+      rotateButton.click();
+    });
+
+    const center = screen.getByRole("dialog", {
+      name: "Alpha Project 录屏分享中心",
+    });
+    expect(center).toHaveAttribute("aria-busy", "true");
+    expect(
+      screen.getByText("正在重置分享链接，请等待一次性交付信息返回…"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "关闭录屏分享中心" }),
+    ).toBeDisabled();
+    fireEvent.keyDown(center, { key: "Escape" });
+    fireEvent.click(center);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(actions.rotateAdmissionShareBoardToken).toHaveBeenCalledTimes(1);
+
+    finishRotate({
+      shareUrl: "https://app.example/share/admission/new-one-time-token",
+      accessCode: "13572468",
+    });
+    const delivery = await screen.findByRole("dialog", {
+      name: "一次性交付信息",
+    });
+    expect(delivery).toHaveTextContent(
+      "https://app.example/share/admission/new-one-time-token",
+    );
+    expect(delivery).toHaveTextContent("13572468");
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      within(delivery).getByRole("button", { name: "关闭交付信息" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "关闭录屏分享中心" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("unlocks token rotation after a safe failure and allows retry or close", async () => {
+    const task = shareTask("share-rotate-failure", "轮换失败任务");
+    const onClose = vi.fn();
+    let failRotate;
+    const failure = new Error(
+      "postgres tokenHash organizations/private/rotate-token",
+    );
+    failure.status = 503;
+    actions.listAdmissionShareBoards.mockResolvedValue({
+      shareBoards: [task],
+      nextCursor: null,
+    });
+    actions.rotateAdmissionShareBoardToken.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          failRotate = () => reject(failure);
+        }),
+    );
+    renderShareCenter(actions, onClose);
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "重置分享链接" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "关闭录屏分享中心" }),
+    ).toBeDisabled();
+
+    failRotate();
+    expect(
+      await screen.findByText("分享任务操作失败，请稍后重试"),
+    ).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("postgres");
+    expect(document.body).not.toHaveTextContent("organizations/private");
+    expect(
+      screen.getByRole("dialog", {
+        name: "Alpha Project 录屏分享中心",
+      }),
+    ).not.toHaveAttribute("aria-busy");
+    expect(screen.getByRole("button", { name: "重置分享链接" })).toBeEnabled();
+    const closeButton = screen.getByRole("button", {
+      name: "关闭录屏分享中心",
+    });
+    expect(closeButton).toBeEnabled();
+    fireEvent.click(closeButton);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores stale contact-card loads after a project switch", async () => {
+    let finishOldCards;
+    const oldCards = new Promise((resolve) => {
+      finishOldCards = resolve;
+    });
+    const newCard = {
+      ...activeContactCard,
+      id: "7b2a8333-a36a-4a18-82c6-a20a540ca32a",
+      displayName: "新项目联系人",
+    };
+    actions.listAdmissionShareContactCards
+      .mockReturnValueOnce(oldCards)
+      .mockResolvedValueOnce([newCard]);
+    const view = renderShareCenter(actions);
+    view.rerender(
+      <AdmissionShareCenter
+        project={{
+          ...project,
+          id: "project-2",
+          name: "Beta Project",
+          code: "BETA-02",
+        }}
+        actions={actions}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+    fireEvent.click(screen.getByRole("button", { name: "创建分享" }));
+    expect(
+      await screen.findByRole("option", { name: /新项目联系人/ }),
+    ).toBeInTheDocument();
+    finishOldCards([activeContactCard]);
+    await Promise.resolve();
+    expect(
+      screen.queryByRole("option", { name: /林商务/ }),
     ).not.toBeInTheDocument();
   });
 
@@ -672,7 +1684,77 @@ describe("AdmissionShareCenter", () => {
     expect(await screen.findByLabelText("自定义访问码")).toHaveValue("");
   });
 
+  for (const scenario of [
+    { outcome: "resolve", closeWith: "Escape" },
+    { outcome: "reject", closeWith: "button" },
+  ]) {
+    it(`releases a cancelled pending preflight via ${scenario.closeWith} when the stale request ${scenario.outcome}s`, async () => {
+      let resolvePreflight;
+      let rejectPreflight;
+      actions.preflightAdmissionShareBoard.mockReturnValueOnce(
+        new Promise((resolve, reject) => {
+          resolvePreflight = resolve;
+          rejectPreflight = reject;
+        }),
+      );
+      renderShareCenter(actions);
+
+      fireEvent.click(await screen.findByLabelText("选择 主播甲 V2"));
+      const createButton = screen.getByRole("button", { name: "创建分享" });
+      createButton.focus();
+      fireEvent.click(createButton);
+
+      const wizard = await screen.findByRole("dialog", {
+        name: "创建录屏分享",
+      });
+      expect(createButton).toBeDisabled();
+      if (scenario.closeWith === "Escape") {
+        fireEvent.keyDown(wizard, { key: "Escape" });
+      } else {
+        fireEvent.click(
+          within(wizard).getByRole("button", { name: "关闭创建向导" }),
+        );
+      }
+
+      expect(screen.queryByRole("dialog", { name: "创建录屏分享" })).toBeNull();
+      await waitFor(() => expect(createButton).toBeEnabled());
+      expect(createButton).toHaveFocus();
+
+      const libraryTab = screen.getByRole("tab", { name: "录屏库" });
+      libraryTab.focus();
+      await act(async () => {
+        if (scenario.outcome === "resolve") {
+          resolvePreflight(
+            readyResult([
+              {
+                applicationId: latestCandidate.applicationId,
+                recordingSubmissionId: latestCandidate.recordingSubmissionId,
+                recordingVersion: latestCandidate.recordingVersion,
+                sortOrder: 0,
+              },
+            ]),
+          );
+        } else {
+          rejectPreflight(new Error("stale preflight failure"));
+        }
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByRole("dialog", { name: "创建录屏分享" })).toBeNull();
+      expect(screen.queryByText("stale preflight failure")).toBeNull();
+      expect(createButton).toBeEnabled();
+      expect(libraryTab).toHaveFocus();
+    });
+  }
+
   it("traps focus in nested dialogs, supports Escape, and restores the opener", async () => {
+    let finishPreflight;
+    actions.preflightAdmissionShareBoard.mockImplementationOnce(() => {
+      document.activeElement?.blur?.();
+      return new Promise((resolve) => {
+        finishPreflight = resolve;
+      });
+    });
     const opener = document.createElement("button");
     opener.textContent = "外部入口";
     document.body.appendChild(opener);
@@ -690,6 +1772,20 @@ describe("AdmissionShareCenter", () => {
     fireEvent.click(createButton);
 
     const wizard = await screen.findByRole("dialog", { name: "创建录屏分享" });
+    expect(createButton).toBeDisabled();
+    finishPreflight(
+      readyResult([
+        {
+          applicationId: latestCandidate.applicationId,
+          recordingSubmissionId: latestCandidate.recordingSubmissionId,
+          recordingVersion: latestCandidate.recordingVersion,
+          sortOrder: 0,
+        },
+      ]),
+    );
+    expect(
+      await within(wizard).findByRole("button", { name: "下一步" }),
+    ).toBeEnabled();
     expect(center).toHaveAttribute("inert");
     const closeWizard = within(wizard).getByRole("button", {
       name: "关闭创建向导",
@@ -701,7 +1797,7 @@ describe("AdmissionShareCenter", () => {
     ).toHaveFocus();
     fireEvent.keyDown(wizard, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "创建录屏分享" })).toBeNull();
-    expect(createButton).toHaveFocus();
+    await waitFor(() => expect(createButton).toHaveFocus());
 
     fireEvent.keyDown(center, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -918,6 +2014,94 @@ describe("AdmissionShareCenter", () => {
       within(resultPending).getByText("录屏 V2 · 通过"),
     ).toBeInTheDocument();
     expect(within(resultPending).getByText("节奏稳定")).toBeInTheDocument();
+  });
+
+  it("loads later result pages even when the first page has no pending result", async () => {
+    actions.listAdmissionShareBoards
+      .mockResolvedValueOnce({
+        shareBoards: [shareTask("share-open", "仍在复核")],
+        nextCursor: "result-page-2",
+      })
+      .mockResolvedValueOnce({
+        shareBoards: [
+          {
+            ...shareTask("share-submitted", "后页复核结果"),
+            reviewState: "submitted_locked",
+          },
+        ],
+        nextCursor: null,
+      });
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+    expect(screen.queryByText("后页复核结果")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "加载更多复核结果待办" }),
+    );
+
+    expect(await screen.findByText("后页复核结果")).toBeInTheDocument();
+    expect(actions.listAdmissionShareBoards).toHaveBeenNthCalledWith(
+      2,
+      "project-1",
+      "result-page-2",
+    );
+  });
+
+  it("retries the first result task page after an initial failure", async () => {
+    actions.listAdmissionShareBoards
+      .mockRejectedValueOnce(new Error("result list unavailable"))
+      .mockResolvedValueOnce({
+        shareBoards: [
+          {
+            ...shareTask("share-recovered", "恢复的复核结果"),
+            reviewState: "submitted_locked",
+          },
+        ],
+        nextCursor: null,
+      });
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+    expect(
+      await screen.findByRole("alert", { name: "复核结果待办加载失败" }),
+    ).toHaveTextContent("result list unavailable");
+    fireEvent.click(
+      screen.getByRole("button", { name: "重试加载复核结果待办" }),
+    );
+
+    expect(await screen.findByText("恢复的复核结果")).toBeInTheDocument();
+    expect(actions.listAdmissionShareBoards).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps loaded result work visible when loading the next page fails", async () => {
+    actions.listAdmissionShareBoards
+      .mockResolvedValueOnce({
+        shareBoards: [
+          {
+            ...shareTask("share-existing", "已加载复核结果"),
+            reviewState: "submitted_locked",
+          },
+        ],
+        nextCursor: "result-next-page",
+      })
+      .mockRejectedValueOnce(new Error("result next page unavailable"));
+    renderShareCenter(actions);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "结果待办" }));
+    expect(await screen.findByText("已加载复核结果")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "加载更多复核结果待办" }),
+    );
+
+    expect(
+      await screen.findByRole("alert", {
+        name: "复核结果待办加载更多失败",
+      }),
+    ).toHaveTextContent("result next page unavailable");
+    expect(screen.getByText("已加载复核结果")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "重试加载更多复核结果待办" }),
+    ).toBeEnabled();
   });
 
   it("shows a scoped retry when playback issue loading fails", async () => {

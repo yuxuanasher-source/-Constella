@@ -10,6 +10,7 @@ import {
   listOpsSettlementPool,
 } from "@/features/settlements/settlement-queries";
 import { getAuthContext } from "@/lib/auth/context";
+import { getPrivateStorageBucket } from "@/lib/config/env";
 import { createSupabaseServerClient } from "@/lib/db/supabase-server";
 
 import StubPage from "./page";
@@ -60,6 +61,10 @@ vi.mock("@/lib/auth/context", () => ({
   getAuthContext: vi.fn(),
 }));
 
+vi.mock("@/lib/config/env", () => ({
+  getPrivateStorageBucket: vi.fn(() => "jy-private"),
+}));
+
 vi.mock("@/lib/db/supabase-server", () => ({
   createSupabaseServerClient: vi.fn(),
 }));
@@ -70,7 +75,14 @@ describe("console module stubs route", () => {
   });
 
   it("passes the authenticated staff identity into the ops UI", async () => {
-    const supabase = {};
+    const logoStoragePath =
+      "11111111-1111-4111-8111-111111111111/brand-logos/33333333-3333-4333-8333-333333333333.webp";
+    const createSignedUrl = vi.fn().mockResolvedValue({
+      data: { signedUrl: "https://signed.example/stub-logo.webp" },
+      error: null,
+    });
+    const from = vi.fn(() => ({ createSignedUrl }));
+    const supabase = { storage: { from } };
     vi.mocked(createSupabaseServerClient).mockResolvedValue(supabase as never);
     vi.mocked(getAuthContext).mockResolvedValue({
       userId: "user-finance",
@@ -78,6 +90,24 @@ describe("console module stubs route", () => {
       name: "Finance User",
       organizationId: "org-1",
       organizationName: "Demo Org",
+      organizationBranding: {
+        schemaVersion: 1,
+        version: 3,
+        logoText: "DO",
+        logoStoragePath,
+        brandName: "Demo Org",
+        brandTagline: "Trusted",
+        primaryColor: "#123456",
+        actionColor: "#123456",
+        softColor: "#E3E7EB",
+        publishedAt: "2026-08-01T00:00:00.000Z",
+        semantic: {
+          success: "#00B42A",
+          warning: "#FF7D00",
+          danger: "#F53F3F",
+          info: "#165DFF",
+        },
+      },
       role: "finance",
     });
 
@@ -97,10 +127,19 @@ describe("console module stubs route", () => {
         }),
         organizationSettings: expect.objectContaining({
           name: "Demo Org",
+          logoStoragePath: null,
+          logoUrl: "https://signed.example/stub-logo.webp",
+          brand: expect.objectContaining({ logoStoragePath: null }),
         }),
       }),
       undefined,
     );
+    expect(getPrivateStorageBucket).toHaveBeenCalledOnce();
+    expect(from).toHaveBeenCalledWith("jy-private");
+    expect(createSignedUrl).toHaveBeenCalledWith(logoStoragePath, 120);
+    expect(
+      JSON.stringify(vi.mocked(OpsReferenceApp).mock.calls[0][0]),
+    ).not.toContain(logoStoragePath);
   });
 
   it("redirects unauthenticated visitors to login", async () => {

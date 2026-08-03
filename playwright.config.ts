@@ -2,6 +2,21 @@ import { defineConfig, devices } from "@playwright/test";
 
 const PORT = Number(process.env.OPS_VISUAL_PORT ?? 3107);
 const baseURL = `http://127.0.0.1:${PORT}`;
+const task11Spec = /organization-brand-share\.spec\.ts$/;
+const task11ProjectRequested = process.argv.some(
+  (argument, index, argumentsList) =>
+    argument === "--project=chromium" ||
+    (argument === "--project" && argumentsList[index + 1] === "chromium"),
+);
+const task11Requested =
+  process.env.TASK11_VISUAL === "1" ||
+  task11ProjectRequested ||
+  process.argv.some((argument) =>
+    argument.includes("organization-brand-share.spec"),
+  );
+if (task11Requested) {
+  process.env.TASK11_VISUAL = "1";
+}
 const webServerEnv = {
   NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL ?? baseURL,
   NEXT_PUBLIC_SUPABASE_ANON_KEY:
@@ -23,23 +38,60 @@ export default defineConfig({
   testDir: "./tests/visual",
   outputDir: "./.qa-screenshots/playwright",
   fullyParallel: false,
+  workers: task11Requested ? 1 : undefined,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
+  reporter: [
+    ["list"],
+    [
+      "html",
+      {
+        open: "never",
+        outputFolder: "./.qa-screenshots/playwright-html-report",
+      },
+    ],
+  ],
   use: {
     baseURL,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
-  webServer: {
-    command: `pnpm dev --hostname 127.0.0.1 --port ${PORT}`,
-    url: baseURL,
-    env: webServerEnv,
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
+  webServer: task11Requested
+    ? {
+        command:
+          "pnpm exec tsx tests/visual/organization-brand-share.spec.ts --serve-task11",
+        url: baseURL,
+        env: {
+          ...process.env,
+          TASK11_APP_PORT: String(PORT),
+        },
+        reuseExistingServer: false,
+        timeout: 180_000,
+      }
+    : {
+        command: `pnpm dev --hostname 127.0.0.1 --port ${PORT}`,
+        url: baseURL,
+        env: webServerEnv,
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+      },
   projects: [
+    ...(task11Requested
+      ? [
+          {
+            name: "chromium",
+            testMatch: task11Spec,
+            use: {
+              ...devices["Desktop Chrome"],
+              ...browserChannel,
+              viewport: { width: 1440, height: 900 },
+            },
+          },
+        ]
+      : []),
     {
       name: "chromium-1920",
+      testIgnore: task11Spec,
       use: {
         ...devices["Desktop Chrome"],
         ...browserChannel,
@@ -48,6 +100,7 @@ export default defineConfig({
     },
     {
       name: "chromium-1440",
+      testIgnore: task11Spec,
       use: {
         ...devices["Desktop Chrome"],
         ...browserChannel,
@@ -56,6 +109,7 @@ export default defineConfig({
     },
     {
       name: "chromium-1280",
+      testIgnore: task11Spec,
       use: {
         ...devices["Desktop Chrome"],
         ...browserChannel,
@@ -64,6 +118,7 @@ export default defineConfig({
     },
     {
       name: "chromium-1024",
+      testIgnore: task11Spec,
       use: {
         ...devices["Desktop Chrome"],
         ...browserChannel,
@@ -72,6 +127,7 @@ export default defineConfig({
     },
     {
       name: "chromium-tablet",
+      testIgnore: task11Spec,
       use: {
         ...devices["Desktop Chrome"],
         ...browserChannel,
@@ -80,6 +136,7 @@ export default defineConfig({
     },
     {
       name: "chromium-mobile",
+      testIgnore: task11Spec,
       use: {
         ...devices["Pixel 5"],
         ...browserChannel,

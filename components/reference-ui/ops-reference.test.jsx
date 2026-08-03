@@ -11,7 +11,161 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import OpsReferenceApp, { buildOcrManualConfirmation } from "./ops-reference";
+import OpsReferenceApp, {
+  buildOcrManualConfirmation,
+  normalizeAdmissionSharePresentation,
+} from "./ops-reference";
+
+describe("normalizeAdmissionSharePresentation", () => {
+  it("recursively whitelists bounded presentation fields and rejects unknown schemas", () => {
+    const normalized = normalizeAdmissionSharePresentation({
+      schemaVersion: 1,
+      id: "share-1",
+      brandVersion: 3,
+      contactCardId: null,
+      title: ["organizations/private/title"],
+      purpose: "A".repeat(900),
+      mode: "not-a-mode",
+      status: "not-a-status",
+      reviewState: "not-a-review-state",
+      roundNumber: -4,
+      expiresAt: { raw: "must-not-survive" },
+      tokenHash: "top-secret-token",
+      accessCodeHash: "top-secret-code",
+      logoStoragePath: "organizations/private/logo.webp",
+      sourceDiagnostics: [{ storagePath: "organizations/private/debug" }],
+      project: {
+        id: "project-1",
+        name: "Fixture Project",
+        code: "FP-001",
+        privateMetadata: "secret-project-data",
+      },
+      progress: { completed: -1, total: 3, diagnostics: "secret-progress" },
+      latestSubmission: {
+        revision: 2,
+        submittedAt: "2026-08-01T00:00:00.000Z",
+        summary: {
+          selected: 1,
+          backup: 0,
+          rejected: 0,
+          needsChanges: 0,
+          storagePath: "organizations/private/submission",
+        },
+        tokenHash: "secret-submission-token",
+      },
+      brand: {
+        logoText: "北辰",
+        brandName: "北辰直播运营",
+        brandTagline: "专业协作，可信交付",
+        primaryColor: "not-a-color",
+        logoStoragePath: "organizations/private/brand.webp",
+      },
+      contactCard: {
+        displayName: "林商务",
+        title: "品牌合作负责人",
+        phone: "13800000000",
+        email: "lin@example.com",
+        wechat: "beichen-lin",
+        internalNote: "secret-note",
+      },
+      items: [
+        null,
+        {
+          applicationId: "app-1",
+          recordingSubmissionId: "recording-1",
+          recordingVersion: 3,
+          sourceHealth: "original_ready",
+          storagePath: "organizations/private/recording.mp4",
+          streamer: {
+            id: "streamer-1",
+            displayName: "主播甲",
+            accountLabel: "dy-1",
+            tokenHash: "secret-streamer-token",
+            privateMetadata: { path: "organizations/private/profile" },
+          },
+          finalReview: {
+            decision: "selected",
+            remark: "通过",
+            reasonCodes: ["quality_ok", 7],
+            submittedAt: "2026-08-01T00:00:00.000Z",
+            diagnostics: "secret-review",
+          },
+        },
+        "malformed-item",
+      ],
+    });
+
+    expect(normalized).toMatchObject({
+      schemaVersion: 1,
+      id: "share-1",
+      title: "",
+      mode: "preview",
+      status: "active",
+      reviewState: "not_started",
+      roundNumber: 1,
+      expiresAt: "",
+      project: { id: "project-1", name: "Fixture Project", code: "FP-001" },
+      progress: { completed: 0, total: 3 },
+      brand: {
+        logoText: "北辰",
+        brandName: "北辰直播运营",
+        brandTagline: "专业协作，可信交付",
+      },
+    });
+    expect(normalized.purpose).toHaveLength(500);
+    expect(normalized.brand.primaryColor).toBe("#165DFF");
+    expect(normalized.items).toEqual([
+      {
+        applicationId: "app-1",
+        recordingSubmissionId: "recording-1",
+        recordingVersion: 3,
+        sourceHealth: "original_ready",
+        streamer: {
+          id: "streamer-1",
+          displayName: "主播甲",
+          accountLabel: "dy-1",
+        },
+        finalReview: {
+          decision: "selected",
+          remark: "通过",
+          reasonCodes: ["quality_ok"],
+          submittedAt: "2026-08-01T00:00:00.000Z",
+        },
+      },
+    ]);
+    expect(JSON.stringify(normalized)).not.toMatch(
+      /tokenHash|accessCodeHash|storagePath|privateMetadata|sourceDiagnostics|internalNote|diagnostics|organizations\/private/,
+    );
+    expect(
+      normalizeAdmissionSharePresentation({
+        schemaVersion: 999,
+        title: "future payload",
+        items: [],
+      }),
+    ).toBeNull();
+    expect(normalizeAdmissionSharePresentation(null)).toBeNull();
+  });
+});
+
+const publishedOrganizationBrand = {
+  schemaVersion: 1,
+  version: 3,
+  logoText: "北辰",
+  logoStoragePath:
+    "11111111-1111-4111-8111-111111111111/brand-logos/33333333-3333-4333-8333-333333333333.webp",
+  brandName: "北辰直播运营",
+  brandTagline: "专业协作，可信交付",
+  primaryColor: "#7A3E00",
+  actionColor: "#663400",
+  softColor: "#F0E7DE",
+  publishedAt: "2026-08-01T00:00:00.000Z",
+  semantic: {
+    success: "#00B42A",
+    warning: "#FF7D00",
+    danger: "#F53F3F",
+    info: "#165DFF",
+  },
+};
 
 const taskProjectCards = [
   {
@@ -271,20 +425,26 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     renderShell();
     fireEvent.click(screen.getByLabelText("打开主导航"));
 
+    const brandSettingsButton = screen.getByRole("button", {
+      name: /未配置组织.*组织设置/,
+    });
     const closeButton = screen.getByLabelText("关闭主导航");
     const accountSummary = screen.getByRole("button", { name: /账号菜单/ });
 
     expect(closeButton).toHaveFocus();
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
-    expect(accountSummary).toHaveFocus();
+    expect(brandSettingsButton).toHaveFocus();
 
     fireEvent.keyDown(document, { key: "Tab" });
     expect(closeButton).toHaveFocus();
 
+    accountSummary.focus();
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(brandSettingsButton).toHaveFocus();
+
     fireEvent.click(accountSummary);
     const logout = screen.getByRole("menuitem", { name: "退出登录" });
-    expect(closeButton).toHaveFocus();
-
+    brandSettingsButton.focus();
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
     expect(logout).toHaveFocus();
   });
@@ -391,6 +551,33 @@ describe("OpsReferenceApp responsive navigation shell", () => {
     expect(dialog).toContainElement(container.ownerDocument.activeElement);
   });
 
+  it("keeps profile modal branding and focus inside the portal boundary", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="export"
+        organizationSettings={{
+          name: "北辰机构",
+          brand: publishedOrganizationBrand,
+          logoUrl: "https://signed.example/brand.webp",
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "个人资料" }));
+
+    const dialog = screen.getByRole("dialog", { name: "个人资料" });
+    const portal = dialog.closest(".organization-brand-theme-portal");
+    expect(portal).toHaveClass("organization-brand-theme");
+    expect(portal).toHaveStyle({
+      "--org-brand-action": "#663400",
+      "--org-brand-soft": "#F0E7DE",
+    });
+    expect(
+      within(dialog).getByRole("button", { name: "保存头像" }),
+    ).toHaveAttribute("data-button-kind", "primary");
+    expect(within(dialog).getByRole("button", { name: "关闭" })).toHaveFocus();
+  });
+
   it("deactivates the mobile drawer before opening organization settings", () => {
     stubMobileViewport();
     const { container } = renderShell();
@@ -454,7 +641,11 @@ describe("OpsReferenceApp responsive navigation shell", () => {
 
       const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
       const layer = dialog.closest(".ops-drawer-layer");
-      expect(layer?.parentElement).toBe(document.body);
+      const portal = layer?.closest(".organization-brand-theme-portal");
+      expect(portal).toHaveClass("organization-brand-theme");
+      expect(portal?.parentElement).toBe(document.body);
+      expect(portal).not.toHaveAttribute("inert");
+      expect(portal).not.toHaveAttribute("aria-hidden");
       expect(layer).not.toHaveAttribute("inert");
       expect(layer).not.toHaveAttribute("aria-hidden");
       expect(container).toHaveAttribute("inert");
@@ -2518,14 +2709,14 @@ describe("OpsReferenceApp project smoke", () => {
     expect(screen.queryByText(/已启用 \d+ 项功能/)).not.toBeInTheDocument();
   });
 
-  it("opens organization feature settings from the account menu and syncs brand display", async () => {
+  it("keeps brand fields read-only in organization settings and saves name only", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({ organization: { id: "org-1" } }),
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<OpsReferenceApp initialRoute="warroom" />);
+    render(<OpsReferenceApp initialRoute="projects" />);
 
     fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
     fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
@@ -2533,6 +2724,18 @@ describe("OpsReferenceApp project smoke", () => {
     expect(
       screen.getByRole("dialog", { name: "组织功能设置" }),
     ).toBeInTheDocument();
+
+    const dialog = screen.getByRole("dialog", { name: "组织功能设置" });
+    expect(within(dialog).getByText("当前品牌")).toBeInTheDocument();
+    expect(within(dialog).getByText("未配置组织")).toBeInTheDocument();
+    expect(
+      within(dialog).queryByLabelText("LOGO 字标"),
+    ).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("品牌名称")).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("品牌副标")).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("link", { name: "前往品牌中心" }),
+    ).toHaveAttribute("href", "/console/brand");
 
     fireEvent.change(screen.getByLabelText("组织名称"), {
       target: { value: "未来经营组" },
@@ -2543,13 +2746,7 @@ describe("OpsReferenceApp project smoke", () => {
     fireEvent.click(screen.getByLabelText("厂家门户"));
     fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
 
-    const orgSwitcher = (await screen.findByText("未来经营组")).closest(
-      "button",
-    );
-    expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
-    expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
-
-    // 品牌设置持久化到组织设置接口。
+    // 旧入口只持久化组织名称，不再携带任何品牌字段。
     let settingsCall;
     await waitFor(() => {
       settingsCall = fetchMock.mock.calls.find(
@@ -2557,106 +2754,274 @@ describe("OpsReferenceApp project smoke", () => {
       );
       expect(settingsCall).toBeTruthy();
     });
-    expect(screen.queryByText("当前组织 · 配额 48")).not.toBeInTheDocument();
-    expect(screen.queryByText("已启用 4 项功能")).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /未来经营组/ }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("dialog", { name: "组织功能设置" }),
-    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "组织功能设置" }),
+      ).not.toBeInTheDocument(),
+    );
+    const orgSwitcher = await screen.findByRole("button", {
+      name: "当前组织设置摘要",
+    });
+    expect(orgSwitcher).toHaveTextContent("当前组织 · 配额 48");
+    expect(orgSwitcher).toHaveTextContent("已启用 4 项功能");
     expect(settingsCall[1].method).toBe("PATCH");
-    expect(JSON.parse(settingsCall[1].body).name).toBe("未来经营组");
+    expect(JSON.parse(settingsCall[1].body)).toEqual({ name: "未来经营组" });
   }, 15000);
 
-  it("uses organization logo settings in the sidebar brand mark", () => {
+  it("keeps global organization settings unchanged when the legacy settings request fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({
+          code: "ORGANIZATION_SETTINGS_UNAVAILABLE",
+          error: "temporary",
+        }),
+      })),
+    );
     render(
       <OpsReferenceApp
         initialRoute="warroom"
-        organizationSettings={{ name: "未来经营组", logoText: "未" }}
+        organizationSettings={{ name: "稳定组织", memberLimit: 32 }}
       />,
     );
 
-    expect(screen.getByLabelText("组织 LOGO")).toHaveTextContent("未");
-    expect(screen.queryByText("JY")).not.toBeInTheDocument();
-  });
+    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
+    fireEvent.change(screen.getByLabelText("组织名称"), {
+      target: { value: "不应生效" },
+    });
+    fireEvent.change(screen.getByLabelText("成员规模"), {
+      target: { value: "48" },
+    });
+    fireEvent.click(screen.getByLabelText("厂家门户"));
+    fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
 
-  it("uses the default mascot image in the sidebar brand mark", () => {
-    render(<OpsReferenceApp initialRoute="warroom" />);
-
-    const logo = screen.getByLabelText("组织 LOGO");
-    expect(logo).not.toHaveTextContent("JY");
-    expect(screen.getByRole("img", { name: "经营舱品牌标识" })).toHaveAttribute(
-      "src",
-      "/brand/ops-mascot-logo.png",
+    expect(await screen.findByText("temporary")).toBeVisible();
+    expect(
+      screen.getByRole("dialog", { name: "组织功能设置" }),
+    ).toBeInTheDocument();
+    const switcher = document.querySelector(
+      'button[aria-label="当前组织设置摘要"]',
     );
+    expect(switcher).not.toBeNull();
+    expect(switcher).toHaveTextContent("当前组织 · 配额 32");
+    expect(switcher).toHaveTextContent("已启用 3 项功能");
+    expect(screen.queryByRole("button", { name: /不应生效/ })).toBeNull();
   });
 
-  it("updates the sidebar brand logo from organization settings", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ organization: { id: "org-1" } }),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<OpsReferenceApp initialRoute="warroom" />);
+  it("merges only the authoritative name and keeps the drawer open when settings audit fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({
+          code: "ORGANIZATION_SETTINGS_AUDIT_FAILED",
+          error: "raw audit diagnostics",
+          organization: { id: "org-1", name: "权威已写名称" },
+        }),
+      })),
+    );
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        organizationSettings={{ name: "旧组织", memberLimit: 32 }}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
     fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
-    fireEvent.change(screen.getByLabelText("LOGO 字标"), {
-      target: { value: "未" },
+    fireEvent.change(screen.getByLabelText("组织名称"), {
+      target: { value: "请求名称" },
     });
+    fireEvent.change(screen.getByLabelText("成员规模"), {
+      target: { value: "48" },
+    });
+    fireEvent.click(screen.getByLabelText("厂家门户"));
     fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
 
-    await waitFor(() =>
-      expect(screen.getByLabelText("组织 LOGO")).toHaveTextContent("未"),
+    expect(
+      await screen.findByText("名称已更新但审计失败，请刷新确认"),
+    ).toBeVisible();
+    expect(document.body).not.toHaveTextContent("raw audit diagnostics");
+    expect(
+      screen.getByRole("dialog", { name: "组织功能设置" }),
+    ).toBeInTheDocument();
+    const switcher = document.querySelector(
+      'button[aria-label="当前组织设置摘要"]',
+    );
+    expect(switcher).not.toBeNull();
+    expect(switcher).toHaveTextContent("当前组织 · 配额 32");
+    expect(switcher).toHaveTextContent("已启用 3 项功能");
+  });
+
+  it("uses the canonical published organization brand in the old shell", () => {
+    const { container } = render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        organizationSettings={{
+          name: "北辰机构",
+          brand: publishedOrganizationBrand,
+          logoUrl: "https://signed.example/brand.webp",
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole("img", { name: "北辰直播运营品牌标识" }),
+    ).toHaveAttribute("src", "https://signed.example/brand.webp");
+    expect(screen.getByText("北辰直播运营")).toBeInTheDocument();
+    expect(screen.getByText("专业协作，可信交付")).toBeInTheDocument();
+    expect(screen.getByText("由经营舱提供技术服务")).toBeInTheDocument();
+    expect(screen.getByText("北辰机构")).toBeInTheDocument();
+    expect(container.querySelector(".organization-brand-theme")).toHaveStyle({
+      "--org-brand-action": "#663400",
+      "--org-brand-soft": "#F0E7DE",
+    });
+    expect(
+      container.querySelector('button[data-button-kind="link"]'),
+    ).toHaveStyle({ color: "var(--blue-600)" });
+    const brandSettingsButton = screen.getByRole("button", {
+      name: "组织品牌设置入口",
+    });
+    expect(brandSettingsButton).not.toHaveAttribute("tabindex", "-1");
+    brandSettingsButton.focus();
+    expect(brandSettingsButton).toHaveFocus();
+    expect(container.innerHTML).not.toContain(
+      "11111111-1111-4111-8111-111111111111/brand-logos/33333333-3333-4333-8333-333333333333.webp",
     );
   });
 
-  it("customizes the sidebar brand name and tagline from organization settings", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ organization: { id: "org-1" } }),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("brands the real project settings controls and their visible focus states", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="projects"
+        projectCards={[projectManagementCards[0]]}
+        streamerCards={[]}
+        applicationQueue={[]}
+        organizationMembers={[]}
+        organizationSettings={{
+          name: "北辰机构",
+          brand: publishedOrganizationBrand,
+          logoUrl: "https://signed.example/brand.webp",
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByText("Alpha Launch"));
+    fireEvent.click(screen.getByRole("button", { name: "项目设置" }));
 
-    render(<OpsReferenceApp initialRoute="warroom" />);
+    const primaryButton = screen.getByRole("button", { name: "保存设置" });
+    const projectName = screen.getByLabelText("项目名称");
+    const publicSwitch = screen.getByLabelText("公开给组织内主播");
+    const visibleSwitch = publicSwitch.nextElementSibling;
+    const projectSettingsCss = Array.from(document.querySelectorAll("style"))
+      .map((style) => style.textContent ?? "")
+      .find((css) => css.includes(".ps-btn-primary"));
 
-    // 默认品牌文案来自内置兜底。
-    expect(screen.getByText("经营舱")).toBeInTheDocument();
-    expect(screen.getByText("MCN OPERATIONS · v1.2")).toBeInTheDocument();
+    expect(primaryButton).toHaveClass("ps-btn-primary");
+    expect(projectName).toHaveClass("ps-control");
+    expect(visibleSwitch?.tagName).toBe("SPAN");
+    expect(projectSettingsCss).toMatch(
+      /\.ps-btn-primary\s*\{[^}]*background:\s*var\(--org-brand-action,\s*#2f6fed\)/,
+    );
+    expect(projectSettingsCss).toMatch(
+      /\.ps-btn-primary:hover:not\(:disabled\)\s*\{[^}]*color-mix\([^}]*var\(--org-brand-action,\s*#2f6fed\)/,
+    );
+    expect(projectSettingsCss).toMatch(
+      /\.ps-control:focus\s*\{[^}]*border-color:\s*var\(--org-brand-action,\s*#2f6fed\)[^}]*color-mix\(/,
+    );
+    expect(projectSettingsCss).toMatch(
+      /\.ps-switch input:focus-visible \+ span\s*\{[^}]*outline:\s*2px solid var\(--org-brand-action,\s*#2f6fed\)/,
+    );
 
-    fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "组织设置" }));
-    fireEvent.change(screen.getByLabelText("品牌名称"), {
-      target: { value: "星耀经营舱" },
+    fireEvent.click(publicSwitch);
+    expect(publicSwitch).toBeChecked();
+    expect.soft(visibleSwitch).toHaveStyle({
+      background: "var(--org-brand-action, #2f6fed)",
     });
-    fireEvent.change(screen.getByLabelText("品牌副标"), {
-      target: { value: "XINGYAO OPS · v2.0" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存功能设置" }));
 
-    expect(await screen.findByText("星耀经营舱")).toBeInTheDocument();
-    expect(screen.getByText("XINGYAO OPS · v2.0")).toBeInTheDocument();
-    expect(screen.queryByText("MCN OPERATIONS · v1.2")).not.toBeInTheDocument();
+    const statusPicker = screen.getByRole("combobox", { name: "项目状态" });
+    fireEvent.click(statusPicker);
+    expect
+      .soft(statusPicker.getAttribute("style"))
+      .toContain("border: 1px solid var(--org-brand-action, #2f6fed)");
+    expect
+      .soft(statusPicker.getAttribute("style"))
+      .toContain(
+        "box-shadow: 0 0 0 3px color-mix(in srgb, var(--org-brand-action, #2f6fed) 18%, transparent)",
+      );
+    expect(statusPicker.querySelector('span[aria-hidden="true"]')).toHaveStyle({
+      background: "#12a17c",
+    });
+    const statusListbox = screen.getByRole("listbox", {
+      name: "项目状态选项",
+    });
+    expect
+      .soft(
+        within(statusListbox)
+          .getByRole("option", { selected: true })
+          .querySelector("svg"),
+      )
+      .toHaveAttribute("stroke", "var(--org-brand-action, #2f6fed)");
+
+    const startDate = screen.getByLabelText("开始日期");
+    fireEvent.focus(startDate);
+    const dateControl = startDate.parentElement;
+    expect
+      .soft(dateControl?.getAttribute("style"))
+      .toContain("border: 1px solid var(--org-brand-action, #2f6fed)");
+    expect
+      .soft(dateControl?.getAttribute("style"))
+      .toContain(
+        "box-shadow: 0 0 0 3px color-mix(in srgb, var(--org-brand-action, #2f6fed) 18%, transparent)",
+      );
   });
 
-  it("renders custom brand fields passed from server-side organization settings", () => {
+  it("falls back to the canonical wordmark when the old-shell image fails", () => {
+    render(
+      <OpsReferenceApp
+        initialRoute="warroom"
+        organizationSettings={{
+          name: "北辰机构",
+          brand: publishedOrganizationBrand,
+          logoUrl: "https://signed.example/brand.webp",
+        }}
+      />,
+    );
+
+    fireEvent.error(screen.getByRole("img", { name: "北辰直播运营品牌标识" }));
+
+    expect(
+      screen.queryByRole("img", { name: "北辰直播运营品牌标识" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("ops-reference-brand-mark")).toHaveTextContent(
+      "北辰",
+    );
+  });
+
+  it("does not use flat legacy brand fields or render a broken default image", () => {
     render(
       <OpsReferenceApp
         initialRoute="warroom"
         organizationSettings={{
           name: "未来经营组",
-          logoText: "未",
-          brandName: "未来作战舱",
-          brandTagline: "FUTURE OPS · v9",
+          logoText: "不应使用",
+          logoImage: "/brand/ops-mascot-logo.png",
+          brandName: "不应使用的品牌",
+          brandTagline: "不应使用的口号",
         }}
       />,
     );
 
-    expect(screen.getByText("未来作战舱")).toBeInTheDocument();
-    expect(screen.getByText("FUTURE OPS · v9")).toBeInTheDocument();
-    expect(screen.getByLabelText("组织 LOGO")).toHaveTextContent("未");
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.getByTestId("ops-reference-brand-mark")).toHaveTextContent(
+      "未来",
+    );
+    expect(screen.getAllByText("未来经营组").length).toBeGreaterThan(0);
+    expect(screen.queryByText("不应使用的品牌")).not.toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain("/brand/ops-mascot-logo.png");
   });
 
   it("saves a custom avatar mark from the profile dialog and shows it in the sidebar", async () => {
@@ -2728,7 +3093,7 @@ describe("OpsReferenceApp project smoke", () => {
       />,
     );
 
-    expect(screen.queryByText("星耀传媒测试机构")).not.toBeInTheDocument();
+    expect(screen.getAllByText("星耀传媒测试机构")).toHaveLength(1);
     expect(screen.queryByText("当前组织 · 0 名成员")).not.toBeInTheDocument();
     expect(screen.queryByText(/已启用 \d+ 项功能/)).not.toBeInTheDocument();
     expect(screen.getAllByText("智能作战台").length).toBeGreaterThan(0);
@@ -6927,6 +7292,82 @@ describe("OpsReferenceApp streamer smoke", () => {
   });
 });
 
+function pagedShareAdmissionApplications() {
+  return [
+    {
+      id: "app-paged-share",
+      status: "recording_approved",
+      source: "signup",
+      submittedAt: "2026-07-30T00:00:00.000Z",
+      project: { id: "project-1", code: "P-001", name: "Alpha Project" },
+      streamer: { id: "streamer-1", displayName: "Streamer One" },
+      latestRecording: { id: "recording-1", version: 1, status: "approved" },
+      vendorReview: null,
+    },
+  ];
+}
+
+function admissionBoardResponse() {
+  return {
+    ok: true,
+    json: async () => ({
+      projects: [
+        {
+          project: {
+            id: "project-1",
+            code: "P-001",
+            name: "Alpha Project",
+            vendor: "Vendor A",
+            product: "Game A",
+          },
+          counts: {
+            totalApplications: 1,
+            recordingCount: 1,
+            mcnPendingReview: 0,
+            mcnApproved: 1,
+            mcnRejected: 0,
+            needsChanges: 0,
+            vendorPending: 1,
+            vendorSelected: 0,
+            vendorBackup: 0,
+            vendorRejected: 0,
+            vendorNeedsChanges: 0,
+            pendingFinalConfirm: 0,
+          },
+          share: {
+            id: null,
+            status: "unshared",
+            expiresAt: null,
+            lastSubmittedAt: null,
+          },
+          lastActivityAt: "2026-07-30T00:00:00.000Z",
+        },
+      ],
+    }),
+  };
+}
+
+function admissionShareTask(id, title) {
+  return {
+    id,
+    title,
+    purpose: "Review",
+    mode: "preview",
+    status: "active",
+    reviewState: "not_started",
+    roundNumber: 0,
+    expiresAt: "2026-08-06T00:00:00.000Z",
+    itemCount: 1,
+    draftCompletedCount: 0,
+    lastViewedAt: null,
+    lastDraftAt: null,
+    lastSubmittedAt: null,
+    lockedAt: null,
+    createdBy: "user-ops",
+    createdAt: "2026-07-30T00:00:00.000Z",
+  };
+}
+
 describe("OpsReferenceApp admission smoke", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -7650,7 +8091,55 @@ describe("OpsReferenceApp admission smoke", () => {
         return {
           ok: true,
           json: async () => ({
-            shareBoard: { id: "share-1", mode: "formal_review" },
+            shareBoard: {
+              id: "share-1",
+              mode: "formal_review",
+              presentation: {
+                schemaVersion: 1,
+                id: "share-1",
+                title: "创建接口持久化预览",
+                purpose: "同源创建响应",
+                mode: "formal_review",
+                status: "active",
+                reviewState: "not_started",
+                roundNumber: 1,
+                expiresAt: "2099-08-01T00:00:00.000Z",
+                project: {
+                  id: "project-1",
+                  name: "Alpha Project",
+                  code: "P-001",
+                },
+                progress: { completed: 0, total: 1 },
+                brand: {
+                  logoText: "北辰",
+                  brandName: "北辰直播运营",
+                  brandTagline: "专业协作，可信交付",
+                  primaryColor: "#7A3E00",
+                  logoStoragePath: "organizations/private/brand.webp",
+                },
+                contactCard: null,
+                items: [
+                  {
+                    applicationId: "app-ui-1",
+                    recordingSubmissionId: "recording-ui-1",
+                    recordingVersion: 1,
+                    sourceHealth: "original_ready",
+                    storagePath: "organizations/private/recording.mp4",
+                    streamer: {
+                      id: "streamer-1",
+                      displayName: "Streamer One",
+                      accountLabel: "Douyin / one-live",
+                      tokenHash: "must-never-render-create-token",
+                    },
+                    finalReview: null,
+                  },
+                ],
+                tokenHash: "must-never-render-create",
+                sourceDiagnostics: [
+                  { storagePath: "organizations/private/debug" },
+                ],
+              },
+            },
             shareUrl: "https://share.example/admission/explicit-token",
             accessCode: "24681024",
           }),
@@ -7824,6 +8313,9 @@ describe("OpsReferenceApp admission smoke", () => {
       }),
     );
     expect(await screen.findByText("24681024")).toBeInTheDocument();
+    expect(screen.getByText("创建接口持久化预览")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("must-never-render-create");
+    expect(document.body).not.toHaveTextContent("organizations/private");
   });
 
   it("shows recording AI details and carries AI guidance into review notes", async () => {
@@ -9316,6 +9808,297 @@ describe("OpsReferenceApp admission smoke", () => {
     );
     expect(await screen.findByText("预审结果不可用")).toBeInTheDocument();
   });
+
+  it("loads the next admission share page only after explicit user intent", async () => {
+    const applications = pagedShareAdmissionApplications();
+    const firstPage = Array.from({ length: 20 }, (_, index) =>
+      admissionShareTask(`task-${index + 1}`, `Paged task ${index + 1}`),
+    );
+    const secondPage = [
+      firstPage[19],
+      admissionShareTask("task-21", "Second page task"),
+    ];
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target === "/api/applications/admission-board") {
+        return admissionBoardResponse();
+      }
+      if (target === "/api/projects/project-1/admission-share-candidates") {
+        return { ok: true, json: async () => ({ candidates: [] }) };
+      }
+      if (
+        target === "/api/projects/project-1/admission-share-boards" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareBoards: firstPage,
+            nextCursor: "page-2/cursor",
+          }),
+        };
+      }
+      if (
+        target ===
+          "/api/projects/project-1/admission-share-boards?cursor=page-2%2Fcursor" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({ shareBoards: secondPage, nextCursor: null }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={applications}
+      />,
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/admission-board",
+        expect.objectContaining({ method: "GET" }),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "录屏分享中心" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+
+    expect(await screen.findByText("Paged task 1")).toBeInTheDocument();
+    expect(screen.queryByText("Second page task")).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, requestInit]) =>
+          String(url).includes("/admission-share-boards") &&
+          requestInit?.method === "GET",
+      ),
+    ).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
+    expect(await screen.findByText("Second page task")).toBeInTheDocument();
+    expect(screen.getAllByText("Paged task 20")).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, requestInit]) =>
+          String(url).includes("/admission-share-boards") &&
+          requestInit?.method === "GET",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("loads whitelisted share branding and an existing board presentation through focused actions", async () => {
+    const boardId = "00000000-0000-4000-8000-000000000001";
+    const presentation = {
+      id: boardId,
+      brandVersion: 3,
+      contactCardId: null,
+      title: "持久化分享预览",
+      purpose: "核对同源字段",
+      mode: "preview",
+      status: "active",
+      reviewState: "not_started",
+      roundNumber: 2,
+      expiresAt: "2099-08-01T00:00:00.000Z",
+      project: { id: "project-1", name: "Fixture Project", code: "FP-001" },
+      progress: { completed: 0, total: 1 },
+      latestSubmission: null,
+      brand: {
+        logoText: "北辰",
+        brandName: "北辰直播运营",
+        brandTagline: "专业协作，可信交付",
+        primaryColor: "#7A3E00",
+      },
+      contactCard: null,
+      items: [
+        null,
+        {
+          applicationId: "app-1",
+          recordingSubmissionId: "recording-1",
+          recordingVersion: 3,
+          sourceHealth: "original_ready",
+          streamer: {
+            id: "streamer-1",
+            displayName: "主播甲",
+            accountLabel: "dy-1",
+            tokenHash: "must-never-render-nested",
+          },
+          storagePath: "organizations/private/recording.mp4",
+          finalReview: null,
+        },
+        "malformed-item",
+      ],
+      sourceDiagnostics: [],
+    };
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target === "/api/applications/admission-board") {
+        return admissionBoardResponse();
+      }
+      if (target === "/api/projects/project-1/admission-share-candidates") {
+        return { ok: true, json: async () => ({ candidates: [] }) };
+      }
+      if (
+        target === "/api/projects/project-1/admission-share-boards" &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareBoards: [admissionShareTask(boardId, "持久化分享预览")],
+            nextCursor: null,
+          }),
+        };
+      }
+      if (target === "/api/organization/brand") {
+        return {
+          ok: true,
+          json: async () => ({
+            studio: {
+              published: {
+                ...publishedOrganizationBrand,
+                logoStoragePath: "organizations/private/brand.webp",
+              },
+            },
+          }),
+        };
+      }
+      if (target === "/api/organization/contact-cards") {
+        return {
+          ok: true,
+          json: async () => ({
+            contactCards: [
+              {
+                id: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+                displayName: "林商务",
+                title: "品牌合作负责人",
+                phone: "13800000000",
+                email: null,
+                wechat: null,
+                status: "active",
+                internalNote: "must-not-reach-preview",
+              },
+              {
+                id: "8c3a9444-b47a-4b29-93d7-b31a650da43b",
+                displayName: "停用联系人",
+                title: "旧对接人",
+                status: "disabled",
+              },
+            ],
+          }),
+        };
+      }
+      if (
+        target ===
+        `/api/projects/project-1/admission-share-boards?boardId=${boardId}`
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareBoard: {
+              id: boardId,
+              presentation,
+              tokenHash: "must-never-render",
+            },
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={pagedShareAdmissionApplications()}
+      />,
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "录屏分享中心" }),
+    );
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "查看 持久化分享预览 分享预览",
+      }),
+    );
+
+    expect(
+      await screen.findByRole("region", {
+        name: "持久化分享预览 已保存分享预览",
+      }),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/organization/brand",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/organization/contact-cards",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/projects/project-1/admission-share-boards?boardId=${boardId}`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(document.body).not.toHaveTextContent("organizations/private");
+    expect(document.body).not.toHaveTextContent("must-never-render");
+    expect(document.body).not.toHaveTextContent("must-not-reach-preview");
+  });
+
+  it("stops a repeated admission share cursor and exposes a safe task-load error", async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      const target = String(url);
+      if (target === "/api/applications/admission-board") {
+        return admissionBoardResponse();
+      }
+      if (target === "/api/projects/project-1/admission-share-candidates") {
+        return { ok: true, json: async () => ({ candidates: [] }) };
+      }
+      if (
+        target.startsWith("/api/projects/project-1/admission-share-boards") &&
+        init?.method === "GET"
+      ) {
+        return {
+          ok: true,
+          json: async () => ({
+            shareBoards: [admissionShareTask("task-cycle", "Cycle task")],
+            nextCursor: "same-cursor",
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({ error: "unexpected request" }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <OpsReferenceApp
+        initialRoute="admission"
+        applicationQueue={pagedShareAdmissionApplications()}
+      />,
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/applications/admission-board",
+        expect.objectContaining({ method: "GET" }),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "录屏分享中心" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "分享任务" }));
+
+    expect(await screen.findByText("Cycle task")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "加载更多分享任务" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /分享任务加载更多失败/,
+    );
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, requestInit]) =>
+          String(url).includes("/admission-share-boards") &&
+          requestInit?.method === "GET",
+      ),
+    ).toHaveLength(2);
+  });
 });
 
 describe("OpsReferenceApp live task smoke", () => {
@@ -9411,15 +10194,19 @@ describe("OpsReferenceApp live task smoke", () => {
   it("portals nested live review and preserves the outer modal isolation stack", () => {
     const { reviewDialog, reviewTrigger, taskDrawer } = openNestedLiveReview();
     const outerLayer = taskDrawer.closest(".ops-drawer-layer");
-    const appContainer = document.querySelector(
-      ".ops-reference-shell",
-    )?.parentElement;
+    const outerPortal = outerLayer?.closest(".organization-brand-theme-portal");
+    const reviewPortal = reviewDialog.closest(
+      ".organization-brand-theme-portal",
+    );
+    const appContainer = document.querySelector(".ops-reference-shell")
+      ?.parentElement?.parentElement;
 
-    expect(reviewDialog.parentElement).toBe(document.body);
-    expect(reviewDialog).not.toHaveAttribute("inert");
-    expect(reviewDialog).not.toHaveAttribute("aria-hidden");
-    expect(outerLayer).toHaveAttribute("inert");
-    expect(outerLayer).toHaveAttribute("aria-hidden", "true");
+    expect(reviewPortal).toHaveClass("organization-brand-theme");
+    expect(reviewPortal?.parentElement).toBe(document.body);
+    expect(reviewPortal).not.toHaveAttribute("inert");
+    expect(reviewPortal).not.toHaveAttribute("aria-hidden");
+    expect(outerPortal).toHaveAttribute("inert");
+    expect(outerPortal).toHaveAttribute("aria-hidden", "true");
     expect(taskDrawer).not.toHaveAttribute("aria-modal");
     expect(appContainer).toHaveAttribute("inert");
     expect(appContainer).toHaveAttribute("aria-hidden", "true");
@@ -9428,8 +10215,8 @@ describe("OpsReferenceApp live task smoke", () => {
 
     expect(reviewTrigger).toHaveFocus();
     expect(taskDrawer).toHaveAttribute("aria-modal", "true");
-    expect(outerLayer).not.toHaveAttribute("inert");
-    expect(outerLayer).not.toHaveAttribute("aria-hidden");
+    expect(outerPortal).not.toHaveAttribute("inert");
+    expect(outerPortal).not.toHaveAttribute("aria-hidden");
     expect(appContainer).toHaveAttribute("inert");
     expect(appContainer).toHaveAttribute("aria-hidden", "true");
 

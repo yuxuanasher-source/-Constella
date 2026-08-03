@@ -10,6 +10,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AuditLogInput } from "@/lib/audit/audit";
 import { normalizeAbsoluteHttpUrl } from "@/lib/http/safe-public-url";
 import { isMcnStaff, type AppRole } from "@/lib/rbac/roles";
+import { normalizePublishedBrand } from "@/features/organizations/organization-brand";
 
 import type {
   ApplicationStatus,
@@ -51,6 +52,10 @@ export type AdmissionShareBoardRecord = {
   allowExternalFallback: boolean;
   reviewState: "not_started" | "viewed" | "in_progress" | "submitted_locked";
   roundNumber: number;
+  brandSnapshot?: unknown;
+  brandVersion?: number;
+  contactCardId?: string | null;
+  contactCardSnapshot?: unknown | null;
   createdBy: string;
   createdAt?: string;
 };
@@ -74,6 +79,26 @@ export type AdmissionShareBoardTaskRecord = {
   createdAt: string;
 };
 
+export type AdmissionShareBoardTaskWithPresentation =
+  AdmissionShareBoardTaskRecord & {
+    presentation: InternalAdmissionSharePresentation;
+  };
+
+export type AdmissionShareBoardInternalHydration = {
+  task: AdmissionShareBoardTaskRecord;
+  snapshot: AdmissionSharePresentationSnapshot;
+};
+
+export type AdmissionShareBoardInternalPage = {
+  tasks: AdmissionShareBoardTaskRecord[];
+  nextCursor: string | null;
+};
+
+export type CreateAdmissionShareBoardPersistenceResult = {
+  shareBoard: AdmissionShareBoardRecord;
+  snapshot: AdmissionSharePresentationSnapshot;
+};
+
 export type CreateAdmissionShareBoardPersistenceInput = {
   organizationId: string;
   projectId: string;
@@ -84,6 +109,7 @@ export type CreateAdmissionShareBoardPersistenceInput = {
   accessCodeHash: string | null;
   expiresAt: string;
   allowExternalFallback: boolean;
+  contactCardId?: string | null;
   createdBy: string;
   items: AdmissionShareSelectionInput[];
 };
@@ -91,7 +117,7 @@ export type CreateAdmissionShareBoardPersistenceInput = {
 export type AdmissionShareBoardRepository = {
   createShareBoardWithItems(
     input: CreateAdmissionShareBoardPersistenceInput,
-  ): Promise<AdmissionShareBoardRecord>;
+  ): Promise<CreateAdmissionShareBoardPersistenceResult>;
   listShareBoards(projectId: string): Promise<AdmissionShareBoardTaskRecord[]>;
   extendShareBoard(input: {
     shareBoardId: string;
@@ -139,6 +165,9 @@ export type AdmissionShareBoardRepository = {
   getPublicShareBoardSnapshot(
     tokenHash: string,
   ): Promise<PublicAdmissionShareBoardSnapshot | null>;
+  getPublicShareBrandLogoAccess?(
+    tokenHash: string,
+  ): Promise<PublicAdmissionShareBrandLogoAccess | null>;
   listReviewDrafts(shareBoardId: string): Promise<AdmissionReviewDraftDto[]>;
   saveReviewDraft(
     input: SaveAdmissionReviewDraftPersistenceInput,
@@ -176,6 +205,19 @@ export type AdmissionShareBoardRepository = {
   markShareBoardViewed(shareBoardId: string, viewedAt: string): Promise<void>;
 };
 
+export type AdmissionShareBoardInternalReader = {
+  listInternalShareBoardTasks(input: {
+    projectId: string;
+    beforeCreatedAt?: string;
+    beforeId?: string;
+    limit: number;
+  }): Promise<AdmissionShareBoardInternalPage>;
+  getInternalShareBoardHydration(input: {
+    projectId: string;
+    shareBoardId: string;
+  }): Promise<AdmissionShareBoardInternalHydration>;
+};
+
 export type CreateAdmissionShareBoardInput = {
   title?: string;
   purpose?: string;
@@ -184,6 +226,7 @@ export type CreateAdmissionShareBoardInput = {
   requireAccessCode?: boolean;
   accessCode?: string;
   allowExternalFallback?: boolean;
+  contactCardId?: string | null;
   items: AdmissionShareSelectionInput[];
 };
 
@@ -200,6 +243,36 @@ export class AdmissionShareFormalRoundConflictError extends Error {
 
   constructor() {
     super("Admission share formal round already open");
+  }
+}
+
+export class AdmissionShareContactCardError extends Error {
+  readonly name = "AdmissionShareContactCardError";
+  readonly code = "INVALID_ORGANIZATION_CONTACT_CARD";
+  readonly statusCode = 400;
+
+  constructor() {
+    super("Selected organization contact card is unavailable");
+  }
+}
+
+export class AdmissionShareCursorError extends Error {
+  readonly name = "AdmissionShareCursorError";
+  readonly code = "SHARE_CURSOR_INVALID";
+  readonly statusCode = 400;
+
+  constructor() {
+    super("Admission share cursor is invalid");
+  }
+}
+
+export class AdmissionShareItemLimitError extends Error {
+  readonly name = "AdmissionShareItemLimitError";
+  readonly code = "SHARE_BOARD_TOO_LARGE";
+  readonly statusCode = 400;
+
+  constructor() {
+    super("Admission share boards support at most 5000 recordings");
   }
 }
 
@@ -309,6 +382,50 @@ export type PublicAdmissionShareBoardSnapshot = AdmissionShareBoardRecord & {
   items: PublicAdmissionShareItemSnapshot[];
 };
 
+export type PublicAdmissionShareBrandLogoAccess = Pick<
+  AdmissionShareBoardRecord,
+  | "id"
+  | "organizationId"
+  | "accessCodeHash"
+  | "status"
+  | "expiresAt"
+  | "brandSnapshot"
+>;
+
+type AdmissionSharePresentationItemSnapshot = Omit<
+  PublicAdmissionShareItemSnapshot,
+  "storagePath"
+> & {
+  storagePath?: string | null;
+  hasPrivateStorage?: boolean;
+};
+
+export type AdmissionSharePresentationSnapshot = Omit<
+  PublicAdmissionShareBoardSnapshot,
+  "tokenHash" | "accessCodeHash" | "items"
+> & {
+  tokenHash?: string;
+  accessCodeHash?: string | null;
+  items: AdmissionSharePresentationItemSnapshot[];
+};
+
+export type PublicAdmissionShareBrand = {
+  version: number;
+  logoText: string;
+  logoUrl: string | null;
+  brandName: string;
+  brandTagline: string;
+  primaryColor: string;
+};
+
+export type PublicAdmissionShareContactCard = {
+  displayName: string;
+  title: string;
+  phone?: string;
+  email?: string;
+  wechat?: string;
+};
+
 export type AdmissionShareSourceHealth =
   | "original_ready"
   | "original_with_external_fallback"
@@ -379,6 +496,52 @@ export type PublicAdmissionShareBoard = {
     hasPrivateStorage: boolean;
     streamer: PublicAdmissionShareItemSnapshot["streamer"];
     finalReview: PublicAdmissionShareFinalReview | null;
+  }>;
+};
+
+export type BrandedPublicAdmissionShareBoard = PublicAdmissionShareBoard & {
+  brand: PublicAdmissionShareBrand;
+  contactCard: PublicAdmissionShareContactCard | null;
+};
+
+export type AdmissionSharePresentation = Pick<
+  PublicAdmissionShareBoard,
+  | "title"
+  | "purpose"
+  | "mode"
+  | "status"
+  | "reviewState"
+  | "roundNumber"
+  | "expiresAt"
+  | "project"
+  | "progress"
+  | "latestSubmission"
+> & {
+  brand: Omit<PublicAdmissionShareBrand, "logoUrl" | "version">;
+  contactCard: PublicAdmissionShareContactCard | null;
+  items: Array<
+    Pick<
+      PublicAdmissionShareBoard["items"][number],
+      | "applicationId"
+      | "recordingSubmissionId"
+      | "recordingVersion"
+      | "sourceHealth"
+      | "streamer"
+      | "finalReview"
+    >
+  >;
+};
+
+export type InternalAdmissionSharePresentation = AdmissionSharePresentation & {
+  id: string;
+  brandVersion: number;
+  contactCardId: string | null;
+  sourceDiagnostics: Array<{
+    recordingSubmissionId: string;
+    applicationStatus: ApplicationStatus;
+    recordingStatus: RecordingReviewStatus;
+    hasPrivateStorage: boolean;
+    externalUrl: string | null;
   }>;
 };
 
@@ -505,12 +668,17 @@ export type AdmissionReviewSubmissionDto = {
   }>;
 };
 
+const INTERNAL_SHARE_DEFAULT_PAGE_SIZE = 20;
+const INTERNAL_SHARE_MAX_PAGE_SIZE = 50;
+const PUBLIC_SHARE_COLLECTION_PAGE_SIZE = 1000;
+const ADMISSION_SHARE_MAX_ITEMS = 5000;
+
 export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoardRepository {
   constructor(private readonly client: SupabaseClient) {}
 
   async createShareBoardWithItems(
     input: CreateAdmissionShareBoardPersistenceInput,
-  ): Promise<AdmissionShareBoardRecord> {
+  ): Promise<CreateAdmissionShareBoardPersistenceResult> {
     const { data, error } = await this.client
       .rpc("create_admission_share_board", {
         p_organization_id: input.organizationId,
@@ -529,8 +697,9 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
           recording_version: item.recordingVersion,
           sort_order: item.sortOrder,
         })),
+        p_contact_card_id: input.contactCardId ?? null,
       })
-      .single<AdmissionShareBoardRow>();
+      .single<{ board: Record<string, unknown>; snapshot: unknown }>();
 
     if (error) {
       if (isAdmissionShareProjectStatusRpcError(error)) {
@@ -545,10 +714,19 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       if (isAdmissionShareSelectionChangedRpcError(error)) {
         throw new AdmissionShareSelectionChangedPersistenceError(error);
       }
+      if (isAdmissionShareContactCardRpcError(error)) {
+        throw new AdmissionShareContactCardError();
+      }
+      if (isAdmissionShareItemLimitRpcError(error)) {
+        throw new AdmissionShareItemLimitError();
+      }
       throw error;
     }
 
-    return toShareBoardRecord(data);
+    return {
+      shareBoard: toCreatedShareBoardRecord(data.board, input),
+      snapshot: data.snapshot as AdmissionSharePresentationSnapshot,
+    };
   }
 
   async listShareBoards(
@@ -581,6 +759,73 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       };
       return toShareBoardTaskRecord(row, progress);
     });
+  }
+
+  async listInternalShareBoardTasks(input: {
+    projectId: string;
+    beforeCreatedAt?: string;
+    beforeId?: string;
+    limit: number;
+  }): Promise<AdmissionShareBoardInternalPage> {
+    const limit = normalizeInternalSharePageSize(input.limit);
+    const { data, error } = await this.client.rpc(
+      "list_internal_admission_share_board_tasks",
+      {
+        p_project_id: input.projectId,
+        p_before_created_at: input.beforeCreatedAt ?? null,
+        p_before_id: input.beforeId ?? null,
+        p_limit: limit,
+      },
+    );
+    if (error) {
+      if (isAdmissionShareCursorRpcError(error))
+        throw new AdmissionShareCursorError();
+      throw error;
+    }
+
+    const rows = (data ?? []) as Array<{ task: unknown }>;
+    const hasNextPage = rows.length > limit;
+    const tasks = rows
+      .slice(0, limit)
+      .map((row) => row.task as AdmissionShareBoardTaskRecord);
+    const last = tasks.at(-1);
+    return {
+      tasks,
+      nextCursor:
+        hasNextPage && last
+          ? encodeAdmissionShareCursor(last.createdAt, last.id)
+          : null,
+    };
+  }
+
+  async getInternalShareBoardHydration(input: {
+    projectId: string;
+    shareBoardId: string;
+  }): Promise<AdmissionShareBoardInternalHydration> {
+    const { data, error } = await this.client.rpc(
+      "get_internal_admission_share_board_hydration",
+      {
+        p_project_id: input.projectId,
+        p_share_board_id: input.shareBoardId,
+      },
+    );
+    if (error) {
+      if (isAdmissionShareItemLimitRpcError(error)) {
+        throw new AdmissionShareItemLimitError();
+      }
+      throw mapAdmissionShareLifecycleRpcError(error);
+    }
+
+    const hydration = ((data ?? []) as Array<{ hydration?: unknown }>)[0]
+      ?.hydration;
+    if (!hydration) {
+      throw new AdmissionShareLifecycleError(
+        "SHARE_NOT_FOUND",
+        "Share board was not found in this project",
+        404,
+      );
+    }
+    return hydration as AdmissionShareBoardInternalHydration;
   }
 
   async extendShareBoard(input: {
@@ -748,7 +993,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     const { data: boardData, error: boardError } = await this.client
       .from("project_recording_share_boards")
       .select(
-        "id, organization_id, project_id, title, purpose, mode, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, allow_external_fallback, review_state, round_number, created_by, created_at, projects(id, code, name, vendor_name, product_name)",
+        "id, organization_id, project_id, title, purpose, mode, token_hash, access_code_hash, status, expires_at, allow_vendor_submit, allow_external_fallback, review_state, round_number, brand_snapshot, brand_version, contact_card_id, contact_card_snapshot, created_by, created_at, projects(id, code, name, vendor_name, product_name)",
       )
       .eq("token_hash", tokenHash)
       .maybeSingle<AdmissionShareBoardWithProjectRow>();
@@ -760,22 +1005,10 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       return null;
     }
 
-    const { data: itemData, error: itemError } = await this.client
-      .from("project_recording_share_items")
-      .select(
-        "application_id, recording_submission_id, recording_version, source_health, project_applications(status, streamer_id, streamers(id, display_name, streamer_accounts(platform, account_handle, is_primary))), recording_submissions(status, external_url, storage_path)",
-      )
-      .eq("share_board_id", boardData.id)
-      .order("sort_order", { ascending: true });
-
-    if (itemError) {
-      throw itemError;
-    }
-
-    const itemRows = (itemData ?? []) as PublicShareItemRow[];
+    const itemRows = await this.listPublicShareItemRows(boardData.id);
     const workflow =
       boardData.mode === "formal_review"
-        ? await this.getPublicReviewWorkflow(boardData.id, boardData.project_id)
+        ? await this.getPublicReviewWorkflow(boardData.id)
         : {
             completedDraftCount: 0,
             latestSubmission: null,
@@ -803,22 +1036,39 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     };
   }
 
-  async listReviewDrafts(
-    shareBoardId: string,
-  ): Promise<AdmissionReviewDraftDto[]> {
+  async getPublicShareBrandLogoAccess(
+    tokenHash: string,
+  ): Promise<PublicAdmissionShareBrandLogoAccess | null> {
     const { data, error } = await this.client
-      .from("project_recording_vendor_review_drafts")
+      .from("project_recording_share_boards")
       .select(
-        "recording_submission_id, recording_version, decision, remark, reason_codes, revision, updated_at",
+        "id, organization_id, access_code_hash, status, expires_at, brand_snapshot",
       )
-      .eq("share_board_id", shareBoardId)
-      .order("updated_at", { ascending: true });
+      .eq("token_hash", tokenHash)
+      .maybeSingle<PublicAdmissionShareBrandLogoAccessRow>();
 
     if (error) {
       throw error;
     }
+    if (!data) {
+      return null;
+    }
 
-    return ((data ?? []) as AdmissionReviewDraftRow[]).map(toReviewDraftDto);
+    return {
+      id: data.id,
+      organizationId: data.organization_id,
+      accessCodeHash: data.access_code_hash,
+      status: data.status,
+      expiresAt: data.expires_at,
+      brandSnapshot: data.brand_snapshot,
+    };
+  }
+
+  async listReviewDrafts(
+    shareBoardId: string,
+  ): Promise<AdmissionReviewDraftDto[]> {
+    const rows = await this.listPublicReviewDraftRows(shareBoardId);
+    return rows.map(toReviewDraftDto);
   }
 
   async saveReviewDraft(
@@ -1054,16 +1304,64 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
     }
   }
 
-  private async getPublicReviewWorkflow(
+  private async listPublicShareItemRows(
     shareBoardId: string,
-    projectId: string,
-  ): Promise<{
+  ): Promise<PublicShareItemRow[]> {
+    return collectBoundedPublicRows(async (from, to) => {
+      const { data, error } = await this.client
+        .from("project_recording_share_items")
+        .select(
+          "id, sort_order, application_id, recording_submission_id, recording_version, source_health, project_applications(status, streamer_id, streamers(id, display_name, streamer_accounts(id, platform, account_handle, is_primary, created_at))), recording_submissions(status, external_url, storage_path)",
+        )
+        .eq("share_board_id", shareBoardId)
+        .order("sort_order", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
+      if (error) throw error;
+      return (data ?? []) as PublicShareItemRow[];
+    });
+  }
+
+  private async listPublicReviewDraftRows(
+    shareBoardId: string,
+  ): Promise<AdmissionReviewDraftRow[]> {
+    return collectBoundedPublicRows(async (from, to) => {
+      const { data, error } = await this.client
+        .from("project_recording_vendor_review_drafts")
+        .select(
+          "recording_submission_id, recording_version, decision, remark, reason_codes, revision, updated_at",
+        )
+        .eq("share_board_id", shareBoardId)
+        .order("recording_submission_id", { ascending: true })
+        .range(from, to);
+      if (error) throw error;
+      return (data ?? []) as AdmissionReviewDraftRow[];
+    });
+  }
+
+  private async listPublicSubmissionReceiptRows(
+    submissionId: string,
+  ): Promise<PublicSubmissionReceiptItemRow[]> {
+    return collectBoundedPublicRows(async (from, to) => {
+      const { data, error } = await this.client
+        .from("project_recording_vendor_review_submission_items")
+        .select("id, recording_submission_id, decision, remark, reason_codes")
+        .eq("submission_id", submissionId)
+        .order("recording_submission_id", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
+      if (error) throw error;
+      return (data ?? []) as PublicSubmissionReceiptItemRow[];
+    });
+  }
+
+  private async getPublicReviewWorkflow(shareBoardId: string): Promise<{
     completedDraftCount: number;
     latestSubmission: PublicAdmissionShareSubmissionSummary | null;
     finalReviewByRecording: Map<string, PublicAdmissionShareFinalReview>;
   }> {
-    const [progressByBoard, submissionResult] = await Promise.all([
-      listAdmissionShareBoardProgress(this.client, [projectId]),
+    const [draftRows, submissionResult] = await Promise.all([
+      this.listPublicReviewDraftRows(shareBoardId),
       this.client
         .from("project_recording_vendor_review_submissions")
         .select(
@@ -1071,6 +1369,7 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
         )
         .eq("share_board_id", shareBoardId)
         .order("revision", { ascending: false })
+        .order("id", { ascending: false })
         .limit(1),
     ]);
 
@@ -1078,8 +1377,9 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       throw submissionResult.error;
     }
 
-    const completedDraftCount =
-      progressByBoard.get(shareBoardId)?.draftCompletedCount ?? 0;
+    const completedDraftCount = draftRows.filter(
+      isAdmissionReviewDraftComplete,
+    ).length;
     const latestRow = (
       (submissionResult.data ?? []) as AdmissionReviewSubmissionRow[]
     )[0];
@@ -1091,24 +1391,17 @@ export class SupabaseAdmissionShareBoardRepository implements AdmissionShareBoar
       };
     }
 
-    const { data: itemData, error: itemError } = await this.client
-      .from("project_recording_vendor_review_submission_items")
-      .select("recording_submission_id, decision, remark, reason_codes")
-      .eq("submission_id", latestRow.id);
-
-    if (itemError) {
-      throw itemError;
-    }
+    const itemRows = await this.listPublicSubmissionReceiptRows(latestRow.id);
 
     const finalReviewByRecording = new Map<
       string,
       PublicAdmissionShareFinalReview
     >(
-      ((itemData ?? []) as PublicSubmissionReceiptItemRow[]).map((item) => [
+      itemRows.map((item) => [
         item.recording_submission_id,
         {
           decision: item.decision,
-          remark: item.remark?.trim() || "",
+          remark: trimPostgresBtrimSpaces(item.remark),
           reasonCodes: item.reason_codes,
           submittedAt: latestRow.submitted_at,
         },
@@ -1146,6 +1439,10 @@ type AdmissionShareBoardRow = {
   allow_external_fallback: boolean;
   review_state: "not_started" | "viewed" | "in_progress" | "submitted_locked";
   round_number: number;
+  brand_snapshot: unknown;
+  brand_version: number;
+  contact_card_id: string | null;
+  contact_card_snapshot: unknown | null;
   created_by: string;
   created_at?: string;
 };
@@ -1220,7 +1517,18 @@ type AdmissionShareBoardWithProjectRow = AdmissionShareBoardRow & {
     | null;
 };
 
+type PublicAdmissionShareBrandLogoAccessRow = {
+  id: string;
+  organization_id: string;
+  access_code_hash: string | null;
+  status: AdmissionShareBoardRecord["status"];
+  expires_at: string;
+  brand_snapshot: unknown;
+};
+
 type PublicShareItemRow = {
+  id: string;
+  sort_order: number;
   application_id: string;
   recording_submission_id: string;
   recording_version: number;
@@ -1234,18 +1542,22 @@ type PublicShareItemRow = {
               id: string;
               display_name: string | null;
               streamer_accounts: Array<{
+                id: string;
                 platform: string | null;
                 account_handle: string | null;
                 is_primary: boolean | null;
+                created_at: string;
               }> | null;
             }
           | Array<{
               id: string;
               display_name: string | null;
               streamer_accounts: Array<{
+                id: string;
                 platform: string | null;
                 account_handle: string | null;
                 is_primary: boolean | null;
+                created_at: string;
               }> | null;
             }>
           | null;
@@ -1258,18 +1570,22 @@ type PublicShareItemRow = {
               id: string;
               display_name: string | null;
               streamer_accounts: Array<{
+                id: string;
                 platform: string | null;
                 account_handle: string | null;
                 is_primary: boolean | null;
+                created_at: string;
               }> | null;
             }
           | Array<{
               id: string;
               display_name: string | null;
               streamer_accounts: Array<{
+                id: string;
                 platform: string | null;
                 account_handle: string | null;
                 is_primary: boolean | null;
+                created_at: string;
               }> | null;
             }>
           | null;
@@ -1290,6 +1606,7 @@ type PublicShareItemRow = {
 };
 
 type PublicSubmissionReceiptItemRow = {
+  id: string;
   recording_submission_id: string;
   decision: Exclude<VendorAdmissionDecision, "pending">;
   remark: string | null;
@@ -1350,6 +1667,9 @@ export async function createAdmissionShareBoard({
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw new Error("Share board requires at least one recording");
   }
+  const contactCardId = normalizeAdmissionShareContactCardId(
+    input.contactCardId,
+  );
 
   const requireAccessCode =
     input.requireAccessCode ?? input.mode === "formal_review";
@@ -1388,20 +1708,22 @@ export async function createAdmissionShareBoard({
   }
 
   const token = tokenFactory();
-  let shareBoard: AdmissionShareBoardRecord;
+  const tokenHash = hashShareSecret(token);
+  let persisted: CreateAdmissionShareBoardPersistenceResult;
   try {
-    shareBoard = await repo.createShareBoardWithItems({
+    persisted = await repo.createShareBoardWithItems({
       organizationId: actor.organizationId,
       projectId,
       title: input.title?.trim() || "Admission recording review",
       purpose: input.purpose?.trim() || "",
       mode: input.mode,
-      tokenHash: hashShareSecret(token),
+      tokenHash,
       accessCodeHash: accessCode
         ? hashAdmissionShareAccessCode(accessCode)
         : null,
       expiresAt,
       allowExternalFallback: input.allowExternalFallback ?? true,
+      contactCardId,
       createdBy: actor.userId,
       items: preflight.items.map((item) => ({
         applicationId: item.applicationId,
@@ -1432,6 +1754,9 @@ export async function createAdmissionShareBoard({
     throw error.originalError;
   }
 
+  const { shareBoard, snapshot } = persisted;
+  const presentation = toInternalAdmissionSharePresentation(snapshot);
+
   if (audit) {
     try {
       await audit({
@@ -1452,8 +1777,16 @@ export async function createAdmissionShareBoard({
           mode: shareBoard.mode,
           expiresAt: shareBoard.expiresAt,
           allowExternalFallback: shareBoard.allowExternalFallback,
+          brandVersion: shareBoard.brandVersion,
+          contactCardId: shareBoard.contactCardId,
         },
-        changedFields: ["share_board", "share_items", "share_event"],
+        changedFields: [
+          "share_board",
+          "share_items",
+          "brand_snapshot",
+          "contact_card_snapshot",
+          "share_event",
+        ],
       });
     } catch {
       // The atomic created event is the primary evidence. Losing the only
@@ -1462,7 +1795,7 @@ export async function createAdmissionShareBoard({
     }
   }
 
-  return { shareBoard, token, accessCode };
+  return { shareBoard, presentation, token, accessCode };
 }
 
 export async function listAdmissionShareBoards({
@@ -1474,6 +1807,55 @@ export async function listAdmissionShareBoards({
   projectId: string;
 }) {
   return repo.listShareBoards(projectId);
+}
+
+export async function listInternalAdmissionShareBoardTasks({
+  repo,
+  projectId,
+  cursor,
+  limit = INTERNAL_SHARE_DEFAULT_PAGE_SIZE,
+}: {
+  repo: AdmissionShareBoardRepository & AdmissionShareBoardInternalReader;
+  actor: AdmissionShareBoardActor;
+  projectId: string;
+  cursor?: string;
+  limit?: number;
+}): Promise<{
+  shareBoards: AdmissionShareBoardTaskRecord[];
+  nextCursor: string | null;
+}> {
+  const decoded =
+    cursor === undefined ? null : decodeAdmissionShareCursor(cursor);
+  const page = await repo.listInternalShareBoardTasks({
+    projectId,
+    beforeCreatedAt: decoded?.createdAt,
+    beforeId: decoded?.id,
+    limit: normalizeInternalSharePageSize(limit),
+  });
+  return {
+    shareBoards: page.tasks,
+    nextCursor: page.nextCursor,
+  };
+}
+
+export async function getInternalAdmissionShareBoardDetail({
+  repo,
+  projectId,
+  shareBoardId,
+}: {
+  repo: AdmissionShareBoardRepository & AdmissionShareBoardInternalReader;
+  actor: AdmissionShareBoardActor;
+  projectId: string;
+  shareBoardId: string;
+}): Promise<AdmissionShareBoardTaskWithPresentation> {
+  const { task, snapshot } = await repo.getInternalShareBoardHydration({
+    projectId,
+    shareBoardId,
+  });
+  return {
+    ...task,
+    presentation: toInternalAdmissionSharePresentation(snapshot),
+  };
 }
 
 export async function extendAdmissionShareBoard({
@@ -1693,7 +2075,7 @@ export async function getPublicAdmissionShareBoardContext({
   onViewAuditError = observeViewAuditError,
 }: GetPublicAdmissionShareBoardInput): Promise<{
   organizationId: string;
-  board: PublicAdmissionShareBoard;
+  board: BrandedPublicAdmissionShareBoard;
 }> {
   const snapshot = await requirePublicSnapshot({
     repo,
@@ -1715,7 +2097,7 @@ export async function getPublicAdmissionShareBoardContext({
 
 export async function getPublicAdmissionShareBoard(
   input: GetPublicAdmissionShareBoardInput,
-): Promise<PublicAdmissionShareBoard> {
+): Promise<BrandedPublicAdmissionShareBoard> {
   return (await getPublicAdmissionShareBoardContext(input)).board;
 }
 
@@ -1734,7 +2116,7 @@ export async function getPublicAdmissionShareBoardContextWithSession({
 }): Promise<{
   organizationId: string;
   allowVendorSubmit: boolean;
-  board: PublicAdmissionShareBoard;
+  board: BrandedPublicAdmissionShareBoard;
   session: PreparedPublicAdmissionShareSession;
 }> {
   const snapshot = await requireAvailablePublicSnapshot({ repo, token, now });
@@ -2091,6 +2473,36 @@ export async function getPublicAdmissionRecordingPlaybackSource({
     recordingUrl: item.recordingUrl,
     storagePath: item.storagePath,
   };
+}
+
+export async function getPublicAdmissionShareBrandLogoPath({
+  repo,
+  accessStore,
+  token,
+  accessCode,
+  sessionToken,
+  now = new Date().toISOString(),
+}: {
+  repo: AdmissionShareBoardRepository;
+  accessStore?: AdmissionShareAccessStore;
+  token: string;
+  accessCode?: string;
+  sessionToken?: string;
+  now?: string;
+}): Promise<string | null> {
+  const access = await requireAvailablePublicBrandLogoAccess({
+    repo,
+    token,
+    now,
+  });
+  await requirePublicSnapshotAccess({
+    snapshot: access,
+    accessStore,
+    accessCode,
+    sessionToken,
+    now,
+  });
+  return normalizedAdmissionShareBrand(access).logoStoragePath;
 }
 
 const admissionSharePlaybackIssueCodes =
@@ -2544,6 +2956,22 @@ function daysFrom(now: string, days: number) {
   return new Date(Date.parse(now) + days * 24 * 60 * 60 * 1000).toISOString();
 }
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function normalizeAdmissionShareContactCardId(
+  value: string | null | undefined,
+): string | null {
+  if (value == null) {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!UUID_PATTERN.test(normalized)) {
+    throw new AdmissionShareContactCardError();
+  }
+  return normalized;
+}
+
 function isAdmissionShareSelectionChangedRpcError(error: unknown) {
   if (!error || typeof error !== "object") {
     return false;
@@ -2552,6 +2980,38 @@ function isAdmissionShareSelectionChangedRpcError(error: unknown) {
   return (
     candidate.code === "P0001" &&
     candidate.message === "admission_share_selection_changed"
+  );
+}
+
+function isAdmissionShareContactCardRpcError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown; message?: unknown };
+  return (
+    candidate.code === "P0001" &&
+    candidate.message === "invalid_organization_contact_card"
+  );
+}
+
+function isAdmissionShareItemLimitRpcError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { code?: unknown; message?: unknown };
+  return (
+    candidate.code === "P0001" &&
+    (candidate.message === "admission_share_item_limit_exceeded" ||
+      candidate.message === "admission_share_hydration_item_limit_exceeded")
+  );
+}
+
+function isAdmissionShareCursorRpcError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { message?: unknown };
+  return (
+    candidate.message === "admission_share_cursor_invalid" ||
+    candidate.message === "admission_share_page_limit_invalid"
   );
 }
 
@@ -2795,14 +3255,16 @@ async function requirePublicSnapshot({
   });
 }
 
-async function requirePublicSnapshotAccess({
+async function requirePublicSnapshotAccess<
+  T extends Pick<AdmissionShareBoardRecord, "id" | "accessCodeHash">,
+>({
   snapshot,
   accessStore,
   accessCode,
   sessionToken,
   now,
 }: {
-  snapshot: PublicAdmissionShareBoardSnapshot;
+  snapshot: T;
   accessStore?: AdmissionShareAccessStore;
   accessCode?: string;
   sessionToken?: string;
@@ -2843,6 +3305,48 @@ async function requirePublicSnapshotAccess({
       : "Access code is required",
     401,
   );
+}
+
+async function requireAvailablePublicBrandLogoAccess({
+  repo,
+  token,
+  now,
+}: {
+  repo: AdmissionShareBoardRepository;
+  token: string;
+  now: string;
+}) {
+  const tokenHash = hashShareSecret(token.trim());
+  if (!repo.getPublicShareBrandLogoAccess) {
+    throw new PublicAdmissionShareError(
+      "SHARE_SERVICE_UNAVAILABLE",
+      "Public share service is unavailable",
+      503,
+    );
+  }
+  const access = await repo.getPublicShareBrandLogoAccess(tokenHash);
+  if (!access) {
+    throw new PublicAdmissionShareError(
+      "SHARE_NOT_AVAILABLE",
+      "Share link is not available",
+      404,
+    );
+  }
+  if (access.status === "revoked") {
+    throw new PublicAdmissionShareError(
+      "SHARE_REVOKED",
+      "Share link is revoked",
+      410,
+    );
+  }
+  if (access.status !== "active" || access.expiresAt <= now) {
+    throw new PublicAdmissionShareError(
+      "SHARE_EXPIRED",
+      "Share link is expired",
+      410,
+    );
+  }
+  return access;
 }
 
 async function requirePublicReviewDraftSnapshot({
@@ -2920,6 +3424,186 @@ function earlierIsoDate(left: string, right: string) {
   return Date.parse(left) <= Date.parse(right) ? left : right;
 }
 
+function recordFromUnknown(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function safeSnapshotText(
+  value: unknown,
+  fallback: string,
+  maxLength: number,
+): string {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  return Array.from(candidate || fallback.trim())
+    .slice(0, maxLength)
+    .join("");
+}
+
+function normalizeInternalSharePageSize(value: number) {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new AdmissionShareCursorError();
+  }
+  return Math.min(value, INTERNAL_SHARE_MAX_PAGE_SIZE);
+}
+
+function encodeAdmissionShareCursor(createdAt: string, id: string) {
+  const canonicalCreatedAt = new Date(createdAt).toISOString();
+  return Buffer.from(
+    JSON.stringify({ createdAt: canonicalCreatedAt, id }),
+    "utf8",
+  ).toString("base64url");
+}
+
+function decodeAdmissionShareCursor(value: string): {
+  createdAt: string;
+  id: string;
+} {
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(value, "base64url").toString("utf8"),
+    ) as Record<string, unknown>;
+    const parsedCreatedAt =
+      typeof decoded.createdAt === "string"
+        ? new Date(decoded.createdAt)
+        : null;
+    if (
+      typeof decoded.createdAt !== "string" ||
+      !parsedCreatedAt ||
+      !Number.isFinite(parsedCreatedAt.getTime()) ||
+      typeof decoded.id !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        decoded.id,
+      )
+    ) {
+      throw new AdmissionShareCursorError();
+    }
+    const canonical = {
+      createdAt: parsedCreatedAt.toISOString(),
+      id: decoded.id.toLowerCase(),
+    };
+    if (
+      encodeAdmissionShareCursor(canonical.createdAt, canonical.id) !== value
+    ) {
+      throw new AdmissionShareCursorError();
+    }
+    return canonical;
+  } catch (error) {
+    if (error instanceof AdmissionShareCursorError) {
+      throw error;
+    }
+    throw new AdmissionShareCursorError();
+  }
+}
+
+function optionalSnapshotText(
+  value: unknown,
+  maxLength: number,
+): string | undefined {
+  const candidate = safeSnapshotText(value, "", maxLength);
+  return candidate || undefined;
+}
+
+function pickPublicContactCard(
+  value: unknown,
+): PublicAdmissionShareContactCard | null {
+  const source = recordFromUnknown(value);
+  const displayName = safeSnapshotText(source.displayName, "", 40);
+  if (!displayName) {
+    return null;
+  }
+
+  const phone = optionalSnapshotText(source.phone, 30);
+  const email = optionalSnapshotText(source.email, 120);
+  const wechat = optionalSnapshotText(source.wechat, 60);
+  return {
+    displayName,
+    title: safeSnapshotText(source.title, "", 40),
+    ...(phone ? { phone } : {}),
+    ...(email ? { email } : {}),
+    ...(wechat ? { wechat } : {}),
+  };
+}
+
+export function toAdmissionShareIdentityPresentation(
+  snapshot: Pick<
+    AdmissionShareBoardRecord,
+    "organizationId" | "brandSnapshot" | "contactCardSnapshot"
+  >,
+): Pick<AdmissionSharePresentation, "brand" | "contactCard"> {
+  const brand = normalizedAdmissionShareBrand(snapshot);
+
+  return {
+    brand: {
+      logoText: brand.logoText,
+      brandName: brand.brandName,
+      brandTagline: brand.brandTagline,
+      primaryColor: brand.primaryColor,
+    },
+    contactCard: pickPublicContactCard(snapshot.contactCardSnapshot),
+  };
+}
+
+function normalizedAdmissionShareBrand(
+  snapshot: Pick<AdmissionShareBoardRecord, "organizationId" | "brandSnapshot">,
+) {
+  const rawBrand = recordFromUnknown(snapshot.brandSnapshot);
+  const schemaIsTrusted =
+    rawBrand.schemaVersion === undefined || rawBrand.schemaVersion === 1;
+  const organizationName = schemaIsTrusted
+    ? safeSnapshotText(rawBrand.brandName, "组织", 40)
+    : "组织";
+  return normalizePublishedBrand(snapshot.brandSnapshot, {
+    organizationId: snapshot.organizationId,
+    organizationName,
+  });
+}
+
+export function toAdmissionSharePresentation(
+  snapshot: AdmissionSharePresentationSnapshot,
+): AdmissionSharePresentation {
+  return {
+    title: snapshot.title,
+    purpose: snapshot.purpose,
+    mode: snapshot.mode,
+    status: snapshot.status,
+    reviewState: snapshot.reviewState,
+    roundNumber: snapshot.roundNumber,
+    expiresAt: snapshot.expiresAt,
+    project: snapshot.project,
+    progress: snapshot.progress,
+    latestSubmission: snapshot.latestSubmission,
+    ...toAdmissionShareIdentityPresentation(snapshot),
+    items: snapshot.items.map((item) => ({
+      applicationId: item.applicationId,
+      recordingSubmissionId: item.recordingSubmissionId,
+      recordingVersion: item.recordingVersion,
+      sourceHealth: item.sourceHealth,
+      streamer: item.streamer,
+      finalReview: item.finalReview,
+    })),
+  };
+}
+
+export function toInternalAdmissionSharePresentation(
+  snapshot: AdmissionSharePresentationSnapshot,
+): InternalAdmissionSharePresentation {
+  return {
+    id: snapshot.id,
+    ...toAdmissionSharePresentation(snapshot),
+    brandVersion: snapshot.brandVersion ?? 0,
+    contactCardId: snapshot.contactCardId ?? null,
+    sourceDiagnostics: snapshot.items.map((item) => ({
+      recordingSubmissionId: item.recordingSubmissionId,
+      applicationStatus: item.applicationStatus,
+      recordingStatus: item.recordingStatus,
+      hasPrivateStorage: item.hasPrivateStorage ?? Boolean(item.storagePath),
+      externalUrl: normalizeAbsoluteHttpUrl(item.recordingUrl),
+    })),
+  };
+}
+
 function publicAdmissionShareContext(
   snapshot: PublicAdmissionShareBoardSnapshot,
   token: string,
@@ -2933,28 +3617,25 @@ function publicAdmissionShareContext(
 function toPublicShareDto(
   snapshot: PublicAdmissionShareBoardSnapshot,
   input: { token: string },
-): PublicAdmissionShareBoard {
+): BrandedPublicAdmissionShareBoard {
+  const presentation = toAdmissionSharePresentation(snapshot);
+  const normalizedBrand = normalizedAdmissionShareBrand(snapshot);
+  const hasLogo = Boolean(normalizedBrand.logoStoragePath);
   return {
     id: snapshot.id,
-    title: snapshot.title,
-    purpose: snapshot.purpose,
-    mode: snapshot.mode,
-    status: snapshot.status,
-    reviewState: snapshot.reviewState,
-    roundNumber: snapshot.roundNumber,
-    expiresAt: snapshot.expiresAt,
+    ...presentation,
+    brand: {
+      ...presentation.brand,
+      version: normalizedBrand.version,
+      logoUrl: hasLogo ? publicAdmissionShareBrandLogoUrl(input.token) : null,
+    },
     canSubmit:
       snapshot.mode === "formal_review" &&
       snapshot.status === "active" &&
       snapshot.reviewState !== "submitted_locked",
     allowExternalFallback: snapshot.allowExternalFallback,
-    project: snapshot.project,
-    progress: snapshot.progress,
-    latestSubmission: snapshot.latestSubmission,
-    items: snapshot.items.map((item) => ({
-      applicationId: item.applicationId,
-      recordingSubmissionId: item.recordingSubmissionId,
-      recordingVersion: item.recordingVersion,
+    items: snapshot.items.map((item, index) => ({
+      ...presentation.items[index],
       playbackUrl: publicAdmissionRecordingPlaybackUrl({
         token: input.token,
         recordingSubmissionId: item.recordingSubmissionId,
@@ -2962,12 +3643,13 @@ function toPublicShareDto(
       externalUrl: snapshot.allowExternalFallback
         ? normalizeAbsoluteHttpUrl(item.recordingUrl)
         : null,
-      sourceHealth: item.sourceHealth,
       hasPrivateStorage: Boolean(item.storagePath),
-      streamer: item.streamer,
-      finalReview: item.finalReview,
     })),
   };
+}
+
+function publicAdmissionShareBrandLogoUrl(token: string) {
+  return `/api/public/admission-share/${encodeURIComponent(token)}/brand-logo`;
 }
 
 function publicAdmissionRecordingPlaybackUrl(input: {
@@ -3102,8 +3784,47 @@ function toShareBoardRecord(
     allowExternalFallback: row.allow_external_fallback,
     reviewState: row.review_state,
     roundNumber: row.round_number,
+    brandSnapshot: row.brand_snapshot,
+    brandVersion: row.brand_version,
+    contactCardId: row.contact_card_id,
+    contactCardSnapshot: row.contact_card_snapshot,
     createdBy: row.created_by,
     createdAt: row.created_at,
+  };
+}
+
+function toCreatedShareBoardRecord(
+  value: Record<string, unknown>,
+  input: CreateAdmissionShareBoardPersistenceInput,
+): AdmissionShareBoardRecord {
+  return {
+    id: String(value.id ?? ""),
+    organizationId: String(value.organizationId ?? input.organizationId),
+    projectId: String(value.projectId ?? input.projectId),
+    title: String(value.title ?? input.title),
+    purpose: String(value.purpose ?? input.purpose),
+    mode: (value.mode ?? input.mode) as AdmissionShareMode,
+    tokenHash: input.tokenHash,
+    accessCodeHash: input.accessCodeHash,
+    status: (value.status ?? "active") as AdmissionShareBoardRecord["status"],
+    expiresAt: String(value.expiresAt ?? input.expiresAt),
+    allowVendorSubmit: Boolean(
+      value.allowVendorSubmit ?? input.mode === "formal_review",
+    ),
+    allowExternalFallback: Boolean(
+      value.allowExternalFallback ?? input.allowExternalFallback,
+    ),
+    reviewState: (value.reviewState ??
+      "not_started") as AdmissionShareBoardRecord["reviewState"],
+    roundNumber: Number(value.roundNumber ?? 0),
+    brandSnapshot: value.brandSnapshot,
+    brandVersion: Number(value.brandVersion ?? 0),
+    contactCardId:
+      typeof value.contactCardId === "string" ? value.contactCardId : null,
+    contactCardSnapshot: value.contactCardSnapshot ?? null,
+    createdBy: String(value.createdBy ?? input.createdBy),
+    createdAt:
+      typeof value.createdAt === "string" ? value.createdAt : undefined,
   };
 }
 
@@ -3279,17 +4000,65 @@ function toAdmissionSharePlaybackIssueDto(
   };
 }
 
+async function collectBoundedPublicRows<T>(
+  loadPage: (from: number, to: number) => Promise<T[]>,
+): Promise<T[]> {
+  const rows: T[] = [];
+
+  for (let from = 0; ; from += PUBLIC_SHARE_COLLECTION_PAGE_SIZE) {
+    const to = Math.min(
+      from + PUBLIC_SHARE_COLLECTION_PAGE_SIZE - 1,
+      ADMISSION_SHARE_MAX_ITEMS,
+    );
+    const page = await loadPage(from, to);
+
+    if (from === ADMISSION_SHARE_MAX_ITEMS) {
+      if (page.length > 0) throw new AdmissionShareItemLimitError();
+      return rows;
+    }
+
+    rows.push(...page);
+    if (page.length < PUBLIC_SHARE_COLLECTION_PAGE_SIZE) return rows;
+  }
+}
+
+function isAdmissionReviewDraftComplete(row: AdmissionReviewDraftRow) {
+  if (row.decision === "selected" || row.decision === "backup") return true;
+  if (row.decision !== "rejected" && row.decision !== "needs_changes") {
+    return false;
+  }
+
+  // PostgreSQL btrim(text) removes U+0020 spaces by default, not every JS
+  // whitespace character. Keep public progress identical to the SQL aggregate.
+  return /[^ ]/u.test(row.remark ?? "");
+}
+
+function trimPostgresBtrimSpaces(value: string | null) {
+  return (value ?? "").replace(/^ +| +$/gu, "");
+}
+
 function accountLabel(
   accounts:
     | Array<{
+        id: string;
         platform: string | null;
         account_handle: string | null;
         is_primary: boolean | null;
+        created_at: string;
       }>
     | null
     | undefined,
 ) {
-  const account = accounts?.find((item) => item.is_primary) ?? accounts?.[0];
+  const account = [...(accounts ?? [])].sort((left, right) => {
+    if (left.is_primary !== right.is_primary) {
+      return left.is_primary ? -1 : 1;
+    }
+    if (left.created_at !== right.created_at) {
+      return left.created_at < right.created_at ? -1 : 1;
+    }
+    if (left.id === right.id) return 0;
+    return left.id < right.id ? -1 : 1;
+  })[0];
   return [account?.platform?.trim(), account?.account_handle?.trim()]
     .filter(Boolean)
     .join(" / ");

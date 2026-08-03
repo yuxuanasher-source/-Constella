@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -9,7 +10,77 @@ const referenceSource = fs.readFileSync(
   "utf8",
 );
 
+function hasStaticAdmissionShareCenterImport(source) {
+  const sourceFile = ts.createSourceFile(
+    "static-import-check.jsx",
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.JSX,
+  );
+  return sourceFile.statements.some(
+    (statement) =>
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteralLike(statement.moduleSpecifier) &&
+      statement.moduleSpecifier.text === "./admission-share-center",
+  );
+}
+
 describe("OpsReferenceApp scene splitting", () => {
+  it.each([
+    [
+      "named",
+      'import { AdmissionShareCenter } from "./admission-share-center";',
+    ],
+    [
+      "aliased named",
+      'import { AdmissionShareCenter as EagerAdmissionShareCenter } from "./admission-share-center";',
+    ],
+    ["default", 'import AdmissionShareCenter from "./admission-share-center";'],
+    [
+      "namespace",
+      'import * as admissionShare from "./admission-share-center";',
+    ],
+    ["side effect", 'import "./admission-share-center";'],
+    [
+      "multiline",
+      `import {
+  AdmissionShareCenter as EagerAdmissionShareCenter,
+} from "./admission-share-center";`,
+    ],
+  ])("detects a %s static admission share import", (_form, source) => {
+    expect(hasStaticAdmissionShareCenterImport(source)).toBe(true);
+  });
+
+  it("does not classify a dynamic admission share import as static", () => {
+    expect(
+      hasStaticAdmissionShareCenterImport(
+        'const module = await import("./admission-share-center");',
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps AdmissionShareCenter in the admission lazy chunk and injects it during configuration", () => {
+    const admissionLoader = referenceSource.slice(
+      referenceSource.indexOf("const ScreenAdmission = lazy"),
+      referenceSource.indexOf("const ScreenSettlement = lazy"),
+    );
+    const admissionDependencies = referenceSource.slice(
+      referenceSource.indexOf("const ADMISSION_SCENE_DEPENDENCIES = {"),
+      referenceSource.indexOf(
+        "\n};",
+        referenceSource.indexOf("const ADMISSION_SCENE_DEPENDENCIES = {"),
+      ),
+    );
+
+    expect(hasStaticAdmissionShareCenterImport(referenceSource)).toBe(false);
+    expect(admissionLoader).toContain('import("./admission-share-center")');
+    expect(admissionLoader).toMatch(
+      /configureAdmissionScene\(\s*\{[\s\S]*\.\.\.ADMISSION_SCENE_DEPENDENCIES,[\s\S]*AdmissionShareCenter:\s*\w+\.AdmissionShareCenter[\s\S]*\}\s*\)/,
+    );
+    expect(admissionDependencies).not.toMatch(/\bAdmissionShareCenter\b/);
+  });
+
   it("loads the knowledge base through a dedicated lazy scene and stable fallback", () => {
     const knowledgeSceneSource = fs.readFileSync(
       path.join(currentDirectory, "scenes", "knowledge-base-scene.jsx"),

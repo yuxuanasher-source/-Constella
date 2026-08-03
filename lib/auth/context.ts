@@ -1,13 +1,20 @@
-import type { SupabaseClient, User } from "@supabase/supabase-js";
+import {
+  AuthInvalidJwtError,
+  isAuthApiError,
+  isAuthRetryableFetchError,
+  isAuthSessionMissingError,
+  type SupabaseClient,
+  type User,
+} from "@supabase/supabase-js";
 import { cache } from "react";
 
+import {
+  normalizePublishedBrand,
+  type PublishedOrganizationBrand,
+} from "@/features/organizations/organization-brand";
 import { appRoles, type AppRole } from "@/lib/rbac/roles";
 
-export type OrganizationBranding = {
-  logoText?: string;
-  brandName?: string;
-  brandTagline?: string;
-};
+export type OrganizationBranding = PublishedOrganizationBrand;
 
 export type AuthContext = {
   userId: string;
@@ -22,9 +29,57 @@ export type AuthContext = {
   requiresOnboarding?: boolean;
 };
 
+export class AuthContextUnavailableError extends Error {
+  constructor() {
+    super("Authentication context is unavailable");
+    this.name = "AuthContextUnavailableError";
+  }
+}
+
+const invalidSessionCodes = new Set([
+  "bad_jwt",
+  "session_not_found",
+  "session_expired",
+  "refresh_token_not_found",
+  "refresh_token_already_used",
+  "no_authorization",
+]);
+
+const infrastructureAuthCodes = new Set([
+  "request_timeout",
+  "hook_timeout",
+  "hook_timeout_after_retry",
+  "over_request_rate_limit",
+  "over_email_send_rate_limit",
+  "over_sms_send_rate_limit",
+]);
+
+function isRejectedSessionError(error: unknown): boolean {
+  if (isAuthSessionMissingError(error)) {
+    return true;
+  }
+  if (isAuthRetryableFetchError(error)) {
+    return false;
+  }
+  if (error instanceof AuthInvalidJwtError) {
+    return true;
+  }
+  if (!isAuthApiError(error)) {
+    return false;
+  }
+  if (error.status >= 500 || infrastructureAuthCodes.has(error.code ?? "")) {
+    return false;
+  }
+  return (
+    invalidSessionCodes.has(error.code ?? "") ||
+    error.status === 401 ||
+    error.status === 403
+  );
+}
+
 type OrganizationRow = {
   name: string;
-  branding?: OrganizationBranding | null;
+  branding?: unknown;
 };
 
 type MembershipRow = {
@@ -75,11 +130,21 @@ function pickPrimaryMembership(
 export const getAuthenticatedUser = cache(async function getAuthenticatedUser(
   supabase: SupabaseClient,
 ): Promise<User | null> {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let result: Awaited<ReturnType<typeof supabase.auth.getUser>>;
+  try {
+    result = await supabase.auth.getUser();
+  } catch {
+    throw new AuthContextUnavailableError();
+  }
 
-  return user ?? null;
+  if (result.error) {
+    if (isRejectedSessionError(result.error)) {
+      return null;
+    }
+    throw new AuthContextUnavailableError();
+  }
+
+  return result.data.user ?? null;
 });
 
 // React.cache: 同一次 SSR 请求内以 client 实例为键去重。配合请求级缓存的
@@ -107,7 +172,9 @@ export const getAuthContext = cache(async function getAuthContext(
       .maybeSingle<ProfileRow>(),
     supabase
       .from("organization_members")
-      .select("organization_id, role, organizations(name, branding), created_at")
+      .select(
+        "organization_id, role, organizations(name, branding), created_at",
+      )
       .eq("user_id", user.id)
       .eq("status", "active")
       // Deterministic primary-org selection: earliest joined, stable id
@@ -115,7 +182,13 @@ export const getAuthContext = cache(async function getAuthContext(
       .order("created_at", { ascending: true })
       .order("organization_id", { ascending: true })
       .returns<MembershipRow[]>(),
-  ]);
+  ]).catch(() => {
+    throw new AuthContextUnavailableError();
+  });
+
+  if (profileResult.error || membershipResult.error) {
+    throw new AuthContextUnavailableError();
+  }
 
   const profile = profileResult.data;
   const membership = pickPrimaryMembership(membershipResult.data ?? []);
@@ -127,35 +200,21 @@ export const getAuthContext = cache(async function getAuthContext(
   const organization = Array.isArray(membership.organizations)
     ? membership.organizations[0]
     : membership.organizations;
+  const organizationName = organization?.name ?? "未选择组织";
 
   return {
     userId: user.id,
     email: user.email,
     name: profile?.full_name ?? user.email,
     organizationId: membership.organization_id,
-    organizationName: organization?.name ?? "未选择组织",
-    organizationBranding: normalizeBranding(organization?.branding),
+    organizationName,
+    organizationBranding: normalizePublishedBrand(organization?.branding, {
+      organizationId: membership.organization_id,
+      organizationName,
+    }),
     avatarText: profile?.avatar_text ?? null,
     avatarUrl: profile?.avatar_url ?? null,
     role: membership.role,
     requiresOnboarding: profile?.requires_onboarding ?? false,
   };
 });
-
-function normalizeBranding(
-  input: OrganizationBranding | null | undefined,
-): OrganizationBranding | null {
-  if (!input || typeof input !== "object") {
-    return null;
-  }
-  const pick = (value: unknown) =>
-    typeof value === "string" && value.trim() ? value.trim() : undefined;
-  const branding: OrganizationBranding = {
-    logoText: pick(input.logoText),
-    brandName: pick(input.brandName),
-    brandTagline: pick(input.brandTagline),
-  };
-  return branding.logoText || branding.brandName || branding.brandTagline
-    ? branding
-    : null;
-}

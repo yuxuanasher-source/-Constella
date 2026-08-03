@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 type PackageManifest = {
   name?: string;
   version: string;
+  dependencies?: Record<string, string>;
 };
 
 type ResolvedPackage = {
@@ -71,6 +72,7 @@ function resolvePackageFrom(
 
 describe("production dependency security contract", () => {
   const projectPackageJsonPath = resolve(process.cwd(), "package.json");
+  const projectManifest = readManifest(projectPackageJsonPath);
   const workspace = readProjectFile("pnpm-workspace.yaml");
   const lockfile = readProjectFile("pnpm-lock.yaml");
   const nextConfig = readProjectFile("next.config.ts");
@@ -85,7 +87,7 @@ describe("production dependency security contract", () => {
     "@playwright/test",
   );
   const postcss = resolvePackageFrom(next.packageJsonPath, "postcss");
-  const sharp = resolvePackageFrom(next.packageJsonPath, "sharp");
+  const sharp = resolvePackageFrom(projectPackageJsonPath, "sharp");
 
   const exceljs = resolvePackageFrom(projectPackageJsonPath, "exceljs");
   const archiver = resolvePackageFrom(exceljs.packageJsonPath, "archiver");
@@ -140,6 +142,10 @@ describe("production dependency security contract", () => {
   it("resolves the patched framework dependency releases", () => {
     expect(playwright.version).toBe("1.55.1");
     expect(postcss.version).toBe("8.5.18");
+  });
+
+  it("pins Sharp as an exact direct production dependency", () => {
+    expect(projectManifest.dependencies?.sharp).toBe("0.35.0");
     expect(sharp.version).toBe("0.35.0");
   });
 

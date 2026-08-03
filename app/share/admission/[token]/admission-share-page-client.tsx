@@ -29,7 +29,7 @@ import {
 import { AdmissionShareReviewWorkspace } from "./admission-share-review-workspace";
 import type {
   AdmissionSharePlaybackSource,
-  PublicAdmissionShareBoard,
+  BrandedPublicAdmissionShareBoard as PublicAdmissionShareBoard,
   ReviewDraft,
   ReviewDraftSaveState,
   VendorCheckpointOption,
@@ -38,6 +38,7 @@ import type {
 type AdmissionSharePageClientProps = {
   token: string;
   initialAccessCode?: string;
+  brandUiEnabled?: boolean;
 };
 
 type PageError = {
@@ -63,6 +64,7 @@ const emptyDraft = (): ReviewDraft => ({
 export default function AdmissionSharePageClient({
   token,
   initialAccessCode = "",
+  brandUiEnabled = false,
 }: AdmissionSharePageClientProps) {
   const [board, setBoard] = useState<PublicAdmissionShareBoard | null>(null);
   const [reasonOptions, setReasonOptions] = useState<VendorCheckpointOption[]>(
@@ -562,8 +564,7 @@ export default function AdmissionSharePageClient({
         const response = await loadAdmissionShareBoard(token);
         const remoteDrafts =
           response.shareBoard.mode === "formal_review"
-            ? (response.reviewDrafts ??
-              (await loadAdmissionShareDrafts(token)))
+            ? (response.reviewDrafts ?? (await loadAdmissionShareDrafts(token)))
             : [];
         if (!mountedRef.current || loadEpoch !== loadEpochRef.current) {
           return;
@@ -941,48 +942,55 @@ export default function AdmissionSharePageClient({
   return (
     <main className="min-h-screen bg-[var(--bg)] text-[var(--ink-900)]">
       <div className="mx-auto flex w-full max-w-[1480px] flex-col gap-4 px-3 py-4 sm:px-5 lg:px-6">
-        <header className="flex flex-col gap-4 border-b border-[var(--line)] pb-4 md:flex-row md:items-end md:justify-between">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--blue-600)]">
-                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                受控录屏复核
-              </span>
-              {board ? (
-                <span className="text-[var(--ink-500)]">
-                  第 {board.roundNumber} 轮 ·{" "}
-                  {board.mode === "formal_review" ? "正式复核" : "预览"}
+        {brandUiEnabled && board ? (
+          <BrandedShareHeader
+            board={board}
+            completedDraftCount={completedDraftCount}
+          />
+        ) : (
+          <header className="flex flex-col gap-4 border-b border-[var(--line)] pb-4 md:flex-row md:items-end md:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--blue-600)]">
+                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                  受控录屏复核
                 </span>
+                {board ? (
+                  <span className="text-[var(--ink-500)]">
+                    第 {board.roundNumber} 轮 ·{" "}
+                    {board.mode === "formal_review" ? "正式复核" : "预览"}
+                  </span>
+                ) : null}
+              </div>
+              <h1 className="mt-2 truncate text-xl font-semibold tracking-normal text-[var(--ink-900)]">
+                {board?.title || board?.project.name || "录屏复核工作台"}
+              </h1>
+              {board ? (
+                <p className="mt-1 max-w-[72ch] text-sm leading-6 text-[var(--ink-500)]">
+                  {[board.project.name, board.purpose]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
               ) : null}
             </div>
-            <h1 className="mt-2 truncate text-xl font-semibold tracking-normal text-[var(--ink-900)]">
-              {board?.title || board?.project.name || "录屏复核工作台"}
-            </h1>
             {board ? (
-              <p className="mt-1 max-w-[72ch] text-sm leading-6 text-[var(--ink-500)]">
-                {[board.project.name, board.purpose]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </p>
+              <dl className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs">
+                <div>
+                  <dt className="text-[var(--ink-500)]">进度</dt>
+                  <dd className="mt-0.5 font-semibold tabular-nums">
+                    {completedDraftCount}/{board.items.length}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[var(--ink-500)]">截止时间</dt>
+                  <dd className="mt-0.5 font-semibold">
+                    {formatDateTime(board.expiresAt)}
+                  </dd>
+                </div>
+              </dl>
             ) : null}
-          </div>
-          {board ? (
-            <dl className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs">
-              <div>
-                <dt className="text-[var(--ink-500)]">进度</dt>
-                <dd className="mt-0.5 font-semibold tabular-nums">
-                  {completedDraftCount}/{board.items.length}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[var(--ink-500)]">截止时间</dt>
-                <dd className="mt-0.5 font-semibold">
-                  {formatDateTime(board.expiresAt)}
-                </dd>
-              </div>
-            </dl>
-          ) : null}
-        </header>
+          </header>
+        )}
 
         {pageError && !needsAccessCode ? (
           <div
@@ -1037,7 +1045,9 @@ export default function AdmissionSharePageClient({
           </div>
         ) : null}
 
-        {isLoading ? <WorkspaceSkeleton /> : null}
+        {isLoading ? (
+          <WorkspaceSkeleton brandUiEnabled={brandUiEnabled} />
+        ) : null}
 
         {!isLoading && needsAccessCode && !board ? (
           <AccessCodePanel
@@ -1073,6 +1083,7 @@ export default function AdmissionSharePageClient({
               reportPlaybackIssue(recordingSubmissionId, sourceType)
             }
             reasonOptions={reasonOptions}
+            brandUiEnabled={brandUiEnabled}
           />
         ) : null}
       </div>
@@ -1088,6 +1099,134 @@ export default function AdmissionSharePageClient({
         />
       ) : null}
     </main>
+  );
+}
+
+function BrandedShareHeader({
+  board,
+  completedDraftCount,
+}: {
+  board: PublicAdmissionShareBoard;
+  completedDraftCount: number;
+}) {
+  const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null);
+  const showLogo =
+    Boolean(board.brand.logoUrl) && failedLogoUrl !== board.brand.logoUrl;
+  const brandTint = `color-mix(in srgb, ${board.brand.primaryColor} 10%, white)`;
+
+  return (
+    <header className="border-b border-[var(--line)] pb-4">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <div
+            className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border bg-white text-sm font-bold text-[var(--ink-900)]"
+            style={{
+              borderColor: board.brand.primaryColor,
+              backgroundColor: brandTint,
+            }}
+          >
+            {showLogo ? (
+              // The logo route is cookie-gated, so it must load directly in the
+              // browser instead of through the Next image optimization proxy.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={board.brand.logoUrl ?? undefined}
+                alt={`${board.brand.brandName} LOGO`}
+                className="h-full w-full object-contain"
+                onError={() => setFailedLogoUrl(board.brand.logoUrl)}
+              />
+            ) : (
+              <span aria-label={`${board.brand.brandName} 字标`}>
+                {board.brand.logoText}
+              </span>
+            )}
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className="inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold text-[var(--ink-700)]"
+                style={{
+                  borderColor: board.brand.primaryColor,
+                  backgroundColor: brandTint,
+                }}
+              >
+                组织官方分享
+              </span>
+              <span className="text-xs text-[var(--ink-500)]">
+                第 {board.roundNumber} 轮 ·{" "}
+                {board.mode === "formal_review" ? "正式复核" : "预览"}
+              </span>
+            </div>
+            <p className="mt-1 truncate text-lg font-semibold text-[var(--ink-900)]">
+              {board.brand.brandName}
+            </p>
+            {board.brand.brandTagline ? (
+              <p className="mt-0.5 max-w-[65ch] text-sm leading-5 text-[var(--ink-500)]">
+                {board.brand.brandTagline}
+              </p>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="min-w-0 xl:max-w-[58%] xl:text-right">
+          <p className="text-xs font-medium text-[var(--ink-500)]">
+            {board.project.code ? `${board.project.code} · ` : ""}
+            {board.project.name}
+          </p>
+          <h1 className="mt-1 truncate text-xl font-semibold tracking-normal text-[var(--ink-900)]">
+            {board.title || board.project.name}
+          </h1>
+          {board.purpose ? (
+            <p className="mt-1 text-sm leading-5 text-[var(--ink-500)]">
+              {board.purpose}
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-3 border-t border-[var(--line)] pt-3 sm:flex-row sm:items-start sm:justify-between">
+        <dl className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs">
+          <div>
+            <dt className="text-[var(--ink-500)]">进度</dt>
+            <dd className="mt-0.5 font-semibold tabular-nums">
+              {completedDraftCount}/{board.items.length}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[var(--ink-500)]">截止时间</dt>
+            <dd className="mt-0.5 font-semibold">
+              {formatDateTime(board.expiresAt)}
+            </dd>
+          </div>
+        </dl>
+
+        {board.contactCard ? (
+          <address
+            aria-label="商务对接"
+            className="flex max-w-full flex-wrap items-baseline gap-x-3 gap-y-1 text-xs not-italic text-[var(--ink-700)] sm:justify-end"
+          >
+            <span className="font-semibold text-[var(--ink-900)]">
+              商务对接
+            </span>
+            <span>{board.contactCard.displayName}</span>
+            {board.contactCard.title ? (
+              <span className="text-[var(--ink-500)]">
+                {board.contactCard.title}
+              </span>
+            ) : null}
+            {board.contactCard.phone ? (
+              <span>{board.contactCard.phone}</span>
+            ) : null}
+            {board.contactCard.email ? (
+              <span>{board.contactCard.email}</span>
+            ) : null}
+            {board.contactCard.wechat ? (
+              <span>微信 {board.contactCard.wechat}</span>
+            ) : null}
+          </address>
+        ) : null}
+      </div>
+    </header>
   );
 }
 
@@ -1337,7 +1476,36 @@ function LockedReviewReceipt({ board }: { board: PublicAdmissionShareBoard }) {
   );
 }
 
-function WorkspaceSkeleton() {
+function WorkspaceSkeleton({ brandUiEnabled }: { brandUiEnabled: boolean }) {
+  if (brandUiEnabled) {
+    return (
+      <section
+        aria-label="正在读取复核工作台"
+        role="status"
+        aria-live="polite"
+        className="grid min-h-[680px] overflow-hidden rounded-lg border border-[var(--line)] bg-white lg:grid-cols-[280px_minmax(0,1fr)_340px]"
+      >
+        <span className="sr-only">正在读取复核工作台…</span>
+        <div className="animate-pulse border-r border-[var(--line)] bg-[var(--bg-soft)] p-4 motion-reduce:animate-none">
+          <div className="h-4 w-24 rounded bg-[var(--ink-100)]" />
+          <div className="mt-5 grid gap-3">
+            <div className="h-14 rounded bg-white" />
+            <div className="h-14 rounded bg-white" />
+            <div className="h-14 rounded bg-white" />
+          </div>
+        </div>
+        <div className="recording-media-stage p-5">
+          <div className="recording-media-canvas animate-pulse motion-reduce:animate-none" />
+        </div>
+        <div className="animate-pulse border-l border-[var(--line)] p-5 motion-reduce:animate-none">
+          <div className="h-4 w-28 rounded bg-[var(--ink-100)]" />
+          <div className="mt-5 h-24 rounded bg-[var(--ink-50)]" />
+          <div className="mt-4 h-28 rounded bg-[var(--ink-50)]" />
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section
       aria-label="正在读取复核工作台"

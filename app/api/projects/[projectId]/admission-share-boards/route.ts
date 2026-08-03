@@ -4,10 +4,13 @@ import {
   AdmissionShareFormalRoundConflictError,
   AdmissionShareSelectionError,
   createAdmissionShareBoard,
-  listAdmissionShareBoards,
+  getInternalAdmissionShareBoardDetail,
+  listInternalAdmissionShareBoardTasks,
   SupabaseAdmissionShareBoardRepository,
+  toAdmissionShareIdentityPresentation,
   type AdmissionShareBoardRecord,
   type AdmissionShareBoardTaskRecord,
+  type AdmissionShareBoardTaskWithPresentation,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareCandidateRepository } from "@/features/applications/admission-share-candidates";
 import {
@@ -30,7 +33,7 @@ import { getPublicRequestOrigin } from "@/lib/http/public-request-origin";
 import { isMcnStaff } from "@/lib/rbac/roles";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   try {
@@ -39,18 +42,62 @@ export async function GET(
     assertMcnStaff(context.auth.role);
 
     const repo = new SupabaseAdmissionShareBoardRepository(context.supabase);
-    const shareBoards = await listAdmissionShareBoards({
+    const url = new URL(request.url);
+    const boardIdValue = url.searchParams.get("boardId");
+    if (boardIdValue !== null) {
+      if (url.searchParams.has("cursor") || url.searchParams.has("limit")) {
+        throw new RouteError(
+          "boardId cannot be combined with list pagination",
+          400,
+        );
+      }
+      const shareBoardId = admissionShareBoardId(boardIdValue);
+      const shareBoard = await getInternalAdmissionShareBoardDetail({
+        repo,
+        actor: actorFromContext(context),
+        projectId,
+        shareBoardId,
+      });
+      return NextResponse.json({
+        shareBoard: toSafeShareBoardDetail(shareBoard),
+      });
+    }
+    const cursor = url.searchParams.has("cursor")
+      ? (url.searchParams.get("cursor") ?? "")
+      : undefined;
+    if (cursor === "") {
+      throw new RouteError("cursor must not be empty", 400);
+    }
+    const limit = admissionSharePageLimit(url.searchParams.get("limit"));
+    const page = await listInternalAdmissionShareBoardTasks({
       repo,
       actor: actorFromContext(context),
       projectId,
+      cursor,
+      limit,
     });
 
     return NextResponse.json({
-      shareBoards: shareBoards.map(toSafeShareBoardTask),
+      shareBoards: page.shareBoards.map(toSafeShareBoardTask),
+      nextCursor: page.nextCursor,
     });
   } catch (error) {
     return jsonError(error);
   }
+}
+
+function admissionSharePageLimit(value: string | null) {
+  if (value === null) {
+    return 20;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 50) {
+    throw new RouteError(
+      "Share board page limit must be between 1 and 50",
+      400,
+    );
+  }
+  return parsed;
 }
 
 export async function POST(
@@ -93,6 +140,7 @@ export async function POST(
           typeof body.allowExternalFallback === "boolean"
             ? body.allowExternalFallback
             : undefined,
+        contactCardId: admissionShareContactCardId(body.contactCardId),
         items: admissionShareSelectionItems(body.items),
       },
     });
@@ -102,7 +150,10 @@ export async function POST(
       getPublicRequestOrigin(request),
     );
     return NextResponse.json({
-      shareBoard: toSafeShareBoard(result.shareBoard),
+      shareBoard: {
+        ...toSafeShareBoard(result.shareBoard),
+        presentation: result.presentation,
+      },
       shareUrl: shareUrl.toString(),
       accessCode: result.accessCode,
     });
@@ -159,6 +210,9 @@ function toSafeShareBoard(shareBoard: AdmissionShareBoardRecord) {
     allowExternalFallback: shareBoard.allowExternalFallback,
     reviewState: shareBoard.reviewState,
     roundNumber: shareBoard.roundNumber,
+    brandVersion: shareBoard.brandVersion,
+    contactCardId: shareBoard.contactCardId,
+    ...toAdmissionShareIdentityPresentation(shareBoard),
     createdBy: shareBoard.createdBy,
     createdAt: shareBoard.createdAt,
   };
@@ -185,8 +239,43 @@ function toSafeShareBoardTask(shareBoard: AdmissionShareBoardTaskRecord) {
   };
 }
 
+function toSafeShareBoardDetail(
+  shareBoard: AdmissionShareBoardTaskWithPresentation,
+) {
+  return {
+    ...toSafeShareBoardTask(shareBoard),
+    presentation: shareBoard.presentation,
+  };
+}
+
 function optionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function admissionShareBoardId(value: string) {
+  const normalized = value.trim();
+  if (!UUID_PATTERN.test(normalized)) {
+    throw new RouteError("boardId must be a UUID", 400);
+  }
+  return normalized;
+}
+
+function admissionShareContactCardId(
+  value: unknown,
+): string | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string" || !UUID_PATTERN.test(value.trim())) {
+    throw new RouteError("contactCardId must be a UUID or null", 400);
+  }
+  return value.trim();
 }
 
 function admissionShareMode(value: unknown): AdmissionShareMode {

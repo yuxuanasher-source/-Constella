@@ -36,7 +36,7 @@ import { routeForOpsModule } from "@/features/ui-route-contracts/module-route-ma
 
 import {
   currentUserFromAuth,
-  organizationSettingsFromAuth,
+  organizationSettingsForClient,
   requireConsoleStaffAuth,
 } from "../../console-auth";
 
@@ -47,6 +47,10 @@ export default async function StubPage({
 }) {
   const { module } = await params;
   const { supabase, auth } = await requireConsoleStaffAuth();
+  const [liveData, organizationSettings] = await Promise.all([
+    loadLiveReferenceData(module, supabase, auth),
+    organizationSettingsForClient(supabase, auth),
+  ]);
   const {
     liveTasks,
     liveReports,
@@ -59,14 +63,14 @@ export default async function StubPage({
     notificationItems,
     billingStatus,
     complexCost,
-  } = await loadLiveReferenceData(module, supabase, auth);
+  } = liveData;
   const route = routeForOpsModule(module);
 
   return (
     <OpsReferenceApp
       initialRoute={route?.routeKey ?? "warroom"}
       currentUser={currentUserFromAuth(auth)}
-      organizationSettings={organizationSettingsFromAuth(auth)}
+      organizationSettings={organizationSettings}
       liveTasks={liveTasks}
       liveReports={liveReports}
       liveBatches={liveBatches}

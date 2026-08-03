@@ -6,7 +6,8 @@ import {
   AdmissionShareFormalRoundConflictError,
   AdmissionShareSelectionError,
   createAdmissionShareBoard,
-  listAdmissionShareBoards,
+  getInternalAdmissionShareBoardDetail,
+  listInternalAdmissionShareBoardTasks,
   SupabaseAdmissionShareBoardRepository,
 } from "@/features/applications/admission-share-board";
 import { SupabaseAdmissionShareCandidateRepository } from "@/features/applications/admission-share-candidates";
@@ -29,7 +30,17 @@ vi.mock("@/features/applications/admission-share-board", () => ({
       };
     }),
   createAdmissionShareBoard: vi.fn(),
-  listAdmissionShareBoards: vi.fn(),
+  getInternalAdmissionShareBoardDetail: vi.fn(),
+  listInternalAdmissionShareBoardTasks: vi.fn(),
+  toAdmissionShareIdentityPresentation: vi.fn().mockReturnValue({
+    brand: {
+      logoText: "星河",
+      brandName: "星河直播",
+      brandTagline: "专业直播运营",
+      primaryColor: "#165DFF",
+    },
+    contactCard: null,
+  }),
   AdmissionShareSelectionError: class AdmissionShareSelectionError extends Error {
     readonly name = "AdmissionShareSelectionError";
 
@@ -115,6 +126,90 @@ const context = {
 
 const params = Promise.resolve({ projectId: "project-1" });
 
+const internalPresentation = {
+  id: "share-1",
+  title: "Vendor review",
+  purpose: "",
+  mode: "formal_review" as const,
+  status: "active" as const,
+  reviewState: "not_started" as const,
+  roundNumber: 1,
+  expiresAt: "2026-06-14T00:00:00.000Z",
+  project: {
+    id: "project-1",
+    code: "P-001",
+    name: "Launch project",
+    vendor: "Vendor",
+    product: "Product",
+  },
+  brand: {
+    logoText: "STAR",
+    brandName: "Star Live",
+    brandTagline: "Professional live operations",
+    primaryColor: "#165DFF",
+  },
+  contactCard: {
+    displayName: "Lin",
+    title: "Account lead",
+    phone: "13800000000",
+  },
+  progress: { completed: 1, total: 2 },
+  latestSubmission: {
+    revision: 2,
+    submittedAt: "2026-07-30T09:00:00.000Z",
+    summary: { selected: 1, backup: 0, rejected: 0, needsChanges: 1 },
+  },
+  items: [
+    {
+      applicationId: "app-1",
+      recordingSubmissionId: "recording-v2",
+      recordingVersion: 2,
+      sourceHealth: "original_ready" as const,
+      streamer: {
+        id: "streamer-1",
+        displayName: "Streamer One",
+        accountLabel: "dy_1",
+      },
+      finalReview: null,
+    },
+    {
+      applicationId: "app-2",
+      recordingSubmissionId: "recording-v3",
+      recordingVersion: 3,
+      sourceHealth: "external_only" as const,
+      streamer: {
+        id: "streamer-2",
+        displayName: "Streamer Two",
+        accountLabel: "dy_2",
+      },
+      finalReview: {
+        decision: "needs_changes" as const,
+        remark: "Adjust the opening",
+        reasonCodes: ["opening"],
+        submittedAt: "2026-07-30T09:00:00.000Z",
+      },
+    },
+  ],
+  brandVersion: 4,
+  contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+  sourceDiagnostics: [
+    {
+      recordingSubmissionId: "recording-v2",
+      applicationStatus: "recording_reviewing" as const,
+      recordingStatus: "submitted" as const,
+      hasPrivateStorage: true,
+      externalUrl: null,
+    },
+    {
+      recordingSubmissionId: "recording-v3",
+      applicationStatus: "recording_reviewing" as const,
+      recordingStatus: "submitted" as const,
+      hasPrivateStorage: false,
+      externalUrl: "https://video.example/recording-v3",
+    },
+  ],
+};
+
 describe("project admission share-board route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -123,26 +218,48 @@ describe("project admission share-board route", () => {
     vi.mocked(createSupabaseAdminClient).mockReturnValue({
       client: "admin",
     } as never);
-    vi.mocked(listAdmissionShareBoards).mockResolvedValue([
-      {
-        id: "share-1",
-        title: "Vendor review",
-        purpose: "",
-        mode: "formal_review",
-        status: "active",
-        expiresAt: "2026-06-14T00:00:00.000Z",
-        reviewState: "not_started",
-        roundNumber: 1,
-        itemCount: 10,
-        draftCompletedCount: 4,
-        lastViewedAt: "2026-07-30T08:00:00.000Z",
-        lastDraftAt: "2026-07-30T08:20:00.000Z",
-        lastSubmittedAt: null,
-        lockedAt: null,
-        createdBy: "user-ops",
-        createdAt: "2026-07-30T00:00:00.000Z",
-      },
-    ]);
+    vi.mocked(listInternalAdmissionShareBoardTasks).mockResolvedValue({
+      shareBoards: [
+        {
+          id: "share-1",
+          title: "Vendor review",
+          purpose: "",
+          mode: "formal_review",
+          status: "active",
+          expiresAt: "2026-06-14T00:00:00.000Z",
+          reviewState: "not_started",
+          roundNumber: 1,
+          itemCount: 10,
+          draftCompletedCount: 4,
+          lastViewedAt: "2026-07-30T08:00:00.000Z",
+          lastDraftAt: "2026-07-30T08:20:00.000Z",
+          lastSubmittedAt: null,
+          lockedAt: null,
+          createdBy: "user-ops",
+          createdAt: "2026-07-30T00:00:00.000Z",
+        },
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(getInternalAdmissionShareBoardDetail).mockResolvedValue({
+      id: "share-1",
+      title: "Vendor review",
+      purpose: "",
+      mode: "formal_review",
+      status: "active",
+      expiresAt: "2026-06-14T00:00:00.000Z",
+      reviewState: "not_started",
+      roundNumber: 1,
+      itemCount: 10,
+      draftCompletedCount: 4,
+      lastViewedAt: "2026-07-30T08:00:00.000Z",
+      lastDraftAt: "2026-07-30T08:20:00.000Z",
+      lastSubmittedAt: null,
+      lockedAt: null,
+      createdBy: "user-ops",
+      createdAt: "2026-07-30T00:00:00.000Z",
+      presentation: internalPresentation,
+    });
     vi.mocked(createAdmissionShareBoard).mockResolvedValue({
       token: "plain-token",
       accessCode: "24681024",
@@ -161,19 +278,34 @@ describe("project admission share-board route", () => {
         allowExternalFallback: true,
         reviewState: "not_started",
         roundNumber: 1,
+        brandSnapshot: {
+          schemaVersion: 1,
+          version: 4,
+          logoText: "星河",
+          logoStoragePath: "org-1/brand-logos/private.webp",
+          brandName: "星河直播",
+          brandTagline: "专业直播运营",
+          primaryColor: "#165DFF",
+          publishedAt: "2026-07-29T00:00:00.000Z",
+        },
+        brandVersion: 4,
+        contactCardId: null,
+        contactCardSnapshot: null,
         createdBy: "user-ops",
         createdAt: "2026-07-30T00:00:00.000Z",
       },
+      presentation: internalPresentation,
     });
   });
 
-  it("lists whitelisted share-board task progress without secrets or reviewer data", async () => {
+  it("lists whitelisted task summaries without presentations, items, or secrets", async () => {
     const response = await GET(new Request("http://localhost/api"), {
       params,
     });
 
     expect(response.status).toBe(200);
     const body = await response.json();
+    expect(body.nextCursor).toBeNull();
     expect(body.shareBoards).toEqual([
       {
         id: "share-1",
@@ -194,13 +326,112 @@ describe("project admission share-board route", () => {
         createdAt: "2026-07-30T00:00:00.000Z",
       },
     ]);
+    expect(JSON.stringify(body)).not.toContain("presentation");
+    expect(JSON.stringify(body)).not.toContain('"items"');
     expect(JSON.stringify(body)).not.toContain("hash");
     expect(JSON.stringify(body)).not.toContain("organizationId");
     expect(JSON.stringify(body)).not.toContain("projectId");
     expect(JSON.stringify(body)).not.toContain("allowVendorSubmit");
     expect(JSON.stringify(body)).not.toContain("allowExternalFallback");
     expect(JSON.stringify(body)).not.toContain("storage");
+    expect(JSON.stringify(body)).not.toContain("storagePath");
+    expect(JSON.stringify(body)).not.toContain("logoStoragePath");
+    expect(JSON.stringify(body)).not.toContain("tokenHash");
     expect(JSON.stringify(body)).not.toContain("reviewer");
+  });
+
+  it("loads one explicitly requested board detail without private DTO fields", async () => {
+    const boardId = "00000000-0000-4000-8000-000000000001";
+    const response = await GET(
+      new Request(`http://localhost/api?boardId=${boardId}`),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.shareBoard.presentation).toEqual(internalPresentation);
+    expect(getInternalAdmissionShareBoardDetail).toHaveBeenCalledWith({
+      repo: { repo: "share-repo" },
+      actor: auth,
+      projectId: "project-1",
+      shareBoardId: boardId,
+    });
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toMatch(
+      /tokenHash|accessCodeHash|storagePath|logoStoragePath/u,
+    );
+    expect(listInternalAdmissionShareBoardTasks).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["cross-project or missing", 404],
+    ["unauthorized", 403],
+  ])(
+    "returns %s detail errors without falling back to the list",
+    async (_case, status) => {
+      vi.mocked(getInternalAdmissionShareBoardDetail).mockRejectedValueOnce(
+        Object.assign(new Error("detail unavailable"), { statusCode: status }),
+      );
+
+      const response = await GET(
+        new Request(
+          "http://localhost/api?boardId=00000000-0000-4000-8000-000000000001",
+        ),
+        { params },
+      );
+
+      expect(response.status).toBe(status);
+      expect(listInternalAdmissionShareBoardTasks).not.toHaveBeenCalled();
+    },
+  );
+
+  it("passes a bounded keyset cursor to the internal first-screen listing", async () => {
+    const cursor = Buffer.from(
+      JSON.stringify({
+        createdAt: "2026-07-30T00:00:00.000Z",
+        id: "00000000-0000-4000-8000-000000000001",
+      }),
+    ).toString("base64url");
+    vi.mocked(listInternalAdmissionShareBoardTasks).mockResolvedValue({
+      shareBoards: [],
+      nextCursor: "next-page",
+    });
+
+    const response = await GET(
+      new Request(`http://localhost/api?limit=2&cursor=${cursor}`),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      shareBoards: [],
+      nextCursor: "next-page",
+    });
+    expect(listInternalAdmissionShareBoardTasks).toHaveBeenCalledWith({
+      repo: { repo: "share-repo" },
+      actor: auth,
+      projectId: "project-1",
+      cursor,
+      limit: 2,
+    });
+  });
+
+  it("rejects an explicitly empty cursor instead of treating it as missing", async () => {
+    const response = await GET(new Request("http://localhost/api?cursor="), {
+      params,
+    });
+
+    expect(response.status).toBe(400);
+    expect(listInternalAdmissionShareBoardTasks).not.toHaveBeenCalled();
+  });
+
+  it("rejects an out-of-range internal share page size", async () => {
+    const response = await GET(new Request("http://localhost/api?limit=51"), {
+      params,
+    });
+
+    expect(response.status).toBe(400);
+    expect(listInternalAdmissionShareBoardTasks).not.toHaveBeenCalled();
   });
 
   it("creates a share board and returns one-time share url", async () => {
@@ -216,6 +447,11 @@ describe("project admission share-board route", () => {
             expiresAt: "2026-08-06T00:00:00.000Z",
             requireAccessCode: false,
             allowExternalFallback: true,
+            contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
+            brandSnapshot: {
+              logoStoragePath: "other-org/brand-logos/forged.webp",
+            },
+            contactCardSnapshot: { displayName: "伪造联系人" },
             items: [
               {
                 applicationId: "app-1",
@@ -234,7 +470,22 @@ describe("project admission share-board route", () => {
     const body = await response.json();
     expect(body.shareUrl).toBe("http://localhost/share/admission/plain-token");
     expect(body.accessCode).toBe("24681024");
+    expect(body.shareBoard).toMatchObject({
+      brandVersion: 4,
+      contactCardId: null,
+      brand: {
+        logoText: "星河",
+        brandName: "星河直播",
+        brandTagline: "专业直播运营",
+        primaryColor: "#165DFF",
+      },
+      contactCard: null,
+      presentation: internalPresentation,
+    });
     expect(JSON.stringify(body)).not.toContain("hash");
+    expect(JSON.stringify(body)).not.toContain("private.webp");
+    expect(JSON.stringify(body)).not.toContain("brandSnapshot");
+    expect(JSON.stringify(body)).not.toContain("contactCardSnapshot");
     expect(SupabaseAdmissionShareBoardRepository).toHaveBeenCalledWith(
       context.supabase,
     );
@@ -262,6 +513,7 @@ describe("project admission share-board route", () => {
           requireAccessCode: false,
           accessCode: undefined,
           allowExternalFallback: true,
+          contactCardId: "9d4ba455-c58a-4e31-a3e8-c42a760ea54c",
           items: [
             {
               applicationId: "app-1",
@@ -273,6 +525,75 @@ describe("project admission share-board route", () => {
         },
       }),
     );
+    const serviceInput = vi.mocked(createAdmissionShareBoard).mock.calls[0]?.[0]
+      ?.input;
+    expect(serviceInput).not.toHaveProperty("brandSnapshot");
+    expect(serviceInput).not.toHaveProperty("contactCardSnapshot");
+    expect(JSON.stringify(serviceInput)).not.toContain(
+      "other-org/brand-logos/forged.webp",
+    );
+  });
+
+  it("accepts an explicit null contact-card selection", async () => {
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "preview",
+            contactCardId: null,
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    expect(createAdmissionShareBoard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({ contactCardId: null }),
+      }),
+    );
+  });
+
+  it("rejects a non-UUID contact-card id before share persistence", async () => {
+    const response = await POST(
+      new Request(
+        "http://localhost/api/projects/project-1/admission-share-boards",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "preview",
+            contactCardId: "not-a-uuid",
+            brandSnapshot: { logoStoragePath: "private/forged.webp" },
+            items: [
+              {
+                applicationId: "app-1",
+                recordingSubmissionId: "recording-v2",
+                recordingVersion: 2,
+                sortOrder: 0,
+              },
+            ],
+          }),
+        },
+      ),
+      { params },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "contactCardId must be a UUID or null",
+    });
+    expect(createAdmissionShareBoard).not.toHaveBeenCalled();
   });
 
   it("uses the reverse-proxy public origin instead of an internal configured port", async () => {

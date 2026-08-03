@@ -1,4 +1,7 @@
-export type { PublicAdmissionShareBoard } from "@/features/applications/admission-share-board";
+export type {
+  BrandedPublicAdmissionShareBoard,
+  PublicAdmissionShareBoard,
+} from "@/features/applications/admission-share-board";
 export type { VendorAdmissionDecision } from "@/features/applications/admission-board";
 
 export type ReviewDraft = {
@@ -23,7 +26,7 @@ export type VendorCheckpointOption = {
 };
 
 export type PublicAdmissionShareBoardResponse = {
-  shareBoard: import("@/features/applications/admission-share-board").PublicAdmissionShareBoard;
+  shareBoard: import("@/features/applications/admission-share-board").BrandedPublicAdmissionShareBoard;
   vendorCheckpoints: VendorCheckpointOption[];
   reviewDrafts?: AdmissionShareReviewDraftDto[];
 };

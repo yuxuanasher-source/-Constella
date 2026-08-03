@@ -2,10 +2,9 @@ import OpsReferenceApp from "@/components/reference-ui/ops-reference";
 import { OpsConsoleV2Home } from "@/components/ops-shell/ops-console-v2-home";
 import { loadRoleHomeDashboard } from "@/features/dashboards/role-home-loader";
 import { isOpsUiV2Enabled } from "@/features/ui-route-contracts/ops-ui-v2-flag";
-
 import {
   currentUserFromAuth,
-  organizationSettingsFromAuth,
+  organizationSettingsForClient,
   requireConsoleStaffAuth,
 } from "./console-auth";
 
@@ -22,7 +21,10 @@ export default async function ConsolePage() {
   }
 
   const currentUser = currentUserFromAuth(auth);
-  const organizationSettings = organizationSettingsFromAuth(auth);
+  const clientOrganizationSettings = await organizationSettingsForClient(
+    supabase,
+    auth,
+  );
 
   if (isOpsUiV2Enabled()) {
     return (
@@ -30,7 +32,7 @@ export default async function ConsolePage() {
         dashboardHome={dashboardHome}
         dashboardHomeError={dashboardHomeError}
         currentUser={currentUser}
-        organizationSettings={organizationSettings}
+        organizationSettings={clientOrganizationSettings}
       />
     );
   }
@@ -41,7 +43,7 @@ export default async function ConsolePage() {
       dashboardHome={dashboardHome}
       dashboardHomeError={dashboardHomeError}
       currentUser={currentUser}
-      organizationSettings={organizationSettings}
+      organizationSettings={clientOrganizationSettings}
     />
   );
 }

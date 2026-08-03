@@ -9,6 +9,11 @@ import { OverviewBoard } from "@/components/dashboard/overview-board";
 import { AiDraftsPanel } from "@/components/ai/ai-drafts-panel";
 import HermesSkillCenter from "@/components/ai/hermes-skill-center";
 import { MarketplaceBoard } from "@/components/marketplace/marketplace-board";
+import { OrganizationBrandMark } from "@/components/organization-brand/organization-brand-mark";
+import {
+  OrganizationBrandPortal,
+  OrganizationBrandTheme,
+} from "@/components/organization-brand/organization-brand-theme";
 import { USAGE_TUTORIAL_MD } from "./usage-tutorial-md";
 import { canManageAccounts } from "@/features/account-library/account-library-service";
 import { rankReportQueue } from "@/features/ai/bounded-actions";
@@ -20,6 +25,7 @@ import {
 import { toOpsReferenceTask } from "@/features/live-operations/live-ui-adapters";
 import { resolvePaywall } from "@/features/funnel/paywall";
 import { isCustomSettlementRulesEnabled } from "@/features/settlements/custom-rule-feature-flag";
+import { normalizePublishedBrand } from "@/features/organizations/organization-brand";
 import {
   toPricingResultDto,
   toProjectReviewDto,
@@ -38,7 +44,6 @@ import {
 } from "@/lib/markdown/render-markdown";
 
 import AiUsageDashboard from "./ai-usage-dashboard";
-import { AdmissionShareCenter } from "./admission-share-center";
 import CustomSettlementRuleWorkspace from "./custom-settlement-rule-workspace";
 import SettlementRuleBuilder, {
   builderRuleFromStored,
@@ -71,10 +76,170 @@ import {
   yuanInputToCents,
 } from "./external-cost-view";
 
+const ADMISSION_SHARE_MODES = new Set(["preview", "formal_review"]);
+const ADMISSION_SHARE_STATUSES = new Set(["active", "expired", "revoked"]);
+const ADMISSION_SHARE_REVIEW_STATES = new Set([
+  "not_started",
+  "viewed",
+  "in_progress",
+  "submitted_locked",
+]);
+const ADMISSION_SHARE_SOURCE_HEALTH = new Set([
+  "original_ready",
+  "original_with_external_fallback",
+  "external_only",
+  "blocked",
+]);
+const ADMISSION_SHARE_DECISIONS = new Set([
+  "selected",
+  "backup",
+  "rejected",
+  "needs_changes",
+]);
+
+function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function boundedText(value, limit, fallback = "") {
+  return typeof value === "string" ? value.slice(0, limit) : fallback;
+}
+
+function nonNegativeInteger(value, fallback = 0) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function positiveInteger(value, fallback = 1) {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function normalizeAdmissionShareFinalReview(value) {
+  if (!isPlainRecord(value) || !ADMISSION_SHARE_DECISIONS.has(value.decision)) {
+    return null;
+  }
+  return {
+    decision: value.decision,
+    remark: boundedText(value.remark, 500),
+    reasonCodes: (Array.isArray(value.reasonCodes) ? value.reasonCodes : [])
+      .filter((reasonCode) => typeof reasonCode === "string")
+      .slice(0, 50)
+      .map((reasonCode) => reasonCode.slice(0, 80)),
+    submittedAt: boundedText(value.submittedAt, 64),
+  };
+}
+
+function normalizeAdmissionShareItem(value) {
+  if (!isPlainRecord(value)) return null;
+  const streamer = isPlainRecord(value.streamer) ? value.streamer : {};
+  return {
+    applicationId: boundedText(value.applicationId, 128),
+    recordingSubmissionId: boundedText(value.recordingSubmissionId, 128),
+    recordingVersion: positiveInteger(value.recordingVersion),
+    sourceHealth: ADMISSION_SHARE_SOURCE_HEALTH.has(value.sourceHealth)
+      ? value.sourceHealth
+      : "blocked",
+    streamer: {
+      id: boundedText(streamer.id, 128),
+      displayName: boundedText(streamer.displayName, 120),
+      accountLabel: boundedText(streamer.accountLabel, 120),
+    },
+    finalReview: normalizeAdmissionShareFinalReview(value.finalReview),
+  };
+}
+
+export function normalizeAdmissionSharePresentation(value) {
+  if (!isPlainRecord(value)) return null;
+  if (value.schemaVersion !== undefined && value.schemaVersion !== 1) {
+    return null;
+  }
+  const project = isPlainRecord(value.project) ? value.project : {};
+  const progress = isPlainRecord(value.progress) ? value.progress : {};
+  const brand = isPlainRecord(value.brand) ? value.brand : {};
+  const contactCard = isPlainRecord(value.contactCard)
+    ? {
+        displayName: boundedText(value.contactCard.displayName, 120),
+        title: boundedText(value.contactCard.title, 120),
+        phone: boundedText(value.contactCard.phone, 80),
+        email: boundedText(value.contactCard.email, 254),
+        wechat: boundedText(value.contactCard.wechat, 120),
+      }
+    : null;
+  const latestSubmission = isPlainRecord(value.latestSubmission)
+    ? {
+        revision: positiveInteger(value.latestSubmission.revision),
+        submittedAt: boundedText(value.latestSubmission.submittedAt, 64),
+        summary: {
+          selected: nonNegativeInteger(
+            value.latestSubmission.summary?.selected,
+          ),
+          backup: nonNegativeInteger(value.latestSubmission.summary?.backup),
+          rejected: nonNegativeInteger(
+            value.latestSubmission.summary?.rejected,
+          ),
+          needsChanges: nonNegativeInteger(
+            value.latestSubmission.summary?.needsChanges,
+          ),
+        },
+      }
+    : null;
+
+  return {
+    schemaVersion: 1,
+    id: boundedText(value.id, 128),
+    brandVersion: nonNegativeInteger(value.brandVersion),
+    contactCardId:
+      value.contactCardId === null
+        ? null
+        : boundedText(value.contactCardId, 128) || null,
+    title: boundedText(value.title, 120),
+    purpose: boundedText(value.purpose, 500),
+    mode: ADMISSION_SHARE_MODES.has(value.mode) ? value.mode : "preview",
+    status: ADMISSION_SHARE_STATUSES.has(value.status)
+      ? value.status
+      : "active",
+    reviewState: ADMISSION_SHARE_REVIEW_STATES.has(value.reviewState)
+      ? value.reviewState
+      : "not_started",
+    roundNumber: positiveInteger(value.roundNumber),
+    expiresAt: boundedText(value.expiresAt, 64),
+    project: {
+      id: boundedText(project.id, 128),
+      name: boundedText(project.name, 160),
+      code: boundedText(project.code, 80),
+    },
+    progress: {
+      completed: nonNegativeInteger(progress.completed),
+      total: nonNegativeInteger(progress.total),
+    },
+    latestSubmission,
+    brand: {
+      logoText: boundedText(brand.logoText, 8),
+      brandName: boundedText(brand.brandName, 40),
+      brandTagline: boundedText(brand.brandTagline, 80),
+      primaryColor:
+        typeof brand.primaryColor === "string" &&
+        /^#[0-9A-F]{6}$/i.test(brand.primaryColor)
+          ? brand.primaryColor.toUpperCase()
+          : "#165DFF",
+    },
+    contactCard,
+    items: (Array.isArray(value.items) ? value.items : [])
+      .slice(0, 5000)
+      .map(normalizeAdmissionShareItem)
+      .filter(Boolean),
+  };
+}
+
 const ScreenKnowledge = lazy(() => import("./scenes/knowledge-base-scene"));
 const ScreenAdmission = lazy(async () => {
-  const scene = await import("./scenes/admission-scene");
-  scene.configureAdmissionScene(ADMISSION_SCENE_DEPENDENCIES);
+  const [scene, admissionShareCenter] = await Promise.all([
+    import("./scenes/admission-scene"),
+    import("./admission-share-center"),
+  ]);
+  scene.configureAdmissionScene({
+    ...ADMISSION_SCENE_DEPENDENCIES,
+    AdmissionShareCenter: admissionShareCenter.AdmissionShareCenter,
+  });
   return scene;
 });
 const ScreenSettlement = lazy(async () => {
@@ -188,10 +353,11 @@ function Button({
   const s = sizes[size];
   const kinds = {
     primary: {
-      bg: "var(--blue-600)",
+      bg: "var(--org-brand-action, var(--blue-600))",
       color: "#fff",
-      border: "1px solid var(--blue-600)",
-      hover: "var(--blue-700)",
+      border: "1px solid var(--org-brand-action, var(--blue-600))",
+      hover:
+        "color-mix(in srgb, var(--org-brand-action, var(--blue-600)) 90%, #000)",
     },
     default: {
       bg: "#fff",
@@ -223,6 +389,7 @@ function Button({
   return (
     <button
       type={type}
+      data-button-kind={kind}
       onClick={onClick}
       disabled={disabled}
       {...buttonProps}
@@ -1009,10 +1176,7 @@ const ORGANIZATION_FEATURE_OPTIONS = [
 const DEFAULT_ORGANIZATION_SETTINGS = {
   id: ORG.id,
   name: ORG.name || "未配置组织",
-  logoText: "JY",
-  logoImage: "/brand/ops-mascot-logo.png",
-  brandName: "经营舱",
-  brandTagline: "MCN OPERATIONS · v1.2",
+  logoUrl: null,
   memberLimit: null,
   plan: "",
   verified: false,
@@ -1030,14 +1194,19 @@ function sliceByCodePoints(value, max) {
   return Array.from(value).slice(0, max).join("");
 }
 
-function normalizeBrandField(value, max, fallback) {
-  return typeof value === "string" && value.trim()
-    ? sliceByCodePoints(value.trim(), max)
-    : fallback;
-}
-
 function normalizeOrganizationSettings(input) {
   const source = input && typeof input === "object" ? input : {};
+  const name =
+    typeof source.name === "string" && source.name.trim()
+      ? source.name.trim()
+      : DEFAULT_ORGANIZATION_SETTINGS.name;
+  const brand =
+    source.brand && typeof source.brand === "object"
+      ? source.brand
+      : normalizePublishedBrand(null, {
+          organizationId: "",
+          organizationName: name,
+        });
   const rawLimit = Number(source.memberLimit ?? source.memberCount);
   const memberLimit =
     Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : null;
@@ -1051,29 +1220,13 @@ function normalizeOrganizationSettings(input) {
   return {
     ...DEFAULT_ORGANIZATION_SETTINGS,
     ...source,
-    name:
-      typeof source.name === "string" && source.name.trim()
-        ? source.name.trim()
-        : DEFAULT_ORGANIZATION_SETTINGS.name,
-    logoText: normalizeBrandField(
-      source.logoText,
-      4,
-      DEFAULT_ORGANIZATION_SETTINGS.logoText,
-    ),
-    logoImage:
-      typeof source.logoImage === "string" && source.logoImage.trim()
-        ? source.logoImage.trim()
-        : DEFAULT_ORGANIZATION_SETTINGS.logoImage,
-    brandName: normalizeBrandField(
-      source.brandName,
-      12,
-      DEFAULT_ORGANIZATION_SETTINGS.brandName,
-    ),
-    brandTagline: normalizeBrandField(
-      source.brandTagline,
-      32,
-      DEFAULT_ORGANIZATION_SETTINGS.brandTagline,
-    ),
+    name,
+    brand,
+    logoUrl:
+      typeof source.logoUrl === "string" &&
+      /^https?:\/\//i.test(source.logoUrl.trim())
+        ? source.logoUrl.trim()
+        : null,
     memberLimit,
     plan:
       typeof source.plan === "string" && source.plan.trim()
@@ -2541,8 +2694,17 @@ function useModalLayerIsolation(layerRef, onActivate, onRestore) {
     const layer = layerRef.current;
     if (!body || !layer) return undefined;
 
+    let activeBodyChild = layer;
+    while (
+      activeBodyChild.parentElement &&
+      activeBodyChild.parentElement !== body
+    ) {
+      activeBodyChild = activeBodyChild.parentElement;
+    }
+    if (activeBodyChild.parentElement !== body) return undefined;
+
     const siblings = Array.from(body.children).filter(
-      (element) => element !== layer,
+      (element) => element !== activeBodyChild,
     );
 
     siblings.forEach(acquireBodySiblingIsolation);
@@ -2628,7 +2790,7 @@ export function Sidebar({
       {/* Logo */}
       <div
         style={{
-          height: 56,
+          minHeight: 64,
           display: "flex",
           alignItems: "center",
           gap: 10,
@@ -2639,7 +2801,6 @@ export function Sidebar({
         <button
           ref={organizationSettingsButtonRef}
           type="button"
-          tabIndex={-1}
           data-focus-restore="true"
           aria-label={
             route === "export"
@@ -2663,40 +2824,14 @@ export function Sidebar({
             color: "inherit",
           }}
         >
-          <div
-            aria-label="组织 LOGO"
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 7,
-              background: "linear-gradient(135deg, #1E50C8 0%, #3B6BE6 100%)",
-              color: "#fff",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontWeight: 700,
-              fontSize: 13,
-              letterSpacing: "-0.04em",
-              boxShadow: "0 2px 6px rgba(30,80,200,0.35)",
-              overflow: "hidden",
-            }}
-          >
-            {orgSettings.logoImage &&
-            orgSettings.logoText === DEFAULT_ORGANIZATION_SETTINGS.logoText ? (
-              <img
-                src={orgSettings.logoImage}
-                alt="经营舱品牌标识"
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                  display: "block",
-                }}
-              />
-            ) : (
-              orgSettings.logoText
-            )}
-          </div>
+          <span data-testid="ops-reference-brand-mark">
+            <OrganizationBrandMark
+              className="ops-reference-brand-mark"
+              brandName={orgSettings.brand.brandName}
+              logoText={orgSettings.brand.logoText}
+              logoUrl={orgSettings.logoUrl}
+            />
+          </span>
           <div
             style={{
               display: "flex",
@@ -2711,19 +2846,46 @@ export function Sidebar({
                 fontSize: 14,
                 color: "var(--ink-900)",
                 letterSpacing: "-0.005em",
+                maxWidth: "100%",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
+              title={orgSettings.brand.brandName}
             >
-              {orgSettings.brandName}
+              {orgSettings.brand.brandName}
             </span>
-            <span
-              style={{
-                fontSize: 10.5,
-                color: "var(--ink-400)",
-                letterSpacing: "0.04em",
-              }}
-            >
-              {orgSettings.brandTagline}
-            </span>
+            {orgSettings.brand.brandTagline ? (
+              <span
+                style={{
+                  fontSize: 10.5,
+                  color: "var(--ink-400)",
+                  maxWidth: "100%",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={orgSettings.brand.brandTagline}
+              >
+                {orgSettings.brand.brandTagline}
+              </span>
+            ) : null}
+            {route === "warroom" &&
+            orgSettings.name !== orgSettings.brand.brandName ? (
+              <span
+                style={{
+                  fontSize: 10,
+                  color: "var(--ink-400)",
+                  maxWidth: "100%",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={orgSettings.name}
+              >
+                {orgSettings.name}
+              </span>
+            ) : null}
           </div>
         </button>
         <button
@@ -2778,6 +2940,8 @@ export function Sidebar({
           return (
             <button
               key={it.key}
+              className="ops-reference-nav-item"
+              data-active={active ? "true" : "false"}
               title={badgeLabel}
               aria-label={badgeLabel}
               onClick={() => onNav(it.key)}
@@ -2788,11 +2952,15 @@ export function Sidebar({
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
-                background: active ? "var(--blue-50)" : "transparent",
+                background: active
+                  ? "var(--org-brand-soft, var(--blue-50))"
+                  : "transparent",
                 border: "none",
                 borderRadius: 6,
                 cursor: "pointer",
-                color: active ? "var(--blue-700)" : "var(--ink-500)",
+                color: active
+                  ? "var(--org-brand-action, var(--blue-700))"
+                  : "var(--ink-500)",
                 fontWeight: active ? 600 : 500,
                 fontSize: 13,
                 position: "relative",
@@ -2814,13 +2982,17 @@ export function Sidebar({
                     bottom: 8,
                     width: 3,
                     borderRadius: 999,
-                    background: "var(--blue-600)",
+                    background: "var(--org-brand-action, var(--blue-600))",
                   }}
                 />
               )}
               <IconComp
                 size={16}
-                stroke={active ? "var(--blue-700)" : "var(--ink-400)"}
+                stroke={
+                  active
+                    ? "var(--org-brand-action, var(--blue-700))"
+                    : "var(--ink-400)"
+                }
               />
               <span style={{ flex: 1, textAlign: "left" }}>{it.label}</span>
               {count > 0 && (
@@ -2830,7 +3002,9 @@ export function Sidebar({
                     fontWeight: 600,
                     padding: "0 6px",
                     height: 16,
-                    background: active ? "var(--blue-600)" : "#E1E7F0",
+                    background: active
+                      ? "var(--org-brand-action, var(--blue-600))"
+                      : "#E1E7F0",
                     color: active ? "#fff" : "var(--ink-500)",
                     borderRadius: 999,
                     display: "inline-flex",
@@ -2972,6 +3146,18 @@ export function Sidebar({
           </button>
         </div>
       ) : null}
+      <p
+        style={{
+          margin: "0 18px",
+          padding: "8px 0 0",
+          borderTop: "1px solid var(--line)",
+          color: "var(--ink-400)",
+          fontSize: 10,
+          lineHeight: 1.4,
+        }}
+      >
+        由经营舱提供技术服务
+      </p>
       {/* User */}
       <div
         style={{
@@ -3490,7 +3676,10 @@ function AccountPanelDialog({ mode, currentUser, onClose, onUpdateAvatar }) {
   }
   // 传送到 body：侧边栏 aside 用 position:sticky 会形成独立层叠上下文，
   // 弹窗若留在其中会被根级 position:fixed 的 AI 助手面板盖住。
-  return createPortal(dialog, document.body);
+  return createPortal(
+    <OrganizationBrandPortal>{dialog}</OrganizationBrandPortal>,
+    document.body,
+  );
 }
 
 export function TopBar({
@@ -7201,7 +7390,10 @@ function RangeInput({ value, setValue, min, max, step = 1, prefix, suffix }) {
         step={step}
         value={value}
         onChange={(e) => setValue(Number(e.target.value))}
-        style={{ flex: 1, accentColor: "var(--blue-600)" }}
+        style={{
+          flex: 1,
+          accentColor: "var(--org-brand-action, var(--blue-600))",
+        }}
       />
       <div
         style={{
@@ -9890,8 +10082,8 @@ const PROJECT_SETTINGS_SURFACE_CSS = `
   .ps-control::placeholder { color: #a4afc2; }
   .ps-control:hover:not(:disabled) { border-color: #b9c9ea; }
   .ps-control:focus {
-    border-color: #2f6fed;
-    box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.12);
+    border-color: var(--org-brand-action, #2f6fed);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--org-brand-action, #2f6fed) 18%, transparent);
   }
   .ps-control:disabled {
     color: #8a97ad;
@@ -9929,13 +10121,15 @@ const PROJECT_SETTINGS_SURFACE_CSS = `
   .ps-btn:disabled { opacity: 0.55; cursor: not-allowed; }
   .ps-btn-primary {
     border: none;
-    background: #2f6fed;
+    background: var(--org-brand-action, #2f6fed);
     color: #fff;
     font-weight: 600;
     padding: 0 18px;
-    box-shadow: 0 6px 14px -6px rgba(47, 111, 237, 0.55);
+    box-shadow: 0 6px 14px -6px color-mix(in srgb, var(--org-brand-action, #2f6fed) 55%, transparent);
   }
-  .ps-btn-primary:hover:not(:disabled) { background: #245ed6; }
+  .ps-btn-primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--org-brand-action, #2f6fed) 86%, #000);
+  }
   .ps-btn-secondary {
     border: 1px solid #dfe5ee;
     background: #fff;
@@ -9963,7 +10157,8 @@ const PROJECT_SETTINGS_SURFACE_CSS = `
     font-size: 12px;
   }
   .ps-switch input:focus-visible + span {
-    box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.25);
+    outline: 2px solid var(--org-brand-action, #2f6fed);
+    outline-offset: 2px;
   }
 `;
 
@@ -10094,7 +10289,7 @@ function ProjectSettingsSwitch({ label, checked, onChange, disabled = false }) {
           width: 38,
           height: 22,
           borderRadius: 999,
-          background: checked ? "#2f6fed" : "#cfd6e2",
+          background: checked ? "var(--org-brand-action, #2f6fed)" : "#cfd6e2",
           padding: 2,
           boxSizing: "border-box",
           display: "flex",
@@ -10254,14 +10449,16 @@ function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
         style={{
           width: "100%",
           height: 40,
-          border: `1px solid ${open ? "#b9c9ea" : "#dfe5ee"}`,
+          border: `1px solid ${open ? "var(--org-brand-action, #2f6fed)" : "#dfe5ee"}`,
           borderRadius: 10,
           background: "#fff",
           display: "flex",
           alignItems: "center",
           gap: 8,
           padding: "0 12px",
-          boxShadow: open ? "0 0 0 3px rgba(47, 111, 237, 0.12)" : "none",
+          boxShadow: open
+            ? "0 0 0 3px color-mix(in srgb, var(--org-brand-action, #2f6fed) 18%, transparent)"
+            : "none",
           cursor: "pointer",
           fontFamily: "inherit",
           textAlign: "left",
@@ -10346,7 +10543,7 @@ function ProjectSettingsStatusPicker({ value, fromStatus, onChange }) {
                     aria-hidden="true"
                     size={14}
                     sw={2}
-                    stroke="#2f6fed"
+                    stroke="var(--org-brand-action, #2f6fed)"
                   />
                 )}
               </button>
@@ -10378,13 +10575,15 @@ function ProjectSettingsDateField({ label, value, onChange }) {
         style={{
           position: "relative",
           height: 38,
-          border: `1px solid ${focused ? "#2f6fed" : "#e4e9f1"}`,
+          border: `1px solid ${focused ? "var(--org-brand-action, #2f6fed)" : "#e4e9f1"}`,
           borderRadius: 10,
           background: "#fff",
           display: "flex",
           alignItems: "center",
           cursor: "pointer",
-          boxShadow: focused ? "0 0 0 3px rgba(47, 111, 237, 0.12)" : "none",
+          boxShadow: focused
+            ? "0 0 0 3px color-mix(in srgb, var(--org-brand-action, #2f6fed) 18%, transparent)"
+            : "none",
           transition: "border-color 120ms ease, box-shadow 120ms ease",
         }}
       >
@@ -16731,7 +16930,9 @@ function ReportDetail({ id, reports }) {
               <input
                 type="checkbox"
                 defaultChecked
-                style={{ accentColor: "var(--blue-600)" }}
+                style={{
+                  accentColor: "var(--org-brand-action, var(--blue-600))",
+                }}
               />{" "}
               计入任务结果
             </label>
@@ -22230,7 +22431,10 @@ function LiveReviewDrawer({
   );
 
   if (typeof document === "undefined") return dialog;
-  return createPortal(dialog, document.body);
+  return createPortal(
+    <OrganizationBrandPortal>{dialog}</OrganizationBrandPortal>,
+    document.body,
+  );
 }
 
 function ReviewAssistList({ title, items, tone }) {
@@ -22845,7 +23049,10 @@ function Drawer({ children, onClose, onKeyDown, suspended = false, title }) {
   );
 
   if (typeof document === "undefined") return layer;
-  return createPortal(layer, document.body);
+  return createPortal(
+    <OrganizationBrandPortal>{layer}</OrganizationBrandPortal>,
+    document.body,
+  );
 }
 
 // ===== src\screen-org.jsx =====
@@ -24035,11 +24242,6 @@ function formatOrganizationMemberError(error) {
 function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
   const normalized = normalizeOrganizationSettings(settings);
   const [name, setName] = React.useState(normalized.name);
-  const [logoText, setLogoText] = React.useState(normalized.logoText);
-  const [brandName, setBrandName] = React.useState(normalized.brandName);
-  const [brandTagline, setBrandTagline] = React.useState(
-    normalized.brandTagline,
-  );
   const [memberLimit, setMemberLimit] = React.useState(
     normalized.memberLimit == null ? "" : String(normalized.memberLimit),
   );
@@ -24076,11 +24278,6 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
     try {
       await onSubmit?.({
         name: nextName,
-        logoText: sliceByCodePoints(logoText.trim(), 4) || normalized.logoText,
-        brandName:
-          sliceByCodePoints(brandName.trim(), 12) || normalized.brandName,
-        brandTagline:
-          sliceByCodePoints(brandTagline.trim(), 32) || normalized.brandTagline,
         memberLimit: nextMemberLimit,
         features,
       });
@@ -24163,38 +24360,78 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
           />
         </OrgMemberField>
 
-        <OrgMemberField label="LOGO 字标">
-          <input
-            aria-label="LOGO 字标"
-            value={logoText}
-            maxLength={4}
-            onChange={(event) => setLogoText(event.target.value)}
-            placeholder="JY"
-            style={orgMemberInputStyle}
-          />
-        </OrgMemberField>
-
-        <OrgMemberField label="品牌名称">
-          <input
-            aria-label="品牌名称"
-            value={brandName}
-            maxLength={12}
-            onChange={(event) => setBrandName(event.target.value)}
-            placeholder="经营舱"
-            style={orgMemberInputStyle}
-          />
-        </OrgMemberField>
-
-        <OrgMemberField label="品牌副标">
-          <input
-            aria-label="品牌副标"
-            value={brandTagline}
-            maxLength={32}
-            onChange={(event) => setBrandTagline(event.target.value)}
-            placeholder="MCN OPERATIONS · v1.2"
-            style={orgMemberInputStyle}
-          />
-        </OrgMemberField>
+        <section
+          aria-labelledby="organization-brand-summary"
+          style={{
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            padding: 12,
+            background: "var(--bg-soft)",
+          }}
+        >
+          <div
+            id="organization-brand-summary"
+            style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-700)" }}
+          >
+            当前品牌
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              marginTop: 10,
+              minWidth: 0,
+            }}
+          >
+            <OrganizationBrandMark
+              className="ops-reference-brand-mark ops-reference-brand-mark--summary"
+              brandName={normalized.brand.brandName}
+              logoText={normalized.brand.logoText}
+              logoUrl={normalized.logoUrl}
+              decorative
+            />
+            <span style={{ minWidth: 0, flex: 1 }}>
+              <span
+                style={{
+                  display: "block",
+                  color: "var(--ink-900)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                }}
+              >
+                {normalized.brand.brandName}
+              </span>
+              <span
+                style={{
+                  display: "block",
+                  color: "var(--ink-500)",
+                  fontSize: 12,
+                  marginTop: 2,
+                  overflowWrap: "anywhere",
+                }}
+              >
+                {normalized.brand.brandTagline || "未设置品牌副标"}
+              </span>
+            </span>
+          </div>
+          <a
+            href="/console/brand"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              minHeight: 32,
+              marginTop: 10,
+              color: "var(--org-brand-action, var(--blue-700))",
+              fontSize: 12,
+              fontWeight: 600,
+              textDecoration: "underline",
+              textUnderlineOffset: 3,
+            }}
+          >
+            前往品牌中心
+          </a>
+        </section>
 
         <OrgMemberField label="成员规模">
           <input
@@ -24234,7 +24471,10 @@ function OrganizationSettingsDrawer({ settings, onClose, onSubmit }) {
                   type="checkbox"
                   checked={checked}
                   onChange={() => toggleFeature(feature.key)}
-                  style={{ marginTop: 2, accentColor: "var(--blue-600)" }}
+                  style={{
+                    marginTop: 2,
+                    accentColor: "var(--org-brand-action, var(--blue-600))",
+                  }}
                 />
                 <span
                   style={{ display: "flex", flexDirection: "column", gap: 4 }}
@@ -27427,17 +27667,18 @@ function OpsReferenceInner({
       }
 
       const activeElement = globalThis.document?.activeElement;
-      if (event.shiftKey) {
-        if (activeElement === first || !drawer.contains(activeElement)) {
-          event.preventDefault();
-          last.focus();
-        }
+      const activeIndex = focusable.indexOf(activeElement);
+      if (activeIndex < 0) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
         return;
       }
-      if (activeElement === last || !drawer.contains(activeElement)) {
-        event.preventDefault();
-        first.focus();
-      }
+
+      event.preventDefault();
+      const nextIndex = event.shiftKey
+        ? (activeIndex - 1 + focusable.length) % focusable.length
+        : (activeIndex + 1) % focusable.length;
+      focusable[nextIndex].focus();
     };
 
     globalThis.document?.addEventListener(
@@ -27540,9 +27781,13 @@ function OpsReferenceInner({
     const readJson = async (response, fallbackMessage) => {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const error = new Error(body.error || fallbackMessage);
-        error.code = body.code;
-        error.items = body.items;
+        const error = new Error(
+          response.status >= 500
+            ? fallbackMessage
+            : body?.error || fallbackMessage,
+        );
+        error.code = body?.code;
+        error.items = body?.items;
         error.status = response.status;
         throw error;
       }
@@ -27954,6 +28199,56 @@ function OpsReferenceInner({
       return Array.isArray(body.candidates) ? body.candidates : [];
     };
 
+    const getAdmissionShareBrandPreview = async () => {
+      const body = await fetchJson(
+        "/api/organization/brand",
+        "get admission share brand preview failed",
+        { method: "GET" },
+      );
+      const published = body?.studio?.published || {};
+      return {
+        version:
+          Number.isSafeInteger(published.version) && published.version >= 0
+            ? published.version
+            : 0,
+        logoText:
+          typeof published.logoText === "string" ? published.logoText : "组织",
+        brandName:
+          typeof published.brandName === "string"
+            ? published.brandName
+            : "组织",
+        brandTagline:
+          typeof published.brandTagline === "string"
+            ? published.brandTagline
+            : "",
+        primaryColor:
+          typeof published.primaryColor === "string"
+            ? published.primaryColor
+            : "#4E5969",
+      };
+    };
+
+    const listAdmissionShareContactCards = async () => {
+      const body = await fetchJson(
+        "/api/organization/contact-cards",
+        "list admission share contact cards failed",
+        { method: "GET" },
+      );
+      return (Array.isArray(body.contactCards) ? body.contactCards : [])
+        .filter((card) => card?.status === "active")
+        .map((card) => ({
+          id: typeof card.id === "string" ? card.id : "",
+          displayName:
+            typeof card.displayName === "string" ? card.displayName : "",
+          title: typeof card.title === "string" ? card.title : "",
+          phone: typeof card.phone === "string" ? card.phone : null,
+          email: typeof card.email === "string" ? card.email : null,
+          wechat: typeof card.wechat === "string" ? card.wechat : null,
+          status: "active",
+        }))
+        .filter((card) => card.id && card.displayName);
+    };
+
     const openAdmissionShareCandidatePlayback = (
       projectId,
       recordingSubmissionId,
@@ -27980,17 +28275,46 @@ function OpsReferenceInner({
       );
     };
 
-    const listAdmissionShareBoards = async (projectId) => {
+    const listAdmissionShareBoards = async (projectId, cursor) => {
+      const baseUrl = `/api/projects/${encodeURIComponent(
+        projectId,
+      )}/admission-share-boards`;
+      const url = cursor
+        ? `${baseUrl}?cursor=${encodeURIComponent(cursor)}`
+        : baseUrl;
+      const body = await fetchJson(url, "list admission share boards failed", {
+        method: "GET",
+      });
+      return {
+        shareBoards: Array.isArray(body.shareBoards) ? body.shareBoards : [],
+        nextCursor:
+          typeof body.nextCursor === "string" && body.nextCursor.trim()
+            ? body.nextCursor.trim()
+            : null,
+      };
+    };
+
+    const getAdmissionShareBoardDetail = async (projectId, shareBoardId) => {
       const body = await fetchJson(
-        `/api/projects/${encodeURIComponent(projectId)}/admission-share-boards`,
-        "list admission share boards failed",
+        `/api/projects/${encodeURIComponent(
+          projectId,
+        )}/admission-share-boards?boardId=${encodeURIComponent(shareBoardId)}`,
+        "get admission share board detail failed",
         { method: "GET" },
       );
-      return Array.isArray(body.shareBoards) ? body.shareBoards : [];
+      return {
+        id:
+          typeof body?.shareBoard?.id === "string"
+            ? body.shareBoard.id
+            : shareBoardId,
+        presentation: normalizeAdmissionSharePresentation(
+          body?.shareBoard?.presentation,
+        ),
+      };
     };
 
     const createAdmissionShareBoard = async (projectId, input) => {
-      return fetchJson(
+      const body = await fetchJson(
         `/api/projects/${encodeURIComponent(projectId)}/admission-share-boards`,
         "create admission share board failed",
         {
@@ -27999,6 +28323,19 @@ function OpsReferenceInner({
           body: JSON.stringify(input),
         },
       );
+      return {
+        shareBoard: {
+          id: boundedText(body?.shareBoard?.id, 128),
+          mode: ADMISSION_SHARE_MODES.has(body?.shareBoard?.mode)
+            ? body.shareBoard.mode
+            : "preview",
+          presentation: normalizeAdmissionSharePresentation(
+            body?.shareBoard?.presentation,
+          ),
+        },
+        shareUrl: boundedText(body?.shareUrl, 2048),
+        accessCode: boundedText(body?.accessCode, 128),
+      };
     };
 
     const extendAdmissionShareBoard = async (
@@ -28180,9 +28517,12 @@ function OpsReferenceInner({
       requestRecordingAiAnalysis,
       confirmRecordingProfileInsight,
       listAdmissionShareCandidates,
+      getAdmissionShareBrandPreview,
+      listAdmissionShareContactCards,
       openAdmissionShareCandidatePlayback,
       preflightAdmissionShareBoard,
       listAdmissionShareBoards,
+      getAdmissionShareBoardDetail,
       createAdmissionShareBoard,
       extendAdmissionShareBoard,
       reopenAdmissionShareBoard,
@@ -29100,7 +29440,7 @@ function OpsReferenceInner({
   );
 
   const saveOrganizationSettings = async (input) => {
-    // 品牌四项持久化到 organizations（name 列 + branding jsonb）；
+    // 旧入口只持久化组织名称；品牌资料由品牌中心的草稿/发布流程治理。
     // memberLimit / features 目前仍是会话内展示态，保持本地合并。
     const mergeOrganizationSettings = (current, patch) =>
       normalizeOrganizationSettings({
@@ -29112,32 +29452,37 @@ function OpsReferenceInner({
         },
       });
 
-    setOrganizationSettingsState((current) =>
-      mergeOrganizationSettings(current, input),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const nonBrandPatch = {
+      name: input?.name,
+      memberLimit: input?.memberLimit,
+      features: input?.features,
+    };
     const response = await fetch("/api/organization/settings", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: input?.name,
-        logoText: input?.logoText,
-        brandName: input?.brandName,
-        brandTagline: input?.brandTagline,
-      }),
+      body: JSON.stringify({ name: input?.name }),
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (body.code === "ORGANIZATION_SETTINGS_AUDIT_FAILED") {
+        const authoritativeName =
+          typeof body.organization?.name === "string" &&
+          body.organization.name.trim()
+            ? body.organization.name.trim()
+            : null;
+        if (authoritativeName) {
+          setOrganizationSettingsState((current) =>
+            mergeOrganizationSettings(current, { name: authoritativeName }),
+          );
+        }
+        throw new Error("名称已更新但审计失败，请刷新确认");
+      }
       throw new Error(
         response.status === 403
           ? "仅负责人可以修改组织品牌设置。"
           : body.error || "保存组织设置失败，请稍后重试。",
       );
     }
-    const savedBranding =
-      body.organization && typeof body.organization.branding === "object"
-        ? body.organization.branding
-        : {};
     const savedName =
       typeof body.organization?.name === "string" &&
       body.organization.name.trim()
@@ -29145,9 +29490,8 @@ function OpsReferenceInner({
         : {};
     setOrganizationSettingsState((current) =>
       mergeOrganizationSettings(current, {
-        ...input,
+        ...nonBrandPatch,
         ...savedName,
-        ...savedBranding,
       }),
     );
     setOrganizationSettingsOpen(false);
@@ -29834,7 +30178,6 @@ const KNOWLEDGE_SCENE_DEPENDENCIES = {
 
 const ADMISSION_SCENE_DEPENDENCIES = {
   AdmissionCalibrationDashboard,
-  AdmissionShareCenter,
   Avatar,
   Badge,
   Button,
@@ -29958,31 +30301,36 @@ export default function OpsReferenceApp({
   currentUser,
   accountLibraryAccounts,
 }) {
+  const normalizedOrganizationSettings =
+    normalizeOrganizationSettings(organizationSettings);
+
   return (
-    <OpsReferenceInner
-      initialRoute={initialRoute}
-      admissionFocusRequest={admissionFocusRequest}
-      liveTasks={liveTasks}
-      liveReports={liveReports}
-      liveBatches={liveBatches}
-      liveBatchDetails={liveBatchDetails}
-      liveSettlementPool={liveSettlementPool}
-      settlementScope={settlementScope}
-      auditEntries={auditEntries}
-      notificationItems={notificationItems}
-      organizationMembers={organizationMembers}
-      organizationMemberPermissions={organizationMemberPermissions}
-      organizationSettings={organizationSettings}
-      billingStatus={billingStatus}
-      complexCost={complexCost}
-      dashboardHome={dashboardHome}
-      dashboardHomeError={dashboardHomeError}
-      projectCards={projectCards}
-      collaborationProjectCards={collaborationProjectCards}
-      streamerCards={streamerCards}
-      applicationQueue={applicationQueue}
-      currentUser={currentUser}
-      accountLibraryAccounts={accountLibraryAccounts}
-    />
+    <OrganizationBrandTheme brand={normalizedOrganizationSettings.brand}>
+      <OpsReferenceInner
+        initialRoute={initialRoute}
+        admissionFocusRequest={admissionFocusRequest}
+        liveTasks={liveTasks}
+        liveReports={liveReports}
+        liveBatches={liveBatches}
+        liveBatchDetails={liveBatchDetails}
+        liveSettlementPool={liveSettlementPool}
+        settlementScope={settlementScope}
+        auditEntries={auditEntries}
+        notificationItems={notificationItems}
+        organizationMembers={organizationMembers}
+        organizationMemberPermissions={organizationMemberPermissions}
+        organizationSettings={normalizedOrganizationSettings}
+        billingStatus={billingStatus}
+        complexCost={complexCost}
+        dashboardHome={dashboardHome}
+        dashboardHomeError={dashboardHomeError}
+        projectCards={projectCards}
+        collaborationProjectCards={collaborationProjectCards}
+        streamerCards={streamerCards}
+        applicationQueue={applicationQueue}
+        currentUser={currentUser}
+        accountLibraryAccounts={accountLibraryAccounts}
+      />
+    </OrganizationBrandTheme>
   );
 }
