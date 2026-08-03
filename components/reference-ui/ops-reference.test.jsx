@@ -16,6 +16,14 @@ import OpsReferenceApp, {
   normalizeAdmissionSharePresentation,
 } from "./ops-reference";
 
+function stubObjectURLApis(createObjectURL, revokeObjectURL) {
+  const NativeURL = globalThis.URL;
+  class MockURL extends NativeURL {}
+  MockURL.createObjectURL = createObjectURL;
+  MockURL.revokeObjectURL = revokeObjectURL;
+  vi.stubGlobal("URL", MockURL);
+}
+
 describe("normalizeAdmissionSharePresentation", () => {
   it("recursively whitelists bounded presentation fields and rejects unknown schemas", () => {
     const normalized = normalizeAdmissionSharePresentation({
@@ -7844,11 +7852,7 @@ describe("OpsReferenceApp admission smoke", () => {
     const openWindow = vi.spyOn(window, "open").mockImplementation(() => null);
     const createObjectURL = vi.fn(() => "blob:admission-recordings");
     const revokeObjectURL = vi.fn();
-    vi.stubGlobal("URL", {
-      ...URL,
-      createObjectURL,
-      revokeObjectURL,
-    });
+    stubObjectURLApis(createObjectURL, revokeObjectURL);
     const clickDownload = vi.fn();
     const originalCreateElement = document.createElement.bind(document);
     const createElement = vi
@@ -12710,7 +12714,7 @@ describe("OpsReferenceApp settlement smoke", () => {
       />,
     );
 
-    const lockReason = screen.getByLabelText("锁定原因");
+    const lockReason = await screen.findByLabelText("锁定原因");
     fireEvent.change(lockReason, {
       target: { value: "已核对流水，等待补投流成本" },
     });
@@ -12719,7 +12723,7 @@ describe("OpsReferenceApp settlement smoke", () => {
     const blockingHeading = await screen.findByRole("heading", {
       name: "阻断项",
     });
-    expect(blockingHeading).toHaveFocus();
+    await waitFor(() => expect(blockingHeading).toHaveFocus());
     const reconciliation = screen.getByRole("region", {
       name: "单项目结算校验结果",
     });
@@ -16270,7 +16274,7 @@ describe("OpsReferenceApp recording transcript panel", () => {
   it("exports the transcript to knowledge base, word and pdf with the chosen payload", async () => {
     const createObjectURL = vi.fn(() => "blob:transcript-export");
     const revokeObjectURL = vi.fn();
-    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+    stubObjectURLApis(createObjectURL, revokeObjectURL);
     const clickDownload = vi.fn();
     const anchors = [];
     const originalCreateElement = document.createElement.bind(document);

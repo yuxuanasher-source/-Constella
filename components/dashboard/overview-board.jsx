@@ -235,7 +235,9 @@ function normalizeAiMessageMeta(value) {
   );
   const outcome = normalizeAiOutcome(value);
   const skillDrafts = normalizeHermesSkillDrafts(
-    value?.skillDrafts || value?.hermes?.skillDrafts || value?.metadata?.skillDrafts,
+    value?.skillDrafts ||
+      value?.hermes?.skillDrafts ||
+      value?.metadata?.skillDrafts,
   );
   const meta = {
     ...(projectHealth ? { projectHealth } : {}),
@@ -301,7 +303,8 @@ function normalizeHermesSkillDrafts(value) {
 
 function sanitizeAiPublicValue(value) {
   if (typeof value === "string") return aiPublicText(value, "已隐藏内部字段");
-  if (Array.isArray(value)) return value.map(sanitizeAiPublicValue).slice(0, 20);
+  if (Array.isArray(value))
+    return value.map(sanitizeAiPublicValue).slice(0, 20);
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
     Object.entries(value)
@@ -1716,22 +1719,25 @@ function AdmissionFunnelModel({ admission }) {
 }
 
 function useClock() {
-  const [, force] = React.useReducer((x) => x + 1, 0);
+  const [now, setNow] = React.useState(null);
   React.useEffect(() => {
-    const id = setInterval(force, 5000);
+    const update = () => setNow(Date.now());
+    update();
+    const id = setInterval(update, 5000);
     return () => clearInterval(id);
   }, []);
+  return now;
 }
 function nowClock() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
-function updatedLabelFrom(generatedAt) {
-  if (!generatedAt) return "刚刚更新";
+function updatedLabelFrom(generatedAt, now) {
+  if (!generatedAt || !Number.isFinite(now)) return "刚刚更新";
   const diff = Math.max(
     0,
-    Math.floor((Date.now() - new Date(generatedAt).getTime()) / 1000),
+    Math.floor((now - new Date(generatedAt).getTime()) / 1000),
   );
   return diff < 60 ? `${diff} 秒前更新` : `${Math.floor(diff / 60)} 分钟前更新`;
 }
@@ -2722,7 +2728,10 @@ function AiRunProgressPanel({ progress, onSubmitClarify }) {
 }
 
 function AiProgressRow({ item, icon, kind, testId }) {
-  const safeLabel = aiPublicText(item?.label, kind === "tool" ? "读取数据" : "处理中");
+  const safeLabel = aiPublicText(
+    item?.label,
+    kind === "tool" ? "读取数据" : "处理中",
+  );
   const safeSource = aiPublicText(item?.source, "");
   const statusLabel = compactStatusLabel(kind, item.status);
   const statusTone =
@@ -3172,7 +3181,11 @@ function upsertById(items, id, nextItem) {
 
 function compactStatusLabel(kind, status) {
   if (kind === "tool") {
-    if (status === "completed" || status === "succeeded" || status === "success")
+    if (
+      status === "completed" ||
+      status === "succeeded" ||
+      status === "success"
+    )
       return "成功";
     if (status === "denied" || status === "limited") return "受限";
     if (status === "failed" || status === "failure") return "失败";
@@ -3561,10 +3574,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           .filter(Boolean)[0];
         const toolItem = {
           id,
-          label: String(payload?.label || payload?.toolName || "读取数据").slice(
-            0,
-            80,
-          ),
+          label: String(
+            payload?.label || payload?.toolName || "读取数据",
+          ).slice(0, 80),
           status:
             eventName === "tool.started"
               ? "running"
@@ -3612,7 +3624,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         ).slice(0, 5);
         setRunProgress((current) => ({
           ...current,
-          subagents: upsertById(current.subagents, id, subagentItem).slice(0, 5),
+          subagents: upsertById(current.subagents, id, subagentItem).slice(
+            0,
+            5,
+          ),
         }));
         return;
       }
@@ -3878,7 +3893,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       let meta;
       const activeConversationId =
         kind === "ask" ? await ensureServerConversation(userText) : null;
-      if (askRunControl) askRunControl.conversationId = activeConversationId || "";
+      if (askRunControl)
+        askRunControl.conversationId = activeConversationId || "";
       pushUserMessage();
       if (kind === "match") {
         const res = await fetch("/api/marketplace/intel", {
@@ -3946,7 +3962,10 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }
       const errorMessage =
         kind === "ask"
-          ? aiPublicText(e instanceof Error ? e.message : "", AI_UI_SAFE_FAILURE_TEXT)
+          ? aiPublicText(
+              e instanceof Error ? e.message : "",
+              AI_UI_SAFE_FAILURE_TEXT,
+            )
           : e instanceof Error
             ? e.message
             : "调用失败，请稍后重试";
@@ -4092,10 +4111,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     }
     const selectedChoice = typeof choice === "string" ? choice.trim() : "";
     const freeText = typeof text === "string" ? text.trim() : "";
-    if (
-      selectedChoice &&
-      !currentClarify.choices?.includes(selectedChoice)
-    ) {
+    if (selectedChoice && !currentClarify.choices?.includes(selectedChoice)) {
       return;
     }
     if (freeText && currentClarify.allowFreeText !== true) return;
@@ -4176,9 +4192,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       });
       if (!res.ok) {
         const payload = await res.json().catch(() => ({}));
-        throw new Error(
-          aiPublicText(payload?.error, AI_UI_SAFE_FAILURE_TEXT),
-        );
+        throw new Error(aiPublicText(payload?.error, AI_UI_SAFE_FAILURE_TEXT));
       }
       const contentType = res.headers?.get?.("content-type") || "";
       if (!res.body || !contentType.includes("text/event-stream")) {
@@ -4513,8 +4527,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
                 fontSize: 12,
                 fontWeight: 700,
                 padding: "6px 8px",
-                cursor:
-                  busy || conversationSwitching ? "default" : "pointer",
+                cursor: busy || conversationSwitching ? "default" : "pointer",
                 boxShadow: active
                   ? "inset 0 0 0 1px rgba(85,102,230,.08)"
                   : "none",
@@ -6060,14 +6073,14 @@ export function OverviewBoard({
 }) {
   const [drawer, setDrawer] = React.useState(false);
   const [period, setPeriod] = React.useState("实时");
-  useClock();
+  const now = useClock();
   const d = dashboard || {};
   const profile = d.profile || {};
   const role = String(profile.role || "owner");
   const panels = d.panels || {};
   const kpis = d.kpis || [];
   const risks = d.risks || [];
-  const updatedLabel = updatedLabelFrom(d.generatedAt);
+  const updatedLabel = updatedLabelFrom(d.generatedAt, now);
   const periodScopedData = React.useMemo(
     () =>
       scopeDashboardDataByPeriod(period, d.generatedAt, {

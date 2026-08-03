@@ -231,14 +231,16 @@ export function normalizeAdmissionSharePresentation(value) {
 }
 
 const ScreenKnowledge = lazy(() => import("./scenes/knowledge-base-scene"));
+const LazyAdmissionShareCenter = lazy(() =>
+  import("./admission-share-center").then(({ AdmissionShareCenter }) => ({
+    default: AdmissionShareCenter,
+  })),
+);
 const ScreenAdmission = lazy(async () => {
-  const [scene, admissionShareCenter] = await Promise.all([
-    import("./scenes/admission-scene"),
-    import("./admission-share-center"),
-  ]);
+  const scene = await import("./scenes/admission-scene");
   scene.configureAdmissionScene({
     ...ADMISSION_SCENE_DEPENDENCIES,
-    AdmissionShareCenter: admissionShareCenter.AdmissionShareCenter,
+    AdmissionShareCenter: LazyAdmissionShareCenter,
   });
   return scene;
 });

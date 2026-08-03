@@ -60,7 +60,11 @@ describe("OpsReferenceApp scene splitting", () => {
     ).toBe(false);
   });
 
-  it("keeps AdmissionShareCenter in the admission lazy chunk and injects it during configuration", () => {
+  it("keeps AdmissionShareCenter in an independent secondary lazy chunk", () => {
+    const admissionShareLoader = referenceSource.slice(
+      referenceSource.indexOf("const LazyAdmissionShareCenter = lazy"),
+      referenceSource.indexOf("const ScreenAdmission = lazy"),
+    );
     const admissionLoader = referenceSource.slice(
       referenceSource.indexOf("const ScreenAdmission = lazy"),
       referenceSource.indexOf("const ScreenSettlement = lazy"),
@@ -74,11 +78,31 @@ describe("OpsReferenceApp scene splitting", () => {
     );
 
     expect(hasStaticAdmissionShareCenterImport(referenceSource)).toBe(false);
-    expect(admissionLoader).toContain('import("./admission-share-center")');
+    expect(admissionShareLoader).toContain(
+      'import("./admission-share-center")',
+    );
+    expect(admissionLoader).not.toContain('import("./admission-share-center")');
+    expect(admissionLoader).toContain('import("./scenes/admission-scene")');
     expect(admissionLoader).toMatch(
-      /configureAdmissionScene\(\s*\{[\s\S]*\.\.\.ADMISSION_SCENE_DEPENDENCIES,[\s\S]*AdmissionShareCenter:\s*\w+\.AdmissionShareCenter[\s\S]*\}\s*\)/,
+      /configureAdmissionScene\(\s*\{[\s\S]*\.\.\.ADMISSION_SCENE_DEPENDENCIES,[\s\S]*AdmissionShareCenter:\s*LazyAdmissionShareCenter[\s\S]*\}\s*\)/,
     );
     expect(admissionDependencies).not.toMatch(/\bAdmissionShareCenter\b/);
+  });
+
+  it("keeps the admission page mounted while the secondary share center loads", () => {
+    const admissionSceneSource = fs.readFileSync(
+      path.join(currentDirectory, "scenes", "admission-scene.jsx"),
+      "utf8",
+    );
+    const shareCenterBranch = admissionSceneSource.slice(
+      admissionSceneSource.indexOf("{shareCenterProject ? ("),
+      admissionSceneSource.indexOf("{playbackRecording ? ("),
+    );
+
+    expect(shareCenterBranch).toContain("<React.Suspense");
+    expect(shareCenterBranch).toContain('role="status"');
+    expect(shareCenterBranch).toContain('aria-label="录屏分享中心加载中"');
+    expect(shareCenterBranch).toContain("<AdmissionShareCenter");
   });
 
   it("loads the knowledge base through a dedicated lazy scene and stable fallback", () => {

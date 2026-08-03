@@ -1,4 +1,5 @@
 import React from "react";
+import { renderToString } from "react-dom/server";
 import {
   act,
   fireEvent,
@@ -25,6 +26,34 @@ const dashboard = {
   queue: [],
   risks: [],
 };
+
+describe("OverviewBoard server hydration contract", () => {
+  it("server-renders a stable initial update label before the client clock starts", () => {
+    const renderedAt = Date.parse("2026-08-03T02:00:02.000Z");
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(renderedAt);
+
+    try {
+      const html = renderToString(
+        <OverviewBoard
+          dashboard={{
+            ...dashboard,
+            generatedAt: "2026-08-03T02:00:00.000Z",
+          }}
+          projects={[]}
+          tasks={[]}
+          reports={[]}
+          batches={[]}
+          currentUser={{ name: "123", role: "owner" }}
+        />,
+      );
+
+      expect(html).toContain("刚刚更新");
+      expect(html).not.toContain("2 秒前更新");
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+});
 
 describe("OverviewBoard AI panel", () => {
   beforeEach(() => {
@@ -118,8 +147,7 @@ describe("OverviewBoard AI panel", () => {
         });
       }
       if (
-        url ===
-        "/api/ai/conversations/conversation-stop/turns/turn-stop/cancel"
+        url === "/api/ai/conversations/conversation-stop/turns/turn-stop/cancel"
       ) {
         cancelChecks.push(turnSignal?.aborted === true);
         return Promise.resolve({
@@ -209,7 +237,9 @@ describe("OverviewBoard AI panel", () => {
             type: "todo.updated",
             conversationId: "conversation-progress",
             turnId: "turn-progress",
-            items: [{ id: "todo-1", label: "核对低毛利项目", status: "running" }],
+            items: [
+              { id: "todo-1", label: "核对低毛利项目", status: "running" },
+            ],
           },
         ],
         [
@@ -274,9 +304,13 @@ describe("OverviewBoard AI panel", () => {
     expect(within(quote).getByText("成功")).toBeInTheDocument();
     expect(within(quote).getByText("读取结算明细")).toBeInTheDocument();
     expect(within(quote).getByText("受限")).toBeInTheDocument();
-    expect(quote).not.toHaveTextContent(/rawArguments|secret stack|\/api\/internal|chain-of-thought/i);
+    expect(quote).not.toHaveTextContent(
+      /rawArguments|secret stack|\/api\/internal|chain-of-thought/i,
+    );
     const activity = await screen.findByTestId("ai-activity-panel");
-    expect(activity).not.toHaveTextContent(/rawArguments|secret stack|\/api\/internal|chain-of-thought/i);
+    expect(activity).not.toHaveTextContent(
+      /rawArguments|secret stack|\/api\/internal|chain-of-thought/i,
+    );
     expect(screen.getAllByTestId("ai-todo-row")).toHaveLength(1);
     expect(screen.getByTestId("ai-todo-row")).toHaveTextContent("已完成");
     expect(screen.getAllByTestId("ai-subagent-row")).toHaveLength(1);
@@ -537,8 +571,12 @@ describe("OverviewBoard AI panel", () => {
     fireEvent.keyDown(cancelledInput, { key: "Enter", code: "Enter" });
 
     expect(await screen.findByText("已停止生成")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
-    expect(cancelledRender.container).not.toHaveTextContent(/调用失败|上游|provider/i);
+    expect(
+      screen.queryByRole("button", { name: "重试" }),
+    ).not.toBeInTheDocument();
+    expect(cancelledRender.container).not.toHaveTextContent(
+      /调用失败|上游|provider/i,
+    );
   });
 
   it("mounts Skill draft review from AI metadata for owners only", async () => {
@@ -701,7 +739,9 @@ describe("OverviewBoard AI panel", () => {
           ok: true,
           status: 201,
           json: () =>
-            Promise.resolve({ conversation: { id: "conversation-early-stop" } }),
+            Promise.resolve({
+              conversation: { id: "conversation-early-stop" },
+            }),
         });
       }
       if (url === "/api/ai/conversations") {
@@ -861,7 +901,7 @@ describe("OverviewBoard AI panel", () => {
             turnId: "turn-redaction",
             toolCallId: "tool-unsafe",
             toolName: "internal.rawToolName",
-            label: "Hermes Gateway /api/internal {\"args\":true}",
+            label: 'Hermes Gateway /api/internal {"args":true}',
             status: "completed",
             evidence: ["/api/internal/hermes/read"],
             missing: ["provider model stack trace"],
@@ -900,7 +940,9 @@ describe("OverviewBoard AI panel", () => {
       code: "Enter",
     });
 
-    expect(await screen.findByText("AI response unavailable")).toBeInTheDocument();
+    expect(
+      await screen.findByText("AI response unavailable"),
+    ).toBeInTheDocument();
     expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
       /Hermes Gateway|DeepSeek|provider|model|\/api\/internal|rawToolName|args|stack|chain-of-thought|reasoning/i,
     );
@@ -1535,7 +1577,7 @@ describe("OverviewBoard AI panel", () => {
                   role: "assistant",
                   status: "failed",
                   content:
-                    "Hermes Gateway provider model stack at /api/internal/ai {\"args\":true}",
+                    'Hermes Gateway provider model stack at /api/internal/ai {"args":true}',
                 },
               ],
               turns: [
@@ -1574,7 +1616,9 @@ describe("OverviewBoard AI panel", () => {
     );
 
     expect(await screen.findByText("Stored failure")).toBeInTheDocument();
-    expect(await screen.findByText("AI response unavailable")).toBeInTheDocument();
+    expect(
+      await screen.findByText("AI response unavailable"),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
     expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
       /Hermes Gateway|DeepSeek|provider|model|\/api\/internal|stack|args|chain-of-thought/i,
@@ -1589,7 +1633,9 @@ describe("OverviewBoard AI panel", () => {
           ok: true,
           status: 201,
           json: () =>
-            Promise.resolve({ conversation: { id: "conversation-retry-redact" } }),
+            Promise.resolve({
+              conversation: { id: "conversation-retry-redact" },
+            }),
         });
       }
       if (url === "/api/ai/conversations") {
@@ -1659,7 +1705,9 @@ describe("OverviewBoard AI panel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "重试" }));
 
-    expect(await screen.findByText(/AI response unavailable/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/AI response unavailable/),
+    ).toBeInTheDocument();
     expect(container.querySelector(".ob-ai")).not.toHaveTextContent(
       /Hermes Gateway|provider|model|\/api\/internal|stack/i,
     );
@@ -3780,8 +3828,7 @@ describe("OverviewBoard AI conversation switcher", () => {
     resolveCreate({
       ok: true,
       status: 201,
-      json: () =>
-        Promise.resolve({ conversation: { id: "conversation-new" } }),
+      json: () => Promise.resolve({ conversation: { id: "conversation-new" } }),
     });
 
     await waitFor(() =>
@@ -3928,9 +3975,7 @@ describe("OverviewBoard AI conversation switcher", () => {
 
       fireEvent.change(screen.getByTestId("ai-attachment-input"), {
         target: {
-          files: [
-            new File(["stale"], "from-a.png", { type: "image/png" }),
-          ],
+          files: [new File(["stale"], "from-a.png", { type: "image/png" })],
         },
       });
       await waitFor(() => expect(finishAttachmentRead).toBeTypeOf("function"));
@@ -4009,8 +4054,7 @@ describe("OverviewBoard AI conversation switcher", () => {
           });
         }
         if (
-          url ===
-            "/api/ai/conversations/conversation-a/turns/turn-a/clarify" &&
+          url === "/api/ai/conversations/conversation-a/turns/turn-a/clarify" &&
           options.method === "POST"
         ) {
           return clarifyResponse;
