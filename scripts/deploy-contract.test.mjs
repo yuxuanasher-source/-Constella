@@ -60,6 +60,7 @@ const [
   standalonePreparer,
   artifactRoundtripVerifier,
   ciWorkflow,
+  telemetryBackfillMigration,
 ] = await Promise.all([
   readFile(join(process.cwd(), "scripts/deploy.sh"), "utf8"),
   readFile(join(process.cwd(), "scripts/verify-release.sh"), "utf8"),
@@ -91,6 +92,13 @@ const [
     "utf8",
   ),
   readFile(join(process.cwd(), ".github/workflows/ci.yml"), "utf8"),
+  readFile(
+    join(
+      process.cwd(),
+      "supabase/migrations/20260803120500_ai_turn_stage_telemetry_backfill.sql",
+    ),
+    "utf8",
+  ),
 ]);
 
 function position(source, marker) {
@@ -643,6 +651,101 @@ test("application release migrations pass expand preflight", async () => {
   }
 });
 
+test("telemetry backfill is runner-owned, bounded, and precedes activation", () => {
+  const main = deploy.slice(position(deploy, "main() {"));
+  const migrations = position(main, "apply_migrations");
+  const backfill = position(main, "run_ai_turn_stage_telemetry_backfill");
+  const activation = position(main, "atomic_switch_current");
+  const runner = deploy.slice(
+    position(deploy, "run_ai_turn_stage_telemetry_backfill()"),
+    position(deploy, "atomic_switch_current()"),
+  );
+
+  assert.ok(migrations < backfill);
+  assert.ok(backfill < activation);
+  assert.match(runner, /limit \$AI_TURN_TELEMETRY_BACKFILL_BATCH_SIZE/);
+  assert.match(runner, /for update(?: of historical_turn)? skip locked/);
+  assert.match(runner, /db_q/);
+  assert.match(runner, /deploy_internal\.backfill_progress/);
+  assert.match(runner, /historical_turn\.id > progress\.cursor_uuid/);
+  assert.match(runner, /completed_at/);
+  assert.match(
+    runner,
+    /validate constraint ai_chat_turns_session_action_check/,
+  );
+  assert.match(runner, /accepted_at is null/);
+  assert.match(runner, /convalidated/);
+  assert.doesNotMatch(telemetryBackfillMigration, /\bdo\s+\$\$/i);
+  assert.doesNotMatch(
+    telemetryBackfillMigration,
+    /validate constraint ai_chat_turns_session_action_check/i,
+  );
+  assert.match(deploy, /DEPLOY_CONTROL_CAPABILITY/);
+  assert.match(
+    deploy,
+    /set local jingying\.deploy_control_capability = '\$DEPLOY_CONTROL_CAPABILITY'/,
+  );
+  assert.match(
+    telemetryBackfillMigration,
+    /current_setting\('jingying\.deploy_control_capability', true\)/,
+  );
+  assert.match(
+    telemetryBackfillMigration,
+    /deploy_control_upgrade_required: install reviewed protected control before 20260803120500/,
+  );
+  assert.ok(
+    position(telemetryBackfillMigration, "current_setting(") <
+      position(
+        telemetryBackfillMigration,
+        "drop trigger if exists zz_ai_chat_turns_preserve_updated_at_for_telemetry",
+      ),
+  );
+});
+
+test("first telemetry rollout upgrades the protected control from reviewed provenance", () => {
+  const upgradeStart = position(
+    bootstrapRunbook,
+    "## 7. Upgrade the protected control for telemetry rollout",
+  );
+  const upgradeEnd = position(
+    bootstrapRunbook,
+    "## 8. Normal releases after bootstrap",
+  );
+  const upgradeRunbook = bootstrapRunbook.slice(upgradeStart, upgradeEnd);
+  for (const marker of [
+    "EXPECTED_DEPLOY_CONTROL_SHA256",
+    "TRUSTED_CURRENT_DEPLOY_CONTROL_SHA256",
+    'node "$TRUSTED_RELEASE_INTEGRITY" verify',
+    "deploy-control-backups",
+    "install -o root",
+    "deploy.sh.next",
+    "sha256sum --check --strict",
+    "restore_protected_deploy_control",
+  ]) {
+    assert.ok(upgradeRunbook.includes(marker), `missing ${marker}`);
+  }
+  const verifyCandidate = position(
+    upgradeRunbook,
+    'node "$TRUSTED_RELEASE_INTEGRITY" verify',
+  );
+  const backup = position(upgradeRunbook, "CONTROL_BACKUP=");
+  const install = position(
+    upgradeRunbook,
+    '"$CONTROL_STAGE/scripts/deploy.sh" "$PROTECTED_DEPLOY_CONTROL_NEXT"',
+  );
+  const invoke = position(
+    bootstrapRunbook,
+    "bash /etc/jingying-cabin/release-controls/deploy.sh",
+  );
+  assert.ok(verifyCandidate < backup);
+  assert.ok(backup < install);
+  assert.ok(install < invoke);
+  assert.match(hermesRunbook, /EXPECTED_DEPLOY_CONTROL_SHA256/);
+  assert.match(hermesRunbook, /protected control upgrade/i);
+  assert.match(ciWorkflow, /Deploy control SHA-256/);
+  assert.match(ciWorkflow, /deploy_control_sha256/);
+});
+
 test("a second deployment fails immediately while the host lock is held", async (t) => {
   const sandbox = await mkdtemp(join(tmpdir(), "deploy-lock-"));
   t.after(() => rm(sandbox, { recursive: true, force: true }));
@@ -1114,6 +1217,7 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(deploy, /external release record/);
   assert.match(deploy, /supabase_migrations\.schema_migrations/);
   assert.match(deploy, /__atomic_release_bootstrap_v1__/);
+  assert.match(deploy, /deploy_internal\.backfill_progress/);
   assert.match(deploy, /pg_advisory_xact_lock/);
   assert.match(deploy, /write_migration_manifest/);
   assert.match(deploy, /if ! find/);
@@ -1263,6 +1367,14 @@ test("hardening contracts fail closed across lock, env, ledger, rollback, and cl
   assert.match(
     ciWorkflow,
     /vitest run scripts\/deploy-database-contract\.test\.mjs/,
+  );
+  assert.match(
+    ciWorkflow,
+    /AI_TURN_STAGE_TELEMETRY_DB_REGRESSION_CONTAINER:\s*supabase_db_jingying-cabin/,
+  );
+  assert.match(
+    ciWorkflow,
+    /vitest run lib\/db\/xingyao-hermes-turn-stage-telemetry\.live\.test\.ts/,
   );
 
   const mainActivation = main.slice(position(main, "atomic_switch_current"));

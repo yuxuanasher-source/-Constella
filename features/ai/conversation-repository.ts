@@ -2,22 +2,42 @@ import type {
   AiConversationDto,
   AiConversationMessageDto,
   ConversationContextSnapshot,
+  ConversationMemoryDelta,
+  ConversationMemorySummary,
   ConversationStreamEvent,
   ConversationMessageRole,
   ConversationMessageStatus,
+  ConversationSessionAction,
+  ConversationTurnStage,
   ConversationTurnStatus,
+  TurnRecoveryControlState,
+  TurnRecoveryEventName,
+  TurnRecoveryRecord,
+} from "./conversation-contracts";
+import {
+  isConversationStreamEvent,
+  isConversationSessionAction,
+  isConversationTurnStage,
+  isTurnRecoveryEventName,
+  parseConversationMemorySummary,
+  parseTurnRecoveryRecord,
 } from "./conversation-contracts";
 import type { AiChatMode, AiProviderName } from "./contracts";
 import {
   createHermesStateRepository,
+  HermesStateRepositoryError,
+  mapHermesStateRepositoryError,
   type HermesTurnCancellation,
 } from "./hermes/hermes-state-repository";
 import { isHermesOutcome, type HermesOutcome } from "./hermes/contracts";
+import { parseHermesGatewayProviderState } from "./hermes/gateway-contracts";
 
 type QueryResult<T> = { data: T | null; error: unknown };
 
 type RepositoryQuery = PromiseLike<QueryResult<unknown>> & {
+  contains(column: string, value: unknown): RepositoryQuery;
   eq(column: string, value: unknown): RepositoryQuery;
+  gt(column: string, value: unknown): RepositoryQuery;
   in(column: string, values: string[]): RepositoryQuery;
   order(column: string, options: { ascending: boolean }): RepositoryQuery;
   limit(count: number): RepositoryQuery;
@@ -109,12 +129,43 @@ export type CreatedConversationTurn = {
   duplicate: boolean;
 };
 
+export type RecordedConversationTurnStage = {
+  turnId: string;
+  stage: ConversationTurnStage;
+  observedAt: string;
+  sessionAction?: ConversationSessionAction;
+};
+
+export class ConversationTurnStagePersistenceError extends Error {
+  readonly code = "conversation_turn_stage_persist_failed";
+
+  constructor() {
+    super("Conversation turn stage could not be persisted");
+    this.name = "ConversationTurnStagePersistenceError";
+  }
+}
+
+export class ConversationTurnRecoveryPersistenceError extends Error {
+  readonly code = "conversation_turn_recovery_persist_failed";
+
+  constructor() {
+    super("Conversation turn recovery state could not be persisted");
+    this.name = "ConversationTurnRecoveryPersistenceError";
+  }
+}
+
 export type ConversationGatewayState = {
   generation: number;
   sessionId?: string;
+  checkpointId?: string;
+  provider?: string;
+  model?: string;
+  lastUsedAt?: string;
   childSessions: string[];
-  summary: Record<string, unknown>;
+  summary: ConversationMemorySummary;
   summaryVersion: number;
+  memoryStatus: "ready" | "degraded";
+  memoryDegradedAt: string | null;
   pendingClarify?: ConversationGatewayPendingClarify;
 };
 
@@ -127,7 +178,7 @@ export type ConversationGatewayPendingClarify = {
   allowFreeText: boolean;
   response?: {
     clarifyId: string;
-    answerSha256?: string;
+    answerSha256: string;
   };
 };
 
@@ -215,6 +266,91 @@ export async function listAiConversationMessages(
     : data.filter(isMessageRow).map(toMessageDto).reverse();
 }
 
+export async function listAiConversationContextMessages(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    afterSequence: number;
+    pageSize?: number;
+  },
+): Promise<AiConversationMessageDto[]> {
+  if (!Number.isInteger(input.afterSequence) || input.afterSequence < 0) {
+    throw new RangeError("conversation_message_cursor_invalid");
+  }
+  const pageSize = input.pageSize ?? 200;
+  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 200) {
+    throw new RangeError("conversation_message_page_size_invalid");
+  }
+
+  const recent = await listConversationMessagePages(client, {
+    ...input,
+    pageSize,
+    cursor: input.afterSequence,
+    pinnedOnly: false,
+  });
+  const pinned = await listConversationMessagePages(client, {
+    ...input,
+    pageSize,
+    cursor: 0,
+    pinnedOnly: true,
+  });
+  const byId = new Map<string, AiConversationMessageDto>();
+  for (const message of [...recent, ...pinned]) byId.set(message.id, message);
+  return [...byId.values()].sort(
+    (left, right) => left.sequence - right.sequence,
+  );
+}
+
+async function listConversationMessagePages(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    pageSize: number;
+    cursor: number;
+    pinnedOnly: boolean;
+  },
+): Promise<AiConversationMessageDto[]> {
+  const messages: AiConversationMessageDto[] = [];
+  let cursor = input.cursor;
+  while (true) {
+    let query = client
+      .from("ai_chat_messages")
+      .select(
+        "id, conversation_id, sequence_no, role, status, content, parent_message_id, metadata, created_at, updated_at",
+      )
+      .eq("conversation_id", input.conversationId)
+      .eq("organization_id", input.organizationId)
+      .eq("owner_user_id", input.ownerUserId)
+      .eq("status", "completed")
+      .gt("sequence_no", cursor);
+    if (input.pinnedOnly) {
+      query = query.contains("metadata", { pinned: true });
+    }
+    const { data, error } = (await query
+      .order("sequence_no", { ascending: true })
+      .limit(input.pageSize)) as QueryResult<unknown[]>;
+    if (error || !Array.isArray(data)) {
+      throw new Error("conversation_message_page_unavailable");
+    }
+    const rows = data.filter(isMessageRow);
+    if (rows.length !== data.length) {
+      throw new Error("conversation_message_page_invalid");
+    }
+    const page = rows.map(toMessageDto);
+    messages.push(...page);
+    if (page.length < input.pageSize) return messages;
+    const nextCursor = page.at(-1)?.sequence;
+    if (nextCursor == null || nextCursor <= cursor) {
+      throw new Error("conversation_message_cursor_stalled");
+    }
+    cursor = nextCursor;
+  }
+}
+
 export async function getAiConversationGatewayState(
   client: ConversationRepositoryClient,
   input: {
@@ -225,19 +361,35 @@ export async function getAiConversationGatewayState(
 ): Promise<ConversationGatewayState | null> {
   const { data, error } = await client
     .from("ai_conversations")
-    .select("provider_state, summary, summary_version")
+    .select(
+      "provider_state, summary, summary_version, memory_status, memory_degraded_at",
+    )
     .eq("id", input.conversationId)
     .eq("organization_id", input.organizationId)
     .eq("owner_user_id", input.ownerUserId)
     .maybeSingle();
 
   if (error || !isRecord(data)) return null;
-  const providerState = isRecord(data.provider_state) ? data.provider_state : {};
+  const providerState = isRecord(data.provider_state)
+    ? data.provider_state
+    : {};
   const hermesGateway = isRecord(providerState.hermesGateway)
     ? providerState.hermesGateway
     : {};
   const generation = numberValue(hermesGateway.generation) ?? 0;
   const sessionId = stringValue(hermesGateway.sessionId);
+  const reusableSession = sessionId
+    ? parseHermesGatewayProviderState({
+        generation,
+        sessionId,
+        ...(stringValue(hermesGateway.checkpointId)
+          ? { checkpointId: stringValue(hermesGateway.checkpointId)! }
+          : {}),
+        provider: hermesGateway.provider,
+        model: hermesGateway.model,
+        lastUsedAt: hermesGateway.lastUsedAt,
+      })
+    : null;
   const checkpoint = isRecord(hermesGateway.checkpoint)
     ? hermesGateway.checkpoint
     : {};
@@ -248,15 +400,32 @@ export async function getAiConversationGatewayState(
     ]),
   ];
   const pendingClarify = parsePendingClarify(hermesGateway.pendingClarify);
-  const summary = isRecord(data.summary) ? data.summary : {};
+  const parsedSummary = parseConversationMemorySummary(data.summary);
+  const summary = parsedSummary ?? emptyConversationMemorySummary();
   const summaryVersion = numberValue(data.summary_version) ?? 0;
+  const persistedMemoryStatus = stringValue(data.memory_status);
+  const memoryStatus =
+    parsedSummary && persistedMemoryStatus === "ready" ? "ready" : "degraded";
+  const memoryDegradedAt = stringValue(data.memory_degraded_at);
   return {
     generation,
     ...(sessionId ? { sessionId } : {}),
+    ...(reusableSession?.checkpointId
+      ? { checkpointId: reusableSession.checkpointId }
+      : {}),
+    ...(reusableSession
+      ? {
+          provider: reusableSession.provider,
+          model: reusableSession.model,
+          lastUsedAt: reusableSession.lastUsedAt,
+        }
+      : {}),
     childSessions,
     ...(pendingClarify ? { pendingClarify } : {}),
     summary,
     summaryVersion,
+    memoryStatus,
+    memoryDegradedAt,
   };
 }
 
@@ -466,6 +635,41 @@ export async function renewAiConversationTurnLease(
   return !error && data === true;
 }
 
+export async function recordAiConversationTurnStage(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+    stage: ConversationTurnStage;
+    observedAt: string;
+    sessionAction?: ConversationSessionAction;
+  },
+): Promise<RecordedConversationTurnStage> {
+  let result: QueryResult<unknown>;
+  try {
+    result = await client.rpc("record_ai_chat_turn_stage", {
+      p_organization_id: input.organizationId,
+      p_owner_user_id: input.ownerUserId,
+      p_conversation_id: input.conversationId,
+      p_turn_id: input.turnId,
+      p_stage: input.stage,
+      p_observed_at: input.observedAt,
+      p_session_action: input.sessionAction ?? null,
+    });
+  } catch {
+    throw new ConversationTurnStagePersistenceError();
+  }
+  const recorded = result.error
+    ? null
+    : parseRecordedTurnStage(result.data, input.turnId, input.stage);
+  if (!recorded) {
+    throw new ConversationTurnStagePersistenceError();
+  }
+  return recorded;
+}
+
 export async function finishAiConversationTurnV2(
   client: ConversationRepositoryClient,
   input: {
@@ -499,6 +703,151 @@ export async function finishAiConversationTurnV2(
       metadata: input.metadata,
     },
   );
+}
+
+export type ConversationMemoryFinishResult = {
+  completed: true;
+  memoryStatus: "ready" | "degraded";
+  summaryVersion: number;
+};
+
+export async function finishAiConversationTurnV3(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    turnId: string;
+    invocationId: string;
+    outcome: HermesOutcome;
+    content?: string;
+    providerName?: AiProviderName | null;
+    errorCode?: string | null;
+    errorSummary?: string | null;
+    retryable: boolean;
+    metadata?: Record<string, unknown>;
+    expectedSummaryVersion: number;
+    memoryDelta: ConversationMemoryDelta | null;
+  },
+): Promise<ConversationMemoryFinishResult> {
+  let result: QueryResult<unknown>;
+  try {
+    result = await client.rpc("finish_ai_chat_turn_v3", {
+      p_organization_id: input.organizationId,
+      p_owner_user_id: input.ownerUserId,
+      p_turn_id: input.turnId,
+      p_outcome: input.outcome,
+      p_content: input.content ?? "",
+      p_provider_name: input.providerName ?? null,
+      p_ai_invocation_id: input.invocationId,
+      p_error_code: input.errorCode ?? null,
+      p_error_summary: input.errorSummary ?? null,
+      p_retryable: input.retryable,
+      p_metadata: input.metadata ?? {},
+      p_expected_summary_version: input.expectedSummaryVersion,
+      p_memory_delta: input.memoryDelta,
+    });
+  } catch (error) {
+    throw mapHermesStateRepositoryError(error);
+  }
+  if (result.error) throw mapHermesStateRepositoryError(result.error);
+  if (!isRecord(result.data) || result.data.completed !== true) {
+    throw new HermesStateRepositoryError("state_conflict");
+  }
+  const memoryStatus = result.data.memory_status;
+  const summaryVersion = numberValue(result.data.summary_version);
+  if (
+    (memoryStatus !== "ready" && memoryStatus !== "degraded") ||
+    summaryVersion == null ||
+    !Number.isInteger(summaryVersion) ||
+    summaryVersion < 0
+  ) {
+    throw new HermesStateRepositoryError("state_conflict");
+  }
+  return { completed: true, memoryStatus, summaryVersion };
+}
+
+export async function appendAiConversationTurnRecoveryEvent(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+    eventName: TurnRecoveryEventName;
+    payload?: Record<string, unknown>;
+    partialContent?: string;
+    terminalEvent?: ConversationStreamEvent;
+    controlState?: TurnRecoveryControlState;
+  },
+): Promise<TurnRecoveryRecord> {
+  const payload = input.payload ?? {};
+  if (
+    !isTurnRecoveryEventName(input.eventName) ||
+    !isRecord(payload) ||
+    postgresJsonbTextBytes(payload) > 16_384 ||
+    containsRecoverySensitiveKey(payload) ||
+    (input.partialContent != null &&
+      (typeof input.partialContent !== "string" ||
+        new TextEncoder().encode(input.partialContent).byteLength > 400_000)) ||
+    (input.terminalEvent != null &&
+      (!isConversationStreamEvent(input.terminalEvent) ||
+        postgresJsonbTextBytes(input.terminalEvent) > 524_288 ||
+        containsRecoverySensitiveKey(input.terminalEvent) ||
+        input.terminalEvent.conversationId !== input.conversationId ||
+        input.terminalEvent.turnId !== input.turnId ||
+        ![
+          "response.completed",
+          "response.failed",
+          "response.cancelled",
+        ].includes(input.terminalEvent.type))) ||
+    (input.controlState != null &&
+      postgresJsonbTextBytes(input.controlState) > 16_384)
+  ) {
+    throw new RangeError("conversation_turn_recovery_event_invalid");
+  }
+  const { data, error } = await client.rpc(
+    "append_ai_chat_turn_recovery_event",
+    {
+      p_organization_id: input.organizationId,
+      p_owner_user_id: input.ownerUserId,
+      p_conversation_id: input.conversationId,
+      p_turn_id: input.turnId,
+      p_event_name: input.eventName,
+      p_payload: payload,
+      p_partial_content: input.partialContent ?? null,
+      p_terminal_event: input.terminalEvent ?? null,
+      p_control_state: input.controlState ?? null,
+    },
+  );
+  if (error) throw new ConversationTurnRecoveryPersistenceError();
+  const parsed = parseRecoveryRpcRecord(data);
+  if (!parsed) throw new ConversationTurnRecoveryPersistenceError();
+  return parsed;
+}
+
+export async function getAiConversationTurnRecoverySnapshot(
+  client: ConversationRepositoryClient,
+  input: {
+    organizationId: string;
+    ownerUserId: string;
+    conversationId: string;
+    turnId: string;
+  },
+): Promise<TurnRecoveryRecord | null> {
+  const { data, error } = await client.rpc(
+    "get_ai_chat_turn_recovery_snapshot",
+    {
+      p_organization_id: input.organizationId,
+      p_owner_user_id: input.ownerUserId,
+      p_conversation_id: input.conversationId,
+      p_turn_id: input.turnId,
+    },
+  );
+  if (error) throw new ConversationTurnRecoveryPersistenceError();
+  if (data == null) return null;
+  const parsed = parseRecoveryRpcRecord(data);
+  if (!parsed) throw new ConversationTurnRecoveryPersistenceError();
+  return parsed;
 }
 
 export async function cancelAiConversationTurnV2(
@@ -666,6 +1015,78 @@ function toConversationDto(row: ConversationRow): AiConversationDto {
   };
 }
 
+function parseRecoveryRpcRecord(value: unknown): TurnRecoveryRecord | null {
+  if (!isRecord(value)) return null;
+  return parseTurnRecoveryRecord({
+    turnId: value.turnId ?? value.turn_id,
+    status: value.status,
+    eventSequence: value.eventSequence ?? value.event_sequence,
+    partialContent: value.partialContent ?? value.partial_content ?? "",
+    terminalEvent: value.terminalEvent ?? value.terminal_event,
+    controlState: value.controlState ??
+      value.control_state ?? {
+        childSessionIds: [],
+      },
+    updatedAt: value.updatedAt ?? value.updated_at,
+    operationStatus: value.operationStatus ?? value.operation_status,
+  });
+}
+
+function jsonBytes(value: unknown): number {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function postgresJsonbTextBytes(value: unknown): number {
+  const compactBytes = jsonBytes(value);
+  if (!Number.isFinite(compactBytes)) return compactBytes;
+  return compactBytes + jsonbStructuralWhitespace(value);
+}
+
+function jsonbStructuralWhitespace(value: unknown): number {
+  if (Array.isArray(value)) {
+    return (
+      Math.max(0, value.length - 1) +
+      value.reduce((total, item) => total + jsonbStructuralWhitespace(item), 0)
+    );
+  }
+  if (!isRecord(value)) return 0;
+  const entries = Object.entries(value);
+  return (
+    entries.length +
+    Math.max(0, entries.length - 1) +
+    entries.reduce(
+      (total, [, item]) => total + jsonbStructuralWhitespace(item),
+      0,
+    )
+  );
+}
+
+function containsRecoverySensitiveKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsRecoverySensitiveKey);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(
+    ([key, item]) =>
+      /^(authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|service[_-]?role|secret|password|private[_-]?key|prompt|context_snapshot)$/i.test(
+        key,
+      ) || containsRecoverySensitiveKey(item),
+  );
+}
+
+function emptyConversationMemorySummary(): ConversationMemorySummary {
+  return {
+    schemaVersion: 1,
+    goals: [],
+    confirmedFacts: [],
+    decisions: [],
+    unresolvedQuestions: [],
+    lastCompactedSequence: 0,
+  };
+}
+
 function toMessageDto(row: MessageRow): AiConversationMessageDto {
   return {
     id: row.id,
@@ -735,6 +1156,42 @@ function parseCreatedTurn(value: unknown): CreatedConversationTurn | null {
   };
 }
 
+function parseRecordedTurnStage(
+  value: unknown,
+  expectedTurnId: string,
+  expectedStage: ConversationTurnStage,
+): RecordedConversationTurnStage | null {
+  if (!isRecord(value)) return null;
+  const turnId = stringValue(value.turnId);
+  const observedAt = stringValue(value.observedAt);
+  if (
+    turnId !== expectedTurnId ||
+    !isConversationTurnStage(value.stage) ||
+    value.stage !== expectedStage ||
+    !observedAt ||
+    !Number.isFinite(Date.parse(observedAt))
+  ) {
+    return null;
+  }
+  if (value.stage !== "session_ready" && value.sessionAction != null) {
+    return null;
+  }
+  if (
+    value.sessionAction != null &&
+    !isConversationSessionAction(value.sessionAction)
+  ) {
+    return null;
+  }
+  return {
+    turnId,
+    stage: value.stage,
+    observedAt,
+    ...(value.sessionAction != null
+      ? { sessionAction: value.sessionAction }
+      : {}),
+  };
+}
+
 function isConversationRow(value: unknown): value is ConversationRow {
   return (
     isRecord(value) &&
@@ -792,17 +1249,22 @@ function parsePendingClarify(
   const requestId = stringValue(value.requestId) ?? clarifyId;
   const question = stringValue(value.question);
   const choices = Array.isArray(value.choices)
-    ? value.choices.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    ? value.choices.filter(
+        (item): item is string =>
+          typeof item === "string" && item.trim().length > 0,
+      )
     : [];
   if (!turnId || !clarifyId || !requestId || !question) return null;
-  const response = isRecord(value.response)
-    ? {
-        clarifyId: stringValue(value.response.clarifyId) ?? clarifyId,
-        ...(stringValue(value.response.answerSha256)
-          ? { answerSha256: stringValue(value.response.answerSha256)! }
-          : {}),
-      }
-    : undefined;
+  const responseClarifyId = isRecord(value.response)
+    ? stringValue(value.response.clarifyId)
+    : null;
+  const responseAnswerSha256 = isRecord(value.response)
+    ? stringValue(value.response.answerSha256)
+    : null;
+  const response =
+    responseClarifyId === clarifyId && isSha256(responseAnswerSha256)
+      ? { clarifyId: responseClarifyId, answerSha256: responseAnswerSha256 }
+      : undefined;
   return {
     turnId,
     clarifyId,
@@ -812,6 +1274,10 @@ function parsePendingClarify(
     allowFreeText: value.allowFreeText === true,
     ...(response ? { response } : {}),
   };
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
 function isClarifyClaimStatus(

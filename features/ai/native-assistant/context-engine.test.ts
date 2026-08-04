@@ -137,10 +137,23 @@ describe("native assistant context engine", () => {
           updatedAt: "2026-07-20T08:00:00.000Z",
           privateReasoning: "never expose",
         }),
-        ledgerMessage("m-other-user", "user", 3, "completed", "other user state", {
-          ownerUserId: "other-user",
-        }),
-        ledgerMessage("m-assistant-failed", "assistant", 4, "failed", "failed draft"),
+        ledgerMessage(
+          "m-other-user",
+          "user",
+          3,
+          "completed",
+          "other user state",
+          {
+            ownerUserId: "other-user",
+          },
+        ),
+        ledgerMessage(
+          "m-assistant-failed",
+          "assistant",
+          4,
+          "failed",
+          "failed draft",
+        ),
       ],
     });
 
@@ -172,6 +185,114 @@ describe("native assistant context engine", () => {
     expect(JSON.stringify(context)).not.toContain("other user state");
     expect(JSON.stringify(context)).not.toContain("privateReasoning");
   });
+
+  it("returns the structured-memory cursor and every completed message after it even when degraded", () => {
+    const context = buildGatewayNativeAssistantContext({
+      auth: {
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        role: "finance",
+      },
+      conversationId: CONVERSATION_ID,
+      invocationId: INVOCATION_ID,
+      clientRequest: { message: "what changed?", mode: "fast" },
+      personalMemoryRevision: 0,
+      conversationMemory: {
+        status: "degraded",
+        summaryVersion: 7,
+        summary: {
+          schemaVersion: 1,
+          goals: [],
+          confirmedFacts: [
+            {
+              text: "The target is 25%",
+              sourceMessageIds: [MESSAGE_ID_2],
+            },
+          ],
+          decisions: [],
+          unresolvedQuestions: [],
+          lastCompactedSequence: 2,
+        },
+      },
+      messages: [
+        ledgerMessage(MESSAGE_ID_1, "user", 1, "completed", "compacted"),
+        ledgerMessage(
+          MESSAGE_ID_2,
+          "assistant",
+          2,
+          "completed",
+          "compacted answer",
+        ),
+        ledgerMessage(MESSAGE_ID_3, "user", 3, "completed", "new question"),
+        ledgerMessage(MESSAGE_ID_4, "assistant", 4, "completed", "new answer"),
+        ledgerMessage(MESSAGE_ID_5, "assistant", 5, "failed", "draft"),
+      ],
+    });
+
+    expect(context).toMatchObject({
+      conversationMemory: {
+        status: "degraded",
+        summaryVersion: 7,
+        lastCompactedSequence: 2,
+        summary: expect.objectContaining({ schemaVersion: 1 }),
+      },
+      ledgerTranscript: [
+        expect.objectContaining({ content: "new question" }),
+        expect.objectContaining({ content: "new answer" }),
+      ],
+    });
+    expect(
+      context?.ledgerTranscript.map((entry) => entry.metadata?.sequence),
+    ).toEqual([3, 4]);
+  });
+
+  it("retains a completed pinned fact from the compacted sequence range", () => {
+    const context = buildGatewayNativeAssistantContext({
+      auth: {
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        role: "finance",
+      },
+      conversationId: CONVERSATION_ID,
+      invocationId: INVOCATION_ID,
+      clientRequest: { message: "use the pinned constraint", mode: "fast" },
+      personalMemoryRevision: 0,
+      conversationMemory: {
+        status: "ready",
+        summaryVersion: 4,
+        summary: {
+          schemaVersion: 1,
+          goals: [],
+          confirmedFacts: [],
+          decisions: [],
+          unresolvedQuestions: [],
+          lastCompactedSequence: 2,
+        },
+      },
+      messages: [
+        ledgerMessage(
+          MESSAGE_ID_1,
+          "user",
+          1,
+          "completed",
+          "Never exceed the approved spend",
+          { pinned: true },
+        ),
+        ledgerMessage(MESSAGE_ID_2, "assistant", 2, "completed", "compacted"),
+        ledgerMessage(MESSAGE_ID_3, "user", 3, "completed", "new request"),
+      ],
+    });
+
+    expect(
+      context?.ledgerTranscript.map((entry) => ({
+        sequence: entry.metadata?.sequence,
+        pinned: entry.metadata?.pinned,
+      })),
+    ).toEqual([
+      { sequence: 1, pinned: true },
+      { sequence: 3, pinned: undefined },
+    ]);
+  });
 });
 
 const USER_ID = "22222222-2222-4222-8222-222222222222";
@@ -179,6 +300,11 @@ const ORG_ID = "33333333-3333-4333-8333-333333333333";
 const CONVERSATION_ID = "44444444-4444-4444-8444-444444444444";
 const BATCH_ID = "55555555-5555-4555-8555-555555555555";
 const INVOCATION_ID = "66666666-6666-4666-8666-666666666666";
+const MESSAGE_ID_1 = "77777777-7777-4777-8777-777777777771";
+const MESSAGE_ID_2 = "77777777-7777-4777-8777-777777777772";
+const MESSAGE_ID_3 = "77777777-7777-4777-8777-777777777773";
+const MESSAGE_ID_4 = "77777777-7777-4777-8777-777777777774";
+const MESSAGE_ID_5 = "77777777-7777-4777-8777-777777777775";
 
 function ledgerMessage(
   id: string,

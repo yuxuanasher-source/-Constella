@@ -50,10 +50,14 @@ export type HermesGatewayByteAttachment = {
 
 export type HermesGatewaySession = {
   readonly sessionId: string;
+  readonly checkpointId?: string;
   readonly events: AsyncIterable<HermesGatewayEvent>;
   info(): Promise<unknown>;
   list(): Promise<unknown>;
-  branch(conversationId: string): Promise<unknown>;
+  branch(input: {
+    conversationId: string;
+    checkpointId: string;
+  }): Promise<unknown>;
   compress(): Promise<unknown>;
   respondToClarify(input: {
     requestId: string;
@@ -70,20 +74,81 @@ type JsonRpcResponse = {
   jsonrpc: "2.0";
   id: string;
   result?: unknown;
-  error?: { code?: string; message?: string };
+  error?: { code?: string | number; message?: string };
 };
 
 const DEFAULT_TIMEOUTS: HermesGatewayTimeouts = {
   connectMs: 2_000,
   readyMs: 2_000,
   rpcMs: 15_000,
-  idleMs: 120_000,
+  idleMs: 180_000,
   heartbeatMs: 30_000,
 };
 const XINGYAO_GATEWAY_WS_PATH = "/api/xingyao/ws";
 const MAX_EVENT_RECOVERY_ATTEMPTS = 2;
+const AMBIGUOUS_TRANSPORT_ERROR_CODES = new Set([
+  "hermes_gateway_connection_closed",
+  "hermes_gateway_connection_failed",
+  "hermes_gateway_connect_failed",
+  "hermes_gateway_connect_timeout",
+  "hermes_gateway_idle_timeout",
+  "hermes_gateway_not_connected",
+  "hermes_gateway_ready_timeout",
+  "hermes_gateway_rpc_timeout",
+  "hermes_gateway_send_failed",
+]);
+const RECOVERABLE_CONNECTION_ERROR_CODES = new Set([
+  "hermes_gateway_connection_closed",
+  "hermes_gateway_connection_failed",
+  "hermes_gateway_connect_failed",
+  "hermes_gateway_connect_timeout",
+  "hermes_gateway_ready_timeout",
+]);
+const SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES = {
+  missing: "hermes_gateway_session_missing",
+  notFound: "hermes_gateway_session_not_found",
+  expired: "hermes_gateway_session_expired",
+  incompatibleAgentSignature: "hermes_gateway_agent_signature_incompatible",
+  incompatibleCheckpoint: "hermes_gateway_checkpoint_incompatible",
+} as const;
 const XINGYAO_LOOPBACK_WS_URL =
   /^ws:\/\/(?:127\.0\.0\.1|localhost)(?::[0-9]{1,5})?(?:\/|\/api\/xingyao\/ws)?$/i;
+
+export class HermesGatewayError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(code);
+    this.name = "HermesGatewayError";
+    this.code = code;
+  }
+}
+
+export function isAmbiguousHermesGatewayTransportError(
+  error: unknown,
+): error is HermesGatewayError {
+  return (
+    error instanceof HermesGatewayError &&
+    AMBIGUOUS_TRANSPORT_ERROR_CODES.has(error.code)
+  );
+}
+
+export function isHermesGatewaySessionLifecycleRebuildableError(
+  error: unknown,
+): error is HermesGatewayError {
+  if (!(error instanceof HermesGatewayError)) return false;
+
+  switch (error.code) {
+    case SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES.missing:
+    case SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES.notFound:
+    case SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES.expired:
+    case SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES.incompatibleAgentSignature:
+    case SESSION_LIFECYCLE_REBUILDABLE_ERROR_CODES.incompatibleCheckpoint:
+      return true;
+    default:
+      return false;
+  }
+}
 
 export function resolveHermesGatewayConfig(
   env: Record<string, string | undefined> = process.env,
@@ -135,6 +200,7 @@ export async function attachHermesGatewayBytes(
 
 class HermesGatewayClient implements HermesGatewaySession {
   sessionId = "";
+  checkpointId?: string;
   readonly events: AsyncIterable<HermesGatewayEvent>;
   private readonly options: HermesGatewaySessionOptions;
   private readonly actorFingerprint: string;
@@ -218,8 +284,11 @@ class HermesGatewayClient implements HermesGatewaySession {
     return this.rpc("session.list", {});
   }
 
-  branch(conversationId: string): Promise<unknown> {
-    return this.rpc("session.branch", { conversationId });
+  branch(input: {
+    conversationId: string;
+    checkpointId: string;
+  }): Promise<unknown> {
+    return this.rpc("session.branch", input);
   }
 
   compress(): Promise<unknown> {
@@ -354,6 +423,9 @@ class HermesGatewayClient implements HermesGatewaySession {
       throw this.error("hermes_gateway_session_mismatch");
     }
     this.sessionId = sessionId;
+    if (typeof result.checkpointId === "string" && result.checkpointId) {
+      this.checkpointId = result.checkpointId;
+    }
     if (
       typeof result.invocationId === "string" &&
       result.invocationId !== this.options.actor.invocationId
@@ -415,23 +487,31 @@ class HermesGatewayClient implements HermesGatewaySession {
       { ok: true } | { ok: false; error: Error }
     >((resolve) => {
       const timer = this.timeout("connect", () => {
+        cleanup();
         socket.terminate();
         resolve({
           ok: false,
           error: this.error("hermes_gateway_connect_timeout"),
         });
       });
-      socket.once("open", () => {
+      const cleanup = () => {
         this.clearTrackedTimer(timer);
+        socket.off("open", onOpen);
+        socket.off("error", onError);
+      };
+      const onOpen = () => {
+        cleanup();
         resolve({ ok: true });
-      });
-      socket.once("error", (error) => {
-        this.clearTrackedTimer(timer);
+      };
+      const onError = (error: Error) => {
+        cleanup();
         resolve({
           ok: false,
           error: this.redactError(error, "hermes_gateway_connect_failed"),
         });
-      });
+      };
+      socket.once("open", onOpen);
+      socket.once("error", onError);
     });
     if (!openResult.ok) {
       socket.terminate();
@@ -455,7 +535,7 @@ class HermesGatewayClient implements HermesGatewaySession {
       const timer = this.timeout("ready", () => {
         cleanup();
         const error = this.error("hermes_gateway_ready_timeout");
-        this.fatalProtocolFailure(error);
+        this.recoverableTransportTeardown(socket, error);
         reject(error);
       });
       const cleanup = () => {
@@ -495,10 +575,7 @@ class HermesGatewayClient implements HermesGatewaySession {
   private attachSocket(socket: WebSocket): void {
     this.messageHandler = (data) => this.handleMessage(data);
     this.closeHandler = () => this.handleSocketClose(socket);
-    this.errorHandler = (error) =>
-      this.fatalProtocolFailure(
-        this.redactError(error, "hermes_gateway_connection_failed"),
-      );
+    this.errorHandler = (error) => this.handleSocketError(socket, error);
     socket.on("message", this.messageHandler);
     socket.on("close", this.closeHandler);
     socket.on("error", this.errorHandler);
@@ -506,9 +583,32 @@ class HermesGatewayClient implements HermesGatewaySession {
 
   private handleSocketClose(socket: WebSocket): void {
     if (this.socket !== socket || this.closed || this.fatalError) return;
-    const error = this.error("hermes_gateway_connection_closed");
+    this.recoverableTransportTeardown(
+      socket,
+      this.error("hermes_gateway_connection_closed"),
+    );
+  }
+
+  private handleSocketError(socket: WebSocket, error: Error): void {
+    if (this.socket !== socket || this.closed || this.fatalError) return;
+    const gatewayError = this.redactError(
+      error,
+      "hermes_gateway_connection_failed",
+    );
+    if (isWebSocketProtocolError(error)) {
+      this.fatalProtocolFailure(gatewayError);
+      return;
+    }
+    this.recoverableTransportTeardown(socket, gatewayError);
+  }
+
+  private recoverableTransportTeardown(
+    socket: WebSocket,
+    error: HermesGatewayError,
+  ): void {
     this.detachSocket();
     this.socket = null;
+    socket.terminate();
     this.clearConnectionTimers();
     this.rejectPendingError(error);
     this.failEvents(error);
@@ -790,16 +890,17 @@ class HermesGatewayClient implements HermesGatewaySession {
     this.idleTimer = null;
   }
 
-  private error(code: string): Error {
-    return new Error(redactText(code, this.sensitiveValues()));
+  private error(code: string): HermesGatewayError {
+    return new HermesGatewayError(redactText(code, this.sensitiveValues()));
   }
 
-  private redactError(error: unknown, fallbackCode: string): Error {
-    if (!(error instanceof Error)) {
-      return this.error(fallbackCode);
-    }
-    const redacted = redactText(error.message, this.sensitiveValues());
-    return this.error(redacted === error.message ? fallbackCode : redacted);
+  private redactError(
+    error: unknown,
+    fallbackCode: string,
+  ): HermesGatewayError {
+    return error instanceof HermesGatewayError
+      ? error
+      : this.error(fallbackCode);
   }
 
   private sensitiveValues(): string[] {
@@ -877,11 +978,15 @@ function resultSessionId(value: unknown): string | null {
     : null;
 }
 
-function gatewayError(code: string): Error {
-  return new Error(redactText(code));
+function gatewayError(code: string): HermesGatewayError {
+  return new HermesGatewayError(redactText(code));
 }
 
-function safeRpcErrorCode(error: { code?: string; message?: string }): string {
+function safeRpcErrorCode(error: {
+  code?: string | number;
+  message?: string;
+}): string {
+  if (error.code === 4040) return "hermes_gateway_session_not_found";
   return isSafeSymbolicErrorCode(error.code)
     ? error.code
     : "hermes_gateway_rpc_failed";
@@ -915,12 +1020,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isRecoverableConnectionError(error: unknown): boolean {
   return (
-    error instanceof Error &&
-    [
-      "hermes_gateway_connection_closed",
-      "hermes_gateway_connect_failed",
-      "hermes_gateway_connect_timeout",
-      "hermes_gateway_ready_timeout",
-    ].includes(error.message)
+    error instanceof HermesGatewayError &&
+    RECOVERABLE_CONNECTION_ERROR_CODES.has(error.code)
+  );
+}
+
+function isWebSocketProtocolError(error: unknown): boolean {
+  return (
+    isRecord(error) &&
+    typeof error.code === "string" &&
+    error.code.startsWith("WS_ERR_")
   );
 }

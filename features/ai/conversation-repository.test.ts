@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  appendAiConversationTurnRecoveryEvent,
   cancelAiConversationTurnV2,
   claimAiConversationClarifyResponse,
   compareAndSwapAiConversationGatewayState,
@@ -8,11 +9,15 @@ import {
   createAiConversation,
   createAiConversationTurn,
   finishAiConversationTurnV2,
+  finishAiConversationTurnV3,
   getAiConversationGatewayState,
+  getAiConversationTurnRecoverySnapshot,
+  listAiConversationContextMessages,
   verifyAiConversationTerminalState,
   listAiConversationMessages,
   listAiConversationTurns,
   listAiConversations,
+  recordAiConversationTurnStage,
   renewAiConversationTurnLease,
   renewAiConversationTurnLeaseV2,
   syncAiConversationSummary,
@@ -49,7 +54,346 @@ const gatewayRuntimeSnapshot = {
   },
 };
 
+function repositoryMessageRow(
+  sequence: number,
+  metadata: Record<string, unknown> = {},
+) {
+  const suffix = String(sequence).padStart(12, "0");
+  return {
+    id: `90000000-0000-4000-8000-${suffix}`,
+    conversation_id: "conversation-1",
+    sequence_no: sequence,
+    role: sequence % 2 === 0 ? "user" : "assistant",
+    status: "completed",
+    content: `message ${sequence}`,
+    parent_message_id: null,
+    metadata,
+    created_at: "2026-08-03T16:00:00.000Z",
+    updated_at: "2026-08-03T16:00:00.000Z",
+  };
+}
+
 describe("Xingyao conversation repository", () => {
+  it("appends recovery events with exact actor and turn RPC bindings", async () => {
+    const updatedAt = "2026-08-03T16:02:00.000Z";
+    const terminalEvent = {
+      type: "response.failed" as const,
+      conversationId: v2Ids.conversationId,
+      turnId: v2Ids.turnId,
+      code: "gateway_timeout",
+      retryable: true,
+      message: "Gateway timed out",
+    };
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        turnId: v2Ids.turnId,
+        status: "failed",
+        eventSequence: 9,
+        partialContent: "partial answer",
+        terminalEvent,
+        controlState: { childSessionIds: ["session-child-1"] },
+        operationStatus: "appended",
+        updatedAt,
+      },
+      error: null,
+    });
+
+    const result = await appendAiConversationTurnRecoveryEvent(
+      { rpc } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: v2Ids.organizationId,
+        ownerUserId: v2Ids.ownerUserId,
+        conversationId: v2Ids.conversationId,
+        turnId: v2Ids.turnId,
+        eventName: "terminal",
+        payload: { reason: "timeout" },
+        partialContent: "partial answer",
+        terminalEvent,
+        controlState: { childSessionIds: ["session-child-1"] },
+      },
+    );
+
+    expect(rpc).toHaveBeenCalledWith("append_ai_chat_turn_recovery_event", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_conversation_id: v2Ids.conversationId,
+      p_turn_id: v2Ids.turnId,
+      p_event_name: "terminal",
+      p_payload: { reason: "timeout" },
+      p_partial_content: "partial answer",
+      p_terminal_event: terminalEvent,
+      p_control_state: { childSessionIds: ["session-child-1"] },
+    });
+    expect(result).toEqual({
+      turnId: v2Ids.turnId,
+      status: "failed",
+      eventSequence: 9,
+      partialContent: "partial answer",
+      terminalEvent,
+      controlState: { childSessionIds: ["session-child-1"] },
+      operationStatus: "appended",
+      updatedAt,
+    });
+  });
+
+  it("loads owner-scoped recovery snapshots and normalizes an absent record", async () => {
+    const rpc = vi
+      .fn()
+      .mockResolvedValueOnce({ data: null, error: null })
+      .mockResolvedValueOnce({
+        data: {
+          turnId: v2Ids.turnId,
+          status: "generating",
+          eventSequence: 4,
+          partialContent: "working",
+          terminalEvent: null,
+          controlState: { childSessionIds: [] },
+          updatedAt: "2026-08-03T16:03:00.000Z",
+        },
+        error: null,
+      });
+    const client = { rpc } as unknown as ConversationRepositoryClient;
+    const input = {
+      organizationId: v2Ids.organizationId,
+      ownerUserId: v2Ids.ownerUserId,
+      conversationId: v2Ids.conversationId,
+      turnId: v2Ids.turnId,
+    };
+
+    await expect(
+      getAiConversationTurnRecoverySnapshot(client, input),
+    ).resolves.toBeNull();
+    await expect(
+      getAiConversationTurnRecoverySnapshot(client, input),
+    ).resolves.toMatchObject({
+      turnId: v2Ids.turnId,
+      status: "generating",
+      eventSequence: 4,
+      partialContent: "working",
+    });
+
+    expect(rpc).toHaveBeenLastCalledWith("get_ai_chat_turn_recovery_snapshot", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_conversation_id: v2Ids.conversationId,
+      p_turn_id: v2Ids.turnId,
+    });
+  });
+
+  it("rejects oversized recovery payloads before calling PostgREST", async () => {
+    const rpc = vi.fn();
+
+    await expect(
+      appendAiConversationTurnRecoveryEvent(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          turnId: v2Ids.turnId,
+          eventName: "response_partial",
+          payload: { oversized: "x".repeat(16_385) },
+        },
+      ),
+    ).rejects.toThrow("conversation_turn_recovery_event_invalid");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects sensitive payload keys and cross-turn terminal identities locally", async () => {
+    const rpc = vi.fn();
+    const base = {
+      organizationId: v2Ids.organizationId,
+      ownerUserId: v2Ids.ownerUserId,
+      conversationId: v2Ids.conversationId,
+      turnId: v2Ids.turnId,
+    };
+
+    await expect(
+      appendAiConversationTurnRecoveryEvent(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          ...base,
+          eventName: "tool_started",
+          payload: { nested: { authorization: "Bearer secret" } },
+        },
+      ),
+    ).rejects.toThrow("conversation_turn_recovery_event_invalid");
+    await expect(
+      appendAiConversationTurnRecoveryEvent(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          ...base,
+          eventName: "terminal",
+          terminalEvent: {
+            type: "response.cancelled",
+            conversationId: v2Ids.conversationId,
+            turnId: "00000000-0000-4000-8000-000000000099",
+            messageId: "message-1",
+          },
+        },
+      ),
+    ).rejects.toThrow("conversation_turn_recovery_event_invalid");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("records a turn stage with exact actor and conversation RPC bindings", async () => {
+    const observedAt = "2026-08-03T16:00:00.000Z";
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        turnId: v2Ids.turnId,
+        stage: "session_ready",
+        observedAt,
+        sessionAction: "rebuilt",
+        content: "must-not-escape",
+      },
+      error: null,
+    });
+
+    const result = await recordAiConversationTurnStage(
+      { rpc } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: v2Ids.organizationId,
+        ownerUserId: v2Ids.ownerUserId,
+        conversationId: v2Ids.conversationId,
+        turnId: v2Ids.turnId,
+        stage: "session_ready",
+        observedAt,
+        sessionAction: "rebuilt",
+      },
+    );
+
+    expect(rpc).toHaveBeenCalledWith("record_ai_chat_turn_stage", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_conversation_id: v2Ids.conversationId,
+      p_turn_id: v2Ids.turnId,
+      p_stage: "session_ready",
+      p_observed_at: observedAt,
+      p_session_action: "rebuilt",
+    });
+    expect(result).toEqual({
+      turnId: v2Ids.turnId,
+      stage: "session_ready",
+      observedAt,
+      sessionAction: "rebuilt",
+    });
+  });
+
+  it("returns the first persisted timestamp when a stage is recorded repeatedly", async () => {
+    const firstObservedAt = "2026-08-03T16:00:00.000Z";
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        turnId: v2Ids.turnId,
+        stage: "first_delta",
+        observedAt: firstObservedAt,
+      },
+      error: null,
+    });
+    const client = { rpc } as unknown as ConversationRepositoryClient;
+    const base = {
+      organizationId: v2Ids.organizationId,
+      ownerUserId: v2Ids.ownerUserId,
+      conversationId: v2Ids.conversationId,
+      turnId: v2Ids.turnId,
+      stage: "first_delta" as const,
+    };
+
+    const first = await recordAiConversationTurnStage(client, {
+      ...base,
+      observedAt: firstObservedAt,
+    });
+    const replay = await recordAiConversationTurnStage(client, {
+      ...base,
+      observedAt: "2026-08-03T16:00:01.000Z",
+    });
+
+    expect(first).toEqual(replay);
+    expect(rpc).toHaveBeenCalledTimes(2);
+  });
+
+  it("sanitizes turn-stage RPC errors and malformed responses", async () => {
+    for (const response of [
+      { data: null, error: { message: "secret Supabase body" } },
+      {
+        data: {
+          turnId: v2Ids.turnId,
+          stage: "context_ready",
+          observedAt: "not-a-timestamp",
+        },
+        error: null,
+      },
+    ]) {
+      const error = await recordAiConversationTurnStage(
+        {
+          rpc: vi.fn().mockResolvedValue(response),
+        } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          turnId: v2Ids.turnId,
+          stage: "context_ready",
+          observedAt: "2026-08-03T16:00:00.000Z",
+        },
+      ).then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+      expect(error).toMatchObject({
+        code: "conversation_turn_stage_persist_failed",
+      });
+      expect(String(error)).not.toContain("Supabase");
+      expect(String(error)).not.toContain("not-a-timestamp");
+    }
+
+    const rejected = await recordAiConversationTurnStage(
+      {
+        rpc: vi.fn().mockRejectedValue(new Error("secret transport body")),
+      } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: v2Ids.organizationId,
+        ownerUserId: v2Ids.ownerUserId,
+        conversationId: v2Ids.conversationId,
+        turnId: v2Ids.turnId,
+        stage: "context_ready",
+        observedAt: "2026-08-03T16:00:00.000Z",
+      },
+    ).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    expect(rejected).toMatchObject({
+      code: "conversation_turn_stage_persist_failed",
+    });
+    expect(String(rejected)).not.toContain("secret transport body");
+
+    await expect(
+      recordAiConversationTurnStage(
+        {
+          rpc: vi.fn().mockResolvedValue({
+            data: {
+              turnId: v2Ids.turnId,
+              stage: "agent_ready",
+              observedAt: "2026-08-03T16:00:00.000Z",
+            },
+            error: null,
+          }),
+        } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          conversationId: v2Ids.conversationId,
+          turnId: v2Ids.turnId,
+          stage: "context_ready",
+          observedAt: "2026-08-03T16:00:00.000Z",
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "conversation_turn_stage_persist_failed",
+    });
+  });
+
   it("creates an owner-scoped conversation and maps the public DTO", async () => {
     const single = vi
       .fn()
@@ -342,6 +686,58 @@ describe("Xingyao conversation repository", () => {
     expect(turns[0]).toMatchObject({ outcome: null, cancelRequestedAt: null });
   });
 
+  it("cursor-pages every completed post-compaction message and independently deduplicates pinned history", async () => {
+    const recentRows = Array.from({ length: 250 }, (_, index) =>
+      repositoryMessageRow(index + 2, {
+        pinned: index + 2 === 201,
+      }),
+    );
+    const compactedPinned = repositoryMessageRow(1, { pinned: true });
+    const limit = vi
+      .fn()
+      .mockResolvedValueOnce({ data: recentRows.slice(0, 200), error: null })
+      .mockResolvedValueOnce({ data: recentRows.slice(200), error: null })
+      .mockResolvedValueOnce({
+        data: [compactedPinned, recentRows[199]],
+        error: null,
+      });
+    const query: Record<string, ReturnType<typeof vi.fn>> = {};
+    for (const method of ["select", "eq", "gt", "contains", "order"]) {
+      query[method] = vi.fn(() => query);
+    }
+    query.limit = limit;
+    const from = vi.fn(() => query);
+
+    const messages = await listAiConversationContextMessages(
+      { from } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: "org-1",
+        ownerUserId: "user-1",
+        conversationId: "conversation-1",
+        afterSequence: 1,
+        pageSize: 200,
+      },
+    );
+
+    expect(limit).toHaveBeenCalledTimes(3);
+    expect(query.eq).toHaveBeenCalledWith("conversation_id", "conversation-1");
+    expect(query.eq).toHaveBeenCalledWith("organization_id", "org-1");
+    expect(query.eq).toHaveBeenCalledWith("owner_user_id", "user-1");
+    expect(query.eq).toHaveBeenCalledWith("status", "completed");
+    expect(query.gt).toHaveBeenCalledWith("sequence_no", 1);
+    expect(query.gt).toHaveBeenCalledWith("sequence_no", 201);
+    expect(query.contains).toHaveBeenCalledWith("metadata", { pinned: true });
+    expect(messages).toHaveLength(251);
+    expect(messages[0]).toMatchObject({
+      sequence: 1,
+      metadata: { pinned: true },
+    });
+    expect(messages.at(-1)?.sequence).toBe(251);
+    expect(messages.filter((message) => message.sequence === 201)).toHaveLength(
+      1,
+    );
+  });
+
   it("guards every state transition with the expected current status", async () => {
     const returns = vi
       .fn()
@@ -464,6 +860,70 @@ describe("Xingyao conversation repository", () => {
     });
   });
 
+  it("finishes a Hermes turn and structured memory through one v3 RPC", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        completed: true,
+        memory_status: "ready",
+        summary_version: 5,
+      },
+      error: null,
+    });
+    const memoryDelta = {
+      goals: [],
+      confirmedFacts: [
+        {
+          text: "The target is 25%",
+          sourceMessageIds: ["00000000-0000-4000-8000-000000000006"],
+        },
+      ],
+      decisions: [],
+      unresolvedQuestions: [],
+      throughSequence: 9,
+    };
+
+    await expect(
+      finishAiConversationTurnV3(
+        { rpc } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: v2Ids.organizationId,
+          ownerUserId: v2Ids.ownerUserId,
+          turnId: v2Ids.turnId,
+          invocationId: v2Ids.invocationId,
+          outcome: "complete",
+          content: "The target is 25%.",
+          providerName: "deepseek",
+          errorCode: null,
+          errorSummary: null,
+          retryable: false,
+          metadata: { evidence: [] },
+          expectedSummaryVersion: 4,
+          memoryDelta,
+        },
+      ),
+    ).resolves.toEqual({
+      completed: true,
+      memoryStatus: "ready",
+      summaryVersion: 5,
+    });
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith("finish_ai_chat_turn_v3", {
+      p_organization_id: v2Ids.organizationId,
+      p_owner_user_id: v2Ids.ownerUserId,
+      p_turn_id: v2Ids.turnId,
+      p_outcome: "complete",
+      p_content: "The target is 25%.",
+      p_provider_name: "deepseek",
+      p_ai_invocation_id: v2Ids.invocationId,
+      p_error_code: null,
+      p_error_summary: null,
+      p_retryable: false,
+      p_metadata: { evidence: [] },
+      p_expected_summary_version: 4,
+      p_memory_delta: memoryDelta,
+    });
+  });
+
   it("exposes actor-scoped cancel, v2 lease, and provider-state wrappers", async () => {
     const cancelRpc = vi.fn().mockResolvedValue({
       data: {
@@ -549,6 +1009,12 @@ describe("Xingyao conversation repository", () => {
           hermesGateway: {
             generation: 3,
             sessionId: "session-1",
+            checkpointId: "checkpoint-1",
+            provider: "hermes",
+            model: "hermes-official-gateway",
+            lastUsedAt: "2026-08-03T16:00:00.000Z",
+            organizationId: "must-not-escape",
+            invocationCapability: "must-not-escape",
             childSessions: ["child-1", "child-1", ""],
             checkpoint: {
               childSessions: ["child-2", "child-1"],
@@ -560,15 +1026,38 @@ describe("Xingyao conversation repository", () => {
               question: "Which scope?",
               choices: ["project", "streamer"],
               allowFreeText: false,
+              response: {
+                clarifyId: "00000000-0000-4000-8000-000000000007",
+                answerSha256:
+                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              },
             },
           },
         },
-        summary: { text: "old" },
+        summary: {
+          schemaVersion: 1,
+          goals: [],
+          confirmedFacts: [
+            {
+              text: "The target is 25%",
+              sourceMessageIds: ["00000000-0000-4000-8000-000000000006"],
+            },
+          ],
+          decisions: [],
+          unresolvedQuestions: [],
+          lastCompactedSequence: 9,
+        },
         summary_version: 2,
+        memory_status: "degraded",
+        memory_degraded_at: "2026-08-03T16:01:00.000Z",
       },
       error: null,
     });
-    const select = vi.fn(() => ({ eq: vi.fn(() => ({ eq: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle })) })) })) }));
+    const select = vi.fn(() => ({
+      eq: vi.fn(() => ({
+        eq: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle })) })),
+      })),
+    }));
     const fromForGet = vi.fn(() => ({ select }));
 
     await expect(
@@ -583,9 +1072,27 @@ describe("Xingyao conversation repository", () => {
     ).resolves.toEqual({
       generation: 3,
       sessionId: "session-1",
+      checkpointId: "checkpoint-1",
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      lastUsedAt: "2026-08-03T16:00:00.000Z",
       childSessions: ["child-1", "child-2"],
-      summary: { text: "old" },
+      summary: {
+        schemaVersion: 1,
+        goals: [],
+        confirmedFacts: [
+          {
+            text: "The target is 25%",
+            sourceMessageIds: ["00000000-0000-4000-8000-000000000006"],
+          },
+        ],
+        decisions: [],
+        unresolvedQuestions: [],
+        lastCompactedSequence: 9,
+      },
       summaryVersion: 2,
+      memoryStatus: "degraded",
+      memoryDegradedAt: "2026-08-03T16:01:00.000Z",
       pendingClarify: {
         turnId: v2Ids.turnId,
         clarifyId: "00000000-0000-4000-8000-000000000007",
@@ -593,11 +1100,33 @@ describe("Xingyao conversation repository", () => {
         question: "Which scope?",
         choices: ["project", "streamer"],
         allowFreeText: false,
+        response: {
+          clarifyId: "00000000-0000-4000-8000-000000000007",
+          answerSha256:
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
       },
     });
+    const loaded = await getAiConversationGatewayState(
+      { from: fromForGet } as unknown as ConversationRepositoryClient,
+      {
+        organizationId: "org-1",
+        ownerUserId: "user-1",
+        conversationId: "conversation-1",
+      },
+    );
+    expect(loaded).not.toHaveProperty("organizationId");
+    expect(loaded).not.toHaveProperty("invocationCapability");
+    expect(select).toHaveBeenCalledWith(
+      "provider_state, summary, summary_version, memory_status, memory_degraded_at",
+    );
 
-    const returns = vi.fn().mockResolvedValue({ data: [{ id: "conversation-1" }], error: null });
-    const syncEqSummaryVersion = vi.fn(() => ({ select: vi.fn(() => ({ returns })) }));
+    const returns = vi
+      .fn()
+      .mockResolvedValue({ data: [{ id: "conversation-1" }], error: null });
+    const syncEqSummaryVersion = vi.fn(() => ({
+      select: vi.fn(() => ({ returns })),
+    }));
     const syncEqOwner = vi.fn(() => ({ eq: syncEqSummaryVersion }));
     const syncEqOrganization = vi.fn(() => ({ eq: syncEqOwner }));
     const syncEqId = vi.fn(() => ({ eq: syncEqOrganization }));
@@ -622,6 +1151,69 @@ describe("Xingyao conversation repository", () => {
     });
     expect(syncEqSummaryVersion).toHaveBeenCalledWith("summary_version", 2);
   });
+
+  it.each([
+    ["arbitrary object", {}],
+    ["missing hash", { clarifyId: "00000000-0000-4000-8000-000000000007" }],
+    [
+      "mismatched clarify id",
+      {
+        clarifyId: "00000000-0000-4000-8000-000000000008",
+        answerSha256:
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+    ],
+    [
+      "malformed hash",
+      {
+        clarifyId: "00000000-0000-4000-8000-000000000007",
+        answerSha256: "not-a-sha256",
+      },
+    ],
+  ])(
+    "omits $name pending clarification response state",
+    async (_name, response) => {
+      const maybeSingle = vi.fn().mockResolvedValue({
+        data: {
+          provider_state: {
+            hermesGateway: {
+              generation: 1,
+              pendingClarify: {
+                turnId: v2Ids.turnId,
+                clarifyId: "00000000-0000-4000-8000-000000000007",
+                requestId: "00000000-0000-4000-8000-000000000007",
+                question: "Which scope?",
+                choices: ["project"],
+                allowFreeText: false,
+                response,
+              },
+            },
+          },
+          summary: {},
+          summary_version: 0,
+        },
+        error: null,
+      });
+      const from = vi.fn(() => ({
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            eq: vi.fn(() => ({ eq: vi.fn(() => ({ maybeSingle })) })),
+          })),
+        })),
+      }));
+
+      const state = await getAiConversationGatewayState(
+        { from } as unknown as ConversationRepositoryClient,
+        {
+          organizationId: "org-1",
+          ownerUserId: "user-1",
+          conversationId: "conversation-1",
+        },
+      );
+
+      expect(state?.pendingClarify).not.toHaveProperty("response");
+    },
+  );
 
   it("claims clarify responses atomically through the actor-scoped RPC before Gateway control", async () => {
     const rpc = vi.fn().mockResolvedValue({

@@ -61,6 +61,7 @@ function persistence(
     listConversations: vi.fn().mockResolvedValue([]),
     getConversation: vi.fn(),
     listMessages: vi.fn().mockResolvedValue([]),
+    listContextMessages: vi.fn().mockResolvedValue([]),
     listTurns: vi.fn().mockResolvedValue([]),
     createTurn: vi.fn().mockResolvedValue(createdTurn),
     getTurn: vi.fn().mockResolvedValue(storedTurn()),
@@ -69,6 +70,11 @@ function persistence(
     failTurn: vi.fn().mockResolvedValue(true),
     renewLease: vi.fn().mockResolvedValue(true),
     finishTurnV2: vi.fn().mockResolvedValue(undefined),
+    finishTurnV3: vi.fn().mockResolvedValue({
+      completed: true,
+      memoryStatus: "ready",
+      summaryVersion: 1,
+    }),
     cancelTurnV2: vi.fn().mockResolvedValue({
       turnId: "turn-1",
       status: "cancelled",
@@ -85,6 +91,185 @@ function persistence(
 }
 
 describe("Xingyao conversation service", () => {
+  it("scopes recovery event writes to the current actor and turn", async () => {
+    const appendRecoveryEvent = vi.fn().mockResolvedValue({
+      turnId: "turn-1",
+      status: "generating",
+      eventSequence: 2,
+      partialContent: "partial",
+      controlState: { childSessionIds: [] },
+      updatedAt: "2026-08-03T16:04:00.000Z",
+    });
+    const service = createConversationService(
+      persistence({ appendRecoveryEvent }),
+    );
+
+    await service.appendRecoveryEvent(actor, "conversation-1", "turn-1", {
+      eventName: "response_partial",
+      partialContent: "partial",
+    });
+
+    expect(appendRecoveryEvent).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+      eventName: "response_partial",
+      partialContent: "partial",
+    });
+  });
+
+  it("loads recovery snapshots without loading conversation history", async () => {
+    const getRecoverySnapshot = vi.fn().mockResolvedValue({
+      turnId: "turn-1",
+      status: "generating",
+      eventSequence: 3,
+      partialContent: "still working",
+      controlState: { childSessionIds: [] },
+      updatedAt: "2026-08-03T16:05:00.000Z",
+    });
+    const listMessages = vi.fn();
+    const listTurns = vi.fn();
+    const service = createConversationService(
+      persistence({ getRecoverySnapshot, listMessages, listTurns }),
+    );
+
+    await expect(
+      service.getRecoverySnapshot(actor, "conversation-1", "turn-1"),
+    ).resolves.toMatchObject({
+      eventSequence: 3,
+      partialContent: "still working",
+    });
+
+    expect(getRecoverySnapshot).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+    });
+    expect(listMessages).not.toHaveBeenCalled();
+    expect(listTurns).not.toHaveBeenCalled();
+  });
+
+  it("loads Gateway context messages through actor scope and a sequence cursor", async () => {
+    const listContextMessages = vi.fn().mockResolvedValue([]);
+    const service = createConversationService(
+      persistence({ listContextMessages }),
+    );
+
+    await service.listContextMessages(actor, "conversation-1", 200);
+
+    expect(listContextMessages).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      afterSequence: 200,
+    });
+  });
+
+  it("keeps legacy persistence implementations compatible with deterministic context filtering", async () => {
+    const messages: AiConversationMessageDto[] = [
+      message("message-recent-2", 12, "assistant", "completed", "recent 2"),
+      message("message-pending", 13, "assistant", "pending", "pending"),
+      {
+        ...message("message-pinned-old", 4, "user", "completed", "pinned"),
+        metadata: { pinned: true },
+      },
+      message("message-compacted", 3, "user", "completed", "compacted"),
+      message("message-recent-1", 11, "user", "completed", "recent 1"),
+    ];
+    const store = persistence({
+      listMessages: vi.fn().mockResolvedValue(messages),
+    });
+    delete store.listContextMessages;
+    const service = createConversationService(store);
+
+    await expect(
+      service.listContextMessages(actor, "conversation-1", 10),
+    ).resolves.toEqual([
+      expect.objectContaining({ id: "message-pinned-old" }),
+      expect.objectContaining({ id: "message-recent-1" }),
+      expect.objectContaining({ id: "message-recent-2" }),
+    ]);
+    expect(store.listMessages).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      limit: Number.MAX_SAFE_INTEGER,
+    });
+  });
+
+  it("forwards turn-stage telemetry through actor and conversation boundaries", async () => {
+    const observedAt = "2026-08-03T16:00:00.000Z";
+    const recordTurnStage = vi.fn().mockResolvedValue({
+      turnId: "turn-1",
+      stage: "session_ready",
+      observedAt,
+      sessionAction: "resumed",
+    });
+    const service = createConversationService(persistence({ recordTurnStage }));
+
+    await expect(
+      service.recordTurnStage(actor, "conversation-1", "turn-1", {
+        stage: "session_ready",
+        observedAt,
+        sessionAction: "resumed",
+      }),
+    ).resolves.toEqual({
+      turnId: "turn-1",
+      stage: "session_ready",
+      observedAt,
+      sessionAction: "resumed",
+    });
+    expect(recordTurnStage).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      conversationId: "conversation-1",
+      turnId: "turn-1",
+      stage: "session_ready",
+      observedAt,
+      sessionAction: "resumed",
+    });
+  });
+
+  it("treats an unavailable optional stage persistence as a no-op", async () => {
+    const store = persistence();
+    delete store.recordTurnStage;
+    const service = createConversationService(store);
+
+    await expect(
+      service.recordTurnStage(actor, "conversation-1", "turn-1", {
+        stage: "accepted",
+        observedAt: "2026-08-03T16:00:00.000Z",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("normalizes unknown stage persistence failures without leaking internals", async () => {
+    const service = createConversationService(
+      persistence({
+        recordTurnStage: vi
+          .fn()
+          .mockRejectedValue(new Error("secret database response")),
+      }),
+    );
+
+    const error = await service
+      .recordTurnStage(actor, "conversation-1", "turn-1", {
+        stage: "terminal",
+        observedAt: "2026-08-03T16:00:00.000Z",
+      })
+      .then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+
+    expect(error).toMatchObject({
+      code: "conversation_turn_stage_persist_failed",
+    });
+    expect(String(error)).not.toContain("secret database response");
+  });
+
   it("accepts one user message as an idempotent turn", async () => {
     const store = persistence();
     const service = createConversationService(store);
@@ -1431,6 +1616,46 @@ describe("Xingyao conversation service", () => {
       conversationId: "conversation-1",
       expectedGeneration: 1,
       nextState: { generation: 2, sessionId: "session-1" },
+    });
+  });
+
+  it("injects ownership and validated memory into the atomic v3 finish", async () => {
+    const store = persistence();
+    const service = createConversationService(store);
+    const memoryDelta = {
+      goals: [],
+      confirmedFacts: [],
+      decisions: [],
+      unresolvedQuestions: [],
+      throughSequence: 4,
+    };
+
+    await expect(
+      service.finishTurnV3(actor, "turn-1", {
+        invocationId: "invocation-1",
+        outcome: "complete",
+        content: "Completed answer",
+        providerName: "deepseek",
+        retryable: false,
+        metadata: {},
+        expectedSummaryVersion: 3,
+        memoryDelta,
+      }),
+    ).resolves.toMatchObject({ memoryStatus: "ready", summaryVersion: 1 });
+    expect(store.finishTurnV3).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      ownerUserId: "user-1",
+      turnId: "turn-1",
+      invocationId: "invocation-1",
+      outcome: "complete",
+      content: "Completed answer",
+      providerName: "deepseek",
+      errorCode: undefined,
+      errorSummary: undefined,
+      retryable: false,
+      metadata: {},
+      expectedSummaryVersion: 3,
+      memoryDelta,
     });
   });
 

@@ -87,14 +87,17 @@ jobs:
             -cf "$artifact" .release-integrity.json .next/standalone
           manifest_sha256="$(sha256sum .release-integrity.json | awk '{print $1}')"
           artifact_sha256="$(sha256sum "$artifact" | awk '{print $1}')"
+          deploy_control_sha256="$(sha256sum scripts/deploy.sh | awk '{print $1}')"
           {
             printf 'Release Git SHA: `%s`\n' "$GITHUB_SHA"
             printf 'Release manifest SHA-256: `%s`\n' "$manifest_sha256"
             printf 'Release artifact SHA-256: `%s`\n' "$artifact_sha256"
+            printf 'Deploy control SHA-256: `%s`\n' "$deploy_control_sha256"
           } >> "$GITHUB_STEP_SUMMARY"
           printf 'path=%s\n' "$artifact" >> "$GITHUB_OUTPUT"
           printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
           printf 'artifact_sha256=%s\n' "$artifact_sha256" >> "$GITHUB_OUTPUT"
+          printf 'deploy_control_sha256=%s\n' "$deploy_control_sha256" >> "$GITHUB_OUTPUT"
 
       - name: Verify reviewed release artifact round trip
         if: github.event_name == 'push' && github.ref == 'refs/heads/codex/full-project-ui'
@@ -165,6 +168,11 @@ jobs:
           CUSTOM_SETTLEMENT_RUNTIME_DB_REGRESSION_CONTAINER: supabase_db_jingying-cabin
           SETTLEMENT_AI_DB_LOCK_REGRESSION_CONTAINER: supabase_db_jingying-cabin
         run: pnpm exec vitest run lib/db/schema-contract.test.ts
+
+      - name: Run AI turn-stage telemetry database regression
+        env:
+          AI_TURN_STAGE_TELEMETRY_DB_REGRESSION_CONTAINER: supabase_db_jingying-cabin
+        run: pnpm exec vitest run lib/db/xingyao-hermes-turn-stage-telemetry.live.test.ts
 
       - name: Run atomic deploy database and PostgREST contract
         env:

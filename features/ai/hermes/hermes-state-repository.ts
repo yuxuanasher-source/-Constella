@@ -131,6 +131,7 @@ export type HermesStateRepositoryErrorCode =
   | "idempotency_conflict"
   | "lease_expired"
   | "parallel_limit"
+  | "repository_unavailable"
   | "state_conflict"
   | "invalid_input";
 
@@ -140,6 +141,7 @@ const ERROR_MESSAGES: Record<HermesStateRepositoryErrorCode, string> = {
   idempotency_conflict: "Hermes state request conflicts with a prior request",
   lease_expired: "Hermes state lease has expired",
   parallel_limit: "Hermes parallel capability limit was reached",
+  repository_unavailable: "Hermes state repository is unavailable",
   state_conflict: "Hermes state changed concurrently",
   invalid_input: "Hermes state input is invalid",
 };
@@ -713,6 +715,13 @@ export function mapHermesStateRepositoryError(
   const text = errorText(error);
   if (/\bcapability_parallel_limit\b/.test(text)) {
     return new HermesStateRepositoryError("parallel_limit");
+  }
+  if (
+    /timeout|timed out|connection (?:refused|reset|terminated)|temporarily unavailable|\b(?:0800[0-9a-z]|57p01|53300)\b/.test(
+      text,
+    )
+  ) {
+    return new HermesStateRepositoryError("repository_unavailable");
   }
   if (/not_found|not found|pgrst116/.test(text)) {
     return new HermesStateRepositoryError("not_found");

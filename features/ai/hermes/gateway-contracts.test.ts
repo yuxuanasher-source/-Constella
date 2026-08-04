@@ -11,9 +11,56 @@ import {
   parseHermesGatewayCommand,
   parseHermesGatewayEvent,
   parseHermesGatewayHealth,
+  parseHermesGatewayProviderState,
 } from "./gateway-contracts";
 
 describe("Hermes Gateway v2 runtime contracts", () => {
+  it("accepts only the minimal reusable Product session envelope", () => {
+    const state = {
+      generation: 4,
+      sessionId: SESSION_ID,
+      checkpointId: "checkpoint-4",
+      provider: "hermes",
+      model: "hermes-official-gateway",
+      lastUsedAt: "2026-08-03T16:00:00.000Z",
+    };
+
+    expect(parseHermesGatewayProviderState(state)).toEqual(state);
+    expect(
+      parseHermesGatewayProviderState({
+        ...state,
+        organizationId: "22222222-2222-4222-8222-222222222222",
+      }),
+    ).toBeNull();
+    expect(
+      parseHermesGatewayProviderState({
+        ...state,
+        invocationCapability: INVOCATION_CAPABILITY,
+      }),
+    ).toBeNull();
+    expect(
+      parseHermesGatewayProviderState({
+        ...state,
+        childSessions: ["session-child"],
+      }),
+    ).toBeNull();
+    expect(
+      parseHermesGatewayProviderState({
+        ...state,
+        pendingClarify: {
+          turnId: "turn-1",
+          clarifyId: "clarify-1",
+          question: "Which project?",
+          choices: ["project"],
+          allowFreeText: false,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseHermesGatewayProviderState({ ...state, lastUsedAt: "not-a-date" }),
+    ).toBeNull();
+  });
+
   it("accepts only the pinned, exact health handshake", () => {
     expect(parseHermesGatewayHealth(HEALTH)).toEqual(HEALTH);
 
@@ -58,6 +105,7 @@ describe("Hermes Gateway v2 runtime contracts", () => {
       command("session.list", { actorAssertion: ACTOR_ASSERTION }),
       command("session.branch", {
         sessionId: SESSION_ID,
+        checkpointId: CHECKPOINT_ID,
         conversationId: BRANCH_CONVERSATION_ID,
         invocationId: INVOCATION_ID,
         actorAssertion: ACTOR_ASSERTION,
@@ -104,7 +152,9 @@ describe("Hermes Gateway v2 runtime contracts", () => {
 
   it("rejects unknown methods, extra fields, malformed UUIDs, and path attachments", () => {
     expect(
-      parseHermesGatewayCommand(command("model.select", { model: "forbidden" })),
+      parseHermesGatewayCommand(
+        command("model.select", { model: "forbidden" }),
+      ),
     ).toBeNull();
 
     const prompt = command("prompt.submit", {
@@ -121,6 +171,18 @@ describe("Hermes Gateway v2 runtime contracts", () => {
         ...prompt,
         params: { ...prompt.params, model: "forbidden" },
       }),
+    ).toBeNull();
+
+    expect(
+      parseHermesGatewayCommand(
+        command("session.branch", {
+          sessionId: SESSION_ID,
+          conversationId: BRANCH_CONVERSATION_ID,
+          invocationId: INVOCATION_ID,
+          actorAssertion: ACTOR_ASSERTION,
+          invocationCapability: INVOCATION_CAPABILITY,
+        }),
+      ),
     ).toBeNull();
     expect(
       parseHermesGatewayCommand({
@@ -218,7 +280,9 @@ describe("Hermes Gateway v2 runtime contracts", () => {
 
   it("rejects unknown, private-reasoning, malformed, and widened events", () => {
     for (const type of ["unknown.event", "reasoning.delta", "thinking.delta"]) {
-      expect(parseHermesGatewayEvent(event(type, { text: "private" }))).toBeNull();
+      expect(
+        parseHermesGatewayEvent(event(type, { text: "private" })),
+      ).toBeNull();
     }
 
     const terminal = event("turn.terminal", {
@@ -284,6 +348,7 @@ const CLARIFY_REQUEST_ID = "55555555-5555-4555-8555-555555555555";
 const TOOL_CALL_ID = "66666666-6666-4666-8666-666666666666";
 const SUBAGENT_ID = "77777777-7777-4777-8777-777777777777";
 const SESSION_ID = "gateway-session-1";
+const CHECKPOINT_ID = "checkpoint-source";
 const ACTOR_ASSERTION = "signed.actor.assertion";
 const INVOCATION_CAPABILITY = "opaque-invocation-capability";
 
@@ -294,8 +359,7 @@ const HEALTH = {
   forkCommit: "a9c8ea249494075ab7180c7a9df4b07b478d4708",
   protocolVersion: HERMES_PROTOCOL_VERSION,
   profileVersion: HERMES_PROFILE_VERSION,
-  capabilityManifestSha256:
-    HERMES_CAPABILITY_MANIFEST_SHA256,
+  capabilityManifestSha256: HERMES_CAPABILITY_MANIFEST_SHA256,
 } as const;
 
 const EMPTY_METADATA = {

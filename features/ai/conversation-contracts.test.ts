@@ -1,15 +1,169 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyConversationMemoryDelta,
   canTransitionConversationTurn,
+  isConversationSessionAction,
   isConversationStreamEvent,
+  isConversationTurnStage,
+  isTurnRecoveryEventName,
+  parseConversationMemoryDelta,
+  parseConversationMemorySummary,
   parseCreateTurnCommand,
   parseRetryTurnCommand,
+  parseTurnRecoveryRecord,
+  toPublicTurnRecoverySnapshot,
+  CONVERSATION_MEMORY_LIMITS,
   type ConversationStreamEvent,
 } from "./conversation-contracts";
 import { hasMeaningfulAiContent } from "./response-quality";
 
 describe("Xingyao conversation protocol contracts", () => {
+  it("parses the exact bounded structured-memory schema", () => {
+    const summary = memorySummary({
+      confirmedFacts: [memoryItem("The target is 20%", [MESSAGE_1])],
+      lastCompactedSequence: 9,
+    });
+
+    expect(parseConversationMemorySummary(summary)).toEqual(summary);
+    expect(
+      parseConversationMemorySummary({
+        ...summary,
+        rawTranscript: "USER: secret",
+      }),
+    ).toBeNull();
+    expect(
+      parseConversationMemorySummary({
+        ...summary,
+        goals: [memoryItem("   ", [MESSAGE_1])],
+      }),
+    ).toBeNull();
+    expect(
+      parseConversationMemorySummary({
+        ...summary,
+        decisions: Array.from(
+          { length: CONVERSATION_MEMORY_LIMITS.itemsPerSection + 1 },
+          (_, index) => memoryItem(`decision ${index}`, [MESSAGE_1]),
+        ),
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects duplicate, cross-conversation, and non-monotonic memory provenance", () => {
+    const previous = memorySummary({ lastCompactedSequence: 8 });
+    const sourceMessages = [
+      { id: MESSAGE_1, conversationId: CONVERSATION_ID, sequence: 9 },
+      { id: MESSAGE_2, conversationId: CONVERSATION_ID, sequence: 10 },
+      { id: MESSAGE_3, conversationId: OTHER_CONVERSATION_ID, sequence: 11 },
+    ];
+    const valid = {
+      goals: [],
+      confirmedFacts: [memoryItem("The corrected target is 25%", [MESSAGE_2])],
+      decisions: [],
+      unresolvedQuestions: [],
+      throughSequence: 10,
+    };
+
+    expect(
+      parseConversationMemoryDelta(valid, {
+        conversationId: CONVERSATION_ID,
+        sourceMessages,
+        previousSummary: previous,
+      }),
+    ).toEqual(valid);
+    expect(
+      parseConversationMemoryDelta(
+        {
+          ...valid,
+          confirmedFacts: [memoryItem("duplicate", [MESSAGE_2, MESSAGE_2])],
+        },
+        {
+          conversationId: CONVERSATION_ID,
+          sourceMessages,
+          previousSummary: previous,
+        },
+      ),
+    ).toBeNull();
+    expect(
+      parseConversationMemoryDelta(
+        {
+          ...valid,
+          confirmedFacts: [memoryItem("foreign", [MESSAGE_3])],
+          throughSequence: 11,
+        },
+        {
+          conversationId: CONVERSATION_ID,
+          sourceMessages,
+          previousSummary: previous,
+        },
+      ),
+    ).toBeNull();
+    expect(
+      parseConversationMemoryDelta(
+        { ...valid, throughSequence: 7 },
+        {
+          conversationId: CONVERSATION_ID,
+          sourceMessages,
+          previousSummary: previous,
+        },
+      ),
+    ).toBeNull();
+  });
+
+  it("applies a validated memory delta as the next bounded summary", () => {
+    const previous = memorySummary({
+      confirmedFacts: [memoryItem("The target is 20%", [MESSAGE_1])],
+      lastCompactedSequence: 1,
+    });
+    const delta = parseConversationMemoryDelta(
+      {
+        goals: [],
+        confirmedFacts: [memoryItem("The target is 25%", [MESSAGE_2])],
+        decisions: [memoryItem("Review weekly", [MESSAGE_2])],
+        unresolvedQuestions: [],
+        throughSequence: 10,
+      },
+      {
+        conversationId: CONVERSATION_ID,
+        sourceMessages: [
+          { id: MESSAGE_1, conversationId: CONVERSATION_ID, sequence: 1 },
+          { id: MESSAGE_2, conversationId: CONVERSATION_ID, sequence: 10 },
+        ],
+        previousSummary: previous,
+      },
+    );
+
+    expect(delta).not.toBeNull();
+    expect(applyConversationMemoryDelta(previous, delta!)).toEqual({
+      schemaVersion: 1,
+      goals: [],
+      confirmedFacts: [memoryItem("The target is 25%", [MESSAGE_2])],
+      decisions: [memoryItem("Review weekly", [MESSAGE_2])],
+      unresolvedQuestions: [],
+      lastCompactedSequence: 10,
+    });
+  });
+
+  it("recognizes only durable turn stages and session actions", () => {
+    for (const stage of [
+      "accepted",
+      "context_ready",
+      "session_ready",
+      "agent_ready",
+      "first_delta",
+      "terminal",
+      "persisted",
+    ]) {
+      expect(isConversationTurnStage(stage)).toBe(true);
+    }
+    expect(isConversationTurnStage("generating")).toBe(false);
+    expect(isConversationTurnStage(null)).toBe(false);
+
+    expect(isConversationSessionAction("resumed")).toBe(true);
+    expect(isConversationSessionAction("rebuilt")).toBe(true);
+    expect(isConversationSessionAction("created")).toBe(false);
+  });
+
   it("parses a normalized, idempotent create-turn command", () => {
     expect(
       parseCreateTurnCommand({
@@ -40,7 +194,13 @@ describe("Xingyao conversation protocol contracts", () => {
     expect(
       parseCreateTurnCommand({
         ...base,
-        attachments: [{ name: "payload.exe", mimeType: "application/x-msdownload", text: "x" }],
+        attachments: [
+          {
+            name: "payload.exe",
+            mimeType: "application/x-msdownload",
+            text: "x",
+          },
+        ],
       }),
     ).toBeNull();
     expect(
@@ -110,10 +270,14 @@ describe("Xingyao conversation protocol contracts", () => {
   it("allows only forward state-machine transitions", () => {
     expect(canTransitionConversationTurn("accepted", "grounding")).toBe(true);
     expect(canTransitionConversationTurn("grounding", "generating")).toBe(true);
-    expect(canTransitionConversationTurn("generating", "validating")).toBe(true);
+    expect(canTransitionConversationTurn("generating", "validating")).toBe(
+      true,
+    );
     expect(canTransitionConversationTurn("validating", "completed")).toBe(true);
     expect(canTransitionConversationTurn("validating", "failed")).toBe(true);
-    expect(canTransitionConversationTurn("completed", "generating")).toBe(false);
+    expect(canTransitionConversationTurn("completed", "generating")).toBe(
+      false,
+    );
     expect(canTransitionConversationTurn("failed", "completed")).toBe(false);
   });
 
@@ -175,8 +339,19 @@ describe("Xingyao conversation protocol contracts", () => {
     ).toBe(false);
     for (const event of [
       { type: "activity.updated", label: "Reading", status: "running" },
-      { type: "tool.started", toolCallId: "tool-1", toolName: "projects.search", label: "Project search" },
-      { type: "tool.completed", toolCallId: "tool-1", toolName: "projects.search", status: "completed", label: "Project search" },
+      {
+        type: "tool.started",
+        toolCallId: "tool-1",
+        toolName: "projects.search",
+        label: "Project search",
+      },
+      {
+        type: "tool.completed",
+        toolCallId: "tool-1",
+        toolName: "projects.search",
+        status: "completed",
+        label: "Project search",
+      },
       {
         type: "clarify.requested",
         clarifyId: "55555555-5555-4555-8555-555555555555",
@@ -184,8 +359,16 @@ describe("Xingyao conversation protocol contracts", () => {
         choices: ["A", "B"],
         allowFreeText: false,
       },
-      { type: "todo.updated", items: [{ id: "todo-1", label: "Check", status: "done" }] },
-      { type: "subagent.updated", subagentId: "subagent-1", label: "Research", status: "running" },
+      {
+        type: "todo.updated",
+        items: [{ id: "todo-1", label: "Check", status: "done" }],
+      },
+      {
+        type: "subagent.updated",
+        subagentId: "subagent-1",
+        label: "Research",
+        status: "running",
+      },
       { type: "response.cancelled", messageId: "message-1" },
       { type: "heartbeat" },
     ]) {
@@ -211,6 +394,89 @@ describe("Xingyao conversation protocol contracts", () => {
     ).toBe(false);
   });
 
+  it("parses bounded recovery snapshots without exposing control state publicly", () => {
+    const record = {
+      turnId: "66666666-6666-4666-8666-666666666666",
+      status: "generating",
+      eventSequence: 7,
+      partialContent: "partial answer",
+      updatedAt: "2026-08-03T18:00:00.000Z",
+      controlState: {
+        childSessionIds: ["child-session-1"],
+        pendingClarify: {
+          turnId: "66666666-6666-4666-8666-666666666666",
+          clarifyId: "77777777-7777-4777-8777-777777777777",
+          requestId: "88888888-8888-4888-8888-888888888888",
+          question: "Which project?",
+          choices: ["A", "B"],
+          allowFreeText: false,
+        },
+      },
+    };
+
+    const parsed = parseTurnRecoveryRecord(record);
+
+    expect(parsed).toEqual(record);
+    expect(toPublicTurnRecoverySnapshot(parsed!)).toEqual({
+      turnId: record.turnId,
+      status: "generating",
+      eventSequence: 7,
+      partialContent: "partial answer",
+      updatedAt: record.updatedAt,
+    });
+  });
+
+  it("rejects malformed recovery snapshots and unknown event names", () => {
+    expect(isTurnRecoveryEventName("tool_completed")).toBe(true);
+    expect(isTurnRecoveryEventName("token_delta")).toBe(false);
+    expect(
+      parseTurnRecoveryRecord({
+        turnId: "turn-1",
+        status: "generating",
+        eventSequence: -1,
+        partialContent: "answer",
+        updatedAt: "not-a-date",
+        controlState: { childSessionIds: [] },
+      }),
+    ).toBeNull();
+    expect(
+      parseTurnRecoveryRecord({
+        turnId: "turn-1",
+        status: "completed",
+        eventSequence: 1,
+        partialContent: "answer",
+        terminalEvent: {
+          type: "response.delta",
+          conversationId: "conversation-1",
+          turnId: "turn-1",
+          messageId: "message-1",
+          delta: "answer",
+        },
+        updatedAt: "2026-08-03T18:00:00.000Z",
+        controlState: { childSessionIds: [] },
+      }),
+    ).toBeNull();
+    expect(
+      parseTurnRecoveryRecord({
+        turnId: "66666666-6666-4666-8666-666666666666",
+        status: "generating",
+        eventSequence: 2,
+        partialContent: "answer",
+        updatedAt: "2026-08-03T18:00:00.000Z",
+        controlState: {
+          childSessionIds: [],
+          pendingClarify: {
+            turnId: "99999999-9999-4999-8999-999999999999",
+            clarifyId: "77777777-7777-4777-8777-777777777777",
+            question: "Which project?",
+            choices: [],
+            allowFreeText: true,
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
   it("does not accept punctuation-only output as meaningful content", () => {
     expect(hasMeaningfulAiContent(".\n.")).toBe(false);
     expect(hasMeaningfulAiContent("**---**")).toBe(false);
@@ -218,3 +484,34 @@ describe("Xingyao conversation protocol contracts", () => {
     expect(hasMeaningfulAiContent("风险数为 0")).toBe(true);
   });
 });
+
+const CONVERSATION_ID = "11111111-1111-4111-8111-111111111111";
+const OTHER_CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
+const MESSAGE_1 = "33333333-3333-4333-8333-333333333333";
+const MESSAGE_2 = "44444444-4444-4444-8444-444444444444";
+const MESSAGE_3 = "55555555-5555-4555-8555-555555555555";
+
+function memoryItem(text: string, sourceMessageIds: string[]) {
+  return { text, sourceMessageIds };
+}
+
+function memorySummary(
+  overrides: Partial<{
+    schemaVersion: 1;
+    goals: ReturnType<typeof memoryItem>[];
+    confirmedFacts: ReturnType<typeof memoryItem>[];
+    decisions: ReturnType<typeof memoryItem>[];
+    unresolvedQuestions: ReturnType<typeof memoryItem>[];
+    lastCompactedSequence: number;
+  }> = {},
+) {
+  return {
+    schemaVersion: 1 as const,
+    goals: [],
+    confirmedFacts: [],
+    decisions: [],
+    unresolvedQuestions: [],
+    lastCompactedSequence: 0,
+    ...overrides,
+  };
+}

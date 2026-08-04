@@ -18,9 +18,11 @@ import {
 } from "@/features/ai/native-assistant/legacy-turn-executor";
 import type { ConversationActor } from "@/features/ai/conversation-service";
 
-type GatewayTurnExecutorOptions = Parameters<typeof createGatewayTurnExecutor>[0];
-type NativeTurnService =
-  GatewayTurnExecutorOptions["service"] & LegacyConversationTurnService;
+type GatewayTurnExecutorOptions = Parameters<
+  typeof createGatewayTurnExecutor
+>[0];
+type NativeTurnService = GatewayTurnExecutorOptions["service"] &
+  LegacyConversationTurnService;
 
 export type SelectedNativeTurnRuntime = {
   kind: "selected";
@@ -107,7 +109,7 @@ export function createSelectedNativeTurnExecutor({
           connectMs: 2_000,
           readyMs: 2_000,
           rpcMs: 15_000,
-          idleMs: 120_000,
+          idleMs: 180_000,
           heartbeatMs: 30_000,
         },
       },

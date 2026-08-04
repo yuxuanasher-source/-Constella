@@ -1,7 +1,18 @@
 import type {
   ConversationGatewayContext,
+  ConversationContextSnapshot,
+  ConversationMemoryDelta,
+  ConversationMemorySummary,
   ConversationResponseOutcome,
+  ConversationSessionAction,
   ConversationStreamEvent,
+  ConversationTurnStage,
+  TurnRecoveryControlState,
+  TurnRecoveryEventName,
+} from "../conversation-contracts";
+import {
+  parseConversationMemoryDelta,
+  parseConversationMemorySummary,
 } from "../conversation-contracts";
 import type { AiAttachment, AiProviderName } from "../contracts";
 import type {
@@ -14,6 +25,9 @@ import type { HermesActorProfile } from "../hermes/contracts";
 import {
   attachHermesGatewayBytes,
   createHermesGatewaySession as openHermesGatewaySession,
+  HermesGatewayError,
+  isAmbiguousHermesGatewayTransportError,
+  isHermesGatewaySessionLifecycleRebuildableError,
   resolveHermesGatewayConfig as resolveOfficialHermesGatewayConfig,
   type HermesGatewayByteAttachment,
   type HermesGatewayClientConfig,
@@ -25,6 +39,7 @@ import {
   type HermesToolResultMetadata,
 } from "../hermes/gateway-contracts";
 import { activeHermesRunRegistry } from "../hermes/active-run-registry";
+import { HermesStateRepositoryError } from "../hermes/hermes-state-repository";
 import { HERMES_READ_ENDPOINTS } from "../hermes/read-api";
 import {
   createHermesActorAssertionForRun,
@@ -35,7 +50,15 @@ import {
   HERMES_MEMORY_TOOL_NAMES,
   HERMES_SKILL_TOOL_NAMES,
 } from "../hermes/tool-broker-contracts";
-import { buildGatewayNativeAssistantContext } from "./context-engine";
+import {
+  buildGatewayNativeAssistantContext,
+  type GatewayLedgerTranscriptMessage,
+} from "./context-engine";
+import {
+  resolveConversationTokenBudget,
+  serializeConversationContextPrompt,
+  selectConversationContext,
+} from "./token-budget";
 
 type GatewayService = {
   prepareTurn(
@@ -63,14 +86,32 @@ type GatewayService = {
       >[0]["messages"][number]
     >
   >;
+  listContextMessages(
+    actor: ConversationActor,
+    conversationId: string,
+    afterSequence: number,
+  ): Promise<
+    Array<
+      Parameters<
+        typeof buildGatewayNativeAssistantContext
+      >[0]["messages"][number]
+    >
+  >;
   getGatewayState?(
     actor: ConversationActor,
     conversationId: string,
   ): Promise<{
     generation: number;
     sessionId?: string;
+    checkpointId?: string;
+    provider?: string;
+    model?: string;
+    lastUsedAt?: string;
     summary?: Record<string, unknown>;
     summaryVersion?: number;
+    memoryStatus?: "ready" | "degraded";
+    memoryDegradedAt?: string | null;
+    childSessions?: string[];
     pendingClarify?: {
       turnId: string;
       clarifyId: string;
@@ -78,6 +119,10 @@ type GatewayService = {
       question: string;
       choices: string[];
       allowFreeText: boolean;
+      response?: {
+        clarifyId: string;
+        answerSha256: string;
+      };
     };
   } | null>;
   compareAndSwapGatewayState(
@@ -91,6 +136,26 @@ type GatewayService = {
     conversationId: string,
     input: { expectedSummaryVersion: number; summary: Record<string, unknown> },
   ): Promise<void>;
+  finishTurnV3(
+    actor: ConversationActor,
+    turnId: string,
+    input: {
+      invocationId: string;
+      outcome: "complete" | "partial" | "blocked" | "failed" | "cancelled";
+      content?: string;
+      providerName?: AiProviderName | null;
+      errorCode?: string | null;
+      errorSummary?: string | null;
+      retryable: boolean;
+      metadata?: Record<string, unknown>;
+      expectedSummaryVersion: number;
+      memoryDelta: ConversationMemoryDelta | null;
+    },
+  ): Promise<{
+    completed: true;
+    memoryStatus: "ready" | "degraded";
+    summaryVersion: number;
+  }>;
   finishTurnV2(
     actor: ConversationActor,
     turnId: string,
@@ -105,16 +170,37 @@ type GatewayService = {
       metadata?: Record<string, unknown>;
     },
   ): Promise<void>;
+  verifyTerminalState?(
+    actor: ConversationActor,
+    turnId: string,
+    event: ConversationStreamEvent,
+  ): Promise<boolean>;
+  recordTurnStage?(
+    actor: ConversationActor,
+    conversationId: string,
+    turnId: string,
+    input: {
+      stage: ConversationTurnStage;
+      observedAt: string;
+      sessionAction?: ConversationSessionAction;
+    },
+  ): Promise<unknown>;
+  appendRecoveryEvent?(
+    actor: ConversationActor,
+    conversationId: string,
+    turnId: string,
+    input: {
+      eventName: TurnRecoveryEventName;
+      payload?: Record<string, unknown>;
+      partialContent?: string;
+      terminalEvent?: ConversationStreamEvent;
+      controlState?: TurnRecoveryControlState;
+    },
+  ): Promise<unknown>;
   captureGatewayContext?(
     actor: ConversationActor,
     turnId: string,
-    snapshot: {
-      version: number;
-      summaryVersion: number;
-      messageIds?: string[];
-      groundingRefs?: string[];
-      assembledAt?: string;
-    },
+    snapshot: ConversationContextSnapshot,
     gatewayContext: ConversationGatewayContext,
   ): Promise<unknown>;
   getSourceGatewayCheckpoint?(
@@ -129,11 +215,17 @@ type GatewayService = {
 };
 
 type GatewayClient = {
-  createSession(input: Record<string, unknown>): Promise<{ sessionId: string }>;
+  createSession(
+    input: Record<string, unknown>,
+  ): Promise<{ sessionId: string; checkpointId?: string }>;
+  resumeSession?(
+    input: Record<string, unknown>,
+  ): Promise<{ sessionId: string; checkpointId?: string }>;
   branchSession?(
     input: Record<string, unknown>,
-  ): Promise<{ sessionId: string }>;
+  ): Promise<{ sessionId: string; checkpointId?: string }>;
   submitPrompt(input: Record<string, unknown>): AsyncIterable<unknown>;
+  recoverSession?(input: Record<string, unknown>): AsyncIterable<unknown>;
   interruptSession?(input: { sessionId: string }): Promise<unknown>;
   respondToClarify?(input: {
     sessionId: string;
@@ -141,6 +233,19 @@ type GatewayClient = {
     answer: string;
   }): Promise<unknown>;
   closeSession?(input: { sessionId: string }): void;
+  closeTransport?(): void;
+};
+
+type GatewayConversationState = NonNullable<
+  Awaited<ReturnType<NonNullable<GatewayService["getGatewayState"]>>>
+>;
+
+type GatewaySessionPreparation = {
+  sessionId: string;
+  checkpointId?: string;
+  action: "resumed" | "rebuilt";
+  generation: number;
+  state: GatewayConversationState;
 };
 
 export type GatewayCheckpoint = {
@@ -180,7 +285,135 @@ type GatewayExecutorOptions = {
   personalMemoryRevision?: number;
   sourceTurnId?: string;
   now?: () => Date;
+  recoveryNow?: () => number;
+  telemetryTimeoutMs?: number;
+  telemetryLogger?: {
+    warn(input: {
+      code: "conversation_turn_stage_persist_failed";
+      stage: ConversationTurnStage;
+      turnId: string;
+    }): void;
+  };
+  recoveryLogger?: {
+    warn(input: {
+      code: "conversation_turn_recovery_persist_failed";
+      eventName: TurnRecoveryEventName;
+      turnId: string;
+      attempts: number;
+    }): void;
+  };
 };
+
+const GATEWAY_SESSION_IDLE_TTL_MS = 15 * 60 * 1_000;
+const MAX_PROMPT_SUBMIT_ATTEMPTS = 2;
+const RECOVERY_PARTIAL_INTERVAL_MS = 1_000;
+const RECOVERY_PARTIAL_BYTES = 2_048;
+
+type TurnRecoveryRecorder = {
+  record(
+    eventName: TurnRecoveryEventName,
+    input?: {
+      payload?: Record<string, unknown>;
+      partialContent?: string;
+      terminalEvent?: ConversationStreamEvent;
+      controlState?: TurnRecoveryControlState;
+    },
+  ): Promise<boolean>;
+  partial(content: string): Promise<void>;
+  terminal(content: string, event: ConversationStreamEvent): Promise<void>;
+};
+
+function createTurnRecoveryRecorder({
+  service,
+  actor,
+  turn,
+  now = Date.now,
+  logger,
+}: {
+  service: GatewayService;
+  actor: ConversationActor;
+  turn: CreatedConversationTurn;
+  now?: () => number;
+  logger?: GatewayExecutorOptions["recoveryLogger"];
+}): TurnRecoveryRecorder {
+  if (!service.appendRecoveryEvent) {
+    return {
+      record: async () => false,
+      partial: async () => undefined,
+      terminal: async () => undefined,
+    };
+  }
+
+  const append = service.appendRecoveryEvent.bind(service);
+  const recoveryLogger =
+    logger ??
+    ({
+      warn: (input) =>
+        console.warn("AI turn recovery persistence failed", input),
+    } satisfies NonNullable<GatewayExecutorOptions["recoveryLogger"]>);
+  const encoder = new TextEncoder();
+  let lastPartialBytes = 0;
+  let lastPartialAt = now();
+
+  async function record(
+    eventName: TurnRecoveryEventName,
+    input: {
+      payload?: Record<string, unknown>;
+      partialContent?: string;
+      terminalEvent?: ConversationStreamEvent;
+      controlState?: TurnRecoveryControlState;
+    } = {},
+  ): Promise<boolean> {
+    const attempts = ["clarify_requested", "terminal"].includes(eventName)
+      ? 3
+      : 1;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        await append(actor, turn.conversationId, turn.turnId, {
+          eventName,
+          ...input,
+        });
+        return true;
+      } catch {
+        if (attempt === attempts) {
+          recoveryLogger.warn({
+            code: "conversation_turn_recovery_persist_failed",
+            eventName,
+            turnId: turn.turnId,
+            attempts,
+          });
+        }
+      }
+    }
+    return false;
+  }
+
+  return {
+    async record(eventName, input) {
+      return record(eventName, input);
+    },
+    async partial(content) {
+      const currentBytes = encoder.encode(content).byteLength;
+      const observedAt = now();
+      if (
+        currentBytes - lastPartialBytes < RECOVERY_PARTIAL_BYTES &&
+        observedAt - lastPartialAt < RECOVERY_PARTIAL_INTERVAL_MS
+      ) {
+        return;
+      }
+      if (await record("response_partial", { partialContent: content })) {
+        lastPartialBytes = currentBytes;
+        lastPartialAt = observedAt;
+      }
+    },
+    async terminal(content, event) {
+      await record("terminal", {
+        partialContent: content,
+        terminalEvent: event,
+      });
+    },
+  };
+}
 
 export function createGatewayTurnExecutor(
   options: GatewayExecutorOptions,
@@ -200,7 +433,24 @@ export function createGatewayTurnExecutor(
       > | null = null;
       let unregisterActiveRun: (() => void) | null = null;
       let activeSessionId: string | null = null;
+      const telemetry = createBestEffortStageRecorder({
+        service,
+        actor: input.actor,
+        turn: input.turn,
+        now,
+        logger: options.telemetryLogger,
+        timeoutMs: options.telemetryTimeoutMs,
+      });
+      const recovery = createTurnRecoveryRecorder({
+        service,
+        actor: input.actor,
+        turn: input.turn,
+        now: options.recoveryNow,
+        logger: options.recoveryLogger,
+      });
 
+      telemetry.record("accepted");
+      await recovery.record("accepted");
       yield started(input.turn);
 
       try {
@@ -209,48 +459,47 @@ export function createGatewayTurnExecutor(
           input.turn.turnId,
           [],
         );
+        telemetry.record("context_ready");
+        await recovery.record("context_ready");
         state = (await service.getGatewayState?.(
           input.actor,
           input.turn.conversationId,
         )) ?? {
           generation: 0,
-          summary: {},
+          summary: emptyConversationMemorySummary(),
           summaryVersion: prepared.snapshot.summaryVersion,
+          memoryStatus: "ready",
+          memoryDegradedAt: null,
         };
         const frozen = frozenGatewayContext(prepared.snapshot.gatewayContext);
         const sessionSetup = frozen
-          ? {
+          ? await resumeFrozenGatewayContext({
+              input,
+              service,
+              gateway,
               context: frozen,
-              session: {
-                sessionId:
-                  stringValue(frozen.invocationMetadata.sessionId) ??
-                  stringValue(
-                    recordValue(
-                      frozen.invocationMetadata.gatewayCheckpoint,
-                      "sessionId",
-                    ),
-                  ) ??
-                  state.sessionId ??
-                  "",
-              },
-              checkpoint: checkpointFromMetadata(
-                frozen.invocationMetadata.gatewayCheckpoint,
-              ),
-              captured: true,
-              capability: null,
-            }
+              state,
+            })
           : await buildAndCaptureFreshGatewayContext({
               input,
               options,
               service,
               gateway,
               prepared,
+              state,
               now,
             });
         if (!sessionSetup.session.sessionId) {
           throw new GatewayExecutionError("gateway_checkpoint_invalid");
         }
+        state = sessionSetup.state;
+        telemetry.record("session_ready", sessionSetup.action);
         const sessionId = sessionSetup.session.sessionId;
+        const childSessionIds = new Set(stringList(state.childSessions));
+        await recovery.record("session_ready", {
+          payload: { sessionAction: sessionSetup.action },
+          controlState: { childSessionIds: [...childSessionIds] },
+        });
         activeSessionId = sessionId;
         unregisterActiveRun = activeHermesRunRegistry.register({
           actor: input.actor,
@@ -289,62 +538,57 @@ export function createGatewayTurnExecutor(
             gatewayContext: sessionSetup.context,
           }));
 
-        if (!frozen) {
-          if (!sessionSetup.checkpoint) {
-            throw new GatewayExecutionError("gateway_checkpoint_invalid");
-          }
-          const nextGeneration = state.generation + 1;
-          const nextState = {
-            generation: nextGeneration,
-            sessionId: sessionSetup.session.sessionId,
-            provider: options.provider,
-            model: options.model,
-            rebuiltAt: now().toISOString(),
-            checkpoint: {
-              sessionId: sessionSetup.checkpoint.sessionId,
-              ...(sessionSetup.checkpoint.checkpointId
-                ? { checkpointId: sessionSetup.checkpoint.checkpointId }
-                : {}),
-            },
-          };
-          try {
-            await service.compareAndSwapGatewayState(
-              input.actor,
-              input.turn.conversationId,
-              state.generation,
-              nextState,
-            );
-            state = {
-              ...state,
-              ...nextState,
-            };
-          } catch {
-            throw new GatewayExecutionError("gateway_state_conflict");
-          }
-        }
-
         const observations: ToolObservation[] = [];
-        try {
-          for await (const gatewayEvent of gateway.submitPrompt({
-            sessionId: sessionSetup.session.sessionId,
-            prompt: buildGatewayPrompt({
-              context: sessionSetup.context,
-              summary: state.summary ?? {},
-            }),
-            actor:
-              recordValue(sessionSetup.context.invocationMetadata, "actor") ??
-              options.auth,
-            provider: options.provider,
+        let promptAccepted = false;
+        const promptInput = {
+          sessionId: sessionSetup.session.sessionId,
+          prompt: buildGatewayPrompt({
+            context: sessionSetup.context,
+            summary: state.summary ?? {},
             model: options.model,
-            mode: sessionSetup.context.mode,
-            conversationId: input.turn.conversationId,
-            invocationCapability: invocationCapability.invocationCapability,
+          }),
+          actor:
+            recordValue(sessionSetup.context.invocationMetadata, "actor") ??
+            options.auth,
+          provider: options.provider,
+          model: options.model,
+          mode: sessionSetup.context.mode,
+          conversationId: input.turn.conversationId,
+          invocationCapability: invocationCapability.invocationCapability,
+        };
+        try {
+          for await (const gatewayEvent of streamGatewayPrompt({
+            gateway,
+            input: promptInput,
+            onAccepted: () => {
+              promptAccepted = true;
+            },
           })) {
+            const observedSessionId = gatewayEventSessionId(gatewayEvent);
+            if (
+              observedSessionId &&
+              observedSessionId !== sessionId &&
+              !childSessionIds.has(observedSessionId)
+            ) {
+              childSessionIds.add(observedSessionId);
+              await recovery.record("session_ready", {
+                payload: { sessionAction: "child_observed" },
+                controlState: { childSessionIds: [...childSessionIds] },
+              });
+            }
             const terminal = terminalGatewayEvent(gatewayEvent);
             if (terminal) {
+              telemetry.record("agent_ready");
               if (terminal.message && !content) content = terminal.message;
               if (terminal.observation) observations.push(terminal.observation);
               if (terminal.status === "cancelled") {
+                const cancelledEvent: ConversationStreamEvent = {
+                  type: "response.cancelled",
+                  conversationId: input.turn.conversationId,
+                  turnId: input.turn.turnId,
+                  messageId: input.turn.assistantMessageId,
+                  invocationId: input.turn.turnId,
+                };
                 await persistTerminalFailure({
                   service,
                   actor: input.actor,
@@ -354,14 +598,10 @@ export function createGatewayTurnExecutor(
                   model: options.model,
                   code: "turn_cancelled",
                   retryable: false,
+                  telemetry,
                 });
-                yield {
-                  type: "response.cancelled",
-                  conversationId: input.turn.conversationId,
-                  turnId: input.turn.turnId,
-                  messageId: input.turn.assistantMessageId,
-                  invocationId: input.turn.turnId,
-                };
+                await recovery.terminal(content, cancelledEvent);
+                yield cancelledEvent;
                 return;
               }
               if (terminal.status === "failed") {
@@ -377,8 +617,11 @@ export function createGatewayTurnExecutor(
                   model: options.model,
                   code,
                   retryable: true,
+                  telemetry,
                 });
-                yield failedEvent(input.turn, code, true);
+                const event = failedEvent(input.turn, code, true);
+                await recovery.terminal(content, event);
+                yield event;
                 return;
               }
 
@@ -390,30 +633,50 @@ export function createGatewayTurnExecutor(
                 provider: options.provider,
                 model: options.model,
                 observations,
-                summary: terminal.summary,
+                memoryDelta: terminal.memoryDelta,
                 forcedOutcome: terminal.outcome,
                 state,
+                gatewayContext: sessionSetup.context,
+                telemetry,
               });
               if (completed.type === "failed") {
-                yield failedEvent(input.turn, completed.code, true);
+                const event = failedEvent(input.turn, completed.code, true);
+                await recovery.terminal(content, event);
+                yield event;
                 return;
               }
+              await recovery.terminal(content, completed.event);
               yield completed.event;
               return;
             }
 
             const event = normalizeGatewayEvent(gatewayEvent, input.turn);
             if (!event) continue;
+            telemetry.record("agent_ready");
             if (event.type === "clarify.requested") {
               state = await persistGatewayClarifyRequest({
-                service,
                 actor: input.actor,
                 turn: input.turn,
                 state,
                 event,
+                recovery,
+                childSessionIds: [...childSessionIds],
               });
             }
-            if (event.type === "response.delta") content += event.delta;
+            if (event.type === "response.delta") {
+              telemetry.record("first_delta");
+              content += event.delta;
+              await recovery.partial(content);
+            }
+            if (event.type === "tool.started") {
+              await recovery.record("tool_started", {
+                payload: {
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                },
+                controlState: { childSessionIds: [...childSessionIds] },
+              });
+            }
             if (event.type === "tool.completed") {
               observations.push({
                 status: event.status,
@@ -422,12 +685,24 @@ export function createGatewayTurnExecutor(
                 observedAt: event.observedAt,
                 critical: isCriticalToolFailure(gatewayEvent),
               });
+              await recovery.record("tool_completed", {
+                payload: {
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                  status: event.status,
+                },
+                controlState: { childSessionIds: [...childSessionIds] },
+              });
             }
             yield event;
           }
         } catch (error) {
           if (error instanceof GatewayExecutionError) throw error;
-          throw new GatewayExecutionError("gateway_stream_failed");
+          throw new GatewayExecutionError(
+            promptAccepted
+              ? "gateway_stream_recovery_failed"
+              : "gateway_stream_failed",
+          );
         }
 
         throw new GatewayExecutionError("gateway_stream_ended");
@@ -446,79 +721,512 @@ export function createGatewayTurnExecutor(
             model: options.model,
             code,
             retryable: true,
+            telemetry,
           });
         } catch {
           throw new Error("AI terminal state could not be persisted");
         }
-        yield failedEvent(input.turn, code, true);
+        const event = failedEvent(input.turn, code, true);
+        await recovery.terminal(content, event);
+        yield event;
       } finally {
         unregisterActiveRun?.();
-        if (activeSessionId) {
-          try {
+        try {
+          if (activeSessionId && gateway.closeSession) {
             gateway.closeSession?.({ sessionId: activeSessionId });
-          } catch {
-            // Best-effort cleanup after terminal persistence or iterator return.
+          } else {
+            gateway.closeTransport?.();
           }
+        } catch {
+          // Best-effort cleanup after terminal persistence or iterator return.
         }
       }
     },
   };
 }
 
-const GATEWAY_CONTEXT_PROMPT_LIMIT = 24_000;
-const GATEWAY_SUMMARY_PROMPT_LIMIT = 6_000;
+async function resumeFrozenGatewayContext({
+  input,
+  service,
+  gateway,
+  context,
+  state,
+}: {
+  input: ConversationTurnExecutorInput<
+    Omit<GatewayService, "listMessages" | "listContextMessages">
+  >;
+  service: GatewayService;
+  gateway: GatewayClient;
+  context: ConversationGatewayContext;
+  state: GatewayConversationState;
+}) {
+  const sessionId =
+    stringValue(context.invocationMetadata.sessionId) ??
+    stringValue(
+      recordValue(context.invocationMetadata.gatewayCheckpoint, "sessionId"),
+    ) ??
+    state.sessionId;
+  if (!sessionId) {
+    throw new GatewayExecutionError("gateway_checkpoint_invalid");
+  }
+  const capability = await issueGatewayInvocationCapability({
+    service,
+    actor: input.actor,
+    turn: input.turn,
+    gatewayContext: context,
+  });
+  const resumed = await resumeGatewaySession(gateway, {
+    sessionId,
+    actor: recordValue(context.invocationMetadata, "actor"),
+    conversationId: input.turn.conversationId,
+    invocationCapability: capability.invocationCapability,
+    attachments: normalizeAttachmentUpload(input.attachments),
+  });
+  return {
+    context,
+    session: {
+      sessionId: resumed.sessionId,
+      ...(resumed.checkpointId ? { checkpointId: resumed.checkpointId } : {}),
+    },
+    checkpoint: checkpointFromMetadata(
+      context.invocationMetadata.gatewayCheckpoint,
+    ),
+    captured: true,
+    capability,
+    action: "resumed" as const,
+    state,
+  };
+}
+
+async function prepareGatewaySession({
+  service,
+  gateway,
+  actor,
+  conversationId,
+  options,
+  capability,
+  state,
+  createInput,
+  now,
+}: {
+  service: GatewayService;
+  gateway: GatewayClient;
+  actor: ConversationActor;
+  conversationId: string;
+  options: GatewayExecutorOptions;
+  capability: GatewayIssuedCapability;
+  state: GatewayConversationState;
+  createInput: Record<string, unknown>;
+  now: () => Date;
+}): Promise<GatewaySessionPreparation> {
+  let session: { sessionId: string; checkpointId?: string };
+  let action: GatewaySessionPreparation["action"] = "rebuilt";
+  if (isReusableGatewaySessionState(state, options, now())) {
+    try {
+      session = await resumeGatewaySession(gateway, {
+        ...createInput,
+        sessionId: state.sessionId,
+      });
+      action = "resumed";
+    } catch (error) {
+      if (!isHermesGatewaySessionLifecycleRebuildableError(error)) {
+        throw error;
+      }
+      session = await createGatewaySession(gateway, createInput);
+    }
+  } else {
+    session = await createGatewaySession(gateway, createInput);
+  }
+
+  return persistPreparedGatewaySession({
+    service,
+    gateway,
+    actor,
+    conversationId,
+    options,
+    capability,
+    state,
+    session,
+    action,
+    resumeInput: createInput,
+    now,
+  });
+}
+
+async function persistPreparedGatewaySession({
+  service,
+  gateway,
+  actor,
+  conversationId,
+  options,
+  capability,
+  state,
+  session,
+  action,
+  resumeInput,
+  now,
+}: {
+  service: GatewayService;
+  gateway: GatewayClient;
+  actor: ConversationActor;
+  conversationId: string;
+  options: GatewayExecutorOptions;
+  capability: GatewayIssuedCapability;
+  state: GatewayConversationState;
+  session: { sessionId: string; checkpointId?: string };
+  action: GatewaySessionPreparation["action"];
+  resumeInput?: Record<string, unknown>;
+  now: () => Date;
+}): Promise<GatewaySessionPreparation> {
+  const checkpointId =
+    session.checkpointId ??
+    (action === "resumed" ? state.checkpointId : undefined);
+  const nextState = {
+    generation: state.generation + 1,
+    sessionId: session.sessionId,
+    ...(checkpointId ? { checkpointId } : {}),
+    provider: options.provider,
+    model: options.model,
+    lastUsedAt: now().toISOString(),
+  };
+  try {
+    await service.compareAndSwapGatewayState(
+      actor,
+      conversationId,
+      state.generation,
+      nextState,
+    );
+    return {
+      sessionId: session.sessionId,
+      ...(checkpointId ? { checkpointId } : {}),
+      action,
+      generation: nextState.generation,
+      state: { ...state, ...nextState },
+    };
+  } catch (error) {
+    if (
+      !(error instanceof HermesStateRepositoryError) ||
+      error.code !== "state_conflict"
+    ) {
+      throw new GatewayExecutionError("gateway_state_persist_failed");
+    }
+    const winner = await service.getGatewayState?.(actor, conversationId);
+    if (
+      !winner ||
+      winner.generation <= state.generation ||
+      !isReusableGatewaySessionState(winner, options, now()) ||
+      !resumeInput
+    ) {
+      throw new GatewayExecutionError("gateway_state_conflict");
+    }
+    gateway.closeSession?.({ sessionId: session.sessionId });
+    let resumed: { sessionId: string; checkpointId?: string };
+    try {
+      resumed = await resumeGatewaySession(gateway, {
+        ...resumeInput,
+        actor: recordValue(resumeInput, "actor"),
+        conversationId,
+        invocationCapability: capability.invocationCapability,
+        sessionId: winner.sessionId,
+      });
+    } catch {
+      throw new GatewayExecutionError("gateway_session_resume_failed");
+    }
+    const resumedCheckpointId = resumed.checkpointId ?? winner.checkpointId;
+    let resolvedWinner = winner;
+    if (resumedCheckpointId && resumedCheckpointId !== winner.checkpointId) {
+      const nextWinnerState = {
+        generation: winner.generation + 1,
+        sessionId: resumed.sessionId,
+        checkpointId: resumedCheckpointId,
+        provider: options.provider,
+        model: options.model,
+        lastUsedAt: now().toISOString(),
+      };
+      try {
+        await service.compareAndSwapGatewayState(
+          actor,
+          conversationId,
+          winner.generation,
+          nextWinnerState,
+        );
+      } catch {
+        throw new GatewayExecutionError("gateway_state_conflict");
+      }
+      resolvedWinner = { ...winner, ...nextWinnerState };
+    }
+    return {
+      sessionId: resumed.sessionId,
+      ...(resumedCheckpointId ? { checkpointId: resumedCheckpointId } : {}),
+      action: "resumed",
+      generation: resolvedWinner.generation,
+      state: resolvedWinner,
+    };
+  }
+}
+
+async function createGatewaySession(
+  gateway: GatewayClient,
+  input: Record<string, unknown>,
+) {
+  try {
+    return await gateway.createSession(input);
+  } catch {
+    throw new GatewayExecutionError("gateway_session_create_failed");
+  }
+}
+
+async function resumeGatewaySession(
+  gateway: GatewayClient,
+  input: Record<string, unknown>,
+) {
+  if (!gateway.resumeSession) {
+    throw new GatewayExecutionError("gateway_session_resume_failed");
+  }
+  try {
+    return await gateway.resumeSession(input);
+  } catch (error) {
+    if (error instanceof HermesGatewayError) throw error;
+    throw new GatewayExecutionError("gateway_session_resume_failed");
+  }
+}
+
+function isReusableGatewaySessionState(
+  state: GatewayConversationState,
+  options: Pick<GatewayExecutorOptions, "provider" | "model">,
+  now: Date,
+): state is GatewayConversationState & {
+  sessionId: string;
+  provider: string;
+  model: string;
+  lastUsedAt: string;
+} {
+  const lastUsedAtValue = stringValue(state.lastUsedAt);
+  if (
+    !stringValue(state.sessionId) ||
+    state.provider !== options.provider ||
+    state.model !== options.model ||
+    !lastUsedAtValue
+  ) {
+    return false;
+  }
+  const lastUsedAt = Date.parse(lastUsedAtValue);
+  return (
+    Number.isFinite(lastUsedAt) &&
+    lastUsedAt <= now.getTime() &&
+    now.getTime() - lastUsedAt <= GATEWAY_SESSION_IDLE_TTL_MS
+  );
+}
+
+async function* streamGatewayPrompt({
+  gateway,
+  input,
+  onAccepted,
+}: {
+  gateway: GatewayClient;
+  input: Record<string, unknown>;
+  onAccepted: () => void;
+}): AsyncIterable<unknown> {
+  let promptAccepted = false;
+  let submitAttempts = 0;
+
+  while (submitAttempts < MAX_PROMPT_SUBMIT_ATTEMPTS) {
+    submitAttempts += 1;
+    try {
+      for await (const event of gateway.submitPrompt(input)) {
+        if (isGatewayPromptAcceptedEvent(event)) {
+          promptAccepted = true;
+          onAccepted();
+          continue;
+        }
+        yield event;
+      }
+      return;
+    } catch (submitError) {
+      if (promptAccepted) throw submitError;
+      if (!isAmbiguousHermesGatewayTransportError(submitError)) {
+        throw submitError;
+      }
+      if (!gateway.recoverSession) {
+        if (submitAttempts >= MAX_PROMPT_SUBMIT_ATTEMPTS) throw submitError;
+        continue;
+      }
+      try {
+        const recoveredBeforeAcceptance: unknown[] = [];
+        for await (const event of gateway.recoverSession(input)) {
+          if (isGatewayPromptAcceptedEvent(event)) {
+            promptAccepted = true;
+            onAccepted();
+            for (const recovered of recoveredBeforeAcceptance) yield recovered;
+            recoveredBeforeAcceptance.length = 0;
+            continue;
+          }
+          if (promptAccepted) yield event;
+          else recoveredBeforeAcceptance.push(event);
+        }
+        if (promptAccepted) return;
+      } catch (recoveryError) {
+        if (promptAccepted) throw recoveryError;
+        if (!isAmbiguousHermesGatewayTransportError(recoveryError)) {
+          throw recoveryError;
+        }
+        if (submitAttempts >= MAX_PROMPT_SUBMIT_ATTEMPTS) throw submitError;
+      }
+    }
+  }
+
+  throw new GatewayExecutionError("gateway_stream_failed");
+}
+
+function isGatewayPromptAcceptedEvent(
+  value: unknown,
+): value is { type: "prompt.accepted" } {
+  return isRecord(value) && value.type === "prompt.accepted";
+}
+
+type BestEffortStageRecorder = {
+  record(
+    stage: ConversationTurnStage,
+    sessionAction?: ConversationSessionAction,
+  ): void;
+};
+
+function createBestEffortStageRecorder({
+  service,
+  actor,
+  turn,
+  now,
+  logger,
+  timeoutMs,
+}: {
+  service: GatewayService;
+  actor: ConversationActor;
+  turn: CreatedConversationTurn;
+  now: () => Date;
+  logger?: GatewayExecutorOptions["telemetryLogger"];
+  timeoutMs?: number;
+}): BestEffortStageRecorder {
+  const attempted = new Set<ConversationTurnStage>();
+  const boundedTimeoutMs = Math.max(1, Math.min(timeoutMs ?? 1_000, 10_000));
+  return {
+    record(stage, sessionAction) {
+      if (attempted.has(stage)) return;
+      attempted.add(stage);
+      const observedAt = now().toISOString();
+      if (!service.recordTurnStage) return;
+
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const write = Promise.resolve().then(() =>
+        service.recordTurnStage!(actor, turn.conversationId, turn.turnId, {
+          stage,
+          observedAt,
+          ...(sessionAction ? { sessionAction } : {}),
+        }),
+      );
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("conversation_turn_stage_persist_timeout")),
+          boundedTimeoutMs,
+        );
+      });
+      void Promise.race([write, deadline])
+        .catch(() => {
+          try {
+            logger?.warn({
+              code: "conversation_turn_stage_persist_failed",
+              stage,
+              turnId: turn.turnId,
+            });
+          } catch {
+            // Telemetry diagnostics cannot affect the authoritative turn path.
+          }
+        })
+        .finally(() => {
+          if (timeout) clearTimeout(timeout);
+        });
+    },
+  };
+}
 
 function buildGatewayPrompt({
   context,
   summary,
+  model,
 }: {
   context: ConversationGatewayContext;
   summary: Record<string, unknown>;
+  model: string;
 }): string {
   const currentRequest = context.lastUserMessage.trim();
-  const messages = context.messages.slice();
-  const lastMessage = messages.at(-1);
-  if (
-    lastMessage?.role === "user" &&
-    lastMessage.content.trim() === currentRequest
-  ) {
-    messages.pop();
+  const memorySummary =
+    parseConversationMemorySummary(summary) ?? emptyConversationMemorySummary();
+  const frozenTranscript = gatewayLedgerTranscript(context);
+  const currentMessage = [...frozenTranscript]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === "user" &&
+        message.content.trim() === currentRequest &&
+        isString(message.metadata?.messageId) &&
+        Number.isInteger(message.metadata?.sequence),
+    );
+  if (!currentMessage) {
+    throw new GatewayExecutionError("gateway_context_message_identity_missing");
   }
-
-  const summaryText = Object.keys(summary).length
-    ? JSON.stringify(summary).slice(0, GATEWAY_SUMMARY_PROMPT_LIMIT)
-    : "";
-  const historyLines = messages.map(
-    (message) => `${message.role.toUpperCase()}: ${message.content.trim()}`,
+  const pinnedFacts = frozenTranscript.filter(
+    (message) => message.metadata?.pinned === true,
   );
-  const fixedLength = currentRequest.length + summaryText.length + 256;
-  let remaining = Math.max(0, GATEWAY_CONTEXT_PROMPT_LIMIT - fixedLength);
-  const recentHistory: string[] = [];
-  for (
-    let index = historyLines.length - 1;
-    index >= 0 && remaining > 0;
-    index -= 1
-  ) {
-    const line = historyLines[index];
-    if (!line) continue;
-    const kept = line.slice(Math.max(0, line.length - remaining));
-    recentHistory.unshift(kept);
-    remaining -= kept.length + 1;
+  const recentMessages = frozenTranscript.filter(
+    (message) =>
+      message.metadata?.messageId !== currentMessage.metadata?.messageId,
+  );
+  const selected = selectConversationContext({
+    currentRequest: currentMessage,
+    pinnedFacts,
+    summary: memorySummary,
+    recentMessages,
+    budget: resolveConversationTokenBudget(model),
+  });
+  return serializeConversationContextPrompt({
+    currentRequest: currentMessage,
+    pinnedFacts,
+    selectedMessages: selected,
+  });
+}
+
+function gatewayLedgerTranscript(
+  context: ConversationGatewayContext,
+): GatewayLedgerTranscriptMessage[] {
+  const frozen = recordValue(context.invocationMetadata, "ledgerTranscript");
+  if (Array.isArray(frozen)) {
+    return frozen.filter(isGatewayLedgerTranscriptMessage);
   }
+  return context.messages
+    .filter(
+      (message) =>
+        message.role === "user" ||
+        message.role === "assistant" ||
+        message.role === "tool",
+    )
+    .map((message) => ({
+      role: message.role as "user" | "assistant" | "tool",
+      content: message.content,
+    }));
+}
 
-  if (!summaryText && recentHistory.length === 0) return currentRequest;
-
-  return [
-    "<conversation_context>",
-    ...(summaryText ? ["<summary>", summaryText, "</summary>"] : []),
-    ...(recentHistory.length
-      ? ["<recent_messages>", ...recentHistory, "</recent_messages>"]
-      : []),
-    "</conversation_context>",
-    "<current_request>",
-    currentRequest,
-    "</current_request>",
-  ].join("\n");
+function isGatewayLedgerTranscriptMessage(value: unknown): value is {
+  role: "user" | "assistant" | "tool";
+  content: string;
+  metadata?: Record<string, unknown>;
+} {
+  return (
+    isRecord(value) &&
+    (value.role === "user" ||
+      value.role === "assistant" ||
+      value.role === "tool") &&
+    typeof value.content === "string" &&
+    (value.metadata == null || isRecord(value.metadata))
+  );
 }
 
 async function buildAndCaptureFreshGatewayContext({
@@ -527,6 +1235,7 @@ async function buildAndCaptureFreshGatewayContext({
   service,
   gateway,
   prepared,
+  state,
   now,
 }: {
   input: ConversationTurnExecutorInput<Omit<GatewayService, "listMessages">>;
@@ -534,11 +1243,16 @@ async function buildAndCaptureFreshGatewayContext({
   service: GatewayService;
   gateway: GatewayClient;
   prepared: Awaited<ReturnType<GatewayService["prepareTurn"]>>;
+  state: GatewayConversationState;
   now: () => Date;
 }) {
-  const messages = await service.listMessages(
+  const memorySummary =
+    parseConversationMemorySummary(state.summary) ??
+    emptyConversationMemorySummary();
+  const messages = await service.listContextMessages(
     input.actor,
     input.turn.conversationId,
+    memorySummary.lastCompactedSequence,
   );
   const body = await readJsonBody(input.request);
   const context = buildGatewayNativeAssistantContext({
@@ -554,6 +1268,11 @@ async function buildAndCaptureFreshGatewayContext({
         .filter(isString),
     },
     personalMemoryRevision: options.personalMemoryRevision ?? 0,
+    conversationMemory: {
+      status: state.memoryStatus === "degraded" ? "degraded" : "ready",
+      summaryVersion: state.summaryVersion ?? prepared.snapshot.summaryVersion,
+      summary: memorySummary,
+    },
     messages,
   });
   if (!context) {
@@ -598,15 +1317,25 @@ async function buildAndCaptureFreshGatewayContext({
     },
   });
 
-  let session: { sessionId: string };
+  let preparation: GatewaySessionPreparation;
   const branchSession =
     sourceCheckpoint !== null && input.turn.attempt > 1
       ? gateway.branchSession
       : undefined;
+  const sessionInput = {
+    actor: context.actor,
+    conversationId: input.turn.conversationId,
+    invocationCapability: capability.invocationCapability,
+    budget: context.budget,
+    personalMemoryRevision: context.personalMemoryRevision,
+    transcript: context.ledgerTranscript,
+    attachments: normalizeAttachmentUpload(input.attachments),
+  };
   try {
     if (sourceCheckpoint && branchSession) {
-      session = await branchSession({
+      const branched = await branchSession({
         sessionId: sourceCheckpoint.sessionId,
+        checkpointId: sourceCheckpoint.checkpointId,
         actor: context.actor,
         conversationId: input.turn.conversationId,
         invocationCapability: capability.invocationCapability,
@@ -615,33 +1344,51 @@ async function buildAndCaptureFreshGatewayContext({
           sourceTurnId,
         },
       });
-    } else {
-      session = await gateway.createSession({
-        actor: context.actor,
+      if (
+        !isValidBranchedSessionId(
+          branched.sessionId,
+          sourceCheckpoint.sessionId,
+        )
+      ) {
+        throw new GatewayExecutionError("gateway_checkpoint_invalid");
+      }
+      preparation = await persistPreparedGatewaySession({
+        service,
+        gateway,
+        actor: input.actor,
         conversationId: input.turn.conversationId,
-        invocationCapability: capability.invocationCapability,
-        budget: context.budget,
-        personalMemoryRevision: context.personalMemoryRevision,
-        transcript: context.ledgerTranscript,
-        attachments: normalizeAttachmentUpload(input.attachments),
+        options,
+        capability,
+        state,
+        session: branched,
+        action: "rebuilt",
+        resumeInput: sessionInput,
+        now,
+      });
+    } else {
+      preparation = await prepareGatewaySession({
+        service,
+        gateway,
+        actor: input.actor,
+        conversationId: input.turn.conversationId,
+        options,
+        capability,
+        state,
+        createInput: sessionInput,
+        now,
       });
     }
   } catch (error) {
     if (error instanceof GatewayExecutionError) throw error;
+    if (error instanceof HermesGatewayError) {
+      throw new GatewayExecutionError(error.code);
+    }
     throw new GatewayExecutionError("gateway_session_create_failed");
   }
-  if (
-    sourceCheckpoint &&
-    branchSession &&
-    !isValidBranchedSessionId(session.sessionId, sourceCheckpoint.sessionId)
-  ) {
-    throw new GatewayExecutionError("gateway_checkpoint_invalid");
-  }
-
   const checkpoint: GatewayCheckpoint = {
-    sessionId: session.sessionId,
-    ...(sourceCheckpoint?.checkpointId
-      ? { checkpointId: sourceCheckpoint.checkpointId }
+    sessionId: preparation.sessionId,
+    ...(preparation.checkpointId
+      ? { checkpointId: preparation.checkpointId }
       : {}),
     turnId: input.turn.turnId,
     conversationId: input.turn.conversationId,
@@ -666,10 +1413,17 @@ async function buildAndCaptureFreshGatewayContext({
       actor: context.actor,
       budget: context.budget,
       personalMemoryRevision: context.personalMemoryRevision,
+      conversationMemory: context.conversationMemory,
+      ledgerTranscript: context.ledgerTranscript,
+      memorySourceMessages: conversationMemorySourceMessages({
+        messages,
+        summary: context.conversationMemory.summary,
+        conversationId: input.turn.conversationId,
+      }),
       skillGrantsHash: context.actor.skillGrantsHash,
       capabilityId: capability.capabilityId,
       capabilityExpiresAt: capability.expiresAt,
-      sessionId: session.sessionId,
+      sessionId: preparation.sessionId,
       gatewayCheckpoint: checkpoint,
       sourceCheckpoint: sourceCheckpoint ?? null,
       frozenAt: now().toISOString(),
@@ -683,8 +1437,11 @@ async function buildAndCaptureFreshGatewayContext({
     input.turn.turnId,
     {
       version: prepared.snapshot.version,
-      summaryVersion: prepared.snapshot.summaryVersion,
-      messageIds: prepared.snapshot.messageIds ?? [],
+      summaryVersion: context.conversationMemory.summaryVersion,
+      lastCompactedSequence: context.conversationMemory.lastCompactedSequence,
+      messageIds: context.ledgerTranscript
+        .map((message) => message.metadata?.messageId)
+        .filter(isString),
       groundingRefs: prepared.snapshot.groundingRefs ?? [],
       assembledAt: prepared.snapshot.assembledAt ?? now().toISOString(),
     },
@@ -692,11 +1449,59 @@ async function buildAndCaptureFreshGatewayContext({
   );
   return {
     context: gatewayContext,
-    session,
+    session: {
+      sessionId: preparation.sessionId,
+      ...(preparation.checkpointId
+        ? { checkpointId: preparation.checkpointId }
+        : {}),
+    },
     checkpoint,
     captured: true,
     capability,
+    action: preparation.action,
+    state: preparation.state,
   };
+}
+
+function conversationMemorySourceMessages({
+  messages,
+  summary,
+  conversationId,
+}: {
+  messages: Awaited<ReturnType<GatewayService["listContextMessages"]>>;
+  summary: ConversationMemorySummary;
+  conversationId: string;
+}) {
+  const known = new Map(
+    messages.map((message) => [
+      message.id,
+      {
+        id: message.id,
+        conversationId: message.conversationId,
+        sequence: message.sequence,
+      },
+    ]),
+  );
+  for (const item of [
+    ...summary.goals,
+    ...summary.confirmedFacts,
+    ...summary.decisions,
+    ...summary.unresolvedQuestions,
+  ]) {
+    for (const id of item.sourceMessageIds) {
+      if (!known.has(id)) {
+        known.set(id, {
+          id,
+          conversationId,
+          sequence: summary.lastCompactedSequence,
+        });
+      }
+    }
+  }
+  return [...known.values()].sort(
+    (left, right) =>
+      left.sequence - right.sequence || left.id.localeCompare(right.id, "en"),
+  );
 }
 
 async function issueGatewayInvocationCapability({
@@ -767,9 +1572,11 @@ async function completeWithCoherentSummary({
   provider,
   model,
   observations,
-  summary,
+  memoryDelta,
   forcedOutcome,
   state,
+  gatewayContext,
+  telemetry,
 }: {
   service: GatewayService;
   actor: ConversationActor;
@@ -778,11 +1585,13 @@ async function completeWithCoherentSummary({
   provider: AiProviderName;
   model: string;
   observations: ToolObservation[];
-  summary: unknown;
+  memoryDelta: unknown;
   forcedOutcome?: ConversationResponseOutcome;
   state: Awaited<
     ReturnType<NonNullable<GatewayService["getGatewayState"]>>
   > | null;
+  gatewayContext: ConversationGatewayContext;
+  telemetry: BestEffortStageRecorder;
 }): Promise<
   | { type: "completed"; event: ConversationStreamEvent }
   | { type: "failed"; code: string }
@@ -790,8 +1599,30 @@ async function completeWithCoherentSummary({
   const outcome = forcedOutcome ?? classifyOutcome(observations);
   const metadata = completionMetadata({ observations, provider, model });
   const expectedSummaryVersion = state?.summaryVersion ?? 0;
+  const previousSummary =
+    parseConversationMemorySummary(state?.summary) ??
+    emptyConversationMemorySummary();
+  const parsedMemoryDelta = parseConversationMemoryDelta(memoryDelta, {
+    conversationId: turn.conversationId,
+    sourceMessages: memorySourceMessages(gatewayContext),
+    previousSummary,
+  });
+  telemetry.record("terminal");
+  const completedEvent: ConversationStreamEvent = {
+    type: "response.completed",
+    conversationId: turn.conversationId,
+    turnId: turn.turnId,
+    messageId: turn.assistantMessageId,
+    content,
+    outcome,
+    evidence: metadata.evidence,
+    missing: metadata.missing,
+    observationTimes: metadata.observationTimes,
+    meta: metadata,
+    invocationId: turn.turnId,
+  };
   try {
-    await service.finishTurnV2(actor, turn.turnId, {
+    const finish = await service.finishTurnV3(actor, turn.turnId, {
       invocationId: turn.turnId,
       outcome,
       content,
@@ -800,8 +1631,20 @@ async function completeWithCoherentSummary({
       errorSummary: null,
       retryable: false,
       metadata,
+      expectedSummaryVersion,
+      memoryDelta: parsedMemoryDelta,
     });
+    metadata.memoryStatus = finish.memoryStatus;
+    metadata.summaryVersion = finish.summaryVersion;
+    telemetry.record("persisted");
   } catch {
+    const terminalAlreadyCommitted = await service
+      .verifyTerminalState?.(actor, turn.turnId, completedEvent)
+      .catch(() => false);
+    if (terminalAlreadyCommitted === true) {
+      telemetry.record("persisted");
+      return { type: "completed", event: completedEvent };
+    }
     await persistTerminalFailure({
       service,
       actor,
@@ -811,36 +1654,37 @@ async function completeWithCoherentSummary({
       model,
       code: "gateway_terminal_persist_failed",
       retryable: true,
+      telemetry,
     });
     return { type: "failed", code: "gateway_terminal_persist_failed" };
   }
-  if (isRecord(summary) && service.syncConversationSummary) {
-    try {
-      await service.syncConversationSummary(actor, turn.conversationId, {
-        expectedSummaryVersion,
-        summary,
-      });
-    } catch {
-      // Terminal persistence already succeeded. Summary synchronization is
-      // retried by later turns; do not mutate the product-visible terminal state.
-    }
-  }
   return {
     type: "completed",
-    event: {
-      type: "response.completed",
-      conversationId: turn.conversationId,
-      turnId: turn.turnId,
-      messageId: turn.assistantMessageId,
-      content,
-      outcome,
-      evidence: metadata.evidence,
-      missing: metadata.missing,
-      observationTimes: metadata.observationTimes,
-      meta: metadata,
-      invocationId: turn.turnId,
-    },
+    event: completedEvent,
   };
+}
+
+function memorySourceMessages(context: ConversationGatewayContext) {
+  const value = recordValue(context.invocationMetadata, "memorySourceMessages");
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (
+      !isRecord(candidate) ||
+      !isString(candidate.id) ||
+      !isString(candidate.conversationId) ||
+      !Number.isInteger(candidate.sequence) ||
+      Number(candidate.sequence) < 0
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: candidate.id,
+        conversationId: candidate.conversationId,
+        sequence: Number(candidate.sequence),
+      },
+    ];
+  });
 }
 
 async function persistTerminalFailure({
@@ -852,6 +1696,7 @@ async function persistTerminalFailure({
   model,
   code,
   retryable,
+  telemetry,
 }: {
   service: GatewayService;
   actor: ConversationActor;
@@ -861,7 +1706,9 @@ async function persistTerminalFailure({
   model: string;
   code: string;
   retryable: boolean;
+  telemetry: BestEffortStageRecorder;
 }) {
+  telemetry.record("terminal");
   await service.finishTurnV2(actor, turn.turnId, {
     invocationId: turn.turnId,
     outcome: "failed",
@@ -876,12 +1723,13 @@ async function persistTerminalFailure({
       model,
     },
   });
+  telemetry.record("persisted");
 }
 
 function terminalGatewayEvent(event: unknown):
   | {
       status: "completed";
-      summary?: unknown;
+      memoryDelta?: unknown;
       code?: string;
       outcome?: ConversationResponseOutcome;
       message?: string;
@@ -889,7 +1737,7 @@ function terminalGatewayEvent(event: unknown):
     }
   | {
       status: "failed";
-      summary?: unknown;
+      memoryDelta?: unknown;
       code?: string;
       outcome?: ConversationResponseOutcome;
       message?: string;
@@ -897,14 +1745,17 @@ function terminalGatewayEvent(event: unknown):
     }
   | {
       status: "cancelled";
-      summary?: unknown;
+      memoryDelta?: unknown;
       code?: string;
       outcome?: ConversationResponseOutcome;
       message?: string;
       observation?: ToolObservation;
     }
   | null {
-  const official = parseHermesGatewayEvent(event);
+  const memoryDelta = terminalMemoryDelta(event);
+  const official = parseHermesGatewayEvent(
+    memoryDelta === undefined ? event : withoutTerminalMemoryDelta(event),
+  );
   if (official?.params.type === "turn.terminal") {
     const payload = official.params.payload;
     const status =
@@ -924,11 +1775,15 @@ function terminalGatewayEvent(event: unknown):
         : undefined,
       message: payload.message,
       observation: observationFromGatewayMetadata(payload.metadata),
+      ...(memoryDelta === undefined ? {} : { memoryDelta }),
     };
   }
   if (!isRecord(event)) return null;
   if (event.type === "completed") {
-    return { status: "completed", summary: event.summary };
+    return {
+      status: "completed",
+      ...(memoryDelta === undefined ? {} : { memoryDelta }),
+    };
   }
   if (event.type === "failed") {
     return {
@@ -947,10 +1802,47 @@ function terminalGatewayEvent(event: unknown):
     return {
       status,
       code: sanitizeTraceCode(event.code) ?? undefined,
-      summary: event.summary,
+      ...(memoryDelta === undefined ? {} : { memoryDelta }),
     };
   }
   return null;
+}
+
+function terminalMemoryDelta(event: unknown): unknown {
+  if (!isRecord(event)) return undefined;
+  if (isRecord(event.metadata) && "memoryDelta" in event.metadata) {
+    return event.metadata.memoryDelta;
+  }
+  const params = recordValue(event, "params");
+  const payload = recordValue(params, "payload");
+  const metadata = recordValue(payload, "metadata");
+  return isRecord(metadata) && "memoryDelta" in metadata
+    ? metadata.memoryDelta
+    : undefined;
+}
+
+function withoutTerminalMemoryDelta(event: unknown): unknown {
+  if (!isRecord(event)) return event;
+  const params = recordValue(event, "params");
+  const payload = recordValue(params, "payload");
+  const metadata = recordValue(payload, "metadata");
+  if (
+    !isRecord(params) ||
+    !isRecord(payload) ||
+    !isRecord(metadata) ||
+    !("memoryDelta" in metadata)
+  ) {
+    return event;
+  }
+  const sanitizedMetadata = { ...metadata };
+  delete sanitizedMetadata.memoryDelta;
+  return {
+    ...event,
+    params: {
+      ...params,
+      payload: { ...payload, metadata: sanitizedMetadata },
+    },
+  };
 }
 
 class GatewayExecutionError extends Error {
@@ -1074,6 +1966,7 @@ export function createHermesGatewayClient({
         ) => Promise<unknown>;
       })
     | null = null;
+  let ambiguousPromptSubmitError: HermesGatewayError | null = null;
   return {
     async createSession(input) {
       session = await openOfficialGatewaySession({
@@ -1084,11 +1977,38 @@ export function createHermesGatewayClient({
         createActorAssertion,
       });
       await attachGatewayBytes(session, input, attachBytes);
-      return { sessionId: session.sessionId };
+      return {
+        sessionId: session.sessionId,
+        ...(session.checkpointId ? { checkpointId: session.checkpointId } : {}),
+      };
+    },
+    async resumeSession(input) {
+      const sessionId = stringValue(input.sessionId);
+      if (!sessionId) {
+        throw new GatewayExecutionError("gateway_session_resume_failed");
+      }
+      session = await openOfficialGatewaySession({
+        input,
+        config,
+        actorAssertionConfig,
+        openSession,
+        createActorAssertion,
+        sessionId,
+      });
+      await attachGatewayBytes(session, input, attachBytes);
+      return {
+        sessionId: session.sessionId,
+        ...(session.checkpointId ? { checkpointId: session.checkpointId } : {}),
+      };
     },
     async branchSession(input) {
       const sourceSessionId = stringValue(input.sessionId);
-      if (!sourceSessionId) {
+      const checkpointId =
+        stringValue(input.checkpointId) ??
+        stringValue(
+          recordValue(recordValue(input, "checkpoint"), "checkpointId"),
+        );
+      if (!sourceSessionId || !checkpointId) {
         throw new GatewayExecutionError("gateway_checkpoint_invalid");
       }
       session = await openOfficialGatewaySession({
@@ -1099,11 +2019,17 @@ export function createHermesGatewayClient({
         createActorAssertion,
         sessionId: sourceSessionId,
       });
-      const result = await session.branch(
-        stringValue(input.conversationId) ?? gatewayActor(input).conversationId,
-      );
+      const result = await session.branch({
+        conversationId:
+          stringValue(input.conversationId) ??
+          gatewayActor(input).conversationId,
+        checkpointId,
+      });
       const branchedSessionId = isRecord(result)
         ? stringValue(result.sessionId)
+        : null;
+      const branchCheckpointId = isRecord(result)
+        ? stringValue(result.checkpointId)
         : null;
       if (!branchedSessionId || branchedSessionId === sourceSessionId) {
         session.close();
@@ -1120,7 +2046,14 @@ export function createHermesGatewayClient({
         createActorAssertion,
         sessionId: branchedSessionId,
       });
-      return { sessionId: branchedSessionId };
+      return {
+        sessionId: branchedSessionId,
+        ...(session.checkpointId || branchCheckpointId
+          ? {
+              checkpointId: session.checkpointId ?? branchCheckpointId!,
+            }
+          : {}),
+      };
     },
     async *submitPrompt(input) {
       const sessionId = stringValue(input.sessionId);
@@ -1130,13 +2063,54 @@ export function createHermesGatewayClient({
       if (!session.rpc) {
         throw new GatewayExecutionError("gateway_protocol_failed");
       }
-      await session.rpc("prompt.submit", {
-        conversationId:
-          stringValue(input.conversationId) ??
-          gatewayActor(input).conversationId,
-        text: stringValue(input.prompt) ?? "",
-        mode: input.mode === "deep" ? "deep" : "fast",
-      });
+      let acknowledgement: unknown;
+      try {
+        acknowledgement = await session.rpc("prompt.submit", {
+          conversationId:
+            stringValue(input.conversationId) ??
+            gatewayActor(input).conversationId,
+          text: stringValue(input.prompt) ?? "",
+          mode: input.mode === "deep" ? "deep" : "fast",
+        });
+      } catch (error) {
+        ambiguousPromptSubmitError = isAmbiguousHermesGatewayTransportError(
+          error,
+        )
+          ? error
+          : null;
+        throw error;
+      }
+      if (!isRecord(acknowledgement) || acknowledgement.accepted !== true) {
+        ambiguousPromptSubmitError = null;
+        throw new GatewayExecutionError("gateway_prompt_not_accepted");
+      }
+      ambiguousPromptSubmitError = null;
+      yield { type: "prompt.accepted" };
+      yield* session.events;
+    },
+    async *recoverSession(input) {
+      const sessionId = stringValue(input.sessionId);
+      if (!sessionId || !session || session.sessionId !== sessionId) {
+        throw new GatewayExecutionError("gateway_checkpoint_invalid");
+      }
+      try {
+        await session.recover();
+        await session.waitForAccepted();
+      } catch (error) {
+        if (
+          ambiguousPromptSubmitError &&
+          error instanceof HermesGatewayError &&
+          error.code === "hermes_gateway_prompt_not_accepted"
+        ) {
+          const transportError = ambiguousPromptSubmitError;
+          ambiguousPromptSubmitError = null;
+          throw transportError;
+        }
+        ambiguousPromptSubmitError = null;
+        throw error;
+      }
+      ambiguousPromptSubmitError = null;
+      yield { type: "prompt.accepted" };
       yield* session.events;
     },
     async interruptSession(input) {
@@ -1167,6 +2141,10 @@ export function createHermesGatewayClient({
         session.close();
         session = null;
       }
+    },
+    closeTransport() {
+      session?.close();
+      session = null;
     },
   };
 }
@@ -1313,7 +2291,8 @@ function completionMetadata({
   };
   provider: AiProviderName;
   model: string;
-  summarySync?: { status: "synced" | "failed"; expectedSummaryVersion: number };
+  memoryStatus?: "ready" | "degraded";
+  summaryVersion?: number;
 } {
   const evidence = unique(
     observations.flatMap((observation) => observation.evidence),
@@ -1449,22 +2428,31 @@ function normalizeGatewayEvent(
   return null;
 }
 
+function gatewayEventSessionId(event: unknown): string | null {
+  const parsed = parseHermesGatewayEvent(event);
+  if (!parsed || parsed.params.type === "gateway.ready") return null;
+  return parsed.params.type.startsWith("subagent.")
+    ? parsed.params.sessionId
+    : null;
+}
+
 async function persistGatewayClarifyRequest({
-  service,
   actor,
   turn,
   state,
   event,
+  recovery,
+  childSessionIds,
 }: {
-  service: GatewayService;
   actor: ConversationActor;
   turn: CreatedConversationTurn;
   state: Awaited<
     ReturnType<NonNullable<GatewayService["getGatewayState"]>>
   > | null;
   event: Extract<ConversationStreamEvent, { type: "clarify.requested" }>;
+  recovery: TurnRecoveryRecorder;
+  childSessionIds: string[];
 }) {
-  if (!state) throw new GatewayExecutionError("gateway_state_conflict");
   const pendingClarify = {
     turnId: turn.turnId,
     clarifyId: event.clarifyId,
@@ -1473,20 +2461,12 @@ async function persistGatewayClarifyRequest({
     choices: event.choices ?? [],
     allowFreeText: event.allowFreeText === true,
   };
-  const nextGeneration = state.generation + 1;
-  try {
-    await service.compareAndSwapGatewayState(
-      actor,
-      turn.conversationId,
-      state.generation,
-      {
-        ...state,
-        generation: nextGeneration,
-        pendingClarify,
-      },
-    );
-  } catch {
-    throw new GatewayExecutionError("gateway_state_conflict");
+  const persisted = await recovery.record("clarify_requested", {
+    payload: { clarifyId: event.clarifyId },
+    controlState: { childSessionIds, pendingClarify },
+  });
+  if (!persisted) {
+    throw new GatewayExecutionError("gateway_recovery_persist_failed");
   }
   activeHermesRunRegistry.setPendingClarify({
     actor,
@@ -1496,11 +2476,7 @@ async function persistGatewayClarifyRequest({
     choices: pendingClarify.choices,
     allowFreeText: pendingClarify.allowFreeText,
   });
-  return {
-    ...state,
-    generation: nextGeneration,
-    pendingClarify,
-  };
+  return state;
 }
 
 function normalizeOfficialGatewayEvent(
@@ -1761,6 +2737,17 @@ function unique(values: string[]): string[] {
 
 function isString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function emptyConversationMemorySummary(): ConversationMemorySummary {
+  return {
+    schemaVersion: 1,
+    goals: [],
+    confirmedFacts: [],
+    decisions: [],
+    unresolvedQuestions: [],
+    lastCompactedSequence: 0,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

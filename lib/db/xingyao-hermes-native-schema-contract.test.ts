@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -12,6 +13,59 @@ const migrationPath = join(
 const migration = existsSync(migrationPath)
   ? readFileSync(migrationPath, "utf8").toLowerCase()
   : "";
+const telemetryMigrationPath = join(
+  process.cwd(),
+  "supabase",
+  "migrations",
+  "20260803120000_ai_turn_stage_telemetry.sql",
+);
+const telemetryMigration = existsSync(telemetryMigrationPath)
+  ? readFileSync(telemetryMigrationPath, "utf8").toLowerCase()
+  : "";
+const telemetryBackfillMigrationPath = join(
+  process.cwd(),
+  "supabase",
+  "migrations",
+  "20260803120500_ai_turn_stage_telemetry_backfill.sql",
+);
+const telemetryBackfillMigration = existsSync(telemetryBackfillMigrationPath)
+  ? readFileSync(telemetryBackfillMigrationPath, "utf8").toLowerCase()
+  : "";
+const capabilityVerificationMigrationPath = join(
+  process.cwd(),
+  "supabase",
+  "migrations",
+  "20260803121000_ai_hermes_capability_verification.sql",
+);
+const capabilityVerificationMigration = existsSync(
+  capabilityVerificationMigrationPath,
+)
+  ? readFileSync(capabilityVerificationMigrationPath, "utf8").toLowerCase()
+  : "";
+const structuredMemoryMigrationPath = join(
+  process.cwd(),
+  "supabase",
+  "migrations",
+  "20260803130000_ai_conversation_structured_memory.sql",
+);
+const structuredMemoryMigration = existsSync(structuredMemoryMigrationPath)
+  ? readFileSync(structuredMemoryMigrationPath, "utf8").toLowerCase()
+  : "";
+const turnRecoveryMigrationPath = join(
+  process.cwd(),
+  "supabase",
+  "migrations",
+  "20260803140000_ai_turn_recovery_snapshots.sql",
+);
+const turnRecoveryMigrationSource = existsSync(turnRecoveryMigrationPath)
+  ? readFileSync(turnRecoveryMigrationPath, "utf8")
+  : "";
+const turnRecoveryMigration = turnRecoveryMigrationSource.toLowerCase();
+const structuredMemoryDbContainer =
+  process.env.HERMES_STRUCTURED_MEMORY_DB_REGRESSION_CONTAINER;
+const turnRecoveryDbContainer =
+  process.env.HERMES_TURN_RECOVERY_DB_REGRESSION_CONTAINER ??
+  structuredMemoryDbContainer;
 
 function tableSql(tableName: string) {
   const marker = `create table public.${tableName} (`;
@@ -27,6 +81,46 @@ function functionSql(functionName: string) {
   if (start < 0) return "";
   const end = migration.indexOf("\n$$;", start);
   return end < 0 ? migration.slice(start) : migration.slice(start, end + 4);
+}
+
+function telemetryFunctionSql(functionName: string) {
+  const marker = `create or replace function public.${functionName}(`;
+  const start = telemetryMigration.indexOf(marker);
+  if (start < 0) return "";
+  const end = telemetryMigration.indexOf("\n$$;", start);
+  return end < 0
+    ? telemetryMigration.slice(start)
+    : telemetryMigration.slice(start, end + 4);
+}
+
+function capabilityVerificationFunctionSql(functionName: string) {
+  const marker = `create or replace function public.${functionName}(`;
+  const start = capabilityVerificationMigration.indexOf(marker);
+  if (start < 0) return "";
+  const end = capabilityVerificationMigration.indexOf("\n$$;", start);
+  return end < 0
+    ? capabilityVerificationMigration.slice(start)
+    : capabilityVerificationMigration.slice(start, end + 4);
+}
+
+function structuredMemoryFunctionSql(functionName: string) {
+  const marker = `create or replace function public.${functionName}(`;
+  const start = structuredMemoryMigration.indexOf(marker);
+  if (start < 0) return "";
+  const end = structuredMemoryMigration.indexOf("\n$$;", start);
+  return end < 0
+    ? structuredMemoryMigration.slice(start)
+    : structuredMemoryMigration.slice(start, end + 4);
+}
+
+function turnRecoveryFunctionSql(functionName: string) {
+  const marker = `create or replace function public.${functionName}(`;
+  const start = turnRecoveryMigration.indexOf(marker);
+  if (start < 0) return "";
+  const end = turnRecoveryMigration.indexOf("\n$$;", start);
+  return end < 0
+    ? turnRecoveryMigration.slice(start)
+    : turnRecoveryMigration.slice(start, end + 4);
 }
 
 function expectSqlOrder(sql: string, markers: string[]) {
@@ -54,6 +148,578 @@ const serviceOnlyFunctions = [
 ] as const;
 
 describe("Xingyao Hermes native state schema contract", () => {
+  it("adds a tenant-bound event ledger and bounded turn recovery snapshot", () => {
+    expect(existsSync(turnRecoveryMigrationPath)).toBe(true);
+    expect(turnRecoveryMigration.split(/\r?\n/)[0]).toBe("-- deploy: expand");
+
+    for (const column of [
+      "recovery_event_sequence bigint not null default 0",
+      "recovery_partial_content text not null default ''",
+      "recovery_partial_updated_at timestamptz",
+      "recovery_terminal_event jsonb",
+      "recovery_control_state jsonb not null default '{}'::jsonb",
+    ]) {
+      expect(turnRecoveryMigration).toContain(
+        `add column if not exists ${column}`,
+      );
+    }
+
+    expect(turnRecoveryMigration).toContain(
+      "create table if not exists public.ai_chat_turn_events",
+    );
+    expectSqlOrder(turnRecoveryMigration, [
+      "create unique index if not exists ai_chat_turns_recovery_identity_key",
+      "create table if not exists public.ai_chat_turn_events",
+    ]);
+    expect(turnRecoveryMigration).toMatch(
+      /primary key \(turn_id, event_sequence\)/,
+    );
+    expect(turnRecoveryMigration).toMatch(
+      /foreign key \(turn_id, conversation_id, organization_id, owner_user_id\)[\s\S]*?references public\.ai_chat_turns\(id, conversation_id, organization_id, owner_user_id\)/,
+    );
+    expect(turnRecoveryMigration).toContain(
+      "alter table public.ai_chat_turn_events enable row level security",
+    );
+  });
+
+  it("appends bounded recovery milestones atomically under the turn lock", () => {
+    const appendRecovery = turnRecoveryFunctionSql(
+      "append_ai_chat_turn_recovery_event",
+    );
+
+    expect(appendRecovery).toMatch(
+      /p_organization_id uuid,\s*p_owner_user_id uuid,\s*p_conversation_id uuid,\s*p_turn_id uuid,\s*p_event_name text,\s*p_payload jsonb,\s*p_partial_content text,\s*p_terminal_event jsonb,\s*p_control_state jsonb/,
+    );
+    expect(appendRecovery).toContain("security definer");
+    expect(appendRecovery).toContain("set search_path = pg_catalog, public");
+    for (const identity of [
+      "locked_turn.organization_id = p_organization_id",
+      "locked_turn.owner_user_id = p_owner_user_id",
+      "locked_turn.conversation_id = p_conversation_id",
+      "locked_turn.id = p_turn_id",
+    ]) {
+      expect(appendRecovery).toContain(identity);
+    }
+    expect(appendRecovery).toMatch(
+      /from public\.ai_chat_turns locked_turn[\s\S]*?for update/,
+    );
+    expect(appendRecovery).toContain(
+      "v_event_sequence := v_locked_turn.recovery_event_sequence + 1",
+    );
+    expect(appendRecovery).toMatch(
+      /p_event_name not in \(\s*'accepted',[\s\S]*?'terminal'\s*\)/,
+    );
+    for (const eventName of [
+      "accepted",
+      "context_ready",
+      "session_ready",
+      "tool_started",
+      "tool_completed",
+      "clarify_requested",
+      "clarify_answered",
+      "cancel_requested",
+      "response_partial",
+      "terminal",
+    ]) {
+      expect(appendRecovery).toContain(`'${eventName}'`);
+    }
+    for (const obsoleteEventName of [
+      "session_resumed",
+      "session_rebuilt",
+      "clarify_resolved",
+      "first_delta",
+      "progress",
+    ]) {
+      expect(appendRecovery).not.toContain(`'${obsoleteEventName}'`);
+    }
+    expect(appendRecovery).toContain("octet_length(p_payload::text) > 16384");
+    expect(appendRecovery).toContain("access[_-]?token");
+    expect(appendRecovery).toContain("private[_-]?key");
+    expect(appendRecovery).toContain(
+      "octet_length(p_partial_content) > 400000",
+    );
+    expect(appendRecovery).toContain(
+      "octet_length(p_terminal_event::text) > 524288",
+    );
+    expect(appendRecovery).toContain(
+      "octet_length(p_control_state::text) > 16384",
+    );
+    expect(appendRecovery).toContain("jsonb_object_keys(p_control_state)");
+    expect(appendRecovery).toContain("'pendingclarify'");
+    expect(appendRecovery).toContain("'childsessionids'");
+    expectSqlOrder(appendRecovery, [
+      "from public.ai_chat_turns locked_turn",
+      "v_event_sequence := v_locked_turn.recovery_event_sequence + 1",
+      "insert into public.ai_chat_turn_events",
+      "update public.ai_chat_turns",
+    ]);
+    expect(appendRecovery).toContain("'operationstatus', v_operation_status");
+    expect(appendRecovery).toContain("v_operation_status := 'conflict'");
+    expect(appendRecovery).toContain("v_operation_status := 'duplicate'");
+  });
+
+  it("returns only the bounded recovery snapshot across the full identity boundary", () => {
+    const getRecovery = turnRecoveryFunctionSql(
+      "get_ai_chat_turn_recovery_snapshot",
+    );
+
+    expect(getRecovery).toMatch(
+      /p_organization_id uuid,\s*p_owner_user_id uuid,\s*p_conversation_id uuid,\s*p_turn_id uuid/,
+    );
+    expect(getRecovery).toContain("security definer");
+    expect(getRecovery).toContain("set search_path = pg_catalog, public");
+    for (const identity of [
+      "turn_record.organization_id = p_organization_id",
+      "turn_record.owner_user_id = p_owner_user_id",
+      "turn_record.conversation_id = p_conversation_id",
+      "turn_record.id = p_turn_id",
+    ]) {
+      expect(getRecovery).toContain(identity);
+    }
+    for (const key of [
+      "'turnid'",
+      "'status'",
+      "'eventsequence'",
+      "'partialcontent'",
+      "'terminalevent'",
+      "'controlstate'",
+      "'updatedat'",
+    ]) {
+      expect(getRecovery).toContain(key);
+    }
+    for (const forbidden of [
+      "context_snapshot",
+      "provider_state",
+      "idempotency_key",
+      "error_summary",
+    ]) {
+      expect(getRecovery).not.toContain(forbidden);
+    }
+    expect(getRecovery).toContain("if not found then return null; end if");
+  });
+
+  it("keeps recovery tables and RPCs server-only", () => {
+    for (const role of ["public", "anon", "authenticated"]) {
+      expect(turnRecoveryMigration).toContain(
+        `revoke all on table public.ai_chat_turn_events from ${role}`,
+      );
+    }
+    expect(turnRecoveryMigration).toContain(
+      "grant all on table public.ai_chat_turn_events to service_role",
+    );
+
+    for (const functionName of [
+      "append_ai_chat_turn_recovery_event",
+      "get_ai_chat_turn_recovery_snapshot",
+    ]) {
+      expect(turnRecoveryMigration).toMatch(
+        new RegExp(
+          `revoke all on function public\\.${functionName}\\([\\s\\S]*?\\) from public, anon, authenticated;`,
+        ),
+      );
+      expect(turnRecoveryMigration).toMatch(
+        new RegExp(
+          `grant execute on function public\\.${functionName}\\([\\s\\S]*?\\) to service_role;`,
+        ),
+      );
+      expect(turnRecoveryMigration).not.toMatch(
+        new RegExp(
+          `grant execute on function public\\.${functionName}\\([\\s\\S]*?\\) to (anon|authenticated);`,
+        ),
+      );
+    }
+  });
+
+  it("adds bounded structured-memory state and one pending job per conversation version", () => {
+    expect(existsSync(structuredMemoryMigrationPath)).toBe(true);
+    expect(structuredMemoryMigration.split(/\r?\n/)[0]).toBe(
+      "-- deploy: expand",
+    );
+    expect(structuredMemoryMigration).toContain(
+      "add column if not exists memory_status text not null default 'ready'",
+    );
+    expect(structuredMemoryMigration).toContain(
+      "add column if not exists memory_degraded_at timestamptz",
+    );
+    expect(structuredMemoryMigration).toContain(
+      "create table if not exists public.ai_conversation_memory_jobs",
+    );
+    expect(structuredMemoryMigration).toContain(
+      "check (status in ('pending', 'completed'))",
+    );
+    expect(structuredMemoryMigration).toMatch(
+      /create unique index[^;]+on public\.ai_conversation_memory_jobs \(conversation_id, target_summary_version\)[\s\S]+where status = 'pending'/,
+    );
+    expect(structuredMemoryMigration).toContain(
+      "check (memory_status in ('ready', 'degraded'))",
+    );
+  });
+
+  it("finishes the response atomically and degrades only the memory savepoint", () => {
+    const finishV3 = structuredMemoryFunctionSql("finish_ai_chat_turn_v3");
+
+    expect(finishV3).toContain("security definer");
+    expect(finishV3).toContain("set search_path = pg_catalog, public");
+    expect(finishV3).toContain("public.finish_ai_chat_turn_v2(");
+    expect(finishV3).toContain("if not v_terminal_completed then");
+    expect(finishV3).toContain("jsonb_object_keys(p_memory_delta)");
+    expect(finishV3).toContain("jsonb_array_length");
+    expect(finishV3).toContain(
+      "source_message.conversation_id = v_conversation_id",
+    );
+    expect(finishV3).toContain("source_message.status = 'completed'");
+    expect(finishV3).toContain(
+      "source_message.sequence_no <= v_through_sequence",
+    );
+    expect(finishV3).toContain("summary_version = p_expected_summary_version");
+    expect(finishV3).toContain("summary_version = summary_version + 1");
+    expect(finishV3).toContain("exception when others then");
+    expectSqlOrder(finishV3, [
+      "public.finish_ai_chat_turn_v2(",
+      "begin\n    if p_memory_delta is null",
+      "summary_version = summary_version + 1",
+      "exception when others then",
+      "memory_status = 'degraded'",
+      "insert into public.ai_conversation_memory_jobs",
+    ]);
+    expect(finishV3).toContain(
+      "on conflict (conversation_id, target_summary_version)",
+    );
+    expect(finishV3).toContain("return jsonb_build_object(");
+  });
+
+  it("keeps v3 terminal persistence service-only", () => {
+    expect(structuredMemoryMigration).toMatch(
+      /revoke all on function public\.finish_ai_chat_turn_v3\([\s\S]*?from public, anon, authenticated;/,
+    );
+    expect(structuredMemoryMigration).toMatch(
+      /grant execute on function public\.finish_ai_chat_turn_v3\([\s\S]*?to service_role;/,
+    );
+    expect(structuredMemoryMigration).not.toMatch(
+      /grant execute on function public\.finish_ai_chat_turn_v3\([\s\S]*?to (anon|authenticated);/,
+    );
+  });
+
+  it("verifies invocation capabilities atomically under the canonical lock order", () => {
+    expect(existsSync(capabilityVerificationMigrationPath)).toBe(true);
+    expect(capabilityVerificationMigration.split(/\r?\n/)[0]).toBe(
+      "-- deploy: expand",
+    );
+    expect(capabilityVerificationMigration).not.toContain("drop function");
+    const verifyCapability = capabilityVerificationFunctionSql(
+      "verify_ai_hermes_invocation_capability",
+    );
+
+    expect(verifyCapability).toContain("security definer");
+    expect(verifyCapability).toContain("set search_path = pg_catalog, public");
+    expect(verifyCapability).toContain(
+      "lower(coalesce(p_token_sha256, '')) !~ '^[0-9a-f]{64}$'",
+    );
+    expect(verifyCapability).not.toContain("p_capability_token");
+    expectSqlOrder(verifyCapability, [
+      "from public.ai_conversations locked_conversation",
+      "from public.ai_chat_turns locked_turn",
+      "from public.ai_invocations locked_invocation",
+      "perform public.lock_and_validate_ai_hermes_capability_lineage(",
+      "from public.ai_hermes_run_capabilities locked_capability",
+    ]);
+    expect(verifyCapability).toContain("locked_conversation.status = 'active'");
+    expect(verifyCapability).toContain(
+      "locked_turn.status in ('accepted', 'grounding', 'generating', 'validating')",
+    );
+    expect(verifyCapability).toContain(
+      "locked_turn.lease_expires_at > clock_timestamp()",
+    );
+    expect(verifyCapability).toContain(
+      "locked_turn.cancel_requested_at is null",
+    );
+    expect(verifyCapability).toContain(
+      "locked_turn.ai_invocation_id = v_capability.root_invocation_id",
+    );
+    expect(verifyCapability).toContain(
+      "locked_invocation.status in ('started', 'queued')",
+    );
+    expect(verifyCapability).toContain(
+      "v_locked_invocation_count <> v_capability.depth + 1",
+    );
+    expect(verifyCapability).toContain(
+      "v_final_lineage_ids is distinct from v_discovered_lineage_ids",
+    );
+    expect(verifyCapability).toContain(
+      "v_final_invocation_ids is distinct from v_discovered_invocation_ids",
+    );
+    expect(verifyCapability).toMatch(
+      /lineage_capability\.revoked_at is not null[\s\S]*?lineage_capability\.expires_at <= clock_timestamp\(\)/,
+    );
+    expect(verifyCapability).toContain(
+      "locked_capability.token_sha256 = lower(p_token_sha256)",
+    );
+    expect(verifyCapability).toContain("locked_capability.revoked_at is null");
+    expect(verifyCapability).toContain(
+      "locked_capability.expires_at > clock_timestamp()",
+    );
+  });
+
+  it("returns only Gateway's sanitized binding and grants execution only to service_role", () => {
+    const verifyCapability = capabilityVerificationFunctionSql(
+      "verify_ai_hermes_invocation_capability",
+    );
+    const signature = "public.verify_ai_hermes_invocation_capability(text)";
+
+    expect(verifyCapability).toMatch(
+      /returns table \(\s*organization_id uuid,\s*owner_user_id uuid,\s*conversation_id uuid,\s*invocation_id uuid,\s*actor_fingerprint text,\s*expires_at timestamptz,\s*revoked_at timestamptz\s*\)/,
+    );
+    for (const forbidden of [
+      "token_sha256 text,",
+      "turn_id uuid,",
+      "root_invocation_id uuid,",
+      "parent_capability_id uuid,",
+      "skill_grants_hash text,",
+    ]) {
+      expect(verifyCapability).not.toContain(forbidden);
+    }
+    expect(capabilityVerificationMigration).toContain(
+      `revoke all on function ${signature} from public, anon, authenticated;`,
+    );
+    expect(capabilityVerificationMigration).toContain(
+      `grant execute on function ${signature} to service_role;`,
+    );
+    expect(capabilityVerificationMigration).not.toMatch(
+      /grant execute on function public\.verify_ai_hermes_invocation_capability\(text\) to (public|anon|authenticated)/,
+    );
+  });
+
+  it("adds nullable, first-write turn-stage telemetry without replacing terminal persistence", () => {
+    expect(existsSync(telemetryMigrationPath)).toBe(true);
+    expect(telemetryMigration.split(/\r?\n/)[0]).toBe("-- deploy: expand");
+    for (const column of [
+      "accepted_at",
+      "context_ready_at",
+      "session_ready_at",
+      "agent_ready_at",
+      "first_delta_at",
+      "terminal_at",
+      "persisted_at",
+    ]) {
+      expect(telemetryMigration).toContain(
+        `add column if not exists ${column} timestamptz`,
+      );
+    }
+    expect(telemetryMigration).toContain(
+      "add column if not exists session_action text",
+    );
+    expect(telemetryMigration).toMatch(
+      /constraint ai_chat_turns_session_action_check check \(\s*session_action is null or session_action in \('resumed', 'rebuilt'\)\s*\) not valid/,
+    );
+    expectSqlOrder(telemetryMigration, [
+      "add column if not exists accepted_at timestamptz",
+      "alter column accepted_at set default now()",
+    ]);
+    expect(telemetryMigration).not.toMatch(
+      /update public\.ai_chat_turns\s+set accepted_at = created_at/,
+    );
+    expect(telemetryMigration).not.toContain(
+      "create or replace function public.finish_ai_chat_turn_v2(",
+    );
+  });
+
+  it("keeps historical backfill transaction control out of the expand migration", () => {
+    expect(existsSync(telemetryBackfillMigrationPath)).toBe(true);
+    expect(telemetryBackfillMigration.split(/\r?\n/)[0]).toBe(
+      "-- deploy: expand",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "scripts/deploy.sh backfills accepted_at in separately committed batches",
+    );
+    expect(telemetryBackfillMigration).not.toMatch(/\bdo\s+\$\$/);
+    expect(telemetryBackfillMigration).not.toContain(
+      "update public.ai_chat_turns",
+    );
+    expect(telemetryBackfillMigration).not.toContain("validate constraint");
+  });
+
+  it("records tenant-bound stages under a lock with strict monotonic timestamps", () => {
+    const recordStage = telemetryFunctionSql("record_ai_chat_turn_stage");
+
+    expect(recordStage).toContain("security definer");
+    expect(recordStage).toContain("set search_path = pg_catalog, public");
+    for (const identity of [
+      "locked_turn.organization_id = p_organization_id",
+      "locked_turn.owner_user_id = p_owner_user_id",
+      "locked_turn.conversation_id = p_conversation_id",
+      "locked_turn.id = p_turn_id",
+    ]) {
+      expect(recordStage).toContain(identity);
+    }
+    expect(recordStage).toMatch(
+      /from public\.ai_chat_turns (?:as )?locked_turn[\s\S]*?for update/,
+    );
+    expect(recordStage).toContain("p_observed_at is null");
+    expect(recordStage).toContain(
+      "statement_timestamp() + interval '5 minutes'",
+    );
+    expect(recordStage).not.toContain("interval '5 seconds'");
+    expect(recordStage).toMatch(
+      /v_previous is not null\s+and v_candidate < v_previous then/,
+    );
+    expect(recordStage).toMatch(
+      /v_next is not null\s+and v_candidate > v_next then/,
+    );
+    expect(recordStage).toContain("v_effective_accepted_at is null");
+    expect(recordStage).toContain("p_stage in ('terminal', 'persisted')");
+    expect(recordStage).toMatch(
+      /p_stage not in \(\s*'accepted',\s*'context_ready',\s*'session_ready',\s*'agent_ready',\s*'first_delta',\s*'terminal',\s*'persisted'\s*\)/,
+    );
+  });
+
+  it("rejects a null stage before SQL enum membership evaluation", () => {
+    const recordStage = telemetryFunctionSql("record_ai_chat_turn_stage");
+
+    expect(recordStage).toMatch(
+      /if p_stage is null then\s+raise exception 'ai_chat_turn_stage_invalid';\s+end if;/,
+    );
+    expectSqlOrder(recordStage, ["p_stage is null", "p_stage not in ("]);
+  });
+
+  it("keeps stage retries idempotent and returns only sanitized telemetry", () => {
+    const recordStage = telemetryFunctionSql("record_ai_chat_turn_stage");
+
+    for (const column of [
+      "accepted_at",
+      "context_ready_at",
+      "session_ready_at",
+      "agent_ready_at",
+      "first_delta_at",
+      "terminal_at",
+      "persisted_at",
+      "session_action",
+    ]) {
+      expect(recordStage).toContain(`coalesce(${column},`);
+    }
+    expect(recordStage).toContain(
+      "p_session_action is not null and p_stage <> 'session_ready'",
+    );
+    expect(recordStage).toContain(
+      "p_session_action not in ('resumed', 'rebuilt')",
+    );
+    expect(recordStage).toContain(
+      "v_effective_accepted_at := coalesce(v_turn.accepted_at, v_turn.created_at)",
+    );
+    expect(recordStage).toContain(
+      "not (p_stage = 'accepted' and v_turn.accepted_at is null)",
+    );
+    expectSqlOrder(recordStage, [
+      "if v_existing is not null",
+      "not (p_stage = 'accepted' and v_turn.accepted_at is null)",
+      "return jsonb_build_object(",
+      "update public.ai_chat_turns",
+    ]);
+    expect(recordStage).toContain(
+      "set accepted_at = coalesce(accepted_at, created_at)",
+    );
+    expect(recordStage).toContain("jsonb_build_object(");
+    for (const key of ["'turnid'", "'stage'", "'observedat'"]) {
+      expect(recordStage).toContain(key);
+    }
+    for (const forbidden of [
+      "prompt",
+      "content",
+      "provider_name",
+      "context_snapshot",
+    ]) {
+      expect(recordStage).not.toContain(`'${forbidden}'`);
+    }
+  });
+
+  it("keeps telemetry updates off the business updated_at trigger", () => {
+    const telemetrySql = `${telemetryMigration}\n${telemetryBackfillMigration}`;
+
+    expect(telemetrySql).not.toContain("to_jsonb(new)");
+    expect(telemetrySql).not.toContain("to_jsonb(old)");
+    expect(telemetrySql).not.toContain(
+      "create or replace function public.preserve_ai_chat_turn_updated_at_for_telemetry",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "drop function if exists public.preserve_ai_chat_turn_updated_at_for_telemetry()",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "drop trigger if exists ai_chat_turns_touch_updated_at",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "from pg_catalog.pg_attribute",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "format('%i', attribute.attname)",
+    );
+    expect(telemetryBackfillMigration).toContain(
+      "and not attribute.attisdropped",
+    );
+    expect(telemetryBackfillMigration).toMatch(
+      /create trigger ai_chat_turns_touch_updated_at before update of %s on public\.ai_chat_turns/,
+    );
+    const telemetryColumns = [
+      "accepted_at",
+      "context_ready_at",
+      "session_ready_at",
+      "agent_ready_at",
+      "first_delta_at",
+      "terminal_at",
+      "persisted_at",
+      "session_action",
+    ];
+    for (const sql of [telemetryMigration, telemetryBackfillMigration]) {
+      const exclusion = sql.match(
+        /attribute\.attname not in \(([\s\S]*?)\n\s*\);/,
+      );
+      expect(exclusion).not.toBeNull();
+      const excludedColumns = [
+        ...(exclusion?.[1].matchAll(/'([^']+)'/g) ?? []),
+      ].map((match) => match[1]);
+      expect(excludedColumns).toEqual(telemetryColumns);
+    }
+    expect(telemetryBackfillMigration).not.toMatch(
+      /attribute\.attname not in \([\s\S]*?'updated_at'[\s\S]*?\);/,
+    );
+    expect(telemetryBackfillMigration).toContain("v_business_columns is null");
+    expect(telemetryBackfillMigration).not.toContain(
+      "create trigger zz_ai_chat_turns_preserve_updated_at_for_telemetry",
+    );
+  });
+
+  it("keeps authoritative finish persistence independent from telemetry machinery", () => {
+    const finishV2 = functionSql("finish_ai_chat_turn_v2");
+
+    expect(finishV2).not.toContain("record_ai_chat_turn_stage");
+    expect(finishV2).not.toContain(
+      "preserve_ai_chat_turn_updated_at_for_telemetry",
+    );
+    for (const column of [
+      "accepted_at",
+      "context_ready_at",
+      "session_ready_at",
+      "agent_ready_at",
+      "first_delta_at",
+      "terminal_at",
+      "persisted_at",
+      "session_action",
+    ]) {
+      expect(finishV2).not.toContain(column);
+    }
+  });
+
+  it("grants turn-stage recording only to service_role", () => {
+    const signature =
+      "public.record_ai_chat_turn_stage(uuid, uuid, uuid, uuid, text, timestamptz, text)";
+    for (const role of ["public", "anon", "authenticated"]) {
+      expect(telemetryMigration).toContain(
+        `revoke execute on function ${signature} from ${role}`,
+      );
+    }
+    expect(telemetryMigration).toContain(
+      `grant execute on function ${signature} to service_role`,
+    );
+  });
+
   it("ships as one additive migration", () => {
     expect(existsSync(migrationPath)).toBe(true);
     expect(migration).not.toContain("drop table public.ai_");
@@ -465,12 +1131,8 @@ describe("Xingyao Hermes native state schema contract", () => {
     expect(atomic).toMatch(
       /if v_broker_call\.status <> 'claimed'[\s\S]*?claim_lease_expires_at <= now\(\)[\s\S]*?raise exception 'broker_claim_fence_invalid';[\s\S]*?end if;\s+if \(p_operation = 'remember'/,
     );
-    expect(atomic).not.toContain(
-      "or v_capability.revoked_at is not null",
-    );
-    expect(atomic).not.toContain(
-      "or v_capability.expires_at <= now()",
-    );
+    expect(atomic).not.toContain("or v_capability.revoked_at is not null");
+    expect(atomic).not.toContain("or v_capability.expires_at <= now()");
   });
 
   it("validates memory provenance against the exact owner user message", () => {
@@ -1334,3 +1996,1049 @@ describe("Xingyao Hermes native state schema contract", () => {
     }
   });
 });
+
+describe.runIf(Boolean(turnRecoveryDbContainer))(
+  "Xingyao Hermes turn recovery PostgreSQL behavior",
+  () => {
+    it("isolates identities, assigns monotonic sequences, bounds inputs, and rolls back failed appends", () => {
+      const container = turnRecoveryDbContainer ?? "";
+      expect(container).toMatch(/^supabase_db_[A-Za-z0-9_.-]+$/u);
+
+      const organizationId = "8f120000-0000-4000-8000-000000000001";
+      const ownerId = "8f120000-0000-4000-8000-000000000002";
+      const otherOwnerId = "8f120000-0000-4000-8000-000000000003";
+      const conversationId = "8f120000-0000-4000-8000-000000000101";
+      const turnId = "8f120000-0000-4000-8000-000000000201";
+      const userMessageId = "8f120000-0000-4000-8000-000000000301";
+      const assistantMessageId = "8f120000-0000-4000-8000-000000000302";
+      const clarifyId = "8f120000-0000-4000-8000-000000000401";
+      const clarifyRequestId = "8f120000-0000-4000-8000-000000000402";
+
+      const result = JSON.parse(
+        runStructuredMemorySql(
+          container,
+          `
+            begin;
+
+            ${turnRecoveryMigrationSource}
+
+            insert into auth.users (id, email) values
+              ('${ownerId}'::uuid, 'task6-recovery@example.test');
+            insert into public.profiles (id, email, full_name) values
+              ('${ownerId}'::uuid, 'task6-recovery@example.test', 'Task 6 Recovery');
+            insert into public.organizations (id, name, code) values
+              ('${organizationId}'::uuid, 'Task 6 Recovery', 'task6-recovery');
+            insert into public.organization_members (
+              organization_id, user_id, role, status
+            ) values (
+              '${organizationId}'::uuid, '${ownerId}'::uuid, 'owner', 'active'
+            );
+            insert into public.ai_conversations (
+              id, organization_id, owner_user_id, title
+            ) values (
+              '${conversationId}', '${organizationId}', '${ownerId}', 'Recovery snapshot'
+            );
+            insert into public.ai_chat_messages (
+              id, organization_id, owner_user_id, conversation_id,
+              sequence_no, role, status, content
+            ) values
+              ('${userMessageId}', '${organizationId}', '${ownerId}', '${conversationId}', 1, 'user', 'completed', 'Keep this turn running.'),
+              ('${assistantMessageId}', '${organizationId}', '${ownerId}', '${conversationId}', 2, 'assistant', 'pending', '');
+            insert into public.ai_chat_turns (
+              id, organization_id, owner_user_id, conversation_id,
+              user_message_id, assistant_message_id, status,
+              idempotency_key, lease_expires_at
+            ) values (
+              '${turnId}', '${organizationId}', '${ownerId}', '${conversationId}',
+              '${userMessageId}', '${assistantMessageId}', 'generating',
+              'task6-recovery', now() + interval '5 minutes'
+            );
+
+            create temporary table task6_results (
+              name text primary key,
+              payload jsonb not null
+            );
+            create temporary table task6_errors (
+              name text primary key,
+              message text not null
+            );
+
+            insert into task6_results values (
+              'first',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'accepted', '{"stage":"accepted"}'::jsonb, 'First', null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "requestId": "${clarifyRequestId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+            insert into task6_results values (
+              'second',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'context_ready', '{"stage":"context_ready"}'::jsonb,
+                'First second', null, null
+              )
+            );
+
+            do $task6_identity$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${otherOwnerId}', '${conversationId}', '${turnId}',
+                  'tool_started', '{}'::jsonb, null, null, null
+                );
+                raise exception 'task6_identity_not_rejected';
+              exception when others then
+                insert into task6_errors values ('identity', sqlerrm);
+              end;
+            end;
+            $task6_identity$;
+
+            insert into task6_results values (
+              'unauthorizedSnapshot',
+              coalesce(
+                public.get_ai_chat_turn_recovery_snapshot(
+                  '${organizationId}', '${otherOwnerId}', '${conversationId}', '${turnId}'
+                ),
+                'null'::jsonb
+              )
+            );
+
+            do $task6_event$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                  'token', '{}'::jsonb, null, null, null
+                );
+                raise exception 'task6_event_not_rejected';
+              exception when others then
+                insert into task6_errors values ('event', sqlerrm);
+              end;
+            end;
+            $task6_event$;
+
+            do $task6_payload$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                  'tool_started', jsonb_build_object('detail', repeat('x', 16385)),
+                  null, null, null
+                );
+                raise exception 'task6_payload_not_rejected';
+              exception when others then
+                insert into task6_errors values ('payload', sqlerrm);
+              end;
+            end;
+            $task6_payload$;
+
+            do $task6_sanitized_payload$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                  'tool_started', '{"authorization":"Bearer secret"}'::jsonb,
+                  null, null, null
+                );
+                raise exception 'task6_sanitized_payload_not_rejected';
+              exception when others then
+                insert into task6_errors values ('sanitizedPayload', sqlerrm);
+              end;
+            end;
+            $task6_sanitized_payload$;
+
+            do $task6_control$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                  'clarify_requested', '{}'::jsonb, null, null,
+                  '{"accessToken":"must-not-persist"}'::jsonb
+                );
+                raise exception 'task6_control_not_rejected';
+              exception when others then
+                insert into task6_errors values ('control', sqlerrm);
+              end;
+            end;
+            $task6_control$;
+
+            create function pg_temp.fail_task6_snapshot_write()
+            returns trigger language plpgsql as $trigger$
+            begin
+              raise exception 'task6_snapshot_write_failure';
+            end;
+            $trigger$;
+            create trigger task6_fail_snapshot_write
+            before update of recovery_event_sequence on public.ai_chat_turns
+            for each row
+            when (old.id = '${turnId}'::uuid)
+            execute function pg_temp.fail_task6_snapshot_write();
+
+            do $task6_rollback$
+            begin
+              begin
+                perform public.append_ai_chat_turn_recovery_event(
+                  '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                  'tool_started', '{"toolName":"read_only"}'::jsonb,
+                  'Must roll back', null, null
+                );
+                raise exception 'task6_rollback_not_rejected';
+              exception when others then
+                insert into task6_errors values ('rollback', sqlerrm);
+              end;
+            end;
+            $task6_rollback$;
+            drop trigger task6_fail_snapshot_write on public.ai_chat_turns;
+
+            insert into task6_results values (
+              'clarifyClaim',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'clarify_answered', '{"status":"claimed"}'::jsonb, null, null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "requestId": "${clarifyRequestId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false,
+                    "response": {
+                      "clarifyId": "${clarifyId}",
+                      "answerSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "status": "claimed"
+                    }
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+            insert into task6_results values (
+              'clarifySameClaim',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'clarify_answered', '{"status":"claimed"}'::jsonb, null, null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false,
+                    "response": {
+                      "clarifyId": "${clarifyId}",
+                      "answerSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "status": "claimed"
+                    }
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+            insert into task6_results values (
+              'clarifyConflict',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'clarify_answered', '{"status":"claimed"}'::jsonb, null, null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false,
+                    "response": {
+                      "clarifyId": "${clarifyId}",
+                      "answerSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                      "status": "claimed"
+                    }
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+            insert into task6_results values (
+              'clarifyDelivered',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'clarify_answered', '{"status":"delivered"}'::jsonb, null, null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false,
+                    "response": {
+                      "clarifyId": "${clarifyId}",
+                      "answerSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "status": "delivered"
+                    }
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+            insert into task6_results values (
+              'clarifyDuplicate',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'clarify_answered', '{"status":"delivered"}'::jsonb, null, null,
+                '{
+                  "pendingClarify": {
+                    "turnId": "${turnId}",
+                    "clarifyId": "${clarifyId}",
+                    "question": "Choose one",
+                    "choices": ["A", "B"],
+                    "allowFreeText": false,
+                    "response": {
+                      "clarifyId": "${clarifyId}",
+                      "answerSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "status": "delivered"
+                    }
+                  },
+                  "childSessionIds": ["child-1", "child-2"]
+                }'::jsonb
+              )
+            );
+
+            insert into task6_results values (
+              'terminal',
+              public.append_ai_chat_turn_recovery_event(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}',
+                'terminal', '{"outcome":"complete"}'::jsonb, null,
+                '{"type":"response.completed","conversationId":"${conversationId}","turnId":"${turnId}","content":"First second"}'::jsonb,
+                null
+              )
+            );
+            insert into task6_results values (
+              'snapshot',
+              public.get_ai_chat_turn_recovery_snapshot(
+                '${organizationId}', '${ownerId}', '${conversationId}', '${turnId}'
+              )
+            );
+
+            select jsonb_build_object(
+              'first', (select payload from task6_results where name = 'first'),
+              'second', (select payload from task6_results where name = 'second'),
+              'clarifyClaim', (select payload from task6_results where name = 'clarifyClaim'),
+              'clarifySameClaim', (select payload from task6_results where name = 'clarifySameClaim'),
+              'clarifyConflict', (select payload from task6_results where name = 'clarifyConflict'),
+              'clarifyDelivered', (select payload from task6_results where name = 'clarifyDelivered'),
+              'clarifyDuplicate', (select payload from task6_results where name = 'clarifyDuplicate'),
+              'terminal', (select payload from task6_results where name = 'terminal'),
+              'snapshot', (select payload from task6_results where name = 'snapshot'),
+              'unauthorizedSnapshot', (select payload from task6_results where name = 'unauthorizedSnapshot'),
+              'events', (
+                select jsonb_agg(jsonb_build_object(
+                  'sequence', event_sequence,
+                  'name', event_name
+                ) order by event_sequence)
+                from public.ai_chat_turn_events
+                where turn_id = '${turnId}'
+              ),
+              'errors', (select jsonb_object_agg(name, message) from task6_errors),
+              'eventCount', (
+                select count(*) from public.ai_chat_turn_events
+                where turn_id = '${turnId}'
+              ),
+              'snapshotSequence', (
+                select recovery_event_sequence from public.ai_chat_turns
+                where id = '${turnId}'
+              )
+            );
+
+            rollback;
+          `,
+        ),
+      ) as Record<string, unknown>;
+
+      expect(result).toMatchObject({
+        first: {
+          turnId,
+          status: "generating",
+          eventSequence: 1,
+          partialContent: "First",
+          terminalEvent: null,
+        },
+        second: {
+          turnId,
+          eventSequence: 2,
+          partialContent: "First second",
+        },
+        clarifyClaim: { operationStatus: "claimed", eventSequence: 3 },
+        clarifySameClaim: { operationStatus: "claimed", eventSequence: 3 },
+        clarifyConflict: { operationStatus: "conflict", eventSequence: 3 },
+        clarifyDelivered: { operationStatus: "appended", eventSequence: 4 },
+        clarifyDuplicate: { operationStatus: "duplicate", eventSequence: 4 },
+        terminal: {
+          turnId,
+          eventSequence: 5,
+          partialContent: "First second",
+          terminalEvent: {
+            type: "response.completed",
+            conversationId,
+            turnId,
+            content: "First second",
+          },
+        },
+        snapshot: {
+          turnId,
+          status: "generating",
+          eventSequence: 5,
+          partialContent: "First second",
+          terminalEvent: {
+            type: "response.completed",
+            content: "First second",
+          },
+          controlState: {
+            pendingClarify: {
+              turnId,
+              clarifyId,
+              response: {
+                clarifyId,
+                answerSha256:
+                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status: "delivered",
+              },
+            },
+            childSessionIds: ["child-1", "child-2"],
+          },
+        },
+        events: [
+          { sequence: 1, name: "accepted" },
+          { sequence: 2, name: "context_ready" },
+          { sequence: 3, name: "clarify_answered" },
+          { sequence: 4, name: "clarify_answered" },
+          { sequence: 5, name: "terminal" },
+        ],
+        eventCount: 5,
+        snapshotSequence: 5,
+        unauthorizedSnapshot: null,
+        errors: {
+          identity: "ai_chat_turn_recovery_not_found",
+          event: "ai_chat_turn_recovery_event_invalid",
+          payload: "ai_chat_turn_recovery_payload_invalid",
+          sanitizedPayload: "ai_chat_turn_recovery_payload_invalid",
+          control: "ai_chat_turn_recovery_control_state_invalid",
+          rollback: "task6_snapshot_write_failure",
+        },
+      });
+
+      const snapshot = result.snapshot as Record<string, unknown>;
+      expect(Object.keys(snapshot).sort()).toEqual([
+        "controlState",
+        "eventSequence",
+        "partialContent",
+        "status",
+        "terminalEvent",
+        "turnId",
+        "updatedAt",
+      ]);
+      expect(Date.parse(String(snapshot.updatedAt))).not.toBeNaN();
+    });
+  },
+);
+
+describe.runIf(Boolean(structuredMemoryDbContainer))(
+  "Xingyao Hermes structured-memory PostgreSQL behavior",
+  () => {
+    it("commits valid memory atomically, degrades invalid memory, deduplicates jobs, and rejects identity drift", () => {
+      const container = structuredMemoryDbContainer ?? "";
+      expect(container).toMatch(/^supabase_db_[A-Za-z0-9_.-]+$/u);
+
+      const organizationId = "8f100000-0000-4000-8000-000000000001";
+      const ownerId = "8f100000-0000-4000-8000-000000000002";
+      const otherOwnerId = "8f100000-0000-4000-8000-000000000003";
+      const conversationIds = {
+        valid: "8f100000-0000-4000-8000-000000000101",
+        degraded: "8f100000-0000-4000-8000-000000000102",
+        drift: "8f100000-0000-4000-8000-000000000103",
+      } as const;
+      const turnIds = {
+        valid: "8f100000-0000-4000-8000-000000000201",
+        degraded: "8f100000-0000-4000-8000-000000000202",
+        drift: "8f100000-0000-4000-8000-000000000203",
+      } as const;
+      const userMessageIds = {
+        valid: "8f100000-0000-4000-8000-000000000301",
+        degraded: "8f100000-0000-4000-8000-000000000303",
+        drift: "8f100000-0000-4000-8000-000000000305",
+      } as const;
+      const assistantMessageIds = {
+        valid: "8f100000-0000-4000-8000-000000000302",
+        degraded: "8f100000-0000-4000-8000-000000000304",
+        drift: "8f100000-0000-4000-8000-000000000306",
+      } as const;
+      const cleanup = `
+        delete from public.organizations
+        where id = '${organizationId}'::uuid;
+        delete from public.profiles
+        where id = '${ownerId}'::uuid;
+        delete from auth.users
+        where id = '${ownerId}'::uuid;
+      `;
+
+      try {
+        runStructuredMemorySql(container, cleanup);
+        const result = JSON.parse(
+          runStructuredMemorySql(
+            container,
+            `
+              insert into auth.users (id, email) values
+                ('${ownerId}'::uuid, 'task5-memory@example.test');
+              insert into public.profiles (id, email, full_name) values
+                ('${ownerId}'::uuid, 'task5-memory@example.test', 'Task 5 Memory');
+              insert into public.organizations (id, name, code) values
+                ('${organizationId}'::uuid, 'Task 5 Memory', 'task5-memory');
+              insert into public.organization_members (
+                organization_id, user_id, role, status
+              ) values (
+                '${organizationId}'::uuid, '${ownerId}'::uuid, 'owner', 'active'
+              );
+
+              insert into public.ai_conversations (
+                id, organization_id, owner_user_id, title
+              ) values
+                ('${conversationIds.valid}', '${organizationId}', '${ownerId}', 'Valid memory'),
+                ('${conversationIds.degraded}', '${organizationId}', '${ownerId}', 'Degraded memory'),
+                ('${conversationIds.drift}', '${organizationId}', '${ownerId}', 'Identity drift');
+
+              insert into public.ai_chat_messages (
+                id, organization_id, owner_user_id, conversation_id,
+                sequence_no, role, status, content
+              ) values
+                ('${userMessageIds.valid}', '${organizationId}', '${ownerId}', '${conversationIds.valid}', 1, 'user', 'completed', 'Remember the corrected target.'),
+                ('${assistantMessageIds.valid}', '${organizationId}', '${ownerId}', '${conversationIds.valid}', 2, 'assistant', 'pending', ''),
+                ('${userMessageIds.degraded}', '${organizationId}', '${ownerId}', '${conversationIds.degraded}', 1, 'user', 'completed', 'Keep the response even if memory fails.'),
+                ('${assistantMessageIds.degraded}', '${organizationId}', '${ownerId}', '${conversationIds.degraded}', 2, 'assistant', 'pending', ''),
+                ('${userMessageIds.drift}', '${organizationId}', '${ownerId}', '${conversationIds.drift}', 1, 'user', 'completed', 'Reject identity drift.'),
+                ('${assistantMessageIds.drift}', '${organizationId}', '${ownerId}', '${conversationIds.drift}', 2, 'assistant', 'pending', '');
+
+              insert into public.ai_chat_turns (
+                id, organization_id, owner_user_id, conversation_id,
+                user_message_id, assistant_message_id, status,
+                idempotency_key, lease_expires_at
+              ) values
+                ('${turnIds.valid}', '${organizationId}', '${ownerId}', '${conversationIds.valid}', '${userMessageIds.valid}', '${assistantMessageIds.valid}', 'generating', 'task5-valid', now() + interval '5 minutes'),
+                ('${turnIds.degraded}', '${organizationId}', '${ownerId}', '${conversationIds.degraded}', '${userMessageIds.degraded}', '${assistantMessageIds.degraded}', 'generating', 'task5-degraded', now() + interval '5 minutes'),
+                ('${turnIds.drift}', '${organizationId}', '${ownerId}', '${conversationIds.drift}', '${userMessageIds.drift}', '${assistantMessageIds.drift}', 'generating', 'task5-drift', now() + interval '5 minutes');
+
+              do $task5$
+              begin
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('1', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${conversationIds.valid}', '${turnIds.valid}', '${turnIds.valid}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('2', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${conversationIds.degraded}', '${turnIds.degraded}', '${turnIds.degraded}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('3', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${conversationIds.drift}', '${turnIds.drift}', '${turnIds.drift}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+              end;
+              $task5$;
+
+              create temporary table task5_results (
+                name text primary key,
+                payload jsonb not null
+              );
+
+              insert into task5_results values (
+                'valid',
+                public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${turnIds.valid}',
+                  'complete', 'Valid assistant response', 'hermes', '${turnIds.valid}',
+                  null, null, false, '{}'::jsonb, 0,
+                  jsonb_build_object(
+                    'goals', '[]'::jsonb,
+                    'confirmedFacts', jsonb_build_array(jsonb_build_object(
+                      'text', 'The conversion target is 25%',
+                      'sourceMessageIds', jsonb_build_array('${userMessageIds.valid}')
+                    )),
+                    'decisions', '[]'::jsonb,
+                    'unresolvedQuestions', '[]'::jsonb,
+                    'throughSequence', 1
+                  )
+                )
+              );
+
+              insert into task5_results values (
+                'degraded-first',
+                public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${turnIds.degraded}',
+                  'complete', 'Preserved assistant response', 'hermes', '${turnIds.degraded}',
+                  null, null, false, '{}'::jsonb, 0, null
+                )
+              );
+              insert into task5_results values (
+                'degraded-retry',
+                public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${turnIds.degraded}',
+                  'complete', 'Preserved assistant response', 'hermes', '${turnIds.degraded}',
+                  null, null, false, '{}'::jsonb, 0, null
+                )
+              );
+              insert into task5_results values (
+                'identity-drift',
+                public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${otherOwnerId}', '${turnIds.drift}',
+                  'complete', 'Must not persist', 'hermes', '${turnIds.drift}',
+                  null, null, false, '{}'::jsonb, 0, null
+                )
+              );
+
+              select jsonb_build_object(
+                'validResult', (select payload from task5_results where name = 'valid'),
+                'validConversation', (select jsonb_build_object(
+                  'summary', summary,
+                  'summaryVersion', summary_version,
+                  'memoryStatus', memory_status
+                ) from public.ai_conversations where id = '${conversationIds.valid}'),
+                'validMessage', (select jsonb_build_object(
+                  'status', status,
+                  'content', content
+                ) from public.ai_chat_messages where id = '${assistantMessageIds.valid}'),
+                'validTurn', (select jsonb_build_object(
+                  'status', status,
+                  'outcome', outcome
+                ) from public.ai_chat_turns where id = '${turnIds.valid}'),
+                'validInvocationStatus', (select status from public.ai_invocations where id = '${turnIds.valid}'),
+                'validCapabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${turnIds.valid}'),
+                'degradedFirst', (select payload from task5_results where name = 'degraded-first'),
+                'degradedRetry', (select payload from task5_results where name = 'degraded-retry'),
+                'degradedConversation', (select jsonb_build_object(
+                  'summaryVersion', summary_version,
+                  'memoryStatus', memory_status,
+                  'memoryDegraded', memory_degraded_at is not null
+                ) from public.ai_conversations where id = '${conversationIds.degraded}'),
+                'degradedMessage', (select jsonb_build_object(
+                  'status', status,
+                  'content', content
+                ) from public.ai_chat_messages where id = '${assistantMessageIds.degraded}'),
+                'degradedTurnStatus', (select status from public.ai_chat_turns where id = '${turnIds.degraded}'),
+                'degradedInvocationStatus', (select status from public.ai_invocations where id = '${turnIds.degraded}'),
+                'degradedCapabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${turnIds.degraded}'),
+                'pendingJobs', (select count(*) from public.ai_conversation_memory_jobs where conversation_id = '${conversationIds.degraded}' and status = 'pending'),
+                'identityResult', (select payload from task5_results where name = 'identity-drift'),
+                'identityTurnStatus', (select status from public.ai_chat_turns where id = '${turnIds.drift}'),
+                'identityMessageStatus', (select status from public.ai_chat_messages where id = '${assistantMessageIds.drift}'),
+                'identityInvocationStatus', (select status from public.ai_invocations where id = '${turnIds.drift}'),
+                'identityCapabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${turnIds.drift}')
+              );
+            `,
+          ),
+        ) as Record<string, unknown>;
+
+        expect(result).toMatchObject({
+          validResult: {
+            completed: true,
+            memory_status: "ready",
+            summary_version: 1,
+          },
+          validConversation: {
+            summaryVersion: 1,
+            memoryStatus: "ready",
+            summary: {
+              schemaVersion: 1,
+              confirmedFacts: [
+                {
+                  text: "The conversion target is 25%",
+                  sourceMessageIds: [userMessageIds.valid],
+                },
+              ],
+              lastCompactedSequence: 1,
+            },
+          },
+          validMessage: {
+            status: "completed",
+            content: "Valid assistant response",
+          },
+          validTurn: { status: "completed", outcome: "complete" },
+          validInvocationStatus: "succeeded",
+          validCapabilityRevoked: true,
+          degradedFirst: {
+            completed: true,
+            memory_status: "degraded",
+            summary_version: 0,
+          },
+          degradedRetry: {
+            completed: true,
+            memory_status: "degraded",
+            summary_version: 0,
+          },
+          degradedConversation: {
+            summaryVersion: 0,
+            memoryStatus: "degraded",
+            memoryDegraded: true,
+          },
+          degradedMessage: {
+            status: "completed",
+            content: "Preserved assistant response",
+          },
+          degradedTurnStatus: "completed",
+          degradedInvocationStatus: "succeeded",
+          degradedCapabilityRevoked: true,
+          pendingJobs: 1,
+          identityResult: { completed: false },
+          identityTurnStatus: "generating",
+          identityMessageStatus: "pending",
+          identityInvocationStatus: "started",
+          identityCapabilityRevoked: false,
+        });
+      } finally {
+        runStructuredMemorySql(container, cleanup);
+      }
+    });
+
+    it("rolls back message, turn, and invocation terminal failures without partial state", () => {
+      const container = structuredMemoryDbContainer ?? "";
+      expect(container).toMatch(/^supabase_db_[A-Za-z0-9_.-]+$/u);
+
+      const organizationId = "8f110000-0000-4000-8000-000000000001";
+      const ownerId = "8f110000-0000-4000-8000-000000000002";
+      const fixtures = {
+        message: {
+          conversationId: "8f110000-0000-4000-8000-000000000101",
+          turnId: "8f110000-0000-4000-8000-000000000201",
+          userMessageId: "8f110000-0000-4000-8000-000000000301",
+          assistantMessageId: "8f110000-0000-4000-8000-000000000302",
+        },
+        turn: {
+          conversationId: "8f110000-0000-4000-8000-000000000102",
+          turnId: "8f110000-0000-4000-8000-000000000202",
+          userMessageId: "8f110000-0000-4000-8000-000000000303",
+          assistantMessageId: "8f110000-0000-4000-8000-000000000304",
+        },
+        invocation: {
+          conversationId: "8f110000-0000-4000-8000-000000000103",
+          turnId: "8f110000-0000-4000-8000-000000000203",
+          userMessageId: "8f110000-0000-4000-8000-000000000305",
+          assistantMessageId: "8f110000-0000-4000-8000-000000000306",
+        },
+      } as const;
+
+      const result = JSON.parse(
+        runStructuredMemorySql(
+          container,
+          `
+            begin;
+
+            insert into auth.users (id, email) values
+              ('${ownerId}'::uuid, 'task5-rollback@example.test');
+            insert into public.profiles (id, email, full_name) values
+              ('${ownerId}'::uuid, 'task5-rollback@example.test', 'Task 5 Rollback');
+            insert into public.organizations (id, name, code) values
+              ('${organizationId}'::uuid, 'Task 5 Rollback', 'task5-rollback');
+            insert into public.organization_members (
+              organization_id, user_id, role, status
+            ) values (
+              '${organizationId}'::uuid, '${ownerId}'::uuid, 'owner', 'active'
+            );
+
+            insert into public.ai_conversations (
+              id, organization_id, owner_user_id, title
+            ) values
+              ('${fixtures.message.conversationId}', '${organizationId}', '${ownerId}', 'Message rollback'),
+              ('${fixtures.turn.conversationId}', '${organizationId}', '${ownerId}', 'Turn rollback'),
+              ('${fixtures.invocation.conversationId}', '${organizationId}', '${ownerId}', 'Invocation rollback');
+
+            insert into public.ai_chat_messages (
+              id, organization_id, owner_user_id, conversation_id,
+              sequence_no, role, status, content
+            ) values
+              ('${fixtures.message.userMessageId}', '${organizationId}', '${ownerId}', '${fixtures.message.conversationId}', 1, 'user', 'completed', 'Message failure source.'),
+              ('${fixtures.message.assistantMessageId}', '${organizationId}', '${ownerId}', '${fixtures.message.conversationId}', 2, 'assistant', 'pending', ''),
+              ('${fixtures.turn.userMessageId}', '${organizationId}', '${ownerId}', '${fixtures.turn.conversationId}', 1, 'user', 'completed', 'Turn failure source.'),
+              ('${fixtures.turn.assistantMessageId}', '${organizationId}', '${ownerId}', '${fixtures.turn.conversationId}', 2, 'assistant', 'pending', ''),
+              ('${fixtures.invocation.userMessageId}', '${organizationId}', '${ownerId}', '${fixtures.invocation.conversationId}', 1, 'user', 'completed', 'Invocation failure source.'),
+              ('${fixtures.invocation.assistantMessageId}', '${organizationId}', '${ownerId}', '${fixtures.invocation.conversationId}', 2, 'assistant', 'pending', '');
+
+            insert into public.ai_chat_turns (
+              id, organization_id, owner_user_id, conversation_id,
+              user_message_id, assistant_message_id, status,
+              idempotency_key, lease_expires_at
+            ) values
+              ('${fixtures.message.turnId}', '${organizationId}', '${ownerId}', '${fixtures.message.conversationId}', '${fixtures.message.userMessageId}', '${fixtures.message.assistantMessageId}', 'generating', 'task5-message-rollback', now() + interval '5 minutes'),
+              ('${fixtures.turn.turnId}', '${organizationId}', '${ownerId}', '${fixtures.turn.conversationId}', '${fixtures.turn.userMessageId}', '${fixtures.turn.assistantMessageId}', 'generating', 'task5-turn-rollback', now() + interval '5 minutes'),
+              ('${fixtures.invocation.turnId}', '${organizationId}', '${ownerId}', '${fixtures.invocation.conversationId}', '${fixtures.invocation.userMessageId}', '${fixtures.invocation.assistantMessageId}', 'generating', 'task5-invocation-rollback', now() + interval '5 minutes');
+
+            do $task5_setup$
+            begin
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('4', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${fixtures.message.conversationId}', '${fixtures.message.turnId}', '${fixtures.message.turnId}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('5', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${fixtures.turn.conversationId}', '${fixtures.turn.turnId}', '${fixtures.turn.turnId}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+              perform public.issue_ai_hermes_root_run_capability(
+                repeat('6', 64), '${organizationId}', '${ownerId}', 'owner',
+                '${fixtures.invocation.conversationId}', '${fixtures.invocation.turnId}', '${fixtures.invocation.turnId}',
+                null, null, repeat('a', 64), '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::text[],
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                public.ai_hermes_canonical_text_array_sha256('{}'::text[]),
+                '{}'::uuid[], 0, false, now() + interval '5 minutes'
+              );
+            end;
+            $task5_setup$;
+
+            create temporary table task5_terminal_failures (
+              failure_point text primary key,
+              error_message text not null
+            );
+
+            create function pg_temp.fail_task5_message_terminal_write()
+            returns trigger language plpgsql as $trigger$
+            begin
+              raise exception 'task5_message_terminal_failure';
+            end;
+            $trigger$;
+            create trigger task5_fail_message_terminal_write
+            before update on public.ai_chat_messages
+            for each row
+            when (old.id = '${fixtures.message.assistantMessageId}'::uuid)
+            execute function pg_temp.fail_task5_message_terminal_write();
+
+            do $task5_message$
+            begin
+              begin
+                perform public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${fixtures.message.turnId}',
+                  'complete', 'Message terminal response', 'hermes', '${fixtures.message.turnId}',
+                  null, null, false, '{}'::jsonb, 0,
+                  jsonb_build_object(
+                    'goals', '[]'::jsonb,
+                    'confirmedFacts', jsonb_build_array(jsonb_build_object(
+                      'text', 'Message write must be atomic',
+                      'sourceMessageIds', jsonb_build_array('${fixtures.message.userMessageId}')
+                    )),
+                    'decisions', '[]'::jsonb,
+                    'unresolvedQuestions', '[]'::jsonb,
+                    'throughSequence', 1
+                  )
+                );
+                raise exception 'task5_message_failure_not_raised';
+              exception when others then
+                insert into task5_terminal_failures values ('message', sqlerrm);
+              end;
+            end;
+            $task5_message$;
+            drop trigger task5_fail_message_terminal_write on public.ai_chat_messages;
+
+            create function pg_temp.fail_task5_turn_terminal_write()
+            returns trigger language plpgsql as $trigger$
+            begin
+              raise exception 'task5_turn_terminal_failure';
+            end;
+            $trigger$;
+            create trigger task5_fail_turn_terminal_write
+            before update on public.ai_chat_turns
+            for each row
+            when (old.id = '${fixtures.turn.turnId}'::uuid)
+            execute function pg_temp.fail_task5_turn_terminal_write();
+
+            do $task5_turn$
+            begin
+              begin
+                perform public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${fixtures.turn.turnId}',
+                  'complete', 'Turn terminal response', 'hermes', '${fixtures.turn.turnId}',
+                  null, null, false, '{}'::jsonb, 0,
+                  jsonb_build_object(
+                    'goals', '[]'::jsonb,
+                    'confirmedFacts', jsonb_build_array(jsonb_build_object(
+                      'text', 'Turn write must be atomic',
+                      'sourceMessageIds', jsonb_build_array('${fixtures.turn.userMessageId}')
+                    )),
+                    'decisions', '[]'::jsonb,
+                    'unresolvedQuestions', '[]'::jsonb,
+                    'throughSequence', 1
+                  )
+                );
+                raise exception 'task5_turn_failure_not_raised';
+              exception when others then
+                insert into task5_terminal_failures values ('turn', sqlerrm);
+              end;
+            end;
+            $task5_turn$;
+            drop trigger task5_fail_turn_terminal_write on public.ai_chat_turns;
+
+            create function pg_temp.fail_task5_invocation_terminal_write()
+            returns trigger language plpgsql as $trigger$
+            begin
+              raise exception 'task5_invocation_terminal_failure';
+            end;
+            $trigger$;
+            create trigger task5_fail_invocation_terminal_write
+            before update on public.ai_invocations
+            for each row
+            when (old.id = '${fixtures.invocation.turnId}'::uuid)
+            execute function pg_temp.fail_task5_invocation_terminal_write();
+
+            do $task5_invocation$
+            begin
+              begin
+                perform public.finish_ai_chat_turn_v3(
+                  '${organizationId}', '${ownerId}', '${fixtures.invocation.turnId}',
+                  'complete', 'Invocation terminal response', 'hermes', '${fixtures.invocation.turnId}',
+                  null, null, false, '{}'::jsonb, 0,
+                  jsonb_build_object(
+                    'goals', '[]'::jsonb,
+                    'confirmedFacts', jsonb_build_array(jsonb_build_object(
+                      'text', 'Invocation write must be atomic',
+                      'sourceMessageIds', jsonb_build_array('${fixtures.invocation.userMessageId}')
+                    )),
+                    'decisions', '[]'::jsonb,
+                    'unresolvedQuestions', '[]'::jsonb,
+                    'throughSequence', 1
+                  )
+                );
+                raise exception 'task5_invocation_failure_not_raised';
+              exception when others then
+                insert into task5_terminal_failures values ('invocation', sqlerrm);
+              end;
+            end;
+            $task5_invocation$;
+            drop trigger task5_fail_invocation_terminal_write on public.ai_invocations;
+
+            select jsonb_build_object(
+              'errors', (select jsonb_object_agg(failure_point, error_message) from task5_terminal_failures),
+              'messageFailure', jsonb_build_object(
+                'message', (select jsonb_build_object('status', status, 'content', content) from public.ai_chat_messages where id = '${fixtures.message.assistantMessageId}'),
+                'turn', (select jsonb_build_object('status', status, 'outcome', outcome) from public.ai_chat_turns where id = '${fixtures.message.turnId}'),
+                'invocationStatus', (select status from public.ai_invocations where id = '${fixtures.message.turnId}'),
+                'capabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${fixtures.message.turnId}'),
+                'conversation', (select jsonb_build_object('summary', summary, 'summaryVersion', summary_version, 'memoryStatus', memory_status) from public.ai_conversations where id = '${fixtures.message.conversationId}'),
+                'memoryJobs', (select count(*) from public.ai_conversation_memory_jobs where turn_id = '${fixtures.message.turnId}')
+              ),
+              'turnFailure', jsonb_build_object(
+                'message', (select jsonb_build_object('status', status, 'content', content) from public.ai_chat_messages where id = '${fixtures.turn.assistantMessageId}'),
+                'turn', (select jsonb_build_object('status', status, 'outcome', outcome) from public.ai_chat_turns where id = '${fixtures.turn.turnId}'),
+                'invocationStatus', (select status from public.ai_invocations where id = '${fixtures.turn.turnId}'),
+                'capabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${fixtures.turn.turnId}'),
+                'conversation', (select jsonb_build_object('summary', summary, 'summaryVersion', summary_version, 'memoryStatus', memory_status) from public.ai_conversations where id = '${fixtures.turn.conversationId}'),
+                'memoryJobs', (select count(*) from public.ai_conversation_memory_jobs where turn_id = '${fixtures.turn.turnId}')
+              ),
+              'invocationFailure', jsonb_build_object(
+                'message', (select jsonb_build_object('status', status, 'content', content) from public.ai_chat_messages where id = '${fixtures.invocation.assistantMessageId}'),
+                'turn', (select jsonb_build_object('status', status, 'outcome', outcome) from public.ai_chat_turns where id = '${fixtures.invocation.turnId}'),
+                'invocationStatus', (select status from public.ai_invocations where id = '${fixtures.invocation.turnId}'),
+                'capabilityRevoked', (select revoked_at is not null from public.ai_hermes_run_capabilities where turn_id = '${fixtures.invocation.turnId}'),
+                'conversation', (select jsonb_build_object('summary', summary, 'summaryVersion', summary_version, 'memoryStatus', memory_status) from public.ai_conversations where id = '${fixtures.invocation.conversationId}'),
+                'memoryJobs', (select count(*) from public.ai_conversation_memory_jobs where turn_id = '${fixtures.invocation.turnId}')
+              )
+            );
+
+            rollback;
+          `,
+        ),
+      ) as Record<string, unknown>;
+
+      const untouchedTerminalState = {
+        message: { status: "pending", content: "" },
+        turn: { status: "generating", outcome: null },
+        invocationStatus: "started",
+        capabilityRevoked: false,
+        conversation: {
+          summary: {},
+          summaryVersion: 0,
+          memoryStatus: "ready",
+        },
+        memoryJobs: 0,
+      };
+
+      expect(result).toMatchObject({
+        errors: {
+          message: "task5_message_terminal_failure",
+          turn: "task5_turn_terminal_failure",
+          invocation: "task5_invocation_terminal_failure",
+        },
+        messageFailure: untouchedTerminalState,
+        turnFailure: untouchedTerminalState,
+        invocationFailure: untouchedTerminalState,
+      });
+    });
+  },
+);
+
+function runStructuredMemorySql(container: string, sql: string): string {
+  const result = spawnSync(
+    "docker",
+    [
+      "exec",
+      "-i",
+      container,
+      "psql",
+      "-X",
+      "-qAt",
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-U",
+      "postgres",
+      "-d",
+      "postgres",
+    ],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      input: sql,
+      timeout: 30_000,
+      windowsHide: true,
+    },
+  );
+
+  expect(
+    result.status,
+    `${result.stdout ?? ""}\n${result.stderr ?? result.error?.message ?? ""}`.slice(
+      -4_000,
+    ),
+  ).toBe(0);
+  return (result.stdout ?? "").trim();
+}

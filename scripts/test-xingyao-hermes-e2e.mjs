@@ -13,8 +13,25 @@ const terminalOutcomes = new Set([
   "failed",
   "cancelled",
 ]);
-const secretPattern =
-  /(api[_-]?key|authorization|bearer|chain[-_ ]?of[-_ ]?thought|credential|password|secret|sk-[a-z0-9_-]+|\btoken\b)/i;
+const forbiddenReportKeys = new Set([
+  "prompt",
+  "content",
+  "assertion",
+  "capability",
+  "authorization",
+  "servicetoken",
+  "accesstoken",
+  "secret",
+  "chainofthought",
+]);
+const forbiddenGeneratedOutputValuePattern =
+  /(?:api[_-]?key|authorization|bearer|chain[-_ ]?of[-_ ]?thought|credential|password|secret|sk-[a-z0-9_-]+)/i;
+const fastTurnGateThresholds = {
+  minSamples: 100,
+  minSuccessRate: 0.99,
+  maxFirstDeltaP95Ms: 8_000,
+  maxTotalP95Ms: 30_000,
+};
 
 export function loadEvalCases(casesPath = defaultCasesPath) {
   const cases = JSON.parse(readFileSync(casesPath, "utf8"));
@@ -386,19 +403,218 @@ function countEvidenceLessNumericClaims(cases) {
 }
 
 function assertNoPromptSecrets(report) {
-  const serialized = JSON.stringify(report);
-  if (
-    /"prompt"|"chainOfThought"/.test(serialized) ||
-    secretPattern.test(serialized)
-  ) {
+  if (hasForbiddenReportKey(report)) {
     throw new Error(
       "Hermes evaluation report contains prompt secrets or reasoning",
     );
   }
+  if (hasForbiddenGeneratedOutputValue(report)) {
+    throw new Error(
+      "Hermes evaluation report contains a forbidden sensitive value",
+    );
+  }
+}
+
+function loadPerformanceReport(reportPath) {
+  let serialized;
+  try {
+    serialized = readFileSync(reportPath, "utf8");
+  } catch {
+    throw performanceReportError("unreadable");
+  }
+
+  let report;
+  try {
+    report = JSON.parse(serialized);
+  } catch {
+    throw performanceReportError("invalid_json");
+  }
+
+  if (hasForbiddenReportKey(report)) {
+    throw performanceReportError("forbidden_field");
+  }
+  if (!isRecord(report) || !Array.isArray(report.samples)) {
+    throw performanceReportError("invalid_shape");
+  }
+  if (
+    report.samples.some(
+      (sample) => !isRecord(sample) || !["fast", "deep"].includes(sample.mode),
+    )
+  ) {
+    throw performanceReportError("invalid_shape");
+  }
+
+  return report;
+}
+
+function evaluatePerformanceReport(report) {
+  const fastSamples = report.samples
+    .filter((sample) => sample.mode === "fast")
+    .map((sample) => ({
+      success: sample.success,
+      firstDeltaMs: sample.firstDeltaMs,
+      totalMs: sample.totalMs,
+    }));
+  const gate = evaluateFastTurnGate(fastSamples, fastTurnGateThresholds);
+  const successfulSamples = fastSamples.filter(
+    (sample) => sample.success === true,
+  );
+  const validSuccessfulSamples = fastSamples.filter(
+    (sample) => !isInvalidFastTurnSample(sample) && sample.success,
+  );
+  const firstDeltaValues = validSuccessfulSamples.map(
+    (sample) => sample.firstDeltaMs,
+  );
+  const totalValues = validSuccessfulSamples.map((sample) => sample.totalMs);
+
+  return {
+    harness: "xingyao-hermes-e2e",
+    mode: "performance-report",
+    sampleCount: report.samples.length,
+    fastSampleCount: fastSamples.length,
+    totalSamples: fastSamples.length,
+    successfulSamples: successfulSamples.length,
+    firstDeltaSamples: firstDeltaValues.length,
+    totalLatencySamples: totalValues.length,
+    metrics: {
+      successRate:
+        fastSamples.length === 0
+          ? 0
+          : successfulSamples.length / fastSamples.length,
+      firstDeltaP95Ms:
+        firstDeltaValues.length === 0
+          ? null
+          : nearestRankPercentile(firstDeltaValues, 0.95),
+      totalP95Ms:
+        totalValues.length === 0
+          ? null
+          : nearestRankPercentile(totalValues, 0.95),
+    },
+    gate,
+  };
+}
+
+// This runner remains directly executable on the repository's Node 20 floor,
+// so its small gate mirrors the TypeScript module covered by the pure tests.
+function evaluateFastTurnGate(samples, thresholds) {
+  const failures = [];
+  if (!Number.isInteger(thresholds.minSamples) || thresholds.minSamples <= 0) {
+    failures.push("invalid_min_samples");
+  }
+  if (
+    !Number.isFinite(thresholds.minSuccessRate) ||
+    thresholds.minSuccessRate < 0 ||
+    thresholds.minSuccessRate > 1
+  ) {
+    failures.push("invalid_min_success_rate");
+  }
+  if (!isNonNegativeFiniteNumber(thresholds.maxFirstDeltaP95Ms)) {
+    failures.push("invalid_max_first_delta_p95_ms");
+  }
+  if (!isNonNegativeFiniteNumber(thresholds.maxTotalP95Ms)) {
+    failures.push("invalid_max_total_p95_ms");
+  }
+  if (!Array.isArray(samples) || samples.some(isInvalidFastTurnSample)) {
+    failures.push("invalid_samples");
+  }
+  if (failures.length > 0) {
+    return { ok: false, failures };
+  }
+
+  if (samples.length < thresholds.minSamples) {
+    failures.push("insufficient_samples");
+  }
+  const successfulSamples = samples.filter((sample) => sample.success);
+  if (successfulSamples.length / samples.length < thresholds.minSuccessRate) {
+    failures.push("success_rate_below_minimum");
+  }
+  if (successfulSamples.length > 0) {
+    if (
+      nearestRankPercentile(
+        successfulSamples.map((sample) => sample.firstDeltaMs),
+        0.95,
+      ) > thresholds.maxFirstDeltaP95Ms
+    ) {
+      failures.push("first_delta_p95_exceeded");
+    }
+    if (
+      nearestRankPercentile(
+        successfulSamples.map((sample) => sample.totalMs),
+        0.95,
+      ) > thresholds.maxTotalP95Ms
+    ) {
+      failures.push("total_p95_exceeded");
+    }
+  }
+  return { ok: failures.length === 0, failures };
+}
+
+function nearestRankPercentile(values, percentile) {
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.ceil(percentile * sorted.length) - 1];
+}
+
+function isInvalidFastTurnSample(sample) {
+  if (
+    !isRecord(sample) ||
+    typeof sample.success !== "boolean" ||
+    !isNonNegativeFiniteNumber(sample.totalMs)
+  ) {
+    return true;
+  }
+  if (sample.firstDeltaMs === null) {
+    return sample.success;
+  }
+  return (
+    !isNonNegativeFiniteNumber(sample.firstDeltaMs) ||
+    sample.firstDeltaMs > sample.totalMs
+  );
+}
+
+function hasForbiddenReportKey(value) {
+  if (Array.isArray(value)) {
+    return value.some(hasForbiddenReportKey);
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  return Object.entries(value).some(
+    ([key, nestedValue]) =>
+      forbiddenReportKeys.has(normalizeReportKey(key)) ||
+      hasForbiddenReportKey(nestedValue),
+  );
+}
+
+function hasForbiddenGeneratedOutputValue(value) {
+  if (typeof value === "string") {
+    return forbiddenGeneratedOutputValuePattern.test(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some(hasForbiddenGeneratedOutputValue);
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  return Object.values(value).some(hasForbiddenGeneratedOutputValue);
+}
+
+function normalizeReportKey(key) {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function performanceReportError(code) {
+  const error = new Error(code);
+  error.name = "HermesPerformanceReportError";
+  error.code = code;
+  return error;
 }
 
 function parseArgs(argv) {
-  const parsed = { mode: "local", casesPath: defaultCasesPath };
+  const parsed = {
+    mode: "local",
+    casesPath: defaultCasesPath,
+    performanceReportPath: null,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const next = () => {
@@ -418,6 +634,12 @@ function parseArgs(argv) {
       case "--cases":
         parsed.casesPath = resolve(next());
         break;
+      case "--performance-report":
+        if (index + 1 >= argv.length) {
+          throw performanceReportError("missing_path");
+        }
+        parsed.performanceReportPath = resolve(next());
+        break;
       case "--help":
       case "-h":
         parsed.help = true;
@@ -435,10 +657,12 @@ function helpText() {
 Usage:
   node scripts/test-xingyao-hermes-e2e.mjs --local
   node scripts/test-xingyao-hermes-e2e.mjs --real
+  node scripts/test-xingyao-hermes-e2e.mjs --performance-report <path>
 
 Local mode is deterministic and requires no production credentials. Real mode
 requires HTTPS HERMES_OFFICIAL_EVAL_URL, HERMES_INTEGRATED_EVAL_URL, and
-HERMES_E2E_SERVICE_TOKEN, then runs a two-case two-service smoke.`;
+HERMES_E2E_SERVICE_TOKEN, then runs a two-case two-service smoke. Performance
+report mode evaluates sanitized Fast samples against the release gate.`;
 }
 
 function isDenialCategory(category) {
@@ -485,6 +709,10 @@ function numberOrZero(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function isNonNegativeFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -493,20 +721,56 @@ if (
   process.argv[1] &&
   fileURLToPath(import.meta.url) === resolve(process.argv[1])
 ) {
-  const args = parseArgs(process.argv.slice(2));
+  await main(process.argv.slice(2));
+}
+
+async function main(argv) {
+  let args;
+  try {
+    args = parseArgs(argv);
+  } catch (error) {
+    if (error?.name === "HermesPerformanceReportError") {
+      console.error(`Hermes performance report rejected: ${error.code}`);
+    } else {
+      console.error(error instanceof Error ? error.message : "Invalid options");
+    }
+    process.exitCode = 1;
+    return;
+  }
+
   if (args.help) {
     console.log(helpText());
-  } else {
-    runHermesEvaluation({
+    return;
+  }
+  if (args.performanceReportPath !== null) {
+    try {
+      const output = evaluatePerformanceReport(
+        loadPerformanceReport(args.performanceReportPath),
+      );
+      console.log(JSON.stringify(output, null, 2));
+      if (!output.gate.ok) {
+        console.error("Hermes performance gate failed");
+        process.exitCode = 1;
+      }
+    } catch (error) {
+      const code =
+        error?.name === "HermesPerformanceReportError"
+          ? error.code
+          : "invalid_shape";
+      console.error(`Hermes performance report rejected: ${code}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  try {
+    const report = await runHermesEvaluation({
       cases: loadEvalCases(args.casesPath),
       mode: args.mode,
-    })
-      .then((report) => {
-        console.log(JSON.stringify(report, null, 2));
-      })
-      .catch((error) => {
-        console.error(error.message);
-        process.exitCode = 1;
-      });
+    });
+    console.log(JSON.stringify(report, null, 2));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "Evaluation failed");
+    process.exitCode = 1;
   }
 }

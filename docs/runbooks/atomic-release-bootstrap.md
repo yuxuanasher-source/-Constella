@@ -509,7 +509,117 @@ identify `TARGET_SHA` after `pm2 save`. Keep the legacy restore script, PM2
 snapshot, old release, and candidate for the entire observation window.
 Expand migrations are not application rollback.
 
-## 7. Normal releases after bootstrap
+## 7. Upgrade the protected control for telemetry rollout
+
+The first release containing migration `20260803120500` requires a maintenance
+window to replace the protected deploy control before the release deployment.
+An older control cannot run the separately committed telemetry backfill. The
+migration therefore fails closed, before migration ledger or application
+activation changes, with:
+
+```text
+deploy_control_upgrade_required: install reviewed protected control before 20260803120500
+```
+
+Use the same reviewed successful CI run, SHA-named artifact, and hashes intended
+for the release. Take `EXPECTED_DEPLOY_CONTROL_SHA256` from that run's `Deploy
+control SHA-256` output. Take `TRUSTED_CURRENT_DEPLOY_CONTROL_SHA256` from the
+off-host installation record for the currently protected control; never derive
+the trusted value from the deployment host during the window.
+
+Acquire and hash-check the release artifact as described in section 5. Then
+stage a detached worktree for the exact reviewed commit. The source checkout is
+used only to create that exact detached worktree; the already protected
+integrity verifier must approve it before any protected file is replaced:
+
+```bash
+set -Eeuo pipefail
+export SOURCE_REPO=/var/www/jingying-cabin
+export RELEASE_ROOT=/var/cache/jingying-cabin-releases
+export BRANCH=codex/full-project-ui
+export EXPECTED_SHA=<reviewed-full-40-character-ci-sha>
+export EXPECTED_RELEASE_MANIFEST_SHA256=<reviewed-ci-release-manifest-sha256>
+export EXPECTED_RELEASE_ARTIFACT_SHA256=<reviewed-ci-release-artifact-sha256>
+export EXPECTED_DEPLOY_CONTROL_SHA256=<reviewed-ci-deploy-control-sha256>
+export TRUSTED_CURRENT_DEPLOY_CONTROL_SHA256=<off-host-current-control-sha256>
+export RELEASE_ARTIFACT_PATH="/var/cache/jingying-cabin-release-artifacts/$EXPECTED_SHA/release-runtime-$EXPECTED_SHA.tar"
+export TRUSTED_RELEASE_INTEGRITY=/etc/jingying-cabin/release-controls/release-integrity.mjs
+export PROTECTED_DEPLOY_CONTROL=/etc/jingying-cabin/release-controls/deploy.sh
+export PROTECTED_DEPLOY_CONTROL_NEXT=/etc/jingying-cabin/release-controls/deploy.sh.next
+export CONTROL_BACKUP_DIR=/etc/jingying-cabin/release-controls/deploy-control-backups
+export CONTROL_STAGE="$RELEASE_ROOT/$EXPECTED_SHA"
+
+[[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+[[ "$EXPECTED_RELEASE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$EXPECTED_RELEASE_ARTIFACT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$EXPECTED_DEPLOY_CONTROL_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$TRUSTED_CURRENT_DEPLOY_CONTROL_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$(stat -Lc '%u:%a' "$PROTECTED_DEPLOY_CONTROL")" == "0:640" ]]
+printf '%s  %s\n' "$TRUSTED_CURRENT_DEPLOY_CONTROL_SHA256" \
+  "$PROTECTED_DEPLOY_CONTROL" | sha256sum --check --strict
+printf '%s  %s\n' "$EXPECTED_RELEASE_ARTIFACT_SHA256" \
+  "$RELEASE_ARTIFACT_PATH" | sha256sum --check --strict
+
+git -C "$SOURCE_REPO" fetch origin "$BRANCH"
+TARGET_SHA="$(git -C "$SOURCE_REPO" rev-parse "origin/$BRANCH^{commit}")"
+[[ "$TARGET_SHA" == "$EXPECTED_SHA" ]]
+[[ ! -e "$CONTROL_STAGE" ]]
+git -C "$SOURCE_REPO" worktree add --detach "$CONTROL_STAGE" "$EXPECTED_SHA"
+[[ "$(git -C "$CONTROL_STAGE" rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+[[ -z "$(git -C "$CONTROL_STAGE" status --porcelain --untracked-files=no)" ]]
+node "$CONTROL_STAGE/scripts/extract-release-artifact.mjs" \
+  "$RELEASE_ARTIFACT_PATH" "$CONTROL_STAGE" \
+  "$EXPECTED_RELEASE_ARTIFACT_SHA256" "$EXPECTED_SHA"
+node "$TRUSTED_RELEASE_INTEGRITY" verify \
+  "$CONTROL_STAGE" "$EXPECTED_SHA" "$EXPECTED_RELEASE_MANIFEST_SHA256"
+printf '%s  %s\n' "$EXPECTED_DEPLOY_CONTROL_SHA256" \
+  "$CONTROL_STAGE/scripts/deploy.sh" | sha256sum --check --strict
+```
+
+Back up the currently trusted file, install to a root-owned sibling, verify it,
+and atomically rename it. The trap restores the reviewed old control if any
+installation check or staging cleanup fails. It is disarmed before release
+deployment because an old control must never be restored after the telemetry
+migration may have started.
+
+```bash
+CONTROL_GROUP="$(stat -Lc '%G' "$PROTECTED_DEPLOY_CONTROL")"
+CONTROL_BACKUP="$CONTROL_BACKUP_DIR/deploy.sh.$TRUSTED_CURRENT_DEPLOY_CONTROL_SHA256"
+sudo install -d -o root -g "$CONTROL_GROUP" -m 0750 "$CONTROL_BACKUP_DIR"
+sudo install -o root -g "$CONTROL_GROUP" -m 0640 \
+  "$PROTECTED_DEPLOY_CONTROL" "$CONTROL_BACKUP"
+printf '%s  %s\n' "$TRUSTED_CURRENT_DEPLOY_CONTROL_SHA256" \
+  "$CONTROL_BACKUP" | sha256sum --check --strict
+
+restore_protected_deploy_control() {
+  sudo install -o root -g "$CONTROL_GROUP" -m 0640 \
+    "$CONTROL_BACKUP" "$PROTECTED_DEPLOY_CONTROL"
+  sudo rm -f -- "$PROTECTED_DEPLOY_CONTROL_NEXT"
+}
+trap restore_protected_deploy_control ERR INT TERM
+
+sudo install -o root -g "$CONTROL_GROUP" -m 0640 \
+  "$CONTROL_STAGE/scripts/deploy.sh" "$PROTECTED_DEPLOY_CONTROL_NEXT"
+[[ "$(stat -Lc '%u:%a' "$PROTECTED_DEPLOY_CONTROL_NEXT")" == "0:640" ]]
+printf '%s  %s\n' "$EXPECTED_DEPLOY_CONTROL_SHA256" \
+  "$PROTECTED_DEPLOY_CONTROL_NEXT" | sha256sum --check --strict
+bash -n "$PROTECTED_DEPLOY_CONTROL_NEXT"
+grep -Fq 'DEPLOY_CONTROL_CAPABILITY="ai-turn-telemetry-batched-backfill-v1"' \
+  "$PROTECTED_DEPLOY_CONTROL_NEXT"
+sudo mv -Tf "$PROTECTED_DEPLOY_CONTROL_NEXT" "$PROTECTED_DEPLOY_CONTROL"
+[[ "$(stat -Lc '%u:%a' "$PROTECTED_DEPLOY_CONTROL")" == "0:640" ]]
+printf '%s  %s\n' "$EXPECTED_DEPLOY_CONTROL_SHA256" \
+  "$PROTECTED_DEPLOY_CONTROL" | sha256sum --check --strict
+git -C "$SOURCE_REPO" worktree remove --force "$CONTROL_STAGE"
+trap - ERR INT TERM
+```
+
+Retain the root-owned backup and record both control hashes, release SHA,
+manifest hash, artifact hash, CI run ID, operator, and maintenance-window time
+off-host. Now invoke the protected control with the normal release inputs below.
+Do not invoke a candidate checkout's copy.
+
+## 8. Normal releases after bootstrap
 
 Take `EXPECTED_SHA`, `EXPECTED_RELEASE_MANIFEST_SHA256`, and
 `EXPECTED_RELEASE_ARTIFACT_SHA256` from the same reviewed successful hosted-CI

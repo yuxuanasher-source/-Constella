@@ -25,6 +25,83 @@ import {
   resolveHermesGatewayConfig,
   type HermesGatewayClientConfig,
 } from "./gateway-client";
+import * as gatewayClientModule from "./gateway-client";
+
+it("classifies only typed ambiguous Gateway transport errors as retryable before acknowledgement", () => {
+  const moduleExports = gatewayClientModule as Record<string, unknown>;
+  const ErrorType = moduleExports.HermesGatewayError;
+  const classify = moduleExports.isAmbiguousHermesGatewayTransportError;
+
+  expect(ErrorType).toBeTypeOf("function");
+  expect(classify).toBeTypeOf("function");
+  if (typeof ErrorType !== "function" || typeof classify !== "function") return;
+
+  const GatewayError = ErrorType as new (code: string) => Error & {
+    code: string;
+  };
+  const isAmbiguous = classify as (error: unknown) => boolean;
+  for (const code of [
+    "hermes_gateway_connection_closed",
+    "hermes_gateway_rpc_timeout",
+    "hermes_gateway_send_failed",
+  ]) {
+    const error = new GatewayError(code);
+    expect(error.code).toBe(code);
+    expect(isAmbiguous(error)).toBe(true);
+  }
+  for (const code of [
+    "hermes_gateway_prompt_not_accepted",
+    "hermes_gateway_unauthorized",
+    "hermes_gateway_capability_invalid",
+    "hermes_gateway_protocol_rejected",
+    "hermes_gateway_server_rejected",
+  ]) {
+    expect(isAmbiguous(new GatewayError(code))).toBe(false);
+  }
+  expect(isAmbiguous(new Error("hermes_gateway_connection_closed"))).toBe(
+    false,
+  );
+});
+
+it("classifies only typed session lifecycle failures as rebuildable", () => {
+  const moduleExports = gatewayClientModule as Record<string, unknown>;
+  const ErrorType = moduleExports.HermesGatewayError;
+  const classify =
+    moduleExports.isHermesGatewaySessionLifecycleRebuildableError;
+
+  expect(ErrorType).toBeTypeOf("function");
+  expect(classify).toBeTypeOf("function");
+  if (typeof ErrorType !== "function" || typeof classify !== "function") return;
+
+  const GatewayError = ErrorType as new (code: string) => Error & {
+    code: string;
+  };
+  const isRebuildable = classify as (error: unknown) => boolean;
+  for (const code of [
+    "hermes_gateway_session_missing",
+    "hermes_gateway_session_not_found",
+    "hermes_gateway_session_expired",
+    "hermes_gateway_agent_signature_incompatible",
+    "hermes_gateway_checkpoint_incompatible",
+  ]) {
+    expect(isRebuildable(new GatewayError(code))).toBe(true);
+  }
+  for (const code of [
+    "hermes_gateway_unauthorized",
+    "hermes_gateway_capability_invalid",
+    "hermes_gateway_capability_revoked",
+    "hermes_gateway_capability_expired",
+    "hermes_gateway_actor_mismatch",
+    "hermes_gateway_session_mismatch",
+    "hermes_gateway_tenant_mismatch",
+    "hermes_gateway_protocol_rejected",
+  ]) {
+    expect(isRebuildable(new GatewayError(code))).toBe(false);
+  }
+  expect(isRebuildable(new Error("hermes_gateway_session_expired"))).toBe(
+    false,
+  );
+});
 
 describe("Hermes Gateway JSON-RPC client", () => {
   const servers: WebSocketServer[] = [];
@@ -98,6 +175,13 @@ describe("Hermes Gateway JSON-RPC client", () => {
 
     await createHermesGatewaySession(sessionOptions(config!));
 
+    expect(config?.timeouts).toEqual({
+      connectMs: 2_000,
+      readyMs: 2_000,
+      rpcMs: 15_000,
+      idleMs: 180_000,
+      heartbeatMs: 30_000,
+    });
     expect(server.handshakeHeaders.at(0)?.authorization).toBe(
       "Bearer gateway-service-token-that-is-long-enough",
     );
@@ -156,7 +240,10 @@ describe("Hermes Gateway JSON-RPC client", () => {
     servers.push(server);
     server.on("connection", (socket) => {
       socket.send(JSON.stringify(readyEvent()));
-      respondTo(socket, "session.create", { sessionId: SESSION_ID });
+      respondTo(socket, "session.create", {
+        sessionId: SESSION_ID,
+        checkpointId: CHECKPOINT_ID,
+      });
       respondTo(socket, "session.info", { sessionId: SESSION_ID, title: "ok" });
       respondTo(socket, "session.list", { sessions: [SESSION_ID] });
       socket.send(JSON.stringify(event("message.delta", 1, { text: "Hel" })));
@@ -190,7 +277,53 @@ describe("Hermes Gateway JSON-RPC client", () => {
       "message.complete",
     ]);
     expect(events[0]?.params.payload).toEqual({ text: "Hello" });
+    expect(session.checkpointId).toBe(CHECKPOINT_ID);
   });
+
+  it.each([
+    [4040, "hermes_gateway_session_not_found", true],
+    [4090, "hermes_gateway_rpc_failed", false],
+    [4401, "hermes_gateway_rpc_failed", false],
+    [4008, "hermes_gateway_rpc_failed", false],
+  ] as const)(
+    "maps numeric Gateway code %i through the narrow lifecycle boundary",
+    async (wireCode, expectedCode, rebuildable) => {
+      const { server, config } = await configuredGateway();
+      servers.push(server);
+      server.on("connection", (socket) => {
+        socket.send(JSON.stringify(readyEvent()));
+        socket.on("message", (raw) => {
+          const command = JSON.parse(raw.toString()) as {
+            id: string;
+            method: string;
+          };
+          if (command.method !== "session.resume") return;
+          socket.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: command.id,
+              error: {
+                code: wireCode,
+                message: "must not cross the Product boundary",
+              },
+            }),
+          );
+        });
+      });
+
+      const error = await createHermesGatewaySession(
+        sessionOptions(config, { sessionId: SESSION_ID }),
+      ).catch((candidate: unknown) => candidate);
+
+      expect(error).toMatchObject({ code: expectedCode });
+      expect(
+        gatewayClientModule.isHermesGatewaySessionLifecycleRebuildableError(
+          error,
+        ),
+      ).toBe(rebuildable);
+      expect(String(error)).not.toContain("must not cross");
+    },
+  );
 
   it("pins the exact official method and product-visible event surface", async () => {
     expect(HERMES_GATEWAY_CLIENT_METHODS).toEqual(HERMES_GATEWAY_METHODS);
@@ -468,6 +601,10 @@ describe("Hermes Gateway JSON-RPC client", () => {
               id: command.id,
               result: {
                 sessionId: command.params.sessionId,
+                checkpointId:
+                  command.params.sessionId === branchedSessionId
+                    ? "checkpoint-branched"
+                    : "checkpoint-resumed",
                 invocationId: INVOCATION_ID,
                 actorFingerprint: ACTOR_FINGERPRINT,
               },
@@ -481,6 +618,7 @@ describe("Hermes Gateway JSON-RPC client", () => {
               id: command.id,
               result: {
                 sessionId: branchedSessionId,
+                checkpointId: "checkpoint-branched",
                 invocationId: INVOCATION_ID,
                 actorFingerprint: ACTOR_FINGERPRINT,
               },
@@ -502,7 +640,10 @@ describe("Hermes Gateway JSON-RPC client", () => {
     const source = await createHermesGatewaySession(
       sessionOptions(config, { sessionId: SESSION_ID }),
     );
-    const branch = await source.branch(CONVERSATION_ID);
+    const branch = await source.branch({
+      conversationId: CONVERSATION_ID,
+      checkpointId: CHECKPOINT_ID,
+    });
     source.close();
     const branched = await createHermesGatewaySession(
       sessionOptions(config, {
@@ -513,10 +654,13 @@ describe("Hermes Gateway JSON-RPC client", () => {
 
     expect(branch).toEqual({
       sessionId: branchedSessionId,
+      checkpointId: "checkpoint-branched",
       invocationId: INVOCATION_ID,
       actorFingerprint: ACTOR_FINGERPRINT,
     });
     expect(branched.sessionId).toBe(branchedSessionId);
+    expect(source.checkpointId).toBe("checkpoint-resumed");
+    expect(branched.checkpointId).toBe("checkpoint-branched");
     expect(server.commands.map((command) => command.method)).toEqual([
       "session.resume",
       "session.branch",
@@ -529,6 +673,81 @@ describe("Hermes Gateway JSON-RPC client", () => {
       branchedSessionId,
       branchedSessionId,
     ]);
+    expect(server.commands[1]?.params).toEqual({
+      actorAssertion: ACTOR_ASSERTION,
+      invocationId: INVOCATION_ID,
+      invocationCapability: INVOCATION_CAPABILITY,
+      sessionId: SESSION_ID,
+      conversationId: CONVERSATION_ID,
+      checkpointId: CHECKPOINT_ID,
+    });
+  });
+
+  it("uses a second bounded recovery after gateway.ready times out", async () => {
+    const { server, config } = await configuredGateway({
+      timeouts: {
+        connectMs: 100,
+        readyMs: 30,
+        rpcMs: 100,
+        idleMs: 1_000,
+        heartbeatMs: 1_000,
+      },
+    });
+    servers.push(server);
+    let connectionCount = 0;
+    server.on("connection", (socket) => {
+      connectionCount += 1;
+      if (connectionCount === 2) return;
+
+      socket.send(JSON.stringify(readyEvent()));
+      if (connectionCount === 1) {
+        respondTo(socket, "session.create", { sessionId: SESSION_ID });
+        respondTo(
+          socket,
+          "prompt.submit",
+          { accepted: true, invocationId: INVOCATION_ID },
+          () => socket.close(),
+        );
+        return;
+      }
+
+      respondTo(socket, "session.resume", {
+        sessionId: SESSION_ID,
+        invocationId: INVOCATION_ID,
+        actorFingerprint: ACTOR_FINGERPRINT,
+      });
+      respondTo(
+        socket,
+        "session.info",
+        {
+          sessionId: SESSION_ID,
+          invocationId: INVOCATION_ID,
+          actorFingerprint: ACTOR_FINGERPRINT,
+          status: "accepted",
+        },
+        () =>
+          socket.send(
+            JSON.stringify(
+              event("turn.terminal", 1, {
+                outcome: "complete",
+                message: "recovered",
+                metadata: metadata(),
+              }),
+            ),
+          ),
+      );
+    });
+
+    const session = await createHermesGatewaySession(
+      sessionOptions(config, { prompt: "Recover twice" }),
+    );
+    const events = await collectEvents(session.events, 1);
+
+    expect(events[0]?.params.type).toBe("turn.terminal");
+    expect(connectionCount).toBe(3);
+    expect(session.listenerCount()).toBe(3);
+    session.close();
+    expect(session.listenerCount()).toBe(0);
   });
 
   it("does not resubmit prompt when the prompt response is lost after gateway receipt", async () => {
@@ -842,9 +1061,30 @@ describe("Hermes Gateway JSON-RPC client", () => {
     session.close();
     expect(session.listenerCount()).toBe(0);
   });
+
+  it("closes only the local transport and leaves the server session reusable", async () => {
+    const { server, config } = await configuredGateway();
+    servers.push(server);
+    server.on("connection", (socket) => {
+      socket.send(JSON.stringify(readyEvent()));
+      respondTo(socket, "session.create", { sessionId: SESSION_ID });
+    });
+
+    const session = await createHermesGatewaySession(sessionOptions(config));
+    session.close();
+    await waitForServerClients(
+      server,
+      (client) => client.readyState === WebSocket.CLOSED,
+    );
+
+    expect(server.commands.map((command) => command.method)).toEqual([
+      "session.create",
+    ]);
+  });
 });
 
 const SESSION_ID = "gateway-session-1";
+const CHECKPOINT_ID = "checkpoint-source";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const ORG_ID = "22222222-2222-4222-8222-222222222222";
 const CONVERSATION_ID = "33333333-3333-4333-8333-333333333333";

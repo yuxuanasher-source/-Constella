@@ -21,6 +21,10 @@ import {
   Wrench,
 } from "lucide-react";
 import { isConversationStreamEvent } from "@/features/ai/conversation-contracts";
+import {
+  createConversationStreamBuffer,
+  isNearConversationBottom,
+} from "@/features/ai/conversation-stream-buffer";
 import { HermesSkillDraftReview } from "./hermes-skill-draft-review";
 
 // ——— 设计稿调色板（取自设计文件内联样式） ———
@@ -571,7 +575,26 @@ const AI_ACTIVE_TURN_STATUSES = new Set([
   "generating",
   "validating",
 ]);
-const AI_CONVERSATION_RECOVERY_POLL_MS = 1_000;
+const AI_CONVERSATION_RECOVERY_BACKOFF_MS = [1_000, 2_000, 4_000, 5_000];
+
+function normalizeTurnRecoverySnapshot(value, expectedTurnId) {
+  if (!value || typeof value !== "object") return null;
+  if (value.turnId !== expectedTurnId) return null;
+  if (!Number.isSafeInteger(value.eventSequence) || value.eventSequence < 0) {
+    return null;
+  }
+  if (typeof value.partialContent !== "string") return null;
+  if (typeof value.status !== "string") return null;
+  return {
+    turnId: value.turnId,
+    status: value.status,
+    eventSequence: value.eventSequence,
+    partialContent: value.partialContent,
+    terminalEvent: isConversationStreamEvent(value.terminalEvent)
+      ? value.terminalEvent
+      : null,
+  };
+}
 
 function latestActiveConversationTurn(value) {
   const turns = Array.isArray(value?.turns) ? value.turns : [];
@@ -3250,8 +3273,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   const panelMountedRef = React.useRef(true);
   const activeRunRef = React.useRef(null);
   const runProgressRef = React.useRef(runProgress);
+  const stickToBottomRef = React.useRef(true);
   React.useEffect(() => {
-    if (bodyRef.current)
+    if (bodyRef.current && stickToBottomRef.current)
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
   }, [msgs, busy]);
   React.useEffect(() => {
@@ -3272,6 +3296,26 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       conversationRecoveryRef.current += 1;
     };
   }, [conversationStorageKey]);
+  React.useEffect(() => {
+    const resumeRecovery = () => {
+      if (
+        !panelMountedRef.current ||
+        (typeof document !== "undefined" && document.hidden)
+      ) {
+        return;
+      }
+      const active = activeRunRef.current;
+      if (active?.conversationId === conversationIdRef.current) {
+        beginConversationRecovery(active.conversationId);
+      }
+    };
+    window.addEventListener("online", resumeRecovery);
+    document.addEventListener("visibilitychange", resumeRecovery);
+    return () => {
+      window.removeEventListener("online", resumeRecovery);
+      document.removeEventListener("visibilitychange", resumeRecovery);
+    };
+  }, []);
 
   const push = (role, text, meta, fields) =>
     setMsgs((m) =>
@@ -3290,6 +3334,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       return null;
     }
 
+    stickToBottomRef.current = true;
     setMsgs(normalizeConversationHistory(history));
     setRunProgress({
       ...createEmptyAiRunProgress(),
@@ -3313,6 +3358,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           stopQueued: false,
           canceling: false,
           localAbort: false,
+          recoverySequence: 0,
         };
       }
       return activeTurn;
@@ -3326,17 +3372,30 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   }
 
   function beginConversationRecovery(activeId) {
+    const active = activeRunRef.current;
+    if (!active || active.conversationId !== activeId || !active.turnId) {
+      return;
+    }
     const recoveryId = conversationRecoveryRef.current + 1;
     conversationRecoveryRef.current = recoveryId;
 
     void (async () => {
+      let backoffIndex = 0;
       while (
         panelMountedRef.current &&
         conversationIdRef.current === activeId &&
         conversationRecoveryRef.current === recoveryId
       ) {
         await new Promise((resolve) =>
-          setTimeout(resolve, AI_CONVERSATION_RECOVERY_POLL_MS),
+          setTimeout(
+            resolve,
+            AI_CONVERSATION_RECOVERY_BACKOFF_MS[
+              Math.min(
+                backoffIndex,
+                AI_CONVERSATION_RECOVERY_BACKOFF_MS.length - 1,
+              )
+            ],
+          ),
         );
         if (
           !panelMountedRef.current ||
@@ -3347,20 +3406,72 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         }
 
         try {
+          const after = Number.isSafeInteger(active.recoverySequence)
+            ? active.recoverySequence
+            : 0;
           const response = await fetch(
-            `/api/ai/conversations/${encodeURIComponent(activeId)}`,
+            `/api/ai/conversations/${encodeURIComponent(
+              activeId,
+            )}/turns/${encodeURIComponent(active.turnId)}/status?after=${after}`,
             { cache: "no-store" },
           );
-          const history = await response.json().catch(() => ({}));
-          if (!response.ok || history?.conversation?.id !== activeId) {
+          if (response.status === 204) {
+            backoffIndex += 1;
             continue;
           }
-          if (!applyServerConversationHistory(history, activeId)) {
+          const snapshot = normalizeTurnRecoverySnapshot(
+            await response.json().catch(() => ({})),
+            active.turnId,
+          );
+          if (!response.ok || !snapshot) {
+            backoffIndex += 1;
+            continue;
+          }
+          if (snapshot.eventSequence <= after) {
+            backoffIndex += 1;
+            continue;
+          }
+
+          active.recoverySequence = snapshot.eventSequence;
+          backoffIndex = 0;
+          if (snapshot.partialContent) {
+            setMsgs((current) =>
+              current.map((message) =>
+                message.id === active.assistantMessageId
+                  ? {
+                      ...message,
+                      text: aiPublicContent(
+                        snapshot.partialContent,
+                        AI_UI_SAFE_FAILURE_TEXT,
+                      ),
+                      status: "streaming",
+                      turnId: active.turnId,
+                    }
+                  : message,
+              ),
+            );
+          }
+
+          if (
+            snapshot.terminalEvent ||
+            !AI_ACTIVE_TURN_STATUSES.has(snapshot.status)
+          ) {
+            const historyResponse = await fetch(
+              `/api/ai/conversations/${encodeURIComponent(activeId)}`,
+              { cache: "no-store" },
+            );
+            const history = await historyResponse.json().catch(() => ({}));
+            if (!historyResponse.ok || history?.conversation?.id !== activeId) {
+              backoffIndex += 1;
+              continue;
+            }
+            applyServerConversationHistory(history, activeId);
             void refreshConversations();
             return;
           }
         } catch {
-          // The authoritative turn keeps running; retry history restoration.
+          // The authoritative turn keeps running; retry the recovery cursor.
+          backoffIndex += 1;
         }
       }
     })();
@@ -3447,7 +3558,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
   }
 
   async function switchConversation(nextId) {
-    if (busy || conversationSwitching) return;
+    if (conversationSwitching) return;
     if (!nextId || nextId === conversationIdRef.current) return;
     setConversationSwitching(true);
     setConversationError("");
@@ -3464,6 +3575,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       conversationEpochRef.current += 1;
       conversationRecoveryRef.current += 1;
       conversationIdRef.current = nextId;
+      stickToBottomRef.current = true;
       if (panelMountedRef.current) {
         setConversationId(nextId);
         const activeTurn = applyServerConversationHistory(history, nextId);
@@ -3569,6 +3681,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       replaceMessageId,
       onTurnStarted,
       onAssistantMessageId,
+      sourceConversationId,
+      sourceConversationEpoch,
+      runControl,
     } = {},
   ) {
     if (!res.body) throw new Error("AI 会话流不可用");
@@ -3580,8 +3695,14 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     let activeAssistantMessageId = "";
     let sawTerminalEvent = false;
     let failed = false;
+    const isCurrentConversation = () =>
+      panelMountedRef.current &&
+      (!sourceConversationId ||
+        (conversationIdRef.current === sourceConversationId &&
+          conversationEpochRef.current === sourceConversationEpoch));
 
     const upsertAiMessage = (message) => {
+      if (!isCurrentConversation()) return;
       setMsgs((current) => {
         const index = current.findIndex(
           (item) =>
@@ -3594,6 +3715,22 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         return next;
       });
     };
+    const updateRunProgress = (updater) => {
+      if (isCurrentConversation()) setRunProgress(updater);
+    };
+    const streamBuffer = createConversationStreamBuffer({
+      commit: (chunk) => {
+        streamedText += chunk;
+        upsertAiMessage({
+          id: activeAssistantMessageId,
+          role: "ai",
+          text: aiPublicContent(streamedText, AI_UI_SAFE_FAILURE_TEXT),
+          process: processParts.slice(),
+          status: "streaming",
+          turnId: activeTurnId,
+        });
+      },
+    });
 
     let processParts = [];
     // runProgress 走 React 状态，同一批事件内 ref 尚未刷新，
@@ -3601,6 +3738,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     let capturedActivities = [];
     let capturedSubagents = [];
     const captureThinkingSegment = () => {
+      streamBuffer.flush();
       if (!streamedText.trim() || !activeAssistantMessageId) return;
       processParts.push(streamedText);
       streamedText = "";
@@ -3627,13 +3765,19 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           userMessageId: payload.userMessageId,
           assistantMessageId: activeAssistantMessageId,
         });
-        if (activeRunRef.current) {
-          activeRunRef.current.turnId = activeTurnId;
-          activeRunRef.current.assistantMessageId = activeAssistantMessageId;
-          if (activeRunRef.current.stopQueued) void stopActiveRun();
+        if (runControl) {
+          runControl.turnId = activeTurnId;
+          runControl.assistantMessageId = activeAssistantMessageId;
+          if (runControl.stopQueued && activeRunRef.current === runControl) {
+            void stopActiveRun();
+          }
         }
         onAssistantMessageId?.(activeAssistantMessageId);
-        if (userMessageClientId && payload?.userMessageId) {
+        if (
+          isCurrentConversation() &&
+          userMessageClientId &&
+          payload?.userMessageId
+        ) {
           setMsgs((current) =>
             current.map((message) =>
               message.id === userMessageClientId
@@ -3659,7 +3803,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           kind: "activity",
         };
         capturedActivities = upsertById(capturedActivities, id, activityItem);
-        setRunProgress((current) => ({
+        updateRunProgress((current) => ({
           ...current,
           activities: upsertById(current.activities, id, activityItem),
         }));
@@ -3688,7 +3832,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           kind: "tool",
         };
         capturedActivities = upsertById(capturedActivities, id, toolItem);
-        setRunProgress((current) => ({
+        updateRunProgress((current) => ({
           ...current,
           activities: upsertById(current.activities, id, toolItem),
         }));
@@ -3696,7 +3840,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }
       if (eventName === "todo.updated") {
         captureThinkingSegment();
-        setRunProgress((current) => ({
+        updateRunProgress((current) => ({
           ...current,
           todos: Array.isArray(payload?.items)
             ? payload.items
@@ -3725,7 +3869,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           id,
           subagentItem,
         ).slice(0, 5);
-        setRunProgress((current) => ({
+        updateRunProgress((current) => ({
           ...current,
           subagents: upsertById(current.subagents, id, subagentItem).slice(
             0,
@@ -3735,7 +3879,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         return;
       }
       if (eventName === "clarify.requested") {
-        setRunProgress((current) => ({
+        streamBuffer.flush();
+        updateRunProgress((current) => ({
           ...current,
           clarify: {
             clarifyId: payload.clarifyId,
@@ -3752,22 +3897,15 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         const delta = typeof payload?.delta === "string" ? payload.delta : "";
         if (!delta) return;
         if (AI_UI_INTERNAL_TEXT.test(delta)) return;
-        streamedText += delta;
         activeTurnId = payload?.turnId || activeTurnId;
         activeAssistantMessageId =
           payload?.messageId || activeAssistantMessageId;
         onAssistantMessageId?.(activeAssistantMessageId);
-        upsertAiMessage({
-          id: activeAssistantMessageId,
-          role: "ai",
-          text: aiPublicContent(streamedText, AI_UI_SAFE_FAILURE_TEXT),
-          process: processParts.slice(),
-          status: "streaming",
-          turnId: activeTurnId,
-        });
+        streamBuffer.pushDelta(delta);
         return;
       }
       if (eventName === "response.completed") {
+        streamBuffer.flush();
         sawTerminalEvent = true;
         activeTurnId = payload?.turnId || activeTurnId;
         activeAssistantMessageId =
@@ -3821,7 +3959,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
           ...(completedMeta ? { meta: completedMeta } : {}),
         });
         if (processActivities.length || processSubagents.length) {
-          setRunProgress((current) => ({
+          updateRunProgress((current) => ({
             ...current,
             activities: [],
             subagents: [],
@@ -3830,6 +3968,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         return;
       }
       if (eventName === "response.cancelled") {
+        streamBuffer.flush();
         sawTerminalEvent = true;
         activeTurnId = payload?.turnId || activeTurnId;
         activeAssistantMessageId =
@@ -3848,6 +3987,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         return;
       }
       if (eventName === "response.failed") {
+        streamBuffer.flush();
         sawTerminalEvent = true;
         failed = true;
         activeTurnId = payload?.turnId || activeTurnId;
@@ -3899,11 +4039,13 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }
       if (buffer.trim()) flushEventBlock(buffer);
     } catch (error) {
+      streamBuffer.dispose();
       reader.cancel?.().catch?.(() => {});
       if (sawTerminalEvent) return { failed, turnId: activeTurnId };
       throw error;
     }
 
+    streamBuffer.dispose();
     if (!sawTerminalEvent) {
       throw new Error("AI 会话连接提前结束");
     }
@@ -3949,6 +4091,9 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       userMessageClientId,
       onTurnStarted,
       onAssistantMessageId,
+      sourceConversationId: activeConversationId,
+      sourceConversationEpoch: conversationEpochRef.current,
+      runControl: activeRunRef.current,
     });
   }
 
@@ -3972,6 +4117,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         : null;
     let acceptedTurn = null;
     let activeConversationId = "";
+    let activeConversationEpoch = conversationEpochRef.current;
     let backgroundRecoveryStarted = false;
     let userMessagePushed = false;
     const pushUserMessage = () => {
@@ -3998,6 +4144,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       let meta;
       activeConversationId =
         kind === "ask" ? await ensureServerConversation(userText) : "";
+      activeConversationEpoch = conversationEpochRef.current;
       if (askRunControl)
         askRunControl.conversationId = activeConversationId || "";
       pushUserMessage();
@@ -4062,7 +4209,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }
       push("ai", text, meta);
     } catch (e) {
-      if (kind === "ask" && activeRunRef.current?.localAbort) {
+      if (kind === "ask" && askRunControl?.localAbort) {
         return;
       }
       if (kind === "ask" && acceptedTurn && activeConversationId) {
@@ -4114,8 +4261,17 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       }
     } finally {
       if (!backgroundRecoveryStarted) {
-        if (!activeRunRef.current?.localAbort) setBusy(false);
-        activeRunRef.current = null;
+        if (
+          panelMountedRef.current &&
+          conversationIdRef.current === activeConversationId &&
+          conversationEpochRef.current === activeConversationEpoch &&
+          !askRunControl?.localAbort
+        ) {
+          setBusy(false);
+        }
+        if (activeRunRef.current === askRunControl) {
+          activeRunRef.current = null;
+        }
       }
       void refreshConversations();
     }
@@ -4287,6 +4443,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
     );
     let replacementMessageId = message.id;
     let replacementTurnId = message.turnId;
+    const replayConversationId = conversationIdRef.current;
+    const replayConversationEpoch = conversationEpochRef.current;
     try {
       const endpoint =
         action === "regenerate"
@@ -4319,6 +4477,8 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
         onAssistantMessageId: (messageId) => {
           replacementMessageId = messageId || replacementMessageId;
         },
+        sourceConversationId: replayConversationId,
+        sourceConversationEpoch: replayConversationEpoch,
       });
     } catch (error) {
       const safeReplayError = aiPublicText(
@@ -4573,7 +4733,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
                 aria-selected={active}
                 title={label}
                 onClick={() => void switchConversation(conversation.id)}
-                disabled={busy || conversationSwitching}
+                disabled={conversationSwitching}
                 style={{
                   flexShrink: 0,
                   maxWidth: 128,
@@ -4587,7 +4747,7 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
                   fontSize: 11.5,
                   fontWeight: 600,
                   padding: "5px 9px",
-                  cursor: busy || conversationSwitching ? "default" : "pointer",
+                  cursor: conversationSwitching ? "default" : "pointer",
                 }}
               >
                 {label}
@@ -4653,6 +4813,12 @@ function AiPanel({ user, projects, go, onTodoDraftCreated }) {
       {/* 对话区 */}
       <div
         ref={bodyRef}
+        data-testid="ai-conversation-body"
+        onScroll={(event) => {
+          stickToBottomRef.current = isNearConversationBottom(
+            event.currentTarget,
+          );
+        }}
         className="scl"
         style={{
           flex: 1,

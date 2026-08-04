@@ -23,10 +23,99 @@ export type ConversationTurnStatus =
   | "completed"
   | "failed"
   | "cancelled";
+export type ConversationTurnStage =
+  | "accepted"
+  | "context_ready"
+  | "session_ready"
+  | "agent_ready"
+  | "first_delta"
+  | "terminal"
+  | "persisted";
+export type ConversationSessionAction = "resumed" | "rebuilt";
+
+export const TURN_RECOVERY_EVENT_NAMES = [
+  "accepted",
+  "context_ready",
+  "session_ready",
+  "tool_started",
+  "tool_completed",
+  "clarify_requested",
+  "clarify_answered",
+  "cancel_requested",
+  "response_partial",
+  "terminal",
+] as const;
+
+export type TurnRecoveryEventName = (typeof TURN_RECOVERY_EVENT_NAMES)[number];
+
+export type TurnRecoveryPendingClarify = {
+  turnId: string;
+  clarifyId: string;
+  requestId?: string;
+  question: string;
+  choices: string[];
+  allowFreeText: boolean;
+  response?: {
+    clarifyId: string;
+    answerSha256: string;
+    status: "claimed" | "delivered";
+  };
+};
+
+export type TurnRecoveryControlState = {
+  childSessionIds: string[];
+  pendingClarify?: TurnRecoveryPendingClarify;
+};
+
+export type TurnRecoverySnapshot = {
+  turnId: string;
+  status: ConversationTurnStatus;
+  eventSequence: number;
+  partialContent: string;
+  terminalEvent?: ConversationStreamEvent;
+  updatedAt: string;
+};
+
+export type TurnRecoveryRecord = TurnRecoverySnapshot & {
+  controlState: TurnRecoveryControlState;
+  operationStatus?: "appended" | "claimed" | "duplicate" | "conflict";
+};
+
+export const CONVERSATION_MEMORY_LIMITS = {
+  itemsPerSection: 24,
+  textCharacters: 512,
+  sourceMessageIdsPerItem: 8,
+} as const;
+
+export type ConversationMemoryItem = {
+  text: string;
+  sourceMessageIds: string[];
+};
+
+export type ConversationMemorySummary = {
+  schemaVersion: 1;
+  goals: ConversationMemoryItem[];
+  confirmedFacts: ConversationMemoryItem[];
+  decisions: ConversationMemoryItem[];
+  unresolvedQuestions: ConversationMemoryItem[];
+  lastCompactedSequence: number;
+};
+
+export type ConversationMemoryDelta = Omit<
+  ConversationMemorySummary,
+  "schemaVersion" | "lastCompactedSequence"
+> & { throughSequence: number };
+
+export type ConversationMemorySourceMessage = {
+  id: string;
+  conversationId: string;
+  sequence: number;
+};
 
 export type ConversationContextSnapshot = {
   version: number;
   summaryVersion: number;
+  lastCompactedSequence?: number;
   messageIds: string[];
   groundingRefs: string[];
   assembledAt: string;
@@ -236,14 +325,111 @@ export function canTransitionConversationTurn(
   return TURN_TRANSITIONS[from].includes(to);
 }
 
-export function parseCreateTurnCommand(value: unknown): CreateTurnCommand | null {
+export function isConversationTurnStage(
+  value: unknown,
+): value is ConversationTurnStage {
+  return (
+    typeof value === "string" &&
+    [
+      "accepted",
+      "context_ready",
+      "session_ready",
+      "agent_ready",
+      "first_delta",
+      "terminal",
+      "persisted",
+    ].includes(value)
+  );
+}
+
+export function isConversationSessionAction(
+  value: unknown,
+): value is ConversationSessionAction {
+  return value === "resumed" || value === "rebuilt";
+}
+
+export function isTurnRecoveryEventName(
+  value: unknown,
+): value is TurnRecoveryEventName {
+  return (
+    typeof value === "string" &&
+    (TURN_RECOVERY_EVENT_NAMES as readonly string[]).includes(value)
+  );
+}
+
+export function parseTurnRecoveryRecord(
+  value: unknown,
+): TurnRecoveryRecord | null {
+  if (!isRecord(value)) return null;
+  const turnId = nonEmptyString(value.turnId) ? value.turnId : null;
+  const status = isConversationTurnStatus(value.status) ? value.status : null;
+  const eventSequence = value.eventSequence;
+  const partialContent = value.partialContent;
+  const updatedAt = value.updatedAt;
+  const terminalEvent = value.terminalEvent;
+  const controlState = turnId
+    ? parseTurnRecoveryControlState(value.controlState, turnId)
+    : null;
+  if (
+    !turnId ||
+    !status ||
+    !isNonNegativeInteger(eventSequence) ||
+    typeof partialContent !== "string" ||
+    new TextEncoder().encode(partialContent).byteLength > 400_000 ||
+    !isDateString(updatedAt) ||
+    !controlState ||
+    (terminalEvent != null &&
+      (!isConversationStreamEvent(terminalEvent) ||
+        ![
+          "response.completed",
+          "response.failed",
+          "response.cancelled",
+        ].includes(terminalEvent.type)))
+  ) {
+    return null;
+  }
+  return {
+    turnId,
+    status,
+    eventSequence,
+    partialContent,
+    ...(terminalEvent ? { terminalEvent } : {}),
+    updatedAt,
+    controlState,
+    ...(isTurnRecoveryOperationStatus(value.operationStatus)
+      ? { operationStatus: value.operationStatus }
+      : {}),
+  };
+}
+
+export function toPublicTurnRecoverySnapshot(
+  record: TurnRecoveryRecord,
+): TurnRecoverySnapshot {
+  return {
+    turnId: record.turnId,
+    status: record.status,
+    eventSequence: record.eventSequence,
+    partialContent: record.partialContent,
+    ...(record.terminalEvent ? { terminalEvent: record.terminalEvent } : {}),
+    updatedAt: record.updatedAt,
+  };
+}
+
+export function parseCreateTurnCommand(
+  value: unknown,
+): CreateTurnCommand | null {
   if (!isRecord(value)) {
     return null;
   }
 
   const content = normalizedString(value.content, 12_000);
   const clientRequestId = parseClientRequestId(value.clientRequestId);
-  const mode = value.mode === "deep" ? "deep" : value.mode === "fast" || value.mode == null ? "fast" : null;
+  const mode =
+    value.mode === "deep"
+      ? "deep"
+      : value.mode === "fast" || value.mode == null
+        ? "fast"
+        : null;
   const attachmentResult = sanitizeAiAttachments(value.attachments);
   const attachments = attachmentResult.ok ? attachmentResult.attachments : null;
   if (!content || !clientRequestId || !mode || !attachments) {
@@ -259,6 +445,106 @@ export function parseRetryTurnCommand(value: unknown): RetryTurnCommand | null {
   }
   const clientRequestId = parseClientRequestId(value.clientRequestId);
   return clientRequestId ? { clientRequestId } : null;
+}
+
+export function parseConversationMemorySummary(
+  value: unknown,
+): ConversationMemorySummary | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "schemaVersion",
+      "goals",
+      "confirmedFacts",
+      "decisions",
+      "unresolvedQuestions",
+      "lastCompactedSequence",
+    ]) ||
+    value.schemaVersion !== 1 ||
+    !isNonNegativeInteger(value.lastCompactedSequence)
+  ) {
+    return null;
+  }
+  const sections = parseMemorySections(value);
+  return sections
+    ? {
+        schemaVersion: 1,
+        ...sections,
+        lastCompactedSequence: value.lastCompactedSequence,
+      }
+    : null;
+}
+
+export function parseConversationMemoryDelta(
+  value: unknown,
+  provenance: {
+    conversationId: string;
+    sourceMessages: readonly ConversationMemorySourceMessage[];
+    previousSummary: ConversationMemorySummary;
+  },
+): ConversationMemoryDelta | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "goals",
+      "confirmedFacts",
+      "decisions",
+      "unresolvedQuestions",
+      "throughSequence",
+    ]) ||
+    !isNonNegativeInteger(value.throughSequence) ||
+    value.throughSequence < provenance.previousSummary.lastCompactedSequence
+  ) {
+    return null;
+  }
+  const throughSequence = value.throughSequence;
+
+  const sections = parseMemorySections(value);
+  if (!sections) return null;
+
+  const sourceSequences = new Map(
+    provenance.sourceMessages
+      .filter((message) => message.conversationId === provenance.conversationId)
+      .map((message) => [message.id, message.sequence] as const),
+  );
+  const items = Object.values(sections).flat();
+  if (
+    items.some((item) =>
+      item.sourceMessageIds.some((id) => {
+        const sequence = sourceSequences.get(id);
+        return sequence == null || sequence > throughSequence;
+      }),
+    )
+  ) {
+    return null;
+  }
+
+  const maximumSequence = Math.max(
+    provenance.previousSummary.lastCompactedSequence,
+    ...provenance.sourceMessages
+      .filter((message) => message.conversationId === provenance.conversationId)
+      .map((message) => message.sequence),
+  );
+  if (throughSequence > maximumSequence) return null;
+
+  return { ...sections, throughSequence };
+}
+
+export function applyConversationMemoryDelta(
+  previousSummary: ConversationMemorySummary,
+  delta: ConversationMemoryDelta,
+): ConversationMemorySummary {
+  if (delta.throughSequence < previousSummary.lastCompactedSequence) {
+    throw new RangeError("conversation_memory_sequence_regression");
+  }
+  return {
+    schemaVersion: 1,
+    goals: delta.goals,
+    confirmedFacts: delta.confirmedFacts,
+    decisions: delta.decisions,
+    unresolvedQuestions: delta.unresolvedQuestions,
+    lastCompactedSequence: delta.throughSequence,
+  };
 }
 
 export function isConversationStreamEvent(
@@ -314,7 +600,8 @@ export function isConversationStreamEvent(
         nonEmptyString(value.clarifyId) &&
         nonEmptyString(value.question) &&
         (value.choices == null || isStringArray(value.choices)) &&
-        (value.allowFreeText == null || typeof value.allowFreeText === "boolean")
+        (value.allowFreeText == null ||
+          typeof value.allowFreeText === "boolean")
       );
     case "todo.updated":
       return (
@@ -385,6 +672,180 @@ function parseClientRequestId(value: unknown): string | null {
     /^[A-Za-z0-9._:-]+$/.test(normalized)
     ? normalized
     : null;
+}
+
+function parseMemorySections(
+  value: Record<string, unknown>,
+): Omit<
+  ConversationMemorySummary,
+  "schemaVersion" | "lastCompactedSequence"
+> | null {
+  const goals = parseMemoryItems(value.goals);
+  const confirmedFacts = parseMemoryItems(value.confirmedFacts);
+  const decisions = parseMemoryItems(value.decisions);
+  const unresolvedQuestions = parseMemoryItems(value.unresolvedQuestions);
+  return goals && confirmedFacts && decisions && unresolvedQuestions
+    ? { goals, confirmedFacts, decisions, unresolvedQuestions }
+    : null;
+}
+
+function parseMemoryItems(value: unknown): ConversationMemoryItem[] | null {
+  if (
+    !Array.isArray(value) ||
+    value.length > CONVERSATION_MEMORY_LIMITS.itemsPerSection
+  ) {
+    return null;
+  }
+  const items: ConversationMemoryItem[] = [];
+  for (const candidate of value) {
+    if (
+      !isRecord(candidate) ||
+      !hasExactKeys(candidate, ["text", "sourceMessageIds"]) ||
+      !isMemoryText(candidate.text) ||
+      !Array.isArray(candidate.sourceMessageIds) ||
+      candidate.sourceMessageIds.length === 0 ||
+      candidate.sourceMessageIds.length >
+        CONVERSATION_MEMORY_LIMITS.sourceMessageIdsPerItem ||
+      !candidate.sourceMessageIds.every(isUuidString) ||
+      new Set(candidate.sourceMessageIds).size !==
+        candidate.sourceMessageIds.length
+    ) {
+      return null;
+    }
+    items.push({
+      text: candidate.text.trim(),
+      sourceMessageIds: [...candidate.sourceMessageIds],
+    });
+  }
+  return items;
+}
+
+function isMemoryText(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  return (
+    text.length > 0 &&
+    text.length <= CONVERSATION_MEMORY_LIMITS.textCharacters &&
+    !/[\r\n]/.test(text) &&
+    !/^(?:user|assistant|system|tool)\s*:/i.test(text) &&
+    !/<\/?(?:conversation_context|current_request|recent_messages|summary)>/i.test(
+      text,
+    )
+  );
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return (
+    keys.length === sortedExpected.length &&
+    keys.every((key, index) => key === sortedExpected[index])
+  );
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isConversationTurnStatus(
+  value: unknown,
+): value is ConversationTurnStatus {
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(TURN_TRANSITIONS, value)
+  );
+}
+
+function isTurnRecoveryOperationStatus(
+  value: unknown,
+): value is NonNullable<TurnRecoveryRecord["operationStatus"]> {
+  return ["appended", "claimed", "duplicate", "conflict"].includes(
+    String(value),
+  );
+}
+
+function parseTurnRecoveryControlState(
+  value: unknown,
+  turnId: string,
+): TurnRecoveryControlState | null {
+  if (!isRecord(value)) return null;
+  const childSessionIds = value.childSessionIds ?? [];
+  if (
+    !Array.isArray(childSessionIds) ||
+    childSessionIds.length > 64 ||
+    !childSessionIds.every(
+      (item) =>
+        typeof item === "string" && item.length > 0 && item.length <= 256,
+    ) ||
+    new Set(childSessionIds).size !== childSessionIds.length
+  ) {
+    return null;
+  }
+  const pending = value.pendingClarify;
+  if (pending == null) return { childSessionIds: [...childSessionIds] };
+  if (
+    !isRecord(pending) ||
+    pending.turnId !== turnId ||
+    !isUuidString(pending.clarifyId) ||
+    (pending.requestId != null && !isUuidString(pending.requestId)) ||
+    typeof pending.question !== "string" ||
+    pending.question.trim().length === 0 ||
+    pending.question.length > 2_000 ||
+    !Array.isArray(pending.choices) ||
+    pending.choices.length > 12 ||
+    !pending.choices.every(
+      (choice) =>
+        typeof choice === "string" &&
+        choice.trim().length > 0 &&
+        choice.length <= 256,
+    ) ||
+    typeof pending.allowFreeText !== "boolean"
+  ) {
+    return null;
+  }
+  const response = pending.response;
+  if (
+    response != null &&
+    (!isRecord(response) ||
+      response.clarifyId !== pending.clarifyId ||
+      typeof response.answerSha256 !== "string" ||
+      !/^[0-9a-f]{64}$/i.test(response.answerSha256) ||
+      (response.status !== "claimed" && response.status !== "delivered"))
+  ) {
+    return null;
+  }
+  return {
+    childSessionIds: [...childSessionIds],
+    pendingClarify: {
+      turnId,
+      clarifyId: pending.clarifyId,
+      ...(pending.requestId ? { requestId: pending.requestId } : {}),
+      question: pending.question.trim(),
+      choices: [...pending.choices],
+      allowFreeText: pending.allowFreeText,
+      ...(response
+        ? {
+            response: {
+              clarifyId: response.clarifyId as string,
+              answerSha256: response.answerSha256 as string,
+              status: response.status as "claimed" | "delivered",
+            },
+          }
+        : {}),
+    },
+  };
+}
+
+function isUuidString(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  );
 }
 
 function normalizedString(value: unknown, maxLength: number): string | null {

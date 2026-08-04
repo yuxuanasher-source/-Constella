@@ -4,6 +4,11 @@ This runbook covers Product release evidence, deploy controls, canary enablement
 and rollback packaging for the Xingyao Hermes native intelligence restoration.
 The deploy path stays repo-native and uses the existing `scripts/deploy.sh`.
 
+Conversation durability and performance evidence is defined in
+`docs/runbooks/ai-conversation-performance-rollout.md`. That runbook separates
+local contract evidence from production canary evidence and documents the
+observability gaps that currently block traffic expansion.
+
 ## Safety Defaults
 
 - Start every release with `XINGYAO_HERMES_GATEWAY_ENABLED=false`.
@@ -133,6 +138,12 @@ The first managed release must follow
 immutable release pipeline. Hermes changes must first be reviewed and merged into
 `codex/full-project-ui`; deploy only the successful push artifact for that default
 branch and use that merged commit as `EXPECTED_SHA`:
+
+For the first release containing migration `20260803120500`, complete the
+**protected control upgrade** in section 7 of
+`docs/runbooks/atomic-release-bootstrap.md` before running this command. Record
+and verify `EXPECTED_DEPLOY_CONTROL_SHA256` from the same reviewed CI run. An old
+or mismatched protected control will fail closed before applying that migration.
 
 ```sh
 SOURCE_REPO=/var/www/jingying-cabin \
